@@ -11,7 +11,7 @@ use super::node::{EClassId, ENode};
 use alloc::collections::BinaryHeap;
 use alloc::vec::Vec;
 use core::cmp::Reverse;
-use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, OpKind, Shape, Variance};
+use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, Shape, Variance};
 
 /// A witnessed choice map: an e-graph, a root e-class, and a well-founded
 /// choice function from every e-class reachable from `root` to the node
@@ -168,10 +168,7 @@ impl<'g> Extraction<'g> {
         let mut choices = self.choices.clone();
         choices[canonical.0 as usize] = Some(node_idx);
 
-        let new_children: &[EClassId] = match self.egraph.nodes(canonical).get(node_idx) {
-            Some(ENode::Op { children, .. }) => children,
-            _ => &[],
-        };
+        let new_children = operation_operands(self.egraph.nodes(canonical).get(node_idx));
 
         for &child in new_children {
             backfill_well_founded(self.egraph, child, &mut choices);
@@ -565,14 +562,25 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
         // the one place a missing choice would become a wrong *term* is
         // `Selection::of_map`, which refuses it instead.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
-        if let Some(ENode::Op { children, .. }) = egraph.nodes(canonical).get(node_idx) {
-            for &child in children.iter().rev() {
-                stack.push((child, false));
-            }
+        for &child in operation_operands(egraph.nodes(canonical).get(node_idx))
+            .iter()
+            .rev()
+        {
+            stack.push((child, false));
         }
     }
 
     false
+}
+
+/// The operand classes of an operation node, a shift's one operand included;
+/// none for any other node, which is what the reachability walks below follow.
+fn operation_operands(node: Option<&ENode>) -> &[EClassId] {
+    match node {
+        Some(ENode::Op { children, .. }) => children,
+        Some(ENode::Shift { operand, .. }) => core::slice::from_ref(operand),
+        _ => &[],
+    }
 }
 
 /// Check whether `canonical` is forward-reachable from `new_children` by
@@ -611,9 +619,7 @@ fn choices_have_cycle_through(
         // same reason: extra edges can only over-report reachability, which
         // costs a rejected swap and never a wrong term.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
-        if let Some(ENode::Op { children, .. }) = egraph.nodes(c).get(node_idx) {
-            stack.extend_from_slice(children);
-        }
+        stack.extend_from_slice(operation_operands(egraph.nodes(c).get(node_idx)));
     }
 
     false
@@ -632,9 +638,7 @@ fn choices_have_cycle_through(
 /// [`Self::to_arena`] each read an operand's value at a position that was
 /// filled earlier in the same pass. Neither walks the e-graph to find order or
 /// reachability, and neither can meet a missing choice or a cycle, because
-/// neither is representable here. [`Self::pinned`] is the one derived
-/// selection: it re-selects through [`Selection::of_map`] with some picks
-/// replaced by childless ones.
+/// neither is representable here.
 ///
 /// The order is the left-to-right DFS post-order of the chosen DAG, first
 /// occurrence winning. It is *an* order every fold needs and *the* order the
@@ -908,102 +912,23 @@ impl Selection {
         map
     }
 
-    /// The term every `Shl`/`Shr` count of which is the `Const` its class
-    /// holds, if that changes it.
-    ///
-    /// The emitter lowers a shift to a hardware immediate, so the count child
-    /// MUST extract as a `Const`. But a count's e-class can legitimately hold
-    /// arithmetic as well — a reachable `4 + 4` folds into the same class as
-    /// `8` — and extraction picks by cost, so a cost model that prices the
-    /// `Add` lower hands codegen a non-constant child. A `Const` from the same
-    /// class is the same value by definition.
-    ///
-    /// The pin is per class, not per use: a count class that is also an
-    /// ordinary operand elsewhere is a `Const` there too. The set of count
-    /// classes is read off *this* selection, every shift in it, including one
-    /// under a fold body (the emitter lowers that one to an immediate too, so
-    /// leaving it unpinned is a panic in codegen, not a different term). A
-    /// shift only a replaced pick reached still pins its count (unread: that
-    /// class is gone from the result). `None` when every count already is a
-    /// `Const`, which is the usual case, and then the term is this one.
-    ///
-    /// # Panics
-    ///
-    /// If a count class holds no `Const` at all. That cannot arise from a
-    /// well-formed arena (the count entered as a literal) and would panic in
-    /// the emitter regardless — failing here names the real cause.
-    pub(crate) fn pinned(&self, egraph: &EGraph) -> Option<Self> {
-        let mut constant: Vec<Option<usize>> = alloc::vec![None; self.len()];
-        for position in 0..self.len() {
-            let ENode::Op { op, .. } = self.node(egraph, position) else {
-                continue;
-            };
-            if !matches!(op, OpKind::Shl | OpKind::Shr) {
-                continue;
-            }
-            let Some(&count) = self.operands_of(position).get(1) else {
-                continue;
-            };
-            let class = self.picks[count].class;
-            let nodes = egraph.nodes(class);
-            if matches!(self.node(egraph, count), ENode::Const(_)) {
-                continue;
-            }
-            constant[count] = Some(
-                nodes
-                    .iter()
-                    .position(|node| matches!(node, ENode::Const(_)))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Selection::pinned: shift-count e-class {} holds no Const; the \
-                             emitter's immediate-only shift lowering cannot be met",
-                            class.0
-                        )
-                    }),
-            );
-        }
-        if constant.iter().all(Option::is_none) {
-            return None;
-        }
-
-        // A pinned `Const` has no operands, so re-selecting from the map with
-        // those picks overwritten gives exactly the reach and the order the
-        // pinned term has: what only a replaced pick reached drops out, and
-        // what moves up to a later parent is emitted there. That is a new
-        // selection, not a filter of this one, and it goes through the one
-        // post-order walk. It cannot be refused: reach only shrinks, and a
-        // selection that was acyclic stays so.
-        let mut map = self.to_map(egraph.num_classes());
-        for (position, constant) in constant.iter().enumerate() {
-            if let Some(idx) = *constant {
-                map[self.picks[position].class.index()] = Some(idx);
-            }
-        }
-        Some(
-            Self::of_map(egraph, self.root, &map)
-                .expect("pinning replaces picks by childless ones in an acyclic selection"),
-        )
-    }
-
     /// Materialise the term as an arena, and the id of its root.
     ///
     /// One node per class, in pick order, so a class reached twice is one
-    /// `ExprId` used twice. Shifts reach the arena with a constant count
-    /// ([`Self::pinned`]).
+    /// `ExprId` used twice. A shift is written the way the arena spells it,
+    /// its count as a `Const` second operand emitted just before it.
     pub(crate) fn to_arena(&self, egraph: &EGraph) -> (ExprArena, ExprId) {
-        let pinned = self.pinned(egraph);
-        let term = pinned.as_ref().unwrap_or(self);
-        let mut arena = ExprArena::with_capacity(term.len());
-        let mut ids: Vec<ExprId> = Vec::with_capacity(term.len());
+        let mut arena = ExprArena::with_capacity(self.len());
+        let mut ids: Vec<ExprId> = Vec::with_capacity(self.len());
         let mut operand_ids: Vec<ExprId> = Vec::new();
-        for position in 0..term.len() {
+        for position in 0..self.len() {
             operand_ids.clear();
             operand_ids.extend(
-                term.operands_of(position)
+                self.operands_of(position)
                     .iter()
                     .map(|&operand| ids[operand]),
             );
-            let shape = match term.node(egraph, position) {
+            let shape = match self.node(egraph, position) {
                 ENode::Var(var) => Shape::Var(*var),
                 ENode::Const(bits) => Shape::Const(f32::from_bits(*bits)),
                 // One slot per distinct identity, and the assertion that a
@@ -1022,6 +947,12 @@ impl Selection {
                 // (`pixelflow_ir::passes::link`).
                 ENode::Ref { key, .. } => Shape::Ref(*key),
                 ENode::Op { op, .. } => Shape::Op(*op, Children::Many(&operand_ids)),
+                ENode::Shift {
+                    direction, count, ..
+                } => {
+                    operand_ids.push(arena.embed(Shape::Const(count.literal())));
+                    Shape::Op(direction.op(), Children::Many(&operand_ids))
+                }
                 ENode::Reduce { fold, .. } => Shape::Reduce {
                     fold: *fold,
                     body: operand_ids[0],
@@ -1825,6 +1756,12 @@ fn canonical_key(egraph: &EGraph, node: &ENode) -> (u8, u128, usize, Vec<u32>) {
         // differ only in their metadata, so that is what orders them.
         ENode::Reduce { fold, .. } => (6, fold.to_bits(), children.len(), children),
         ENode::Ref { key, .. } => (7, u128::from(key.bits()), 0, children),
+        // A shift orders among the operations by its op, as it did when it
+        // was one; its count, which tells two shifts of one operand apart,
+        // takes the arity's place (a shift has one operand).
+        ENode::Shift {
+            direction, count, ..
+        } => (5, direction.op() as u128, count.bits() as usize, children),
     }
 }
 
@@ -2104,7 +2041,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
             // `CostModel::node_op_cost` gives a fold whose monoid has no
             // combiner), so a node with several such children overflows a
             // plain `usize` sum.
-            ENode::Op { .. } | ENode::Reduce { .. } => {
+            ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => {
                 let per_child = fold_body_multiple(node);
                 own.saturating_add(
                     self.problem
@@ -2376,6 +2313,8 @@ mod tests {
 
     use crate::egraph::and_or::AndOrGraph;
     use crate::egraph::cost::CostModel;
+    use crate::egraph::shift::{ShiftCount, ShiftDirection};
+    use pixelflow_ir::OpKind;
 
     /// What the reference pass prices an unresolved child at — above any
     /// weighted cost a real program can reach (a flat 1_000_000 was safely
@@ -2594,7 +2533,7 @@ mod tests {
                     | ENode::Uniform(_)
                     | ENode::Param(_)
                     | ENode::Ref { .. } => own,
-                    ENode::Op { .. } | ENode::Reduce { .. } => {
+                    ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => {
                         let children = node.children_slice();
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             CYCLE_COST
@@ -3266,7 +3205,7 @@ mod tests {
         fn node_cost(&self, node: &ENode, _parent: Option<pixelflow_ir::OpKind>) -> usize {
             match node {
                 ENode::Var(_) => VAR_ABOVE_TWO_NEGS,
-                ENode::Op { .. } | ENode::Reduce { .. } => 1,
+                ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => 1,
                 ENode::Const(_)
                 | ENode::Buffer(_)
                 | ENode::Uniform(_)
@@ -3437,57 +3376,31 @@ mod tests {
              edge stream"
         );
 
-        // ---------------------------------------------------------------
-        // Shift-count pinning (review thread on PR #1019): a Shl/Shr count
-        // e-class can legitimately hold both a Const and a value-equal
-        // varying-shaped alternative. Materialization always pins that
-        // child to the Const representative (`Selection::pinned` — the
-        // emitter's shift lowering requires an immediate), so if the
-        // extraction chose the varying node, the materialized term must be
-        // the PINNED arena, not the raw choice — otherwise it carries nodes
-        // the compiled form never has.
-        // ---------------------------------------------------------------
-        // The arena the term will actually materialise as: pinning
-        // always wins, so the compiled form is `Shl(X, Const(0))` no matter
-        // which node the count class's extraction chose.
-        let mut arena3 = ExprArena::new();
-        let x3 = arena3.push_var(0);
-        let zero3 = arena3.push_const(0.0);
-        let shl3 = arena3.push_binary(OpKind::Shl, x3, zero3);
-        let from_arena3 = EdgeTrace::from_arena_dag(&arena3, shl3);
+        // A shift materializes in the arena's spelling, `Shl(x, Const)`, so
+        // its stream is that arena's, count included.
+        let mut shifted = ExprArena::new();
+        let sx = shifted.push_var(0);
+        let count = shifted.push_const(0.0);
+        let shl = shifted.push_binary(OpKind::Shl, sx, count);
+        let from_shifted = EdgeTrace::from_arena_dag(&shifted, shl);
 
-        let mut eg3 = EGraph::new();
-        let ex3 = eg3.add(ENode::Var(0));
-        let ey3 = eg3.add(ENode::Var(1));
-        let esub3 = eg3.add(ENode::apply(OpKind::Sub, &[ey3, ey3]));
-        let econst3 = eg3.add(ENode::constant(0.0));
-        let count3 = eg3.union(esub3, econst3); // Sub(Y, Y) = 0, same class as Const(0)
-        eg3.rebuild();
-        let eshl3 = eg3.add(ENode::apply(OpKind::Shl, &[ex3, count3]));
-
-        // Choose the varying Sub(Y, Y) node for the count class, not the
-        // Const — exactly the scenario `Selection::pinned` exists to correct
-        // at emission time.
-        let canonical_count3 = eg3.find(count3);
-        let sub_idx3 = eg3
-            .nodes(canonical_count3)
-            .iter()
-            .position(|n| matches!(n, ENode::Op { .. }))
-            .expect("merged count class holds the Sub node");
-        let mut choices3: Vec<Option<usize>> = alloc::vec![None; eg3.num_classes()];
-        choices3[eg3.find(eshl3).0 as usize] = Some(0);
-        choices3[canonical_count3.0 as usize] = Some(sub_idx3);
-        choices3[eg3.find(ex3).0 as usize] = Some(0);
-        choices3[eg3.find(ey3).0 as usize] = Some(0);
-        let extraction3 = Extraction::from_backfill(&eg3, eshl3, choices3);
-
-        let (term3, term3_root) = extraction3.to_selection().to_arena(&eg3);
-        let from_term3 = EdgeTrace::from_arena_dag(&term3, term3_root);
-
+        let mut shift_graph = EGraph::new();
+        let shift_x = shift_graph.add(ENode::Var(0));
+        let shift_node = shift_graph.add(ENode::Shift {
+            direction: ShiftDirection::Left,
+            count: ShiftCount::from_literal(0.0).expect("0 is a count"),
+            operand: shift_x,
+        });
+        let extraction = Extraction::from_backfill(
+            &shift_graph,
+            shift_node,
+            alloc::vec![None; shift_graph.num_classes()],
+        );
+        let (term, term_root) = extraction.to_selection().to_arena(&shift_graph);
         assert_eq!(
-            from_arena3, from_term3,
-            "the materialized term must not hold Sub(Y, Y) once the count is pinned to \
-             Const(0), or its stream will disagree with the pinned arena"
+            from_shifted,
+            EdgeTrace::from_arena_dag(&term, term_root),
+            "a shift's stream is the arena spelling's, count included"
         );
     }
 
@@ -3578,41 +3491,29 @@ mod tests {
         assert_eq!(root_id.0, 2, "root ExprId should be 2 (the Add node)");
     }
 
-    /// A shift count the extraction chose as arithmetic is materialized as the
-    /// `Const` its class holds, and what only the arithmetic reached is not
-    /// emitted — even when a later operand reaches it too, which then
-    /// reaches the arena where it is *first used* rather than where the
-    /// unpinned walk met it.
+    /// A shift reaches the arena as the arena spells it, its count a `Const`
+    /// emitted at the shift, after its operand and before it, where a walk
+    /// of the term meets them. A literal another node names too is the same
+    /// arena node, whichever use reaches it first.
     #[test]
-    fn a_pinned_shift_count_drops_what_only_it_reached_and_reorders_what_it_shared() {
+    fn a_shift_materializes_with_its_count_at_its_position_and_shares_the_literal() {
         use pixelflow_ir::{ExprArena, OpKind};
 
-        // root = Add(Shl(x, count), Sub(d, y)), count = {Const(3), Mul(d, d)},
-        // d = Add(y, w): `d` is reached under `count` first, and under the
-        // `Sub` second.
+        // root = Add(Shift(x, 3), Mul(y, three)): `three` is an ordinary
+        // operand later, and a count first.
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let w = eg.add(ENode::Var(2));
-        let d = eg.add(ENode::apply(OpKind::Add, &[y, w]));
-        let arithmetic = eg.add(ENode::apply(OpKind::Mul, &[d, d]));
         let three = eg.add(ENode::constant(3.0));
-        let count = eg.union(arithmetic, three);
-        eg.rebuild();
-        let shl = eg.add(ENode::apply(OpKind::Shl, &[x, count]));
-        let sub = eg.add(ENode::apply(OpKind::Sub, &[d, y]));
-        let root = eg.add(ENode::apply(OpKind::Add, &[shl, sub]));
+        let shifted = eg.add(ENode::Shift {
+            direction: ShiftDirection::Left,
+            count: ShiftCount::from_literal(3.0).expect("3 is a count"),
+            operand: x,
+        });
+        let product = eg.add(ENode::apply(OpKind::Mul, &[y, three]));
+        let root = eg.add(ENode::apply(OpKind::Add, &[shifted, product]));
 
-        // Choose the arithmetic for the count, not the Const.
-        let count = eg.find(count);
-        let mul_idx = eg
-            .nodes(count)
-            .iter()
-            .position(|n| matches!(n, ENode::Op { .. }))
-            .expect("the merged count class holds the Mul");
-        let mut choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
-        choices[count.index()] = Some(mul_idx);
-        let extraction = Extraction::from_backfill(&eg, root, choices);
+        let extraction = Extraction::from_backfill(&eg, root, alloc::vec![None; eg.num_classes()]);
         let (arena, arena_root) = extraction.to_selection().to_arena(&eg);
 
         let mut expected = ExprArena::new();
@@ -3620,56 +3521,42 @@ mod tests {
         let e3 = expected.push_const(3.0);
         let eshl = expected.push_binary(OpKind::Shl, ex, e3);
         let ey = expected.push_var(1);
-        let ew = expected.push_var(2);
-        let ed = expected.push_binary(OpKind::Add, ey, ew);
-        let esub = expected.push_binary(OpKind::Sub, ed, ey);
-        let eroot = expected.push_binary(OpKind::Add, eshl, esub);
+        let emul = expected.push_binary(OpKind::Mul, ey, e3);
+        let eroot = expected.push_binary(OpKind::Add, eshl, emul);
         assert_eq!(arena_root, eroot);
         assert_eq!(
             arena.nodes().collect::<Vec<_>>(),
             expected.nodes().collect::<Vec<_>>(),
-            "the pinned term, in the order its first uses meet its nodes"
+            "the count is emitted at the shift, and the Mul reuses it"
         );
     }
 
-    /// A shift under a fold body is pinned too: the emitter lowers it to an
-    /// immediate whether or not a `Reduce` is above it, so a count the
-    /// extraction chose as arithmetic must reach the arena as the `Const` its
-    /// class holds. The pin is per class, so the same class used as an
-    /// ordinary operand outside the fold is that `Const` there as well.
+    /// A shift under a fold body materializes with its count too, and a
+    /// literal the fold's sibling names is the same arena node.
     #[test]
-    fn a_shift_count_under_a_fold_body_is_pinned() {
+    fn a_shift_under_a_fold_body_materializes_with_its_count() {
         use pixelflow_ir::fold::{Binder, Fold, Monoid};
         use pixelflow_ir::{ExprArena, OpKind};
 
         let binder = Binder::from_slot(0).expect("a live binder");
         let fold = Fold::new(Monoid::SUM, binder, 0..4);
 
-        // root = Add(Reduce(Shl(x, count)), count), count = {Const(3), Mul(y, y)}.
+        // root = Add(Reduce(Shift(x, 3)), three)
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
-        let y = eg.add(ENode::Var(1));
-        let arithmetic = eg.add(ENode::apply(OpKind::Mul, &[y, y]));
         let three = eg.add(ENode::constant(3.0));
-        let count = eg.union(arithmetic, three);
-        eg.rebuild();
-        let shl = eg.add(ENode::apply(OpKind::Shl, &[x, count]));
-        let reduce = eg.add(ENode::Reduce { fold, body: shl });
-        let root = eg.add(ENode::apply(OpKind::Add, &[reduce, count]));
+        let shifted = eg.add(ENode::Shift {
+            direction: ShiftDirection::Left,
+            count: ShiftCount::from_literal(3.0).expect("3 is a count"),
+            operand: x,
+        });
+        let reduce = eg.add(ENode::Reduce {
+            fold,
+            body: shifted,
+        });
+        let root = eg.add(ENode::apply(OpKind::Add, &[reduce, three]));
 
-        // Choose the arithmetic for the count, not the Const.
-        let count = eg.find(count);
-        let mul_idx = eg
-            .nodes(count)
-            .iter()
-            .position(|n| matches!(n, ENode::Op { .. }))
-            .expect("the merged count class holds the Mul");
-        let mut choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
-        choices[count.index()] = Some(mul_idx);
-        // A chosen class is a complete subtree to the backfill, so its
-        // operand is chosen here.
-        choices[eg.find(y).index()] = Some(0);
-        let extraction = Extraction::from_backfill(&eg, root, choices);
+        let extraction = Extraction::from_backfill(&eg, root, alloc::vec![None; eg.num_classes()]);
         let (arena, arena_root) = extraction.to_selection().to_arena(&eg);
 
         let mut expected = ExprArena::new();
@@ -3682,7 +3569,7 @@ mod tests {
         assert_eq!(
             arena.nodes().collect::<Vec<_>>(),
             expected.nodes().collect::<Vec<_>>(),
-            "the count is the Const under the fold and beside it, and the Mul is not emitted"
+            "the count is the Const under the fold and beside it"
         );
     }
 
@@ -3935,7 +3822,7 @@ mod tests {
         fn node_cost(&self, node: &ENode, _parent: Option<pixelflow_ir::OpKind>) -> usize {
             match node {
                 ENode::Op { op, .. } if *op == pixelflow_ir::OpKind::Sin => usize::MAX / 2,
-                ENode::Op { .. } | ENode::Reduce { .. } => 1,
+                ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => 1,
                 ENode::Var(_)
                 | ENode::Const(_)
                 | ENode::Buffer(_)

@@ -63,6 +63,7 @@ use pixelflow_ir::{KernelKey, OpKind};
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::rules::RuleId;
+use super::shift::{ShiftCount, ShiftDirection};
 
 /// The pre-registered Phase 3 primary budget tier B for the classical band
 /// (`docs/plans/2026-09-01-phase3-registration.md` §4: "classical: B = 100
@@ -99,6 +100,8 @@ enum NodeShape {
     Uniform(UniformDecl),
     Param(u8),
     Op(OpKind, Vec<u32>),
+    /// A shift's parameters are part of its identity, so of its shape.
+    Shift(ShiftDirection, ShiftCount, u32),
     /// A fold's shape is its metadata plus its body's class — the metadata
     /// is part of the node's identity, so it is part of its shape.
     Reduce(Fold, u32),
@@ -124,6 +127,11 @@ impl NodeShape {
             ENode::Reduce { fold, body } => {
                 NodeShape::Reduce(*fold, egraph.find(*body).index() as u32)
             }
+            ENode::Shift {
+                direction,
+                count,
+                operand,
+            } => NodeShape::Shift(*direction, *count, egraph.find(*operand).index() as u32),
             ENode::Ref { key, .. } => NodeShape::Ref(*key),
         }
     }
@@ -300,8 +308,8 @@ fn neighborhood_ops(egraph: &EGraph, canonical: EClassId) -> Vec<OpKind> {
         for &child in node.children_slice() {
             let child_canonical = egraph.find(child);
             for child_node in egraph.nodes(child_canonical) {
-                if let ENode::Op { op, .. } = child_node {
-                    ops.push(*op);
+                if let Some(op) = child_node.op() {
+                    ops.push(op);
                 }
             }
         }

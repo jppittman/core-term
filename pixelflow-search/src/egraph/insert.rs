@@ -14,6 +14,7 @@ use pixelflow_ir::{Children, Ir, Shape};
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Vocabulary;
+use super::shift::{self, ShiftDirection};
 
 /// Why a term could not be inserted.
 ///
@@ -37,6 +38,15 @@ pub enum Declined {
         /// How many operands the term gave it.
         operands: usize,
     },
+    /// A shift whose count is not a `Const` holding an integer in `0..32`.
+    ///
+    /// A count outside that range has a different answer on each target, and
+    /// a count that is not a literal is not a parameter of the shift but an
+    /// operand, which a shift node cannot hold. The term compiles
+    /// unoptimized, and the emitter refuses it there as it always has: a
+    /// literal out of range as "not an integer in 0..32", a count that is not
+    /// a literal as "must be a Const".
+    ShiftCount(ShiftDirection),
     /// A macro-parameter slot, under a [`Vocabulary`] that may not hold one.
     ///
     /// Only [`Vocabulary::Runtime`] declines it: a `Param` at bake time means
@@ -141,6 +151,15 @@ pub fn insert<I: Ir>(
                             });
                         }
                         tasks.push(Task::Complete(r));
+                        // A shift's count is the shift's own parameter, not
+                        // a term to visit: only its operand is.
+                        if let Some(direction) = ShiftDirection::of(kind) {
+                            let Some((operand, _)) = shift::spelled(term, children) else {
+                                return Err(Declined::ShiftCount(direction));
+                            };
+                            tasks.push(Task::Visit(operand));
+                            continue;
+                        }
                         // Reverse, so children pop in operand order.
                         for i in (0..children.len()).rev() {
                             let child = children.get(i).expect("index < len");
@@ -166,12 +185,24 @@ pub fn insert<I: Ir>(
                     continue;
                 }
                 let class = match term.project(r) {
-                    Shape::Op(kind, children) => {
-                        let start = built.len() - children.len();
-                        let node = ENode::apply(kind, &built[start..]);
-                        built.truncate(start);
-                        egraph.add(node)
-                    }
+                    Shape::Op(kind, children) => match ShiftDirection::of(kind) {
+                        Some(direction) => {
+                            let (_, count) = shift::spelled(term, children)
+                                .expect("the count was checked when the shift was visited");
+                            let operand = built.pop().expect("the operand was visited first");
+                            egraph.add(ENode::Shift {
+                                direction,
+                                count,
+                                operand,
+                            })
+                        }
+                        None => {
+                            let start = built.len() - children.len();
+                            let node = ENode::apply(kind, &built[start..]);
+                            built.truncate(start);
+                            egraph.add(node)
+                        }
+                    },
                     Shape::Reduce { fold, .. } => {
                         let body = built.pop().expect("the body was visited first");
                         egraph.add(ENode::Reduce { fold, body })
@@ -187,12 +218,15 @@ pub fn insert<I: Ir>(
     Ok(built.pop().expect("insert: root produced no e-class"))
 }
 
-/// Count the nodes reachable from `root` — the rough size measure saturation
-/// budgets key on.
+/// The classes [`insert`] makes from `root`, without making them — the size
+/// measure saturation budgets key on.
 ///
 /// Shares [`insert`]'s reachability so a budget cannot be picked from one node
-/// set while the graph is built from another.
-pub fn reachable_count<I: Ir>(term: &I, root: I::Ref) -> usize {
+/// set while the graph is built from another. That is not the count of nodes
+/// in the term: a shift's count is read, not visited, so its literal is
+/// counted only if something else reaches it. A measure of the term itself
+/// is a walk of the term.
+pub fn inserted_class_count<I: Ir>(term: &I, root: I::Ref) -> usize {
     let mut seen: BTreeSet<I::Ref> = BTreeSet::new();
     let mut stack = alloc::vec![root];
     while let Some(r) = stack.pop() {
@@ -200,6 +234,13 @@ pub fn reachable_count<I: Ir>(term: &I, root: I::Ref) -> usize {
             continue;
         }
         match term.project(r) {
+            // A shift's count is read, not visited, as in `insert`.
+            Shape::Op(kind, children) if ShiftDirection::of(kind).is_some() => {
+                match shift::spelled(term, children) {
+                    Some((operand, _)) => stack.push(operand),
+                    None => stack.extend((0..children.len()).filter_map(|i| children.get(i))),
+                }
+            }
             Shape::Op(_, children) => match children {
                 Children::Many(s) => stack.extend_from_slice(s),
                 other => {
@@ -291,6 +332,106 @@ mod tests {
                 Err(Declined::Arity { op, operands }),
             );
             assert_eq!(eg.num_classes(), 0, "{op:?}: nothing was built");
+        }
+    }
+
+    /// `Shl(x, 3)` over the arena's literal count inserts as one shift node
+    /// over `x`'s class, and no class is made for the count: two classes,
+    /// not three. A literal that is also an ordinary operand elsewhere is
+    /// made there, once, and the shift's count does not mention it.
+    #[test]
+    fn a_shift_inserts_its_count_as_a_parameter_not_a_class() {
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let three = arena.push_const(3.0);
+        let shifted = arena.push_binary(OpKind::Shl, x, three);
+        let mut eg = EGraph::new();
+        let class = insert(&arena, shifted, &mut eg, Vocabulary::Runtime).expect("a valid shift");
+        assert_eq!(eg.num_classes(), 2);
+        assert_eq!(inserted_class_count(&arena, shifted), 2);
+        assert!(matches!(
+            eg.nodes(class),
+            [ENode::Shift {
+                direction: ShiftDirection::Left,
+                count,
+                ..
+            }] if count.bits() == 3
+        ));
+
+        let scaled = arena.push_binary(OpKind::Mul, x, three);
+        let both = arena.push_binary(OpKind::Add, shifted, scaled);
+        let mut eg = EGraph::new();
+        insert(&arena, both, &mut eg, Vocabulary::Runtime).expect("valid");
+        assert_eq!(
+            eg.num_classes(),
+            5,
+            "x, the shift, the literal (made by the Mul), the Mul, the Add"
+        );
+        assert_eq!(inserted_class_count(&arena, both), 5);
+    }
+
+    /// Two shifts of one operand by one count are one node; by two counts,
+    /// two.
+    #[test]
+    fn a_shift_is_hash_consed_on_its_count() {
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let (two, three) = (arena.push_const(2.0), arena.push_const(3.0));
+        let a = arena.push_binary(OpKind::Shr, x, two);
+        let b = arena.push_binary(OpKind::Shr, x, three);
+        let root = arena.push_binary(OpKind::Add, a, b);
+        let mut eg = EGraph::new();
+        insert(&arena, root, &mut eg, Vocabulary::Runtime).expect("valid");
+        assert_eq!(eg.num_classes(), 4, "x, two shifts, the sum");
+    }
+
+    /// A count that is not a `Const` holding an integer in `0..32` is
+    /// declined, naming the direction, before anything is built: a graph cannot
+    /// hold what the emitter would refuse, and the term compiles unoptimized.
+    #[test]
+    fn a_shift_by_anything_but_a_valid_literal_is_declined() {
+        for op in [OpKind::Shl, OpKind::Shr] {
+            let direction = ShiftDirection::of(op).expect("a shift");
+            for count in [-1.0, -0.0, 0.5, 32.0, 33.0, 256.0, f32::NAN, f32::INFINITY] {
+                let mut arena = ExprArena::new();
+                let x = arena.push_var(0);
+                let count_node = arena.push_const(count);
+                let root = arena.push_binary(op, x, count_node);
+                let mut eg = EGraph::new();
+                assert_eq!(
+                    insert(&arena, root, &mut eg, Vocabulary::Runtime),
+                    Err(Declined::ShiftCount(direction)),
+                    "{op:?} by {count}"
+                );
+                assert_eq!(eg.num_classes(), 0, "nothing was built");
+            }
+
+            // A count that is arithmetic, or a leaf that is not a literal, is
+            // an operand and not a parameter.
+            for count_node in [
+                {
+                    let mut arena = ExprArena::new();
+                    let x = arena.push_var(0);
+                    let (a, b) = (arena.push_const(1.0), arena.push_const(2.0));
+                    let sum = arena.push_binary(OpKind::Add, a, b);
+                    (arena, x, sum)
+                },
+                {
+                    let mut arena = ExprArena::new();
+                    let x = arena.push_var(0);
+                    let y = arena.push_var(1);
+                    (arena, x, y)
+                },
+            ] {
+                let (mut arena, x, count) = count_node;
+                let root = arena.push_binary(op, x, count);
+                let mut eg = EGraph::new();
+                assert_eq!(
+                    insert(&arena, root, &mut eg, Vocabulary::Runtime),
+                    Err(Declined::ShiftCount(direction)),
+                );
+                assert_eq!(eg.num_classes(), 0, "nothing was built");
+            }
         }
     }
 

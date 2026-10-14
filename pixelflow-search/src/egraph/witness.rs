@@ -32,6 +32,7 @@ use super::extract::{
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Vocabulary;
+use super::shift::{self, ShiftCount, ShiftDirection};
 
 // ---------------------------------------------------------------------------
 // Recording a pass
@@ -375,13 +376,34 @@ pub fn induce<I: Ir>(
                         mapped: memo.len(),
                     });
                 }
-                let mut operands = Vec::with_capacity(children.len());
-                for i in 0..children.len() {
-                    let c = children.get(i).expect("index < len");
-                    let class = *memo.get(&c).expect("post-order maps children first");
-                    operands.push(class);
+                match ShiftDirection::of(kind) {
+                    Some(direction) => {
+                        let Some((operand, count)) = shift::spelled(term, children) else {
+                            return Err(TermMiss {
+                                node: format!(
+                                    "{kind:?} (its count is not a literal integer in 0..{})",
+                                    ShiftCount::WORD_BITS
+                                ),
+                                mapped: memo.len(),
+                            });
+                        };
+                        let operand = *memo.get(&operand).expect("post-order maps children first");
+                        ENode::Shift {
+                            direction,
+                            count,
+                            operand,
+                        }
+                    }
+                    None => {
+                        let mut operands = Vec::with_capacity(children.len());
+                        for i in 0..children.len() {
+                            let c = children.get(i).expect("index < len");
+                            let class = *memo.get(&c).expect("post-order maps children first");
+                            operands.push(class);
+                        }
+                        ENode::apply(kind, &operands)
+                    }
                 }
-                ENode::apply(kind, &operands)
             }
             Shape::Reduce { fold, body } => {
                 let class = *memo.get(&body).expect("post-order maps children first");
@@ -433,10 +455,14 @@ pub fn induce<I: Ir>(
 
 fn canonicalized(egraph: &EGraph, node: &ENode) -> ENode {
     let mut canonical = *node;
-    if let ENode::Op { children, .. } = &mut canonical {
-        for class in children.iter_mut() {
-            *class = egraph.find(*class);
+    match &mut canonical {
+        ENode::Op { children, .. } => {
+            for class in children.iter_mut() {
+                *class = egraph.find(*class);
+            }
         }
+        ENode::Shift { operand, .. } => *operand = egraph.find(*operand),
+        _ => {}
     }
     canonical
 }
@@ -458,9 +484,19 @@ fn post_order_term<I: Ir>(term: &I, root: I::Ref) -> Vec<I::Ref> {
                 }
                 stack.push(Task::Emit(r));
                 match term.project(r) {
-                    Shape::Op(_, children) => {
-                        for i in (0..children.len()).rev() {
-                            stack.push(Task::Visit(children.get(i).expect("index < len")));
+                    Shape::Op(kind, children) => {
+                        // A shift's count is a parameter of the node, as in
+                        // `insert`; a shift that cannot be read that way
+                        // is visited whole and missed by `induce`.
+                        let shift =
+                            ShiftDirection::of(kind).and_then(|_| shift::spelled(term, children));
+                        match shift {
+                            Some((operand, _)) => stack.push(Task::Visit(operand)),
+                            None => {
+                                for i in (0..children.len()).rev() {
+                                    stack.push(Task::Visit(children.get(i).expect("index < len")));
+                                }
+                            }
                         }
                     }
                     // A fold's one child is its body. Missing it would leave

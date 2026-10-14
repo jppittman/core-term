@@ -133,6 +133,9 @@ Not in the trait, each for a reason:
 5. `choices_to_arena` keeps its cycle detection, choice lookup and
    shift-count pinning — those are the e-graph's — and materialises through
    `Ir::embed` instead of an open-coded `ENode` match.
+   (Shift-count pinning is since retired, 2026-10-14: a shift's count is a
+   parameter of its `ENode::Shift`, so no choice can get it wrong and nothing
+   repairs it after extraction.)
 6. Deletions: `EGraph::add_arena`, `runtime::arena_to_egraph`,
    `runtime_op_from_kind`, and `ir_bridge`'s `representable` pre-check
    (`ir_bridge.rs:710-720`), which existed only to avoid `add_arena`'s panic

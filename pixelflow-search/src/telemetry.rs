@@ -231,7 +231,7 @@ fn escape_json(s: &str) -> String {
 /// extraction because neither `Extraction` nor a materialized arena
 /// carries a total cost of its own (extraction tracks per-e-class best cost
 /// internally, not on the materialized arena) — this mirrors
-/// `crate::runtime`'s own `reachable_count` traversal shape.
+/// `crate::runtime`'s own arena walk.
 fn latency_prior_cost(arena: &ExprArena, root: ExprId) -> usize {
     let costs = CostModel::latency_prior();
     let len = arena.len();

@@ -149,6 +149,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 ///   (`Declined::Arity`).
 /// - `Param` — a `pixelflow-compiler` macro-parameter slot that should never
 ///   reach a runtime-built `Kernel` in the first place.
+/// - A `Shl`/`Shr` whose count is not a `Const` holding an integer in
+///   `0..32` (`Declined::ShiftCount`). The count is a parameter of the
+///   shift's node, so the graph cannot hold anything else; the emitter
+///   refuses the term as written, as it always has.
 ///
 /// `Reduce` itself *is* modelled (`ENode::Reduce`) — the graph reasons about
 /// the monoidal form directly (`egraph::fold_rules`: peeling, halving), and
@@ -754,6 +758,24 @@ pub fn is_egraph_representable(kind: OpKind) -> bool {
     crate::egraph::Vocabulary::Runtime.admits(kind)
 }
 
+/// Ids of every node reachable from `root`, discovery order: the arena's own
+/// size, which is not [`crate::egraph::inserted_class_count`] (that is the
+/// classes the graph would hold, and leaves out a shift's count literal).
+#[cfg(test)]
+fn reachable_ids(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
+    let mut seen = vec![false; arena.len()];
+    let mut stack = vec![root];
+    let mut out = Vec::new();
+    while let Some(id) = stack.pop() {
+        if core::mem::replace(&mut seen[id.0 as usize], true) {
+            continue;
+        }
+        out.push(id);
+        stack.extend(arena.children(id));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,21 +841,6 @@ mod tests {
         );
     }
 
-    /// Ids of every node reachable from `root`, discovery order.
-    fn reachable_ids(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
-        let mut seen = vec![false; arena.len()];
-        let mut stack = vec![root];
-        let mut out = Vec::new();
-        while let Some(id) = stack.pop() {
-            if core::mem::replace(&mut seen[id.0 as usize], true) {
-                continue;
-            }
-            out.push(id);
-            stack.extend(arena.children(id));
-        }
-        out
-    }
-
     /// Identities of buffers referenced by reachable `Buffer` leaves.
     fn reachable_buffer_identities(
         arena: &ExprArena,
@@ -878,6 +885,50 @@ mod tests {
         let input: Vec<_> = a.buffers().iter().map(|d| d.id).collect();
         let output: Vec<_> = out.0.buffers().iter().map(|d| d.id).collect();
         assert_eq!(input, output, "slot order must survive optimization");
+    }
+
+    /// **A shift by anything but a literal count in `0..32` is declined here,
+    /// not optimized.** The graph holds a count as the shift's parameter, so
+    /// it cannot hold the rest; the caller compiles the arena as written and
+    /// the emitter refuses it there. A valid count beside them is the control:
+    /// the same shape optimizes. Asked twice, because a decline is memoized.
+    #[test]
+    fn a_shift_by_no_literal_count_is_declined_and_a_valid_one_optimizes() {
+        let shape = pixelflow_ir::LatticeShape::POINT;
+        for op in [OpKind::Shl, OpKind::Shr] {
+            let shifted_by = |count: &dyn Fn(&mut ExprArena) -> ExprId| {
+                let mut a = ExprArena::new();
+                let x = a.push_var(0);
+                let count = count(&mut a);
+                let root = a.push_binary(op, x, count);
+                (a, root)
+            };
+            let declined: [(&str, (ExprArena, ExprId)); 4] = [
+                ("32", shifted_by(&|a| a.push_const(32.0))),
+                ("0.5", shifted_by(&|a| a.push_const(0.5))),
+                ("1 + 2", {
+                    shifted_by(&|a| {
+                        let (one, two) = (a.push_const(1.0), a.push_const(2.0));
+                        a.push_binary(OpKind::Add, one, two)
+                    })
+                }),
+                ("Y", shifted_by(&|a| a.push_var(1))),
+            ];
+            for (count, (arena, root)) in &declined {
+                for ask in ["first", "memoized"] {
+                    assert!(
+                        optimize_runtime_arena(arena, *root, shape).is_none(),
+                        "{op:?} by {count}, {ask} ask: the term must be left as written"
+                    );
+                }
+            }
+
+            let (arena, root) = shifted_by(&|a| a.push_const(3.0));
+            assert!(
+                optimize_runtime_arena(&arena, root, shape).is_some(),
+                "{op:?} by 3 is a shift the graph holds"
+            );
+        }
     }
 
     /// One structure, two compositions: fresh buffer identities, and a
@@ -1228,10 +1279,14 @@ mod congruence_gap_probe {
                 let nodes = egraph.classes[idx].nodes.clone();
                 for node in nodes {
                     let mut cnode = node;
-                    if let ENode::Op { children, .. } = &mut cnode {
-                        for class in children.iter_mut() {
-                            *class = egraph.find(*class);
+                    match &mut cnode {
+                        ENode::Op { children, .. } => {
+                            for class in children.iter_mut() {
+                                *class = egraph.find(*class);
+                            }
                         }
+                        ENode::Shift { operand, .. } => *operand = egraph.find(*operand),
+                        _ => {}
                     }
                     match local_memo.get(&cnode) {
                         Some(&existing) => {
@@ -1381,7 +1436,7 @@ mod congruence_gap_probe {
         // more (stage 2c): the graph reasons about it directly and a
         // surviving one is legal all the way to codegen.
         let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
-        let node_count = crate::egraph::reachable_count(&arena, root);
+        let node_count = crate::egraph::inserted_class_count(&arena, root);
 
         // THE production regime, through the one entry point
         // `optimize_runtime_arena_uncached` itself now calls
@@ -1409,7 +1464,7 @@ mod congruence_gap_probe {
         let model = CostModel::latency_prior();
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
         let cost = arena_static_cost(&model, &extracted, extracted_root);
-        let extracted_nodes = crate::egraph::reachable_count(&extracted, extracted_root);
+        let extracted_nodes = reachable_ids(&extracted, extracted_root).len();
 
         ProductionRun {
             egraph: egraph.into_graph(),
@@ -2186,7 +2241,7 @@ pub(crate) mod production_telemetry {
     /// pixelflow-graphics/tests/production_glyph_arena_dump.rs): replays
     /// reachable nodes in original id order through the public `push_*`
     /// API, which never hash-conses, so the rebuilt arena has exactly the
-    /// dumped node multiset and `reachable_count` is preserved. Buffer
+    /// dumped node multiset and `inserted_class_count` is preserved. Buffer
     /// identities are re-minted per distinct dumped ordinal, preserving the
     /// equality structure (two slots naming one buffer still share an
     /// identity) without depending on the dumping process's counter.
@@ -2404,7 +2459,7 @@ pub(crate) mod production_telemetry {
             elapsed,
             cost: arena_cost(&extracted, extracted_root, &costs),
             dp_cost,
-            extracted_nodes: crate::egraph::reachable_count(&extracted, extracted_root),
+            extracted_nodes: reachable_ids(&extracted, extracted_root).len(),
         }
     }
 
@@ -2532,7 +2587,7 @@ pub(crate) mod production_telemetry {
             let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(&raw_arena, raw_root)
                 .unwrap_or_else(|e| panic!("{name}: lower_dwrt failed: {e:?}"));
             // runtime.rs:126-127
-            let node_count = crate::egraph::reachable_count(&arena, root);
+            let node_count = crate::egraph::inserted_class_count(&arena, root);
             let config = crate::egraph::saturate::config_for_node_count(node_count);
 
             let prod = run(

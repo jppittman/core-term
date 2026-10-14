@@ -553,15 +553,17 @@
 - **Follows:** each phase reads the operand kinds it owns — the allocator
   binds registers and frame slots, the assembler resolves labels, the encoder
   writes all of them. A block's successors are the label operands of its last
-  instruction. `Selection::pinned`, which re-pins a shift count's extraction
-  choice to a `Const`, is the symptom of a missing operand-kind type.
+  instruction. The e-graph keeps a shift's count out of its operands (it is
+  a `ShiftCount` parameter of `ENode::Shift`), so nothing there re-pins it
+  after extraction; codegen's operand kinds still have no type for an
+  immediate, and `shift_immediate` checks the `Const` at lowering.
 - **Lives:** `Operand`, `Access` and `operands` (`emit/mod.rs`), built by B1
   of `docs/plans/2026-10-08-selection-is-a-phase.md`. The schedule still has the
   split below: `program::operands()` yields only vector reads, and the base
   comes from a separate `pointer_operand()` (both in
   `pixelflow-codegen/src/program/mod.rs`); selection joins them
-  (`all_operands`). `Selection::pinned` lives in
-  `pixelflow-search/src/egraph/extract.rs`.
+  (`all_operands`). A shift's count in the e-graph lives in
+  `pixelflow-search/src/egraph/shift.rs`.
 
 ### Instruction
 

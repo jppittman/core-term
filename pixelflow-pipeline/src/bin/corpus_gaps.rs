@@ -38,7 +38,7 @@ use pixelflow_pipeline::shader_bench::{NAMED_KERNEL_NAMES, SHADERTOY_KERNEL_NAME
 use pixelflow_pipeline::training::{bezier_family, sh_family};
 use pixelflow_search::egraph::{
     Budget, CostModel, InputSize, KeepJournal, Optimizer, RuleSet, Vocabulary,
-    collect_rule_templates, insert, reachable_count,
+    collect_rule_templates, insert,
 };
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 
@@ -716,9 +716,9 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
     .expect("fmt");
 
     // ---- construction ----
-    let nodes_reachable = reachable_count(&k.arena, k.root);
+    let nodes_reachable = reach_set(&k.arena, k.root).len();
     let (hc, hc_root) = hash_cons(&k.arena, k.root);
-    let nodes_hashcons = reachable_count(&hc, hc_root);
+    let nodes_hashcons = reach_set(&hc, hc_root).len();
     let (tree_nodes, _) = tree_figures(&k.arena, k.root, &costs);
     write!(
         row,
@@ -752,12 +752,12 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
     // ---- saturation: LowerDwrt, then Optimizer::production() (runtime.rs lowers after) ----
     let (lowered, lowered_root) = pixelflow_ir::passes::lower_dwrt_owned(&k.arena, k.root)
         .unwrap_or_else(|e| panic!("{}: lower_dwrt failed: {e}", k.name));
-    let node_count = reachable_count(&lowered, lowered_root);
+    let node_count = reach_set(&lowered, lowered_root).len();
     // Costs are priced on the LOWERED term — what the e-graph is handed —
     // so the input and extracted columns share units (`Dwrt` is expanded
     // by lowering; pricing it as one op would make the pair incomparable).
     let (lhc, lhc_root) = hash_cons(&lowered, lowered_root);
-    let nodes_lowered_hc = reachable_count(&lhc, lhc_root);
+    let nodes_lowered_hc = reach_set(&lhc, lhc_root).len();
     let (_, input_tree_cost) = tree_figures(&lowered, lowered_root, &costs);
     let input_dag_cost = dag_cost(&lhc, lhc_root, &costs);
     let mut optimizer = Optimizer::production()
@@ -782,7 +782,7 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
     )
     .expect("fmt");
 
-    let ext_nodes = reachable_count(&extracted, extracted_root);
+    let ext_nodes = reach_set(&extracted, extracted_root).len();
     let ext_census = census(&extracted, extracted_root);
     // `ChoiceCost` is the objective the DP minimized — trip-weighted by the
     // lattice shape since `for_lattice` — so its tree/dag pair is reported as

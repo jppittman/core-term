@@ -31,6 +31,9 @@ use pixelflow_ir::OpKind;
 /// - `Reduce` is held as its own node, `ENode::Reduce`, which carries its fold
 ///   as a parameter; it is not an op over operands that a rule could name.
 /// - `Tuple` has no fixed arity, which an inline-operand node cannot hold.
+/// - `Shl` and `Shr` are held as `ENode::Shift`, which carries the count as a
+///   parameter; they are not operations over operand classes, so no rule
+///   could name one.
 #[must_use]
 pub fn template_may_name(kind: OpKind) -> bool {
     match kind {
@@ -127,15 +130,18 @@ impl Vocabulary {
     ///   e-graph.
     ///
     /// No rewrite rule targets any of them, but admission is not fold-opacity:
-    /// `ConstantFold` destructures any `ENode::Op`, so every admitted op folds
-    /// and each needs its own answer to "does this fold agree with what the
-    /// backends emit?" `OpKind::fold_is_platform_specific` is where that answer
-    /// lives; being unnameable by a template guards nothing.
+    /// `ConstantFold` reads any `ENode::Op` or `ENode::Shift`, so every admitted
+    /// op folds and each needs its own answer to "does this fold agree with
+    /// what the backends emit?" `OpKind::fold_is_platform_specific` is where
+    /// that answer lives; being unnameable by a template guards nothing.
     ///
-    /// `Shl`/`Shr` keep `Const` shift operands, because extraction emits `Const`
-    /// leaves verbatim — so the emitter's immediate-only contract holds. The
-    /// count's RANGE is enforced where the `Const` narrows to an immediate
-    /// (`shift_immediate` in `program/lower.rs`) rather than assumed here.
+    /// `Shl`/`Shr` are held as `ENode::Shift`, whose count is a `ShiftCount`:
+    /// [`insert`](fn@super::insert) declines a shift whose count is not a
+    /// literal integer in `0..32`, and extraction writes the count back as
+    /// the `Const` the emitter's immediate-only contract needs. The emitter
+    /// still checks the range where the `Const` narrows to an immediate
+    /// (`shift_immediate` in `program/lower.rs`), for a term that reaches it
+    /// without passing through a graph.
     #[must_use]
     pub fn admits(self, kind: OpKind) -> bool {
         let runtime_extra = self == Self::Runtime

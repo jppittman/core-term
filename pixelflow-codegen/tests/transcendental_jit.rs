@@ -417,6 +417,31 @@ fn a_lane_crossing_shift_count_is_refused() {
     let _ = compile_shift(pixelflow_ir::OpKind::Shl, 32.0);
 }
 
+/// The same shift through the optimizing entry, which every kernel is
+/// compiled by: a count the e-graph declines is not repaired on the way, so
+/// the emitter's own refusal is the one that fires.
+fn jit_compile_shift(count: impl FnOnce(&mut pixelflow_ir::ExprArena) -> pixelflow_ir::ExprId) {
+    let mut a = pixelflow_ir::ExprArena::new();
+    let x = a.push_var(0);
+    let c = count(&mut a);
+    let root = a.push_binary(pixelflow_ir::OpKind::Shl, x, c);
+    let kernel = Kernel::from_parts(a, root);
+    jit_cache::compile(&kernel, pixelflow_ir::LatticeShape::POINT)
+        .expect("the emitter refuses by panic, not by error");
+}
+
+#[test]
+#[should_panic(expected = "is not an integer in 0..32")]
+fn the_optimizing_entry_still_refuses_a_lane_crossing_count() {
+    jit_compile_shift(|a| a.push_const(32.0));
+}
+
+#[test]
+#[should_panic(expected = "is not an integer in 0..32")]
+fn the_optimizing_entry_still_refuses_a_fractional_count() {
+    jit_compile_shift(|a| a.push_const(0.5));
+}
+
 /// A count of 0 is the identity and every target agrees on it, so it must
 /// COMPILE — `fold_is_platform_specific` classifies it as portable, and the
 /// encoder has to honour that. aarch64 `USHR` cannot encode `#0`, so `Shr`

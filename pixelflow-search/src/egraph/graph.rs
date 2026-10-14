@@ -1506,6 +1506,15 @@ fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> ECla
                 fold: *fold,
                 body: resolve(*body, &planned),
             }),
+            HeadNode::Shift {
+                direction,
+                count,
+                operand,
+            } => sink.make(ENode::Shift {
+                direction: *direction,
+                count: *count,
+                operand: resolve(*operand, &planned),
+            }),
         };
         planned.push(id);
     }
@@ -1558,8 +1567,9 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         // nothing else in the monoid set — `Π` wants the product rule, and
         // `min`/`max` are selections. It is a rule this table does not have,
         // so the `Dwrt` is reconstructed below and survives as the fallback,
-        // exactly as `Gather` does.
-        ENode::Reduce { .. } => {
+        // exactly as `Gather` does. A shift has no derivative rule either
+        // (it moves bits, which have no slope), and is kept the same way.
+        ENode::Reduce { .. } | ENode::Shift { .. } => {
             let var_const = sink.make(ENode::constant(var as f32));
             let inner = sink.make(*inner);
             return sink.make(ENode::apply(OpKind::Dwrt, &[inner, var_const]));

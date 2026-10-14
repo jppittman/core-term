@@ -6,6 +6,8 @@ use pixelflow_ir::arena::{BufferDecl, UniformDecl};
 use pixelflow_ir::fold::Fold;
 use pixelflow_ir::{KernelKey, OpKind, Variance};
 
+use super::shift::{ShiftCount, ShiftDirection};
+
 /// Identifier for an equivalence class in the e-graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EClassId(pub(crate) u32);
@@ -39,6 +41,9 @@ pub(crate) const MAX_OPERANDS: usize = 3;
 /// `ENode::Op` can be written with another node's operands under a different
 /// `op`. [`ENode::apply`] is the constructor that keeps them together.
 ///
+/// A shift has no operands in this sense: its count is a parameter, held by
+/// [`ENode::Shift`], so the constructor refuses `Shl` and `Shr`.
+///
 /// `len` counts slots of an inline array, not anything a program can say: its
 /// range is `MAX_OPERANDS` whatever its width, so a wider count would let no
 /// program express more.
@@ -61,11 +66,16 @@ impl Operands {
     ///
     /// If `classes` is not exactly `op.arity()` long, or `op` is not an
     /// operation over one to `MAX_OPERANDS` operands (a leaf kind, or a
-    /// `Tuple`, has none to hold). An operation applied to the wrong number
-    /// of operands is not a node, and a rule that builds one has a bug to
-    /// find, not a graph to carry it.
+    /// `Tuple`, has none to hold), or is a shift, whose count is a parameter
+    /// and not an operand. An operation applied to the wrong number of
+    /// operands is not a node, and a rule that builds one has a bug to find,
+    /// not a graph to carry it.
     #[must_use]
     pub(crate) fn new(op: OpKind, classes: &[EClassId]) -> Self {
+        assert!(
+            ShiftDirection::of(op).is_none(),
+            "{op:?} is a shift: its count is a parameter of ENode::Shift, not an operand class",
+        );
         assert!(
             (1..=MAX_OPERANDS).contains(&op.arity()) && classes.len() == op.arity(),
             "{op:?} takes {} operands (an operation takes 1 to {MAX_OPERANDS}), got {}",
@@ -140,6 +150,28 @@ pub enum ENode {
     Param(u8),
     /// An operation applied to the classes of its operands.
     Op { op: OpKind, children: Operands },
+    /// A shift of one operand by a static count.
+    ///
+    /// The count is a parameter of the operator, as a [`ENode::Reduce`]'s
+    /// fold is, and for the same reason: as a child class it would be an
+    /// e-class like any other, and the `Const(8.0)` naming a count would be
+    /// the same class as every literal `8.0` in the kernel. Every arithmetic
+    /// rule could then rewrite it into something that is not an integer in
+    /// `0..32`, and extraction would have to repair the count afterwards.
+    /// Here no rule reaches it, no class holds it, and a value of
+    /// [`ShiftCount`] is already valid.
+    ///
+    /// The arena spells a shift `Shl(x, Const(count))`, with the count as a
+    /// second operand; [`insert`](fn@super::insert) reads the count off that
+    /// literal without visiting it, and extraction writes the literal back.
+    Shift {
+        /// Which way the bits move.
+        direction: ShiftDirection,
+        /// By how many.
+        count: ShiftCount,
+        /// The class being shifted.
+        operand: EClassId,
+    },
     /// A bounded fold: `⊕_{k} body[fold.binder() := k]`, `k` ranging over
     /// `fold`'s own visited indices (see `Fold`'s doc, in `pixelflow-ir`).
     ///
@@ -200,7 +232,8 @@ impl ENode {
     ///
     /// If `operands.len()` is not `op.arity()`, or `op` is not an operation
     /// over one to `MAX_OPERANDS` operands (a leaf kind, or a `Tuple`, has
-    /// none to hold).
+    /// none to hold), or is a shift, which is an [`ENode::Shift`] and takes
+    /// its count as a parameter.
     #[must_use]
     pub fn apply(op: OpKind, operands: &[EClassId]) -> Self {
         ENode::Op {
@@ -209,10 +242,12 @@ impl ENode {
         }
     }
 
-    /// Get the operation if this is an Op node.
+    /// The operation this node performs, if it is one: an `Op`'s own, or the
+    /// shift a [`ENode::Shift`] names.
     pub fn op(&self) -> Option<OpKind> {
         match self {
             ENode::Op { op, .. } => Some(*op),
+            ENode::Shift { direction, .. } => Some(direction.op()),
             _ => None,
         }
     }
@@ -247,6 +282,7 @@ impl ENode {
             | ENode::Ref { .. } => &[],
             ENode::Op { children, .. } => children,
             ENode::Reduce { body, .. } => core::slice::from_ref(body),
+            ENode::Shift { operand, .. } => core::slice::from_ref(operand),
         }
     }
 
@@ -262,6 +298,7 @@ impl ENode {
             | ENode::Ref { .. } => &mut [],
             ENode::Op { children, .. } => children,
             ENode::Reduce { body, .. } => core::slice::from_mut(body),
+            ENode::Shift { operand, .. } => core::slice::from_mut(operand),
         }
     }
 
@@ -301,6 +338,7 @@ impl ENode {
             ENode::Op { children, .. } => children
                 .iter()
                 .fold(Variance::CONST, |acc, &c| acc.union(child(c))),
+            ENode::Shift { operand, .. } => child(*operand),
             // The one node that *shrinks* the set: its index is bound, so it
             // is not free in the result.
             ENode::Reduce { fold, body } => {
@@ -345,6 +383,38 @@ mod tests {
     #[should_panic(expected = "Const takes 0 operands")]
     fn a_leaf_kind_is_not_an_operation() {
         let _ = ENode::apply(OpKind::Const, &[]);
+    }
+
+    /// A shift's count is a parameter of [`ENode::Shift`], so no operand list
+    /// is a shift's: a count class beside the operand cannot be built.
+    #[test]
+    #[should_panic(expected = "Shl is a shift")]
+    fn a_shift_is_not_an_operation_over_operand_classes() {
+        let _ = ENode::apply(OpKind::Shl, &classes(2));
+    }
+
+    /// A shift has its one operand as its only child, and its op is the one
+    /// its direction names.
+    #[test]
+    fn a_shift_has_one_child_and_names_its_op() {
+        let count = ShiftCount::from_literal(8.0).expect("in range");
+        let node = ENode::Shift {
+            direction: ShiftDirection::Right,
+            count,
+            operand: EClassId(3),
+        };
+        assert_eq!(node.children_slice(), [EClassId(3)]);
+        assert_eq!(node.op(), Some(OpKind::Shr));
+        assert_eq!(node.variance(|_| Variance::X), Variance::X);
+        assert_ne!(
+            node,
+            ENode::Shift {
+                direction: ShiftDirection::Right,
+                count: ShiftCount::from_literal(16.0).expect("in range"),
+                operand: EClassId(3),
+            },
+            "the count is part of the node's identity"
+        );
     }
 
     #[test]
