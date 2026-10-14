@@ -78,12 +78,29 @@ property by proxy is replaced by the property.
 Torture-style differentials over generated kernels as well as hand-written
 ones, each against the Rust oracle:
 
-- **Across tiers.** AVX2, AVX-512 and NEON agree within the documented
-  per-target rows.
+- **Across tiers.** AVX2, AVX-512 and NEON agree.
 - **Across optimization.** `kernel!` against `kernel_raw!` (the `Identity`
   optimizer): the e-graph is tested without one assertion about what it
   chose. The documented divergences (`min`/`max` on NaN) are written into the
   comparison, not discovered by it.
+
+"Agree" is approximate, never byte-identical. JP, 2026-10-14: "I don't know
+that I'd guarantee avx2 and avx512 are byte identical. I would guarantee
+they're pretty close when far from singularities." The tiers' estimates
+differ by design (`rcpps` ~12 bits, `vrcp14ps` ~14), and the optimizer
+reassociates and fuses, so rounding moves even on one tier. Near a
+singularity (`1/x` at 0, `tan` at π/2, cancellation in `a - b`) those last
+bits are amplified without bound, and a comparison there says nothing.
+
+So agreement is **conditioned**: within a tolerance built from each op's
+documented accuracy, at points where the f64 oracle is well-conditioned —
+evaluated at `x` and `x(1 ± ε)`, it moves by no more than a bounded multiple
+of `ε`. Ill-conditioned points are excluded from agreement and still checked
+for **range** (no NaN inside a domain, no `sin` of 8e8). The filter is on
+the oracle's conditioning, never on the output's magnitude: a `> 1e30`
+output filter is what once admitted garbage as training labels (CLAUDE.md,
+"Precision is on the table; range is not"). Determinism, item 4 above, stays
+exact: one kernel on one tier.
 
 Generated kernels come from a small hand-written generator over the arena
 builder, not a new dependency (subtract before you add).
