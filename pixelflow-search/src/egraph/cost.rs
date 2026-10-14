@@ -360,6 +360,9 @@ impl CostModel {
             // Expensive, not infinite, is the distinction. The same one the
             // fold arm below makes, for the same reason.
             ENode::Op { op, .. } => self.cost(*op),
+            // A shift costs its table entry whatever its count: the count is
+            // an immediate, not an operand to evaluate.
+            ENode::Shift { direction, .. } => self.cost(direction.op()),
             // **A fold's own work is its combiner chain**: `len - 1`
             // applications of the monoid's operation. The body's `len`
             // evaluations are not here — a node's cost cannot see its

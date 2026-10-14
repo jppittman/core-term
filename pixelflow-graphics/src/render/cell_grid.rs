@@ -802,6 +802,56 @@ mod tests {
         );
     }
 
+    /// **What the optimizer selects for the terminal's packed frame program
+    /// is pinned** at a frame, under both pixel orders. This is the program
+    /// `CellGridPackedManifold::compile` hands the optimizer: four channels
+    /// over the cell and atlas reads, packed by four shifts. Saturation stops
+    /// at the class cap, so what is selected depends on the order classes
+    /// settle in, which is the thing a change to how the e-graph holds a
+    /// shift's count moves without moving the cost.
+    ///
+    /// Pinned as a structural digest of the arena the choices materialize to
+    /// (`crate::test_support::program_digest`), through the runtime tier's
+    /// entry, the same on every ISA tier.
+    #[test]
+    fn the_cell_grid_program_selects_what_it_selected() {
+        use crate::test_support::program_digest;
+        use pixelflow_search::runtime::optimize_runtime_arena;
+
+        const FRAME_SHAPE: CellGridShape = CellGridShape {
+            cols: 80,
+            rows: 24,
+            atlas_width: 1024,
+            atlas_height: 512,
+            frame_w: 1920,
+            frame_h: 1080,
+        };
+        let observed: Vec<([u32; 4], u64)> = [RGBA_SHIFTS, BGRA_SHIFTS]
+            .map(|shifts| {
+                let channels = FRAME_SHAPE.channel_kernels().channels;
+                let kernel = packed_kernel(&Rgba::from(&channels), shifts);
+                let (arena, root) = kernel.parts();
+                let lattice =
+                    pixelflow_ir::LatticeShape::new([FRAME_SHAPE.frame_w, FRAME_SHAPE.frame_h]);
+                let optimized = optimize_runtime_arena(arena, root, lattice)
+                    .unwrap_or_else(|| panic!("shifts {shifts:?}: the program declined"));
+                let (out, out_root) = &*optimized;
+                (shifts, program_digest(out, *out_root))
+            })
+            .into();
+        assert_eq!(
+            observed, SELECTED_CELL_GRID_DIGESTS,
+            "(shifts, digest): the optimizer selected other programs than the ones recorded"
+        );
+    }
+
+    /// `(shifts, digest)` under `RGBA_SHIFTS` then `BGRA_SHIFTS`: the
+    /// selection the production optimizer makes for the cell-grid program.
+    const SELECTED_CELL_GRID_DIGESTS: [([u32; 4], u64); 2] = [
+        (RGBA_SHIFTS, 0x7a97_8ae7_e7d7_513b),
+        (BGRA_SHIFTS, 0xbb5f_6318_d9d6_44ce),
+    ];
+
     #[test]
     fn packed_row_offset_band_matches_the_full_bake() {
         // Mirrors `baking_a_row_offset_band_samples_the_correct_absolute_row`

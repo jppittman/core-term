@@ -276,7 +276,9 @@ pub struct Optimized {
     /// ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
     /// ([`ChoiceCost::dag`]): the price of the selected term, so it holds
     /// under a `Reranker` too, whose search has its own scale and never
-    /// produced this number before.
+    /// produced this number before. It describes the term [`Self::to_arena`]
+    /// emits: nothing is repaired after extraction (a shift's count is a
+    /// parameter of its node, never a class a choice could get wrong).
     pub cost: ChoiceCost,
     /// Which objective chose [`Self::choices`], and what the sharing-aware
     /// pass cost — `ExtractionObjective::External` under a `Reranker`.

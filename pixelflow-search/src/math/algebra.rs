@@ -968,23 +968,28 @@ impl Rewrite for ConstantFold {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let &ENode::Op { op, children } = node else {
-            return None;
-        };
-
-        // Collect constant values from all children
-        let mut args = Vec::with_capacity(children.len());
-        for &child_id in children.iter() {
-            // Check if this e-class contains a constant
-            let mut found_const = None;
-            for child_node in egraph.nodes(child_id) {
-                if let Some(val) = child_node.as_f32() {
-                    found_const = Some(val);
-                    break;
+        // The operation and its arguments, each a constant. A shift's count
+        // is read off the node, where it is already a valid count, and is
+        // an argument all the same: the folder asks the one question of
+        // `[x, count]` that it asks of every operation.
+        let (op, args) = match node {
+            ENode::Op { op, children } => {
+                let mut args = Vec::with_capacity(children.len());
+                for &child_id in children.iter() {
+                    args.push(constant_of(egraph, child_id)?);
                 }
+                (*op, args)
             }
-            args.push(found_const?);
-        }
+            ENode::Shift {
+                direction,
+                count,
+                operand,
+            } => (
+                direction.op(),
+                vec![constant_of(egraph, *operand)?, count.literal()],
+            ),
+            _ => return None,
+        };
 
         // Refuse to fold anything whose answer is platform-specific. This
         // matters more than a same-machine consistency nicety: the folder runs
@@ -1030,6 +1035,11 @@ impl Rewrite for ConstantFold {
 
         Some(RewriteAction::Create(ENode::constant(result)))
     }
+}
+
+/// The value of the first `Const` in `class`, if it holds one.
+fn constant_of(egraph: &EGraph, class: EClassId) -> Option<f32> {
+    egraph.nodes(class).iter().find_map(ENode::as_f32)
 }
 
 // ============================================================================
@@ -1115,6 +1125,49 @@ mod platform_specific_fold_tests {
             Some(RewriteAction::Create(ENode::Const(bits))) => Some(f32::from_bits(bits)),
             _ => None,
         }
+    }
+
+    /// A shift folds over a constant operand by the count it carries, to the
+    /// value the op evaluates to, in either direction; an operand that is not
+    /// a constant leaves nothing to fold.
+    #[test]
+    fn a_shift_folds_by_the_count_its_node_carries() {
+        use crate::egraph::{ShiftCount, ShiftDirection};
+
+        let operand = 1.5f32;
+        for direction in [ShiftDirection::Left, ShiftDirection::Right] {
+            for bits in 0..ShiftCount::WORD_BITS {
+                let count = ShiftCount::from_literal(bits as f32).expect("in range");
+                let mut eg = EGraph::new();
+                let constant = eg.add(ENode::constant(operand));
+                let node = ENode::Shift {
+                    direction,
+                    count,
+                    operand: constant,
+                };
+                let id = eg.add(node);
+                let folded = match ConstantFold.apply(&eg, id, &node) {
+                    Some(RewriteAction::Create(ENode::Const(bits))) => Some(f32::from_bits(bits)),
+                    _ => None,
+                };
+                let expected = direction.op().eval_binary(operand, count.literal());
+                assert_eq!(
+                    folded.map(f32::to_bits),
+                    expected.map(f32::to_bits),
+                    "{direction:?} by {bits}"
+                );
+            }
+        }
+
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let node = ENode::Shift {
+            direction: ShiftDirection::Left,
+            count: ShiftCount::from_literal(3.0).expect("in range"),
+            operand: x,
+        };
+        let id = eg.add(node);
+        assert!(ConstantFold.apply(&eg, id, &node).is_none());
     }
 
     /// The folder runs on the BUILD host; the constant it bakes in executes on

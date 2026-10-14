@@ -102,7 +102,7 @@ use pixelflow_pipeline::training::structural::FenceKey;
 use pixelflow_search::egraph::{
     APP_CHECKPOINT_GRID, AnytimeCurveOutput, ApplicationId, Budget, CostModel, EClassId, EGraph,
     ENode, ENodeId, EpisodeLabels, KeepJournal, Optimizer, Origin, RuleId, RuleSet, SaturationStop,
-    config_for_node_count, run_anytime_curve,
+    ShiftCount, ShiftDirection, config_for_node_count, run_anytime_curve,
 };
 use pixelflow_search::nnue::guide::linear::{
     LinearCandidateGuide, LinearReturnGuide, PerRuleRateGuide,
@@ -914,7 +914,15 @@ fn prefix_diag(
 /// looked up in ANOTHER e-graph (class ids do not transfer; structure does).
 enum Term {
     Leaf(ENode),
-    Op { op: OpKind, children: Vec<Term> },
+    Op {
+        op: OpKind,
+        children: Vec<Term>,
+    },
+    Shift {
+        direction: ShiftDirection,
+        count: ShiftCount,
+        operand: Box<Term>,
+    },
 }
 
 fn term_of_chosen(
@@ -941,6 +949,24 @@ fn term_of_chosen(
                 })
                 .collect(),
         },
+        ENode::Shift {
+            direction,
+            count,
+            operand,
+        } => {
+            let c = egraph.find(*operand);
+            let idx = choices.get(c.index()).and_then(|o| *o).unwrap_or_else(|| {
+                panic!(
+                    "term_of_chosen: operand class {} of a chosen shift has no extraction choice",
+                    c.index()
+                )
+            });
+            Term::Shift {
+                direction: *direction,
+                count: *count,
+                operand: Box::new(term_of_chosen(egraph, choices, c, idx)),
+            }
+        }
         leaf => Term::Leaf(*leaf),
     }
 }
@@ -970,6 +996,24 @@ impl<'a> NodeIndex<'a> {
                 .iter()
                 .find(|(_, n)| *n == leaf)
                 .map(|(c, _)| *c),
+            Term::Shift {
+                direction,
+                count,
+                operand,
+            } => {
+                let operand_class = self.lookup(operand)?;
+                self.entries
+                    .iter()
+                    .find(|(_, n)| match n {
+                        ENode::Shift {
+                            direction: d,
+                            count: k,
+                            operand: o,
+                        } => d == direction && k == count && self.egraph.find(*o) == operand_class,
+                        _ => false,
+                    })
+                    .map(|(c, _)| *c)
+            }
             Term::Op { op, children } => {
                 let mut child_classes = Vec::with_capacity(children.len());
                 for ch in children {

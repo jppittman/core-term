@@ -35,7 +35,7 @@ use pixelflow_search::egraph::provenance::{ApplicationId, Origin};
 use pixelflow_search::egraph::witness::{self, Stage, Ties};
 use pixelflow_search::egraph::{
     Budget, CostModel, EClassId, EGraph, ENode, Optimized, Optimizer, Vocabulary,
-    config_for_node_count, insert, reachable_count,
+    config_for_node_count, insert, inserted_class_count,
 };
 
 const SCREEN: [u32; 2] = [1920, 1080];
@@ -380,7 +380,7 @@ fn saturate_at(
     shape: LatticeShape,
     class_cap: usize,
 ) -> Saturated {
-    let node_count = reachable_count(arena, root);
+    let node_count = inserted_class_count(arena, root);
     let tier = config_for_node_count(node_count);
     let mut optimizer = Optimizer::production()
         .for_lattice(shape)
@@ -443,6 +443,16 @@ fn node_label(egraph: &EGraph, class: EClassId, idx: usize) -> String {
         ENode::Reduce { fold, body } => {
             format!("Reduce[{fold}]({})", egraph.find(*body).index())
         }
+        ENode::Shift {
+            direction,
+            count,
+            operand,
+        } => format!(
+            "{}[{}]({})",
+            direction.op().name(),
+            count.bits(),
+            egraph.find(*operand).index()
+        ),
     }
 }
 

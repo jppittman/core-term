@@ -71,6 +71,7 @@ use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::rewrite::{Rewrite, RewriteAction, RootShapes};
+use super::shift::{ShiftCount, ShiftDirection};
 
 /// What a [`HeadNode`]'s child is: an earlier entry in the same plan, or an
 /// e-class that already exists.
@@ -98,6 +99,12 @@ pub enum HeadNode {
     Reduce {
         fold: Fold,
         body: HeadRef,
+    },
+    /// A shift, its count carried as the parameter it is.
+    Shift {
+        direction: ShiftDirection,
+        count: ShiftCount,
+        operand: HeadRef,
     },
 }
 
@@ -607,6 +614,13 @@ fn rebuild(node: &ENode, kids: &[Done]) -> Option<HeadNode> {
             op: *op,
             children: kids.iter().map(|k| k.at).collect(),
         }),
+        ENode::Shift {
+            direction, count, ..
+        } => Some(HeadNode::Shift {
+            direction: *direction,
+            count: *count,
+            operand: kids.first()?.at,
+        }),
         // Leaves never reach here: `Task::Build` is scheduled only for a node
         // with children.
         _ => None,
@@ -785,6 +799,81 @@ mod tests {
             "the unshifted half is the body itself: a binder the body never reads shifts to \
              the identity, and hash-consing says so — `body` first, matching `b ⊕ b[binder:=binder+s]`"
         );
+    }
+
+    /// **A shift in a fold body is copied with its direction and count.** The
+    /// body reads the binder, so a peel and a halving both rebuild the shift
+    /// over the substituted operand: the copy is a shift node of the same
+    /// direction by the same count, over a new operand class, never the
+    /// original operand and never another count. Nothing else notices a wrong
+    /// count here: it is as valid a [`ShiftCount`] as the right one.
+    #[test]
+    fn a_shift_in_a_fold_body_is_copied_with_its_direction_and_count() {
+        const COUNT: u32 = 3;
+        for direction in [ShiftDirection::Left, ShiftDirection::Right] {
+            for (range, rule) in [
+                (0..3, &PeelFold as &dyn Rewrite),
+                (0..4, &HalveFold as &dyn Rewrite),
+            ] {
+                let mut a = ExprArena::new();
+                let (x, i) = (a.push_var(0), a.push_var(binder(0).var()));
+                let count = a.push_const(COUNT as f32);
+                let sum = a.push_binary(OpKind::Add, x, i);
+                let shifted = a.push_binary(direction.op(), sum, count);
+                let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), range.clone()), shifted);
+
+                let mut eg = Saturation::over(RuleSet::new(fold_rules()));
+                let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
+                let node = *eg.nodes(class).first().expect("a fold");
+
+                let Some(RewriteAction::Plan(plan)) = rule.apply(&eg, class, &node) else {
+                    panic!("{direction:?} {range:?}: {} did not plan", rule.name());
+                };
+                let copies: Vec<_> = plan
+                    .nodes
+                    .iter()
+                    .filter_map(|n| match n {
+                        HeadNode::Shift {
+                            direction,
+                            count,
+                            operand,
+                        } => Some((*direction, count.bits(), *operand)),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    matches!(
+                        copies.as_slice(),
+                        [(d, COUNT, HeadRef::Plan(_))] if *d == direction
+                    ),
+                    "{direction:?} {range:?}: {} planned {copies:?}",
+                    rule.name()
+                );
+
+                // Applied: every shift the graph now holds is that shift, over
+                // two operands — the original's and the copy's.
+                SaturationConfig::compatibility(1).run(&mut eg);
+                let mut operands = BTreeSet::new();
+                for class in eg.class_ids() {
+                    for node in eg.nodes(class) {
+                        if let ENode::Shift {
+                            direction: d,
+                            count,
+                            operand,
+                        } = node
+                        {
+                            assert_eq!((*d, count.bits()), (direction, COUNT));
+                            operands.insert(eg.find(*operand));
+                        }
+                    }
+                }
+                assert_eq!(
+                    operands.len(),
+                    2,
+                    "{direction:?} {range:?}: the original shift and its copy"
+                );
+            }
+        }
     }
 
     /// `combiner_op` is total over every [`Monoid`] constructible outside

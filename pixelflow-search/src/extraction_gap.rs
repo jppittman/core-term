@@ -74,7 +74,7 @@ use crate::egraph::extract::{
     ExtractedDAG, extract_dag_objectives, extract_dag_scoped, extract_dag_tree_arm,
 };
 use crate::egraph::{Budget, CostModel, EClassId, EGraph, ENode, Limits, Optimizer};
-use crate::egraph::{Vocabulary, insert, reachable_count};
+use crate::egraph::{Vocabulary, insert, inserted_class_count};
 
 // ---------------------------------------------------------------------------
 // The instance: one saturated e-graph, reduced to what a chooser must decide
@@ -1040,7 +1040,7 @@ fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
     // that no longer exists, on an arena an order of magnitude larger than
     // production's.
     let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
-    let node_count = reachable_count(&arena, root);
+    let node_count = inserted_class_count(&arena, root);
 
     let mut optimizer = Optimizer::production().budget(budget);
     let mut egraph = optimizer.egraph();

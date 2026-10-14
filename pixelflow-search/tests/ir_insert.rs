@@ -8,7 +8,7 @@
 
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprNode, UniformDecl, UniformIdentity};
 use pixelflow_ir::{Children, ExprArena, Ir, Kernel, KernelStore, OpKind, Shape};
-use pixelflow_search::egraph::{Declined, EGraph, Vocabulary, insert, reachable_count};
+use pixelflow_search::egraph::{Declined, EGraph, Vocabulary, insert, inserted_class_count};
 use pixelflow_search::runtime::optimize_runtime_arena;
 
 /// A fresh uniform declaration with the given default.
@@ -110,7 +110,11 @@ fn insertion_ignores_unreachable_nodes() {
     let _garbage = arena.push_binary(OpKind::Mul, g, g);
 
     assert_eq!(arena.len(), 5, "arena holds the garbage");
-    assert_eq!(reachable_count(&arena, root), 3, "but only 3 are reachable");
+    assert_eq!(
+        inserted_class_count(&arena, root),
+        3,
+        "but only 3 are reachable"
+    );
 
     let mut eg = EGraph::new();
     let _ = insert(&arena, root, &mut eg, Vocabulary::Templates).expect("insert");
@@ -262,7 +266,7 @@ fn project_then_embed_round_trips() {
 
     assert_eq!(
         dst.len(),
-        reachable_count(&src, root),
+        inserted_class_count(&src, root),
         "sharing must survive the round trip — a re-expanded DAG would be larger"
     );
     // Same term: both sides insert into an e-graph as the same single class.
@@ -370,5 +374,5 @@ fn a_pushed_arena_inserts_to_as_many_classes_as_it_reaches() {
 
     let mut eg = EGraph::new();
     insert(&arena, acc, &mut eg, Vocabulary::Runtime).expect("every op is modelled");
-    assert_eq!(eg.num_classes(), reachable_count(&arena, acc));
+    assert_eq!(eg.num_classes(), inserted_class_count(&arena, acc));
 }

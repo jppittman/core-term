@@ -210,7 +210,8 @@ pub enum RewriteAction {
 
 /// The node shapes on which a rule's [`Rewrite::apply`] can return `Some`.
 ///
-/// A node's *shape* is its [`OpKind`]: for an [`ENode::Op`] the op's own, and
+/// A node's *shape* is its [`OpKind`]: for an [`ENode::Op`] the op's own, for
+/// an [`ENode::Shift`] the shift its direction names, and
 /// for every other node the kind that names its variant (`Var`, `Const`,
 /// `Buffer`, `Uniform`, `Param`, `Reduce`). A [`ENode::Ref`] names no kind,
 /// so only [`RootShapes::Any`] admits one.
@@ -274,8 +275,9 @@ impl RootShapes {
         Self::Kinds(marked)
     }
 
-    /// Every [`ENode::Op`], whatever its op: the kinds a runtime-tier graph
-    /// can hold as an op, which [`Vocabulary::Runtime`] already states.
+    /// Every operation node, [`ENode::Op`] whatever its op or [`ENode::Shift`]
+    /// by its direction's op: the kinds a runtime-tier graph can hold as an
+    /// operation, which [`Vocabulary::Runtime`] already states.
     #[must_use]
     pub fn every_op() -> Self {
         Self::Kinds(OpMap::from_fn(|kind| Vocabulary::Runtime.admits(kind)))
@@ -300,6 +302,7 @@ impl RootShapes {
             ENode::Param(_) => Some(OpKind::Param),
             ENode::Reduce { .. } => Some(OpKind::Reduce),
             ENode::Op { op, .. } => Some(*op),
+            ENode::Shift { direction, .. } => Some(direction.op()),
             ENode::Ref { .. } => None,
         }
     }

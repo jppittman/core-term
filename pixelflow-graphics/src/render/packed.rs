@@ -264,7 +264,11 @@ impl PackedFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::program_digest;
     use pixelflow_core::Lattice;
+    use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
+    use pixelflow_ir::OpKind;
+    use pixelflow_search::runtime::optimize_runtime_arena;
 
     const RGBA: [u32; 4] = [0, 8, 16, 24];
     const BGRA: [u32; 4] = [16, 8, 0, 24];
@@ -321,6 +325,133 @@ mod tests {
             );
         }
     }
+
+    /// A leaf colour and a choice between it and another, every channel
+    /// varying by lane so that no byte folds to a literal before it is
+    /// shifted: the program keeps all four shifts.
+    fn two_colours() -> [Rgba; 2] {
+        let k = Kernel::constant;
+        let (x, y) = (Kernel::x(), Kernel::y());
+        let a = Rgba::new(
+            x.mul(&k(0.125)),
+            y.mul(&k(0.0625)),
+            x.add(&y).mul(&k(0.03125)),
+            x.mul(&y).mul(&k(0.001)),
+        );
+        let b = Rgba::new(
+            y.mul(&k(0.25)),
+            x.mul(&k(0.5)),
+            x.sub(&y).mul(&k(0.015625)),
+            x.add(&k(1.0)).mul(&k(0.0625)),
+        );
+        let chosen = a.select(&x.lt(&k(3.0)), &b);
+        [a, chosen]
+    }
+
+    /// The counts of every `Shl` the program reaches from `root`, one entry per
+    /// shift node, ascending.
+    fn shift_counts(arena: &ExprArena, root: ExprId) -> Vec<u32> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut stack = vec![root];
+        let mut counts = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let ExprNode::Binary(OpKind::Shl, _, count) = arena.node(id) {
+                match arena.node(count) {
+                    ExprNode::Const(c) => counts.push(c as u32),
+                    other => panic!("a shift's count is {other:?}, not a literal"),
+                }
+            }
+            stack.extend(arena.children(id));
+        }
+        counts.sort_unstable();
+        counts
+    }
+
+    /// **What the optimizer selects for the packed frame program is pinned,
+    /// under both pixel orders.** The shift is the one production operator
+    /// with a static count parameter, and the packed program is its only
+    /// user: no font or scene kernel has one. How the e-graph holds that
+    /// parameter changes the classes the program inserts to, the tier and
+    /// class cap it saturates under, and the order equal-cost classes settle
+    /// in, and this is the only gate that sees any of it.
+    ///
+    /// Three programs, so that the pin reaches past the small ones: a leaf
+    /// colour, a choice between two, and the chrome sphere over a checker
+    /// floor, whose saturation stops at the class cap. Each is pinned as the
+    /// arena the choices materialize to, through the runtime tier's entry on
+    /// `Kernel::parts()` (what `jit_cache::compile` hands the optimizer), as
+    /// a structural digest rather than machine-code bytes: the same program
+    /// on every ISA tier.
+    ///
+    /// A digest could go on pinning a program that lost its shifts, or
+    /// duplicated them, so the shifts are checked first: the multiset of
+    /// counts on the arena handed in and on the selected one is the one
+    /// recorded in [`SHIFT_COUNTS`], counted per shift node.
+    #[test]
+    fn the_packed_program_selects_what_it_selected() {
+        let observed: Vec<(usize, [u32; 4], u64)> = pinned_colours()
+            .iter()
+            .enumerate()
+            .flat_map(|(which, color)| [RGBA, BGRA].map(|shifts| (which, color, shifts)))
+            .map(|(which, color, shifts)| {
+                let kernel = packed_kernel(color, shifts);
+                let (arena, root) = kernel.parts();
+                let optimized =
+                    optimize_runtime_arena(arena, root, pixelflow_ir::LatticeShape::new(FRAME))
+                        .unwrap_or_else(|| {
+                            panic!("colour {which}, shifts {shifts:?}: the program declined")
+                        });
+                let (out, out_root) = &*optimized;
+                for (side, counts) in [
+                    ("handed in", shift_counts(arena, root)),
+                    ("selected", shift_counts(out, *out_root)),
+                ] {
+                    assert_eq!(
+                        counts, SHIFT_COUNTS[which],
+                        "colour {which}, shifts {shifts:?}: the program {side} holds other \
+                         shifts than the ones recorded"
+                    );
+                }
+                (which, shifts, program_digest(out, *out_root))
+            })
+            .collect();
+        assert_eq!(
+            observed, SELECTED_PACKED_DIGESTS,
+            "(colour, shifts, digest): the optimizer selected other programs than the \
+             ones recorded"
+        );
+    }
+
+    /// The programs the pin covers: the two small ones, then the chrome scene.
+    fn pinned_colours() -> [Rgba; 3] {
+        let [leaf, choice] = two_colours();
+        [leaf, choice, chrome()]
+    }
+
+    /// The shift counts [`shift_counts`] reads off each of [`pinned_colours`]
+    /// before and after optimization. A choice shifts each arm's channels, so
+    /// it holds two of every byte lane. The chrome sphere's leaves share one
+    /// alpha, the literal `1.0`, so its shift by 24 is one node.
+    const SHIFT_COUNTS: [&[u32]; 3] = [
+        &[0, 8, 16, 24],
+        &[0, 0, 8, 8, 16, 16, 24, 24],
+        &[0, 0, 0, 0, 8, 8, 8, 8, 16, 16, 16, 16, 24],
+    ];
+
+    /// `(colour, shifts, digest)` in [`pinned_colours`] order, each under
+    /// `RGBA` then `BGRA`: the selection the production optimizer makes for
+    /// these programs.
+    const SELECTED_PACKED_DIGESTS: [(usize, [u32; 4], u64); 6] = [
+        (0, RGBA, 0xa27b_c5c7_491f_c55c),
+        (0, BGRA, 0x3f9e_707b_8a4f_1530),
+        (1, RGBA, 0xc639_9eac_ac19_6aef),
+        (1, BGRA, 0x399e_b44e_d12a_ed95),
+        (2, RGBA, 0x4b7c_3573_0d6d_54ad),
+        (2, BGRA, 0x139d_0d0a_4519_5f75),
+    ];
 
     /// A scene whose clock is an argument at its default draws a plausible
     /// picture — frozen at time zero — so nothing downstream can notice it.

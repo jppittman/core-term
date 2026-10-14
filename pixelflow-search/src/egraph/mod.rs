@@ -6,6 +6,7 @@
 //! # Module Structure
 //!
 //! - `node`: Core data structures (EClassId, Op, ENode)
+//! - `shift`: the static parameters of a shift node (direction, count)
 //! - [`candidate`]: Candidate-local features and the dedup key a guided
 //!   saturation loop orders by
 //! - `cost`: Cost model for extraction
@@ -56,6 +57,7 @@ pub mod rewrite;
 pub mod rule_order;
 pub mod rules;
 pub mod saturate;
+mod shift;
 pub mod template;
 // Research only: the read-only half of the extraction-witness instrument
 // (docs/plans/2026-09-08-extraction-witnesses.md). Gated behind the feature
@@ -85,7 +87,7 @@ pub use graph::{
 };
 #[cfg(feature = "saturation-telemetry")]
 pub use growth::{GrowthTelemetry, RuleGrowth};
-pub use insert::{Declined, insert, reachable_count};
+pub use insert::{Declined, insert, inserted_class_count};
 #[cfg(feature = "provenance-journal")]
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode, Operands};
@@ -105,6 +107,7 @@ pub use saturate::{
     CLASSICAL_CLASSES_PER_INSERTED_CLASS, InputSize, SaturationConfig, SaturationResult,
     config_for_input, config_for_node_count, saturate_with_budget, saturate_with_full_budget,
 };
+pub use shift::{ShiftCount, ShiftDirection};
 pub use template::TemplateRewrite;
 
 // Re-export rule types from math module for backward compatibility
