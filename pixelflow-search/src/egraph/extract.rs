@@ -82,7 +82,7 @@ impl<'g> Extraction<'g> {
     /// The chosen node index for `class`, if `class` is reachable from
     /// [`Self::root`]. `None` for classes outside the extraction.
     pub fn choice(&self, class: EClassId) -> Option<usize> {
-        let idx = self.egraph.find(class).0 as usize;
+        let idx = self.egraph.find(class).index();
         self.choices.get(idx).copied().flatten()
     }
 
@@ -166,7 +166,7 @@ impl<'g> Extraction<'g> {
     pub(crate) fn try_swap(&self, class: EClassId, node_idx: usize) -> Option<Self> {
         let canonical = self.egraph.find(class);
         let mut choices = self.choices.clone();
-        choices[canonical.0 as usize] = Some(node_idx);
+        choices[canonical.index()] = Some(node_idx);
 
         let new_children = operation_operands(self.egraph.nodes(canonical).get(node_idx));
 
@@ -364,7 +364,7 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
 
         while let Some(class) = stack.pop() {
             let canonical = egraph.find(class);
-            let idx = canonical.0 as usize;
+            let idx = canonical.index();
             if visited[idx] {
                 continue;
             }
@@ -436,16 +436,16 @@ fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option
     // each not-yet-chosen class. Classes with an existing choice are complete
     // subtrees and stop the walk.
     let mut scope_pos: Vec<Option<usize>> = alloc::vec![None; num_classes];
-    let mut scope: Vec<u32> = Vec::new();
+    let mut scope: Vec<EClassId> = Vec::new();
     let mut stack = alloc::vec![egraph.find(start)];
     while let Some(class) = stack.pop() {
         let canonical = egraph.find(class);
-        let idx = canonical.0 as usize;
+        let idx = canonical.index();
         if idx >= num_classes || scope_pos[idx].is_some() || choices[idx].is_some() {
             continue;
         }
         scope_pos[idx] = Some(scope.len());
-        scope.push(canonical.0);
+        scope.push(canonical);
         for node in egraph.nodes(canonical) {
             {
                 let children = (node).children_slice();
@@ -464,9 +464,8 @@ fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option
     // record which (class, node) counters to decrement when a class admits.
     let mut pending: Vec<Vec<usize>> = Vec::with_capacity(scope.len());
     let mut reverse: Vec<Vec<(usize, usize)>> = alloc::vec![Vec::new(); scope.len()];
-    let mut ready: Vec<u32> = Vec::new();
-    for (pos, &cid) in scope.iter().enumerate() {
-        let canonical = EClassId(cid);
+    let mut ready: Vec<EClassId> = Vec::new();
+    for (pos, &canonical) in scope.iter().enumerate() {
         let nodes = egraph.nodes(canonical);
         let mut per_node = Vec::with_capacity(nodes.len());
         let mut any_ready = false;
@@ -475,7 +474,7 @@ fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option
             {
                 let children = (node).children_slice();
                 for &child in children {
-                    let child_idx = egraph.find(child).0 as usize;
+                    let child_idx = egraph.find(child).index();
                     if let Some(child_pos) = scope_pos[child_idx] {
                         count += 1;
                         reverse[child_pos].push((pos, node_idx));
@@ -489,14 +488,14 @@ fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option
         }
         pending.push(per_node);
         if any_ready {
-            ready.push(cid);
+            ready.push(canonical);
         }
     }
 
     let mut admitted = 0usize;
-    let mut queue: alloc::collections::VecDeque<u32> = ready.into_iter().collect();
-    while let Some(cid) = queue.pop_front() {
-        let idx = cid as usize;
+    let mut queue: alloc::collections::VecDeque<EClassId> = ready.into_iter().collect();
+    while let Some(class) = queue.pop_front() {
+        let idx = class.index();
         if choices[idx].is_some() {
             continue; // Admitted through an earlier queue entry.
         }
@@ -534,7 +533,7 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
 
     while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
-        let idx = canonical.0 as usize;
+        let idx = canonical.index();
         if idx >= num_classes {
             continue;
         }
@@ -603,7 +602,7 @@ fn choices_have_cycle_through(
     choices: &[Option<usize>],
 ) -> bool {
     let num_classes = choices.len();
-    let mut visited: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+    let mut visited: alloc::collections::BTreeSet<EClassId> = alloc::collections::BTreeSet::new();
     let mut stack: Vec<EClassId> = new_children.to_vec();
 
     while let Some(class) = stack.pop() {
@@ -611,8 +610,8 @@ fn choices_have_cycle_through(
         if c == canonical {
             return true;
         }
-        let idx = c.0 as usize;
-        if idx >= num_classes || !visited.insert(c.0) {
+        let idx = c.index();
+        if idx >= num_classes || !visited.insert(c) {
             continue;
         }
         // Same analysis default as `choices_have_cycle_from`, safe for the
@@ -1831,7 +1830,7 @@ struct Settlement<'a, S> {
     /// classes settle in id order, and under `Insertion` that settle order is
     /// what picks the incumbent, so the key must stay the id the e-graph
     /// gave and not the position the class holds in the root's reach.
-    heap: BinaryHeap<Reverse<(usize, u32, Live)>>,
+    heap: BinaryHeap<Reverse<(usize, EClassId, Live)>>,
 }
 
 impl<'a, S: Settling> Settlement<'a, S> {
@@ -1864,7 +1863,7 @@ impl<'a, S: Settling> Settlement<'a, S> {
             return;
         }
         self.best[live] = Some((cost, idx));
-        self.heap.push(Reverse((cost, class.0, live)));
+        self.heap.push(Reverse((cost, class, live)));
     }
 
     fn run(mut self) -> Option<DpOutcome> {
@@ -2338,7 +2337,7 @@ mod tests {
         let costs = CostModel::latency_prior();
         let chosen = |shape| {
             let dag = extract_dag_scoped(&egraph, root, &costs, shape);
-            let idx = dag.choices[egraph.find(root).0 as usize].expect("root is chosen");
+            let idx = dag.choices[egraph.find(root).index()].expect("root is chosen");
             match &egraph.nodes(egraph.find(root))[idx] {
                 ENode::Op { op, .. } => *op,
                 other => panic!("root should be an op, got {other:?}"),
@@ -2490,7 +2489,7 @@ mod tests {
         let words = live.div_ceil(BITS);
         let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
         for (i, c) in order.iter().enumerate() {
-            compact[c.0 as usize] = i as u32;
+            compact[c.index()] = i as u32;
         }
         let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
         let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
@@ -2499,7 +2498,7 @@ mod tests {
         let mut reach: Vec<usize> = alloc::vec![0; live * words];
         let mut scratch: Vec<usize> = alloc::vec![0; words];
         for canonical in order.iter().copied() {
-            let me = compact[canonical.0 as usize] as usize;
+            let me = compact[canonical.index()] as usize;
             let nodes = egraph.nodes(canonical);
             let mut min_cost = usize::MAX;
             let mut min_idx = 0;
@@ -2524,7 +2523,7 @@ mod tests {
                             let mut below = 0usize;
                             let mut unresolved = false;
                             for &child in children.iter() {
-                                let c = egraph.find(child).0 as usize;
+                                let c = egraph.find(child).index();
                                 if best_cost[c].is_none() {
                                     unresolved = true;
                                     break;
@@ -2565,7 +2564,7 @@ mod tests {
                 let children = nodes[min_idx].children_slice();
                 if min_cost != CYCLE_COST {
                     for &child in children.iter() {
-                        let cbase = compact[egraph.find(child).0 as usize] as usize * words;
+                        let cbase = compact[egraph.find(child).index()] as usize * words;
                         for w in 0..words {
                             reach[base + w] |= reach[cbase + w];
                         }
@@ -2573,12 +2572,12 @@ mod tests {
                 }
             }
             reach[base + me / BITS] |= 1usize << (me % BITS);
-            best_cost[canonical.0 as usize] = Some(min_cost);
-            best_node[canonical.0 as usize] = Some(min_idx);
-            best_var[canonical.0 as usize] = min_var;
+            best_cost[canonical.index()] = Some(min_cost);
+            best_node[canonical.index()] = Some(min_idx);
+            best_var[canonical.index()] = min_var;
             best_own[me] = min_own;
         }
-        let root_cost = best_cost[egraph.find(root).0 as usize].expect("the root is settled");
+        let root_cost = best_cost[egraph.find(root).index()].expect("the root is settled");
         (best_node, root_cost)
     }
 
@@ -2643,13 +2642,13 @@ mod tests {
             let all_cyclic = egraph.nodes(class).iter().all(|node| match node {
                 ENode::Op { children, .. } => children
                     .iter()
-                    .any(|&c| egraph.find(c) == class || !priced[egraph.find(c).0 as usize]),
+                    .any(|&c| egraph.find(c) == class || !priced[egraph.find(c).index()]),
                 _ => false,
             });
             if all_cyclic {
                 sentinel.push(class);
             }
-            priced[class.0 as usize] = true;
+            priced[class.index()] = true;
         }
         sentinel
     }
@@ -2692,7 +2691,7 @@ mod tests {
             "the fixpoint priced a candidate at the cycle sentinel: {priced:?}"
         );
         assert!(
-            choices[n1c.0 as usize].is_some(),
+            choices[n1c.index()].is_some(),
             "the class was priced but not settled"
         );
     }
@@ -2710,7 +2709,7 @@ mod tests {
             .iter()
             .enumerate()
             .filter_map(|(i, pick)| {
-                let class = EClassId(i as u32);
+                let class = EClassId::from_index(i);
                 let node = &egraph.nodes(class)[(*pick)?];
                 let children = node
                     .children_slice()
@@ -3148,8 +3147,8 @@ mod tests {
     fn cyclic_choice_set() -> (EGraph, EClassId, Vec<Option<usize>>) {
         let (egraph, merged, n1) = cyclic_capable_egraph();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
-        let m = egraph.find(merged).0 as usize;
-        let i = egraph.find(n1).0 as usize;
+        let m = egraph.find(merged).index();
+        let i = egraph.find(n1).index();
         choices[m] = Some(neg_index(&egraph, merged).expect("merged class holds Neg(n1)"));
         choices[i] = Some(neg_index(&egraph, n1).expect("n1 holds Neg(x)"));
         (egraph, merged, choices)
@@ -3204,8 +3203,8 @@ mod tests {
         // `from_backfill` refuses a cyclic vector up front.
         let (egraph, merged, n1) = cyclic_capable_egraph();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
-        let m = egraph.find(merged).0 as usize;
-        let i = egraph.find(n1).0 as usize;
+        let m = egraph.find(merged).index();
+        let i = egraph.find(n1).index();
         choices[m] = Some(neg_index(&egraph, merged).expect("merged class holds Neg(n1)"));
         choices[i] = Some(neg_index(&egraph, n1).expect("n1 holds Neg(x)"));
         let _ = Extraction::from_backfill(&egraph, merged, choices);
@@ -3309,9 +3308,9 @@ mod tests {
 
         let num_classes = egraph.num_classes();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
-        choices[egraph.find(product).0 as usize] = Some(0);
-        choices[egraph.find(sqrt_x).0 as usize] = Some(0);
-        choices[egraph.find(x).0 as usize] = Some(0);
+        choices[egraph.find(product).index()] = Some(0);
+        choices[egraph.find(sqrt_x).index()] = Some(0);
+        choices[egraph.find(x).index()] = Some(0);
 
         let extraction = Extraction::from_backfill(&egraph, product, choices);
         let (term, term_root) = extraction.to_selection().to_arena(&egraph);
@@ -3494,9 +3493,9 @@ mod tests {
 
         let num_classes = egraph.num_classes();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
-        choices[egraph.find(add).0 as usize] = Some(0);
-        choices[egraph.find(x).0 as usize] = Some(0);
-        choices[egraph.find(y).0 as usize] = Some(0);
+        choices[egraph.find(add).index()] = Some(0);
+        choices[egraph.find(x).index()] = Some(0);
+        choices[egraph.find(y).index()] = Some(0);
 
         let extraction = Extraction::from_backfill(&egraph, add, choices);
         let (arena, root_id) = extraction.to_selection().to_arena(&egraph);
@@ -3598,8 +3597,8 @@ mod tests {
 
         let num_classes = egraph.num_classes();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
-        choices[egraph.find(mul).0 as usize] = Some(0);
-        choices[egraph.find(x).0 as usize] = Some(0);
+        choices[egraph.find(mul).index()] = Some(0);
+        choices[egraph.find(x).index()] = Some(0);
 
         let extraction = Extraction::from_backfill(&egraph, mul, choices);
         let (arena, root_id) = extraction.to_selection().to_arena(&egraph);
@@ -3624,9 +3623,9 @@ mod tests {
 
         let num_classes = egraph.num_classes();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
-        choices[egraph.find(add).0 as usize] = Some(0);
-        choices[egraph.find(x).0 as usize] = Some(0);
-        choices[egraph.find(y).0 as usize] = Some(0);
+        choices[egraph.find(add).index()] = Some(0);
+        choices[egraph.find(x).index()] = Some(0);
+        choices[egraph.find(y).index()] = Some(0);
 
         let extraction = Extraction::from_backfill(&egraph, add, choices);
         let (arena, root_id) = extraction.to_selection().to_arena(&egraph);
@@ -3885,7 +3884,7 @@ mod tests {
         assert_ne!(sin_idx, neg_idx);
 
         let mut self_referential: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
-        self_referential[merged.0 as usize] = Some(neg_idx);
+        self_referential[merged.index()] = Some(neg_idx);
         assert!(
             choices_have_cycle_from(&egraph, merged, &self_referential),
             "the fixture's Neg must name its own class, or the test pins nothing"
@@ -3902,7 +3901,7 @@ mod tests {
         let dag = extract_dag(&egraph, merged, &costs);
 
         assert_eq!(
-            dag.choices[merged.0 as usize],
+            dag.choices[merged.index()],
             Some(sin_idx),
             "the self-referential Neg must not be picked"
         );
@@ -3932,7 +3931,7 @@ mod tests {
     fn a_cyclic_choice_map_has_no_price() {
         let (egraph, merged, _sin_idx, neg_idx) = self_referential_pick_egraph();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
-        choices[merged.0 as usize] = Some(neg_idx);
+        choices[merged.index()] = Some(neg_idx);
         assert_eq!(
             Selection::of_map(&egraph, merged, &choices),
             Err(Refused::Cyclic(merged))
@@ -4076,11 +4075,7 @@ mod tests {
         .expect("unbounded");
 
         let own = |c: EClassId| -> usize {
-            weighted_own(
-                &costs,
-                &egraph.nodes(c)[dp.choices[c.0 as usize].unwrap()],
-                1,
-            )
+            weighted_own(&costs, &egraph.nodes(c)[dp.choices[c.index()].unwrap()], 1)
         };
         assert_eq!(
             dp.root_cost,
@@ -4173,14 +4168,14 @@ mod tests {
         for &class in AndOrGraph::of(&egraph, root).classes() {
             let has_form = egraph.nodes(class).iter().any(|node| match node {
                 ENode::Op { children, .. } => {
-                    children.iter().all(|&c| settled[egraph.find(c).0 as usize])
+                    children.iter().all(|&c| settled[egraph.find(c).index()])
                 }
                 _ => true,
             });
             if !has_form {
                 blind += 1;
             }
-            settled[class.0 as usize] = true;
+            settled[class.index()] = true;
         }
         assert!(blind > 0, "premise: the DFS order is blind on this fixture");
 

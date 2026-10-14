@@ -70,9 +70,12 @@
     `Binder(u8)` (`pixelflow-ir/src/fold.rs`).
   - `LatticeShape([u32; _])` (`pixelflow-ir/src/variance.rs`).
   - The DAG's `Id(u32)` and `DagIdentity(u32)` (`pixelflow-ir/src/dag.rs`).
-  - `EClassId(pub(crate) u32)` (`pixelflow-search/src/egraph/node.rs`).
   - `ScheduledOp::Context(u16)` (`pixelflow-codegen/src/program/mod.rs`).
   - The string `Label` (`pixelflow-codegen/src/emit/mod.rs`).
+
+  Narrower than 64 bits *with* a profiler reason, written in the type's own
+  doc as the rule asks: `EClassId(pub(crate) u32)`
+  (`pixelflow-search/src/egraph/node.rs`; the doc carries the measurement).
 
   `ExprNode`'s own doc still says the assertion "guarantees <= 16 bytes",
   while the assertion reads `<= 32`.
