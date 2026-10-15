@@ -10,7 +10,7 @@
 
 # Kernels and Lattices: Bound Memory in the Language
 
-**Status:** **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the language-level memory design below (`Buffer` leaves, `BufferDecl`, `OpKind::Gather`, `Frozen`/`Pinned` bindings, "bound buffers") no longer holds, because the language has kernels and discrete kernels, and gather is a backend realization. IR + lowering + interpreter + AVX-512 JIT + internal-loop collapse
+**Status:** **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the language-level memory design below (`Buffer` leaves, `BufferDecl`, `OpKind::Gather`, `Frozen`/`Pinned` bindings, "bound buffers") no longer holds, because the language has kernels and discrete kernels, and gather is a backend realization; a user does not schedule by choosing what to collapse, since tabulation is trivial (JP, 2026-10-15). IR + lowering + interpreter + AVX-512 JIT + internal-loop collapse
 implemented and hardware-tested (June 2026). aarch64 gather landed and
 hardware-tested on Apple Silicon (July 2026). SSE2 gather, 2-D collapse, and
 the fonts/ML consumers remain — see Milestones.

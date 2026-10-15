@@ -23,8 +23,9 @@ Kernel ──Manifold::compile(extent)──▶ Manifold ──Lattice::collapse
   is **not batch-shaped**.
 - `Lattice::collapse(&BoundManifold) -> DiscreteManifold` — the one verb. One call per
   stripe; the X/Y loop nest is inside the emitted code.
-- `Lattice::bake(&Kernel)` — `collapse(compile(k, extent).bind(&[]))`, one line, for the
-  common case.
+- `Lattice::bake(&Kernel)` — `collapse(compile(k, extent).bind(&[]))`, one line: sugar for
+  applying a program to the lattice's schedule. Tabulation is trivial and nothing chooses it
+  (docs/plans/2026-10-15-kernels-evaluate-kernels.md §2).
 - `BoundManifold`, `bind`, `BufferIdentity`, `MAX_BOUND_BUFFERS` — still in the tree and
   slated for deletion: a bound buffer is not a concept, a discrete kernel is
   (docs/plans/2026-10-15-kernels-evaluate-kernels.md §2). Until that lands, `collapse`
