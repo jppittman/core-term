@@ -530,9 +530,9 @@ impl Saturation {
         for rule_idx in self.rules.indices() {
             let rule = self.rules.rule(rule_idx);
             for class_id in self.graph.class_ids() {
-                let nodes = &self.graph.classes[class_id.index()].nodes;
+                let nodes = &self.graph.columns.classes[class_id].nodes;
 
-                let tags = &self.graph.classes[class_id.index()].tags;
+                let tags = &self.graph.columns.classes[class_id].tags;
                 for (node_idx, node) in nodes.iter().enumerate() {
                     // Check if rule matches this node
                     if rule.apply(&self.graph, class_id, node).is_some() {
@@ -571,12 +571,12 @@ impl Saturation {
         tag: ENodeId,
     ) -> bool {
         assert!(
-            self.graph.classes.len() < HARD_MINTED_LIMIT,
+            self.graph.num_classes() < HARD_MINTED_LIMIT,
             "apply_single_rule: e-graph is at the hard minted-id limit \
              ({} ids, limit {HARD_MINTED_LIMIT}) — this entry point applies \
              one action per call and carries no budget, so the caller's \
              rewrite loop must impose one (see `saturate_with_limits`)",
-            self.graph.classes.len(),
+            self.graph.num_classes(),
         );
 
         let class_id = self.graph.find(class_id);
@@ -714,7 +714,7 @@ impl Saturation {
                 stop = SaturationStop::Timeout;
                 break;
             }
-            if self.graph.classes.len() > max_minted {
+            if self.graph.num_classes() > max_minted {
                 stop = SaturationStop::MintedCap;
                 break;
             }
@@ -786,7 +786,7 @@ impl Saturation {
         let mut total = 0;
         let mut sweep = ScanStop::Completed;
         for rule_idx in self.rules.indices() {
-            if self.graph.classes.len() > ceilings.minted {
+            if self.graph.num_classes() > ceilings.minted {
                 sweep = ScanStop::MintedCap;
                 break;
             }
@@ -896,7 +896,7 @@ impl Saturation {
         );
         'scan: for canonical in self.graph.live.iter() {
             // Budget check: current graph + pending creates must stay under limit
-            if self.graph.classes.len() + estimated_new_nodes > max_nodes {
+            if self.graph.num_classes() + estimated_new_nodes > max_nodes {
                 scan = ScanStop::MintedCap;
                 break;
             }
@@ -910,7 +910,7 @@ impl Saturation {
             }
             // Only a node in the rule's root shapes can produce an action, so
             // a class with none is skipped exactly as a clean class is.
-            if !self.graph.classes[canonical.index()]
+            if !self.graph.columns.classes[canonical]
                 .nodes
                 .iter()
                 .any(|node| roots.admits(node))
@@ -928,7 +928,7 @@ impl Saturation {
             // Borrowed, not cloned: the scan only reads the graph (a rule's
             // `apply` takes `&EGraph`, and every write waits for the commit
             // below), so nothing can move the class's nodes under the loop.
-            for node in &self.graph.classes[canonical.index()].nodes {
+            for node in &self.graph.columns.classes[canonical].nodes {
                 if !roots.admits(node) {
                     continue;
                 }
@@ -966,7 +966,7 @@ impl Saturation {
                     estimated_new_nodes += action_cost;
 
                     // If this action would push us over budget, stop scanning
-                    if self.graph.classes.len() + estimated_new_nodes > max_nodes {
+                    if self.graph.num_classes() + estimated_new_nodes > max_nodes {
                         // Don't add this action — discard it and stop
                         scan = ScanStop::MintedCap;
                         break 'scan;
@@ -1198,7 +1198,7 @@ impl Saturation {
             // invariant of the representation, not an assumption of the
             // measurement — pinned here rather than merely relied upon.
             debug_assert_eq!(
-                self.graph.classes.len() as u64,
+                self.graph.num_classes() as u64,
                 self.graph.next_enode_id,
                 "EGraph::add's one-class-per-node invariant broke; growth's \
                  nodes_added/classes_added equivalence depends on it"

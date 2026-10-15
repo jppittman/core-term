@@ -1227,7 +1227,7 @@ mod congruence_gap_probe {
     /// live count — see `Saturation::saturate_with_limits`,
     /// `self.classes.len() > max_minted`).
     fn live_class_count(egraph: &EGraph) -> usize {
-        (0..egraph.classes.len())
+        (0..egraph.num_classes())
             .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
             .count()
     }
@@ -1248,7 +1248,7 @@ mod congruence_gap_probe {
         const MAX_PASSES: usize = 20_000;
         let mut total_unions = 0usize;
         for _pass in 0..MAX_PASSES {
-            let n = egraph.classes.len();
+            let n = egraph.num_classes();
             let mut local_memo: HashMap<ENode, EClassId> = HashMap::new();
             let mut pending: Vec<(EClassId, EClassId)> = Vec::new();
             for idx in 0..n {
@@ -1260,7 +1260,7 @@ mod congruence_gap_probe {
                     // vector is empty and re-scanning it would be a no-op.
                     continue;
                 }
-                let nodes = egraph.classes[idx].nodes.clone();
+                let nodes = egraph.columns.classes[id].nodes.clone();
                 for node in nodes {
                     // Not `EGraph::canonical_node`: this probe has always left
                     // a fold's body as stored, and the gap it counted in
@@ -1781,18 +1781,18 @@ mod congruence_gap_probe {
     /// count means something wrote to a class after it stopped being
     /// canonical — which is exactly the `rebuild_budgeted` write-back bug.
     fn orphaned_node_count(egraph: &EGraph) -> usize {
-        (0..egraph.classes.len())
+        (0..egraph.num_classes())
             .filter(|&i| egraph.find(EClassId::from_index(i)) != EClassId::from_index(i))
-            .map(|i| egraph.classes[i].nodes.len())
+            .map(|i| egraph.columns.classes[EClassId::from_index(i)].nodes.len())
             .sum()
     }
 
     /// Sum of e-nodes over canonical classes — everything still reachable
     /// through the public `nodes()`/`tags()` API.
     fn reachable_node_count(egraph: &EGraph) -> usize {
-        (0..egraph.classes.len())
+        (0..egraph.num_classes())
             .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
-            .map(|i| egraph.classes[i].nodes.len())
+            .map(|i| egraph.columns.classes[EClassId::from_index(i)].nodes.len())
             .sum()
     }
 
@@ -1830,7 +1830,7 @@ mod congruence_gap_probe {
                 category,
                 node_count: run.node_count,
                 stop: format!("{:?}", run.stop),
-                classes_raw: run.egraph.classes.len(),
+                classes_raw: run.egraph.num_classes(),
                 live_classes: live_class_count(&run.egraph),
                 reachable_nodes: reachable_node_count(&run.egraph),
                 orphaned_nodes: orphaned_node_count(&run.egraph),
