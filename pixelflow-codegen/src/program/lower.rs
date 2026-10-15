@@ -14,7 +14,7 @@ use pixelflow_ir::fold::Binder;
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::variance::{Variance, compute_arena_variance};
 
-use super::{Def, ScheduledOp, ValueId};
+use super::{CompareOp, Def, Legal, ScheduledOp, ValueId, legal, not_legal};
 
 /// Mark nodes reachable from `root` via DFS.
 ///
@@ -216,7 +216,7 @@ pub(crate) fn arena_to_schedule(
                 });
                 ScheduledOp::Uniform(block, offset)
             }
-            ExprNode::Unary(op, child) => ScheduledOp::Unary(op, map_child(child)),
+            ExprNode::Unary(op, child) => ScheduledOp::Unary(legal(op), map_child(child)),
             // Shl/Shr fold their Const shift-count operand into an immediate, so
             // the count never becomes a scheduled value (matching the imm-only
             // hardware shift encoders). The count const may still appear as its
@@ -229,7 +229,7 @@ pub(crate) fn arena_to_schedule(
                         op
                     ),
                 };
-                ScheduledOp::ShiftImm(op, map_child(a), amount)
+                ScheduledOp::ShiftImm(legal(op), map_child(a), amount)
             }
             // RawGather's buffer leaf is its base pointer's def, mapped like
             // any other child. An index the lane binder does not reach is one
@@ -260,10 +260,17 @@ pub(crate) fn arena_to_schedule(
                  means this schedule was built without the lowering pipeline."
             ),
             ExprNode::Binary(OpKind::Seq, a, b) => ScheduledOp::Seq(map_child(a), map_child(b)),
-            ExprNode::Binary(op, a, b) => ScheduledOp::Binary(op, map_child(a), map_child(b)),
-            ExprNode::Ternary(op, a, b, c) => {
-                ScheduledOp::Ternary(op, map_child(a), map_child(b), map_child(c))
+            ExprNode::Binary(op, a, b) => match CompareOp::of(op) {
+                Some(compare) => ScheduledOp::Compare(compare, map_child(a), map_child(b)),
+                None => ScheduledOp::Binary(legal(op), map_child(a), map_child(b)),
+            },
+            ExprNode::Ternary(OpKind::MulAdd, a, b, c) => {
+                ScheduledOp::MulAdd(map_child(a), map_child(b), map_child(c))
             }
+            ExprNode::Ternary(OpKind::If, a, b, c) => {
+                ScheduledOp::If(map_child(a), map_child(b), map_child(c))
+            }
+            ExprNode::Ternary(op, ..) => not_legal(op),
             // Same unreachable precondition as `Dwrt` above: `passes::legalize`
             // runs `expand_refs` first in every compile entry point, so a
             // reference here means this schedule was built without the

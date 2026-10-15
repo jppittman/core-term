@@ -441,6 +441,7 @@ fn attach_fold(scoped: &mut ScopedSchedule<()>, fold: PendingFold, parent: Scope
 mod tests {
     use super::*;
     use crate::pipeline::tests::schedule_for;
+    use crate::program::BinaryOp;
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId, UniformDecl, UniformIdentity};
     use pixelflow_ir::kind::OpKind;
@@ -547,7 +548,7 @@ mod tests {
             .schedule
             .iter()
             .find(|d| match d.op {
-                ScheduledOp::Binary(OpKind::Mul, l, r) => l == r,
+                ScheduledOp::Binary(BinaryOp::Mul, l, r) => l == r,
                 _ => false,
             })
             .map(|d| d.value)

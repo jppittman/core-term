@@ -14,11 +14,11 @@ use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
     Bound, Class, ClassId, Edges, FrameSize, IfArm, Integer, IsaBackend, Label, LaneOp, Patch,
     Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName, Vector,
-    frame_bytes, slot_disp, unimplemented_op,
+    frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
+use crate::program::{BinaryOp, CompareOp, ShiftOp, UnaryOp};
 use alloc::vec::Vec;
-use pixelflow_ir::kind::OpKind;
 
 mod table;
 use table::*;
@@ -873,63 +873,78 @@ const IOTA: PoolEntry = [
 // Operation forms
 // =============================================================================
 
-/// The one instruction a unary op is, for the ops that are one.
-fn single_form(op: OpKind) -> Option<Lanewise> {
-    Some(match op {
-        OpKind::Neg => Lanewise::Fneg,
-        OpKind::Abs => Lanewise::Fabs,
-        OpKind::Sqrt => Lanewise::Fsqrt,
-        OpKind::Floor => Lanewise::Frintm,
-        OpKind::Ceil => Lanewise::Frintp,
-        OpKind::Round => Lanewise::Frinta,
-        OpKind::TruncToInt => Lanewise::Fcvtzs,
-        OpKind::IntToFloat => Lanewise::Scvtf,
-        _ => return None,
-    })
-}
-
-/// The instruction a binary op is, and what a comparison adds to it: `Lt` and
-/// `Le` are `Fcmgt` and `Fcmge` with the operands swapped, and `Ne` is `Fcmeq`
-/// inverted.
-struct BinaryForm {
+/// The instruction a comparison is: `Lt` and `Le` are `Fcmgt` and `Fcmge`
+/// with the operands swapped, and `Ne` is `Fcmeq` inverted.
+struct CompareForm {
     op: Alu,
     swapped: bool,
     inverted: bool,
 }
 
-fn binary_form(op: OpKind) -> BinaryForm {
-    let plain = |op| BinaryForm {
+fn compare_form(op: CompareOp) -> CompareForm {
+    let plain = |op| CompareForm {
         op,
         swapped: false,
         inverted: false,
     };
     match op {
-        OpKind::Add => plain(Alu::Fadd),
-        OpKind::Sub => plain(Alu::Fsub),
-        OpKind::Mul => plain(Alu::Fmul),
-        OpKind::Div => plain(Alu::Fdiv),
-        OpKind::Min => plain(Alu::Fmin),
-        OpKind::Max => plain(Alu::Fmax),
-        OpKind::Gt => plain(Alu::Fcmgt),
-        OpKind::Ge => plain(Alu::Fcmge),
-        OpKind::Eq => plain(Alu::Fcmeq),
-        OpKind::Lt => BinaryForm {
+        CompareOp::Gt => plain(Alu::Fcmgt),
+        CompareOp::Ge => plain(Alu::Fcmge),
+        CompareOp::Eq => plain(Alu::Fcmeq),
+        CompareOp::Lt => CompareForm {
             swapped: true,
             ..plain(Alu::Fcmgt)
         },
-        OpKind::Le => BinaryForm {
+        CompareOp::Le => CompareForm {
             swapped: true,
             ..plain(Alu::Fcmge)
         },
-        OpKind::Ne => BinaryForm {
+        CompareOp::Ne => CompareForm {
             inverted: true,
             ..plain(Alu::Fcmeq)
         },
-        OpKind::IAdd => plain(Alu::AddI32),
-        OpKind::BitAnd => plain(Alu::And),
-        OpKind::BitOr => plain(Alu::Orr),
-        _ => unimplemented_op("aarch64", op),
     }
+}
+
+fn arithmetic_alu(op: BinaryOp) -> Alu {
+    match op {
+        BinaryOp::Add => Alu::Fadd,
+        BinaryOp::Sub => Alu::Fsub,
+        BinaryOp::Mul => Alu::Fmul,
+        BinaryOp::Div => Alu::Fdiv,
+        BinaryOp::Min => Alu::Fmin,
+        BinaryOp::Max => Alu::Fmax,
+        BinaryOp::IAdd => Alu::AddI32,
+        BinaryOp::BitAnd => Alu::And,
+        BinaryOp::BitOr => Alu::Orr,
+    }
+}
+
+/// A unary op: one instruction, or for the reciprocals the estimate and its
+/// Newton step.
+fn unary(b: &mut Builder<Neon>, op: UnaryOp, src: Value<Vector>) -> Value<Vector> {
+    let single = match op {
+        UnaryOp::Neg => Lanewise::Fneg,
+        UnaryOp::Abs => Lanewise::Fabs,
+        UnaryOp::Sqrt => Lanewise::Fsqrt,
+        UnaryOp::Floor => Lanewise::Frintm,
+        UnaryOp::Ceil => Lanewise::Frintp,
+        UnaryOp::Round => Lanewise::Frinta,
+        UnaryOp::TruncToInt => Lanewise::Fcvtzs,
+        UnaryOp::IntToFloat => Lanewise::Scvtf,
+        UnaryOp::Rsqrt => {
+            let estimate = lanewise(b, Lanewise::Frsqrte, src);
+            let squared = alu(b, Alu::Fmul, estimate, estimate);
+            let step = alu(b, Alu::Frsqrts, src, squared);
+            return alu(b, Alu::Fmul, estimate, step);
+        }
+        UnaryOp::Recip => {
+            let estimate = lanewise(b, Lanewise::Frecpe, src);
+            let step = alu(b, Alu::Frecps, src, estimate);
+            return alu(b, Alu::Fmul, estimate, step);
+        }
+    };
+    lanewise(b, single, src)
 }
 
 // =============================================================================
@@ -1074,27 +1089,14 @@ impl IsaBackend for Neon {
         Ok(match op {
             LaneOp::Const(value) => splat(b, value)?,
             LaneOp::Lanes => pooled(b, IOTA)?,
-            LaneOp::Unary(op, src) => match (single_form(op), op) {
-                (Some(op), _) => lanewise(b, op, src),
-                (None, OpKind::Rsqrt) => {
-                    let estimate = lanewise(b, Lanewise::Frsqrte, src);
-                    let squared = alu(b, Alu::Fmul, estimate, estimate);
-                    let step = alu(b, Alu::Frsqrts, src, squared);
-                    alu(b, Alu::Fmul, estimate, step)
-                }
-                (None, OpKind::Recip) => {
-                    let estimate = lanewise(b, Lanewise::Frecpe, src);
-                    let step = alu(b, Alu::Frecps, src, estimate);
-                    alu(b, Alu::Fmul, estimate, step)
-                }
-                (None, op) => unimplemented_op("aarch64", op),
-            },
-            LaneOp::Binary(op, a, c) => {
-                let BinaryForm {
+            LaneOp::Unary(op, src) => unary(b, op, src),
+            LaneOp::Binary(op, a, c) => alu(b, arithmetic_alu(op), a, c),
+            LaneOp::Compare(op, a, c) => {
+                let CompareForm {
                     op,
                     swapped,
                     inverted,
-                } = binary_form(op);
+                } = compare_form(op);
                 let (a, c) = match swapped {
                     true => (c, a),
                     false => (a, c),
@@ -1127,14 +1129,13 @@ impl IsaBackend for Neon {
                 result
             }
             // `ushr` cannot say 0, which is the identity.
-            LaneOp::Shift(OpKind::Shr, src, 0) => src,
-            LaneOp::Shift(OpKind::Shl, src, amount) => {
+            LaneOp::Shift(ShiftOp::Shr, src, 0) => src,
+            LaneOp::Shift(ShiftOp::Shl, src, amount) => {
                 define(b, |dst| Inst::Shl { dst, src, amount })
             }
-            LaneOp::Shift(OpKind::Shr, src, amount) => {
+            LaneOp::Shift(ShiftOp::Shr, src, amount) => {
                 define(b, |dst| Inst::Ushr { dst, src, amount })
             }
-            LaneOp::Shift(op, ..) => unimplemented_op("aarch64", op),
             // `ldr s, [block, #4·element]`, then spread.
             LaneOp::Uniform { base, element } => {
                 let addr = reach(b, base, element, S_BYTES)?;

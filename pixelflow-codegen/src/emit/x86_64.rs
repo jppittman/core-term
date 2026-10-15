@@ -18,11 +18,11 @@ use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
     LaneOp, Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName,
-    Vector, frame_bytes, slot_disp, unimplemented_op,
+    Vector, frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
+use crate::program::{BinaryOp, CompareOp, ShiftOp, UnaryOp};
 use alloc::vec::Vec;
-use pixelflow_ir::OpKind;
 
 // =============================================================================
 // The pointer class: an address between a general register and memory
@@ -712,23 +712,22 @@ pub(super) fn iota<B: X86>(b: &mut Builder<B>, packed: Value<Vector>) -> Value<V
 /// The one instruction a unary op is.
 pub(super) fn unary<B: X86>(
     b: &mut Builder<B>,
-    op: OpKind,
+    op: UnaryOp,
     src: Value<Vector>,
 ) -> Result<Value<Vector>, CompileError> {
     let lanewise = match op {
-        OpKind::Neg => return signed(b, Sign::Negate, src),
-        OpKind::Abs => return signed(b, Sign::Magnitude, src),
-        OpKind::Floor => return Ok(round(b, Rounding::Floor, src)),
-        OpKind::Ceil => return Ok(round(b, Rounding::Ceil, src)),
-        OpKind::Round => return Ok(round(b, Rounding::Nearest, src)),
-        OpKind::Sqrt => Lanewise::Sqrt,
-        OpKind::Rsqrt => Lanewise::Rsqrt,
-        OpKind::Recip => Lanewise::Recip,
+        UnaryOp::Neg => return signed(b, Sign::Negate, src),
+        UnaryOp::Abs => return signed(b, Sign::Magnitude, src),
+        UnaryOp::Floor => return Ok(round(b, Rounding::Floor, src)),
+        UnaryOp::Ceil => return Ok(round(b, Rounding::Ceil, src)),
+        UnaryOp::Round => return Ok(round(b, Rounding::Nearest, src)),
+        UnaryOp::Sqrt => Lanewise::Sqrt,
+        UnaryOp::Rsqrt => Lanewise::Rsqrt,
+        UnaryOp::Recip => Lanewise::Recip,
         // Int/float domain crossings, exactly the hardware's cvttps2dq /
         // cvtdq2ps — the primitives exp/log lower to.
-        OpKind::TruncToInt => Lanewise::ToInt,
-        OpKind::IntToFloat => Lanewise::FromInt,
-        _ => unimplemented_op("x86", op),
+        UnaryOp::TruncToInt => Lanewise::ToInt,
+        UnaryOp::IntToFloat => Lanewise::FromInt,
     };
     Ok(emit(b, |dst| Inst::Unary {
         op: lanewise,
@@ -761,39 +760,37 @@ fn signed<B: X86>(
     }))
 }
 
-impl Pred {
+impl From<CompareOp> for Pred {
     /// The `vcmpps` predicate of a comparison op.
-    pub(super) fn of(op: OpKind) -> Option<Self> {
-        Some(match op {
-            OpKind::Eq => Pred::Eq,
-            OpKind::Ne => Pred::Ne,
-            OpKind::Lt => Pred::Lt,
-            OpKind::Le => Pred::Le,
-            OpKind::Gt => Pred::Nle,
-            OpKind::Ge => Pred::Ge,
-            _ => return None,
-        })
+    fn from(op: CompareOp) -> Self {
+        match op {
+            CompareOp::Eq => Pred::Eq,
+            CompareOp::Ne => Pred::Ne,
+            CompareOp::Lt => Pred::Lt,
+            CompareOp::Le => Pred::Le,
+            CompareOp::Gt => Pred::Nle,
+            CompareOp::Ge => Pred::Ge,
+        }
     }
 }
 
-/// The vector ALU instruction of a non-comparison binary op.
+/// The vector ALU instruction of a binary op.
 pub(super) fn arithmetic<B: X86>(
     b: &mut Builder<B>,
-    op: OpKind,
+    op: BinaryOp,
     (a, c): (Value<Vector>, Value<Vector>),
 ) -> Value<Vector> {
     let op = match op {
-        OpKind::Add => Alu::Add,
-        OpKind::Sub => Alu::Sub,
-        OpKind::Mul => Alu::Mul,
-        OpKind::Div => Alu::Div,
-        OpKind::Min => Alu::Min,
-        OpKind::Max => Alu::Max,
-        OpKind::BitAnd => Alu::And,
-        OpKind::BitOr => Alu::Or,
+        BinaryOp::Add => Alu::Add,
+        BinaryOp::Sub => Alu::Sub,
+        BinaryOp::Mul => Alu::Mul,
+        BinaryOp::Div => Alu::Div,
+        BinaryOp::Min => Alu::Min,
+        BinaryOp::Max => Alu::Max,
+        BinaryOp::BitAnd => Alu::And,
+        BinaryOp::BitOr => Alu::Or,
         // Integer add on lane bit patterns (exp/log exponent arithmetic).
-        OpKind::IAdd => Alu::IAdd,
-        _ => unimplemented_op("x86", op),
+        BinaryOp::IAdd => Alu::IAdd,
     };
     emit(b, |dst| Inst::Alu { op, dst, a, b: c })
 }
@@ -813,14 +810,13 @@ pub(super) fn mul_add<B: X86>(
 /// `src` shifted by an immediate.
 pub(super) fn shift<B: X86>(
     b: &mut Builder<B>,
-    op: OpKind,
+    op: ShiftOp,
     src: Value<Vector>,
     amount: u8,
 ) -> Value<Vector> {
     let direction = match op {
-        OpKind::Shl => Direction::Left,
-        OpKind::Shr => Direction::Right,
-        _ => unimplemented_op("x86", op),
+        ShiftOp::Shl => Direction::Left,
+        ShiftOp::Shr => Direction::Right,
     };
     emit(b, |dst| Inst::Shift {
         direction,

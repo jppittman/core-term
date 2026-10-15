@@ -27,8 +27,6 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use pixelflow_ir::kind::OpKind;
-
 use crate::error::CompileError;
 use crate::pass::Pass;
 use crate::program::tree::Tree;
@@ -186,7 +184,7 @@ impl Ownership {
             };
 
             match &def.op {
-                ScheduledOp::Ternary(OpKind::If, mask, if_true, if_false) => {
+                ScheduledOp::If(mask, if_true, if_false) => {
                     let on_true = Region(me.regions.grow(here.0));
                     let on_false = Region(me.regions.grow(here.0));
                     // Pushed false arm first: the sweep meets the `If`s
@@ -238,10 +236,11 @@ impl Ownership {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::program::{Item, Layout, Nest};
+    use crate::program::{CompareOp, Item, Layout, Nest, UnaryOp};
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId};
     use pixelflow_ir::fold::{Binder, Fold, Monoid};
+    use pixelflow_ir::kind::OpKind;
     use pixelflow_ir::variance::Variance;
 
     /// A def whose variance is a placeholder, `CONST`: the analyses under
@@ -269,12 +268,7 @@ mod tests {
     fn if_of(value: u64, mask: u64, if_true: u64, if_false: u64) -> Def {
         def(
             value,
-            ScheduledOp::Ternary(
-                OpKind::If,
-                ValueId(mask),
-                ValueId(if_true),
-                ValueId(if_false),
-            ),
+            ScheduledOp::If(ValueId(mask), ValueId(if_true), ValueId(if_false)),
         )
     }
 
@@ -296,7 +290,7 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
+            def(2, ScheduledOp::Unary(UnaryOp::Rsqrt, ValueId(1))),
             if_of(3, 0, 2, 0),
         ];
         let own = Ownership::of(&schedule, &FoldReads::new());
@@ -315,9 +309,9 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
-            def(3, ScheduledOp::Unary(OpKind::Neg, ValueId(2))),
-            def(4, ScheduledOp::Unary(OpKind::Sqrt, ValueId(2))),
+            def(2, ScheduledOp::Unary(UnaryOp::Rsqrt, ValueId(1))),
+            def(3, ScheduledOp::Unary(UnaryOp::Neg, ValueId(2))),
+            def(4, ScheduledOp::Unary(UnaryOp::Sqrt, ValueId(2))),
             if_of(5, 0, 3, 4),
         ];
         let own = Ownership::of(&schedule, &FoldReads::new());
@@ -358,7 +352,7 @@ mod tests {
                 .find(|(schedule, _)| {
                     schedule
                         .iter()
-                        .any(|def| matches!(def.op, ScheduledOp::Ternary(OpKind::If, ..)))
+                        .any(|def| matches!(def.op, ScheduledOp::If(..)))
                 })
                 .expect("a scope holds the If");
             let mut arm_of = alloc::vec![None; schedule.len()];
@@ -379,7 +373,7 @@ mod tests {
                 .collect()
         };
         let reduce = |op: &ScheduledOp| matches!(op, ScheduledOp::Reduce(..));
-        let sqrt = |op: &ScheduledOp| matches!(op, ScheduledOp::Unary(OpKind::Sqrt, _));
+        let sqrt = |op: &ScheduledOp| matches!(op, ScheduledOp::Unary(UnaryOp::Sqrt, _));
 
         // `select(X < 8, R(F(X)), 0)`, `F` invariant in `R`'s binder: `F` is a
         // sibling of `R`, a root of the scope that opens both, and only `R`
@@ -416,7 +410,7 @@ mod tests {
         // `X`, told by being what the one comparison, the mask, compares.
         let compared: Vec<ValueId> = (placed_arm.iter())
             .filter_map(|(def, _)| match def.op {
-                ScheduledOp::Binary(OpKind::Lt, x, _) => Some(x),
+                ScheduledOp::Compare(CompareOp::Lt, x, _) => Some(x),
                 _ => None,
             })
             .collect();
@@ -454,10 +448,10 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
-            def(3, ScheduledOp::Unary(OpKind::Sqrt, ValueId(1))),
+            def(2, ScheduledOp::Unary(UnaryOp::Rsqrt, ValueId(1))),
+            def(3, ScheduledOp::Unary(UnaryOp::Sqrt, ValueId(1))),
             if_of(4, 0, 2, 3),
-            def(5, ScheduledOp::Unary(OpKind::Recip, ValueId(1))),
+            def(5, ScheduledOp::Unary(UnaryOp::Recip, ValueId(1))),
             if_of(6, 0, 4, 5),
         ];
         let own = Ownership::of(&schedule, &FoldReads::new());
@@ -481,9 +475,9 @@ mod tests {
         let ops = alloc::vec![
             var(0, 0),
             var(1, 1),
-            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
-            def(3, ScheduledOp::Unary(OpKind::Sqrt, ValueId(1))),
-            def(4, ScheduledOp::Unary(OpKind::Neg, ValueId(3))),
+            def(2, ScheduledOp::Unary(UnaryOp::Rsqrt, ValueId(1))),
+            def(3, ScheduledOp::Unary(UnaryOp::Sqrt, ValueId(1))),
+            def(4, ScheduledOp::Unary(UnaryOp::Neg, ValueId(3))),
             if_of(5, 0, 2, 4),
         ];
         // The same defs with the two arms' work interleaved the other way.

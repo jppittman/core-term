@@ -35,35 +35,11 @@
 //! value is stored right after its definition, which every path that reads it
 //! has run, and reloaded into a register the allocator chose for the reload.
 
-/// The one way a backend refuses an op.
-///
-/// Reaching this is never "the target cannot do that". [`pixelflow_ir::passes::legalize`]
-/// leaves only ops from the backend-legal set, and every backend owes an
-/// encoding for all of them — so arriving here means the pipeline was bypassed
-/// or this backend is incomplete. Both are bugs in the compiler rather than
-/// facts about the kernel, and neither is something a caller could act on: the
-/// only callers that ever saw the old `Err` immediately `.expect()`ed it.
-///
-/// So it panics, loudly and at the point of failure, naming the op and the
-/// backend that owes it. Development gets a stack trace pointing at the missing
-/// match arm instead of a `&'static str` surfacing three frames up.
-#[cold]
-#[inline(never)]
-fn unimplemented_op(backend: &str, op: impl core::fmt::Debug) -> ! {
-    panic!(
-        "{backend} has no encoding for {op:?} — `passes::legalize` leaves only \
-         backend-legal ops, so this is a missing implementation or a bypassed \
-         pipeline, not a bad kernel"
-    )
-}
-
 mod aarch64;
 mod asm;
 mod avx2;
 mod avx512;
 mod build;
-#[cfg(test)]
-mod coverage;
 mod encoded;
 mod executable;
 mod regalloc;
@@ -83,10 +59,8 @@ use encoded::EncodedInst;
 use regalloc::resource::{FrameSlot, In, InOut, Lease, Lent, Out, SlotName};
 use register_file::RegisterFile;
 
-use pixelflow_ir::kind::OpKind;
-
 use crate::pass::Pass;
-use crate::program::{Flow, IfArm, Scope, ScopedSchedule};
+use crate::program::{BinaryOp, CompareOp, Flow, IfArm, Scope, ScopedSchedule, ShiftOp, UnaryOp};
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -681,14 +655,16 @@ trait IsaBackend: Sized + 'static {
 }
 
 /// An operation producing one lane value, with its operands already lanes.
-/// Comparisons and `BitAnd`/`BitOr` are `Binary`: which file their result
-/// lives in is the backend's choice.
+/// Its ops are the closed set a program carries, so a backend's `match` over
+/// one is exhaustive. A `Compare`'s result and `BitAnd`/`BitOr`'s operands
+/// are masks: which file they live in is the backend's choice.
 enum LaneOp<B: IsaBackend> {
     Const(f32),
     /// `[0, 1, …, L−1]`.
     Lanes,
-    Unary(OpKind, B::Lane),
-    Binary(OpKind, B::Lane, B::Lane),
+    Unary(UnaryOp, B::Lane),
+    Binary(BinaryOp, B::Lane, B::Lane),
+    Compare(CompareOp, B::Lane, B::Lane),
     /// `a·b + c`: one rounding, every target.
     MulAdd(B::Lane, B::Lane, B::Lane),
     /// The `If`'s lane-varying path.
@@ -697,7 +673,7 @@ enum LaneOp<B: IsaBackend> {
         if_true: B::Lane,
         if_false: B::Lane,
     },
-    Shift(OpKind, B::Lane, u8),
+    Shift(ShiftOp, B::Lane, u8),
     /// `base[index]`, one element per lane.
     Gather {
         base: Value<Pointer>,
@@ -865,6 +841,7 @@ mod tests {
     use crate::program::{Layout, Nest, Own, ScheduledOp};
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId, UniformId};
+    use pixelflow_ir::kind::OpKind;
 
     /// `a` compiled for backend `B` on whatever host runs the test: the
     /// schedule at `B`'s own lane count, then the stages `compile` runs after it.
@@ -2602,19 +2579,6 @@ mod tests {
         }
     }
 
-    // =========================================================================
-    // Backend op-coverage completeness (docs/designs/2026-07-25-two-level-ir-
-    // and-backend-completeness.md)
-    // =========================================================================
-    //
-    // Turns "backend X silently doesn't support op Y" into a named, itemized
-    // test failure instead of a gap nobody notices until something happens to
-    // exercise it.
-    //
-    // Every backend compiles on every host — emission is a pure function
-    // into bytes — so the sweeps below run for all three from whichever
-    // machine runs the tests, and a gap in any of them fails every CI job by
-    // name rather than only the leg that happens to select that backend.
     mod uniforms {
         use super::*;
         use pixelflow_ir::arena::{UniformDecl, UniformIdentity};
@@ -2965,109 +2929,6 @@ mod tests {
                     "row {row}: {out:?}"
                 );
             }
-        }
-    }
-
-    mod backend_op_coverage {
-        use super::super::coverage::*;
-        use super::*;
-
-        /// Whether backend `B` compiles `arena`'s kernel.
-        ///
-        /// Every backend signals an op it cannot select the same way — by
-        /// panicking through [`unimplemented_op`], because after `legalize`
-        /// that is a missing implementation rather than a property of the
-        /// kernel. `catch_unwind` is what lets this test report *which* ops a
-        /// backend owes, by name and all of them, instead of dying on the
-        /// first one.
-        fn compiles<B: IsaBackend>(arena: &ExprArena, root: ExprId) -> bool {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                compile_for::<B>(arena, root, POINT).is_ok()
-            }))
-            .unwrap_or(false)
-        }
-
-        /// A kernel of one op over the coordinates, and a constant for a
-        /// shift's immediate amount.
-        fn kernel(
-            build: impl FnOnce(&mut ExprArena, ExprId, ExprId, ExprId) -> ExprId,
-        ) -> (ExprArena, ExprId) {
-            let mut a = ExprArena::new();
-            let (x, y) = (a.push_var(0), a.push_var(1));
-            let one = a.push_const(1.0);
-            let root = build(&mut a, x, y, one);
-            (a, root)
-        }
-
-        /// Sweep the required unary/binary/shift op lists plus the two
-        /// ternary ops (`MulAdd`, `If`) against `B`, collecting every failure
-        /// instead of stopping at the first one — a completeness gap is much
-        /// cheaper to fix as an itemized list than rediscovered one `cargo
-        /// test` run per missing op.
-        fn assert_covers_required_ops<B: IsaBackend>(backend_name: &str) {
-            debug_assert_eq!(REQUIRED_TERNARY_OPS, &[OpKind::MulAdd, OpKind::If]);
-            let mut missing = alloc::vec::Vec::new();
-            let mut check = |what: alloc::string::String, (a, root): (ExprArena, ExprId)| {
-                if !compiles::<B>(&a, root) {
-                    missing.push(what);
-                }
-            };
-
-            for &op in REQUIRED_UNARY_OPS {
-                check(
-                    alloc::format!("unary {op:?}"),
-                    kernel(|a, x, _, _| a.push_unary(op, x)),
-                );
-            }
-            for &op in REQUIRED_BINARY_OPS {
-                check(
-                    alloc::format!("binary {op:?}"),
-                    kernel(|a, x, y, _| a.push_binary(op, x, y)),
-                );
-            }
-            for &op in REQUIRED_SHIFT_OPS {
-                check(
-                    alloc::format!("shift {op:?}"),
-                    kernel(|a, x, _, one| a.push_binary(op, x, one)),
-                );
-            }
-            check(
-                alloc::string::String::from("ternary MulAdd"),
-                kernel(|a, x, y, one| a.push_ternary(OpKind::MulAdd, x, y, one)),
-            );
-            check(
-                alloc::string::String::from("ternary If"),
-                kernel(|a, x, y, one| {
-                    let mask = a.push_binary(OpKind::Lt, x, one);
-                    a.push_ternary(OpKind::If, mask, x, y)
-                }),
-            );
-
-            assert!(
-                missing.is_empty(),
-                "{backend_name} is missing required ops: {missing:?} (see \
-                 pixelflow-codegen/src/emit/coverage.rs for the full \
-                 completeness contract)"
-            );
-        }
-
-        // Ungated, like every sweep below it: these only *encode* — bytes
-        // into a Vec, never executed — and every backend now compiles on
-        // every host, so a coverage gap in any of the three fails every CI
-        // job rather than only the one leg that happens to select it.
-        #[test]
-        fn avx2_backend_covers_required_ops() {
-            assert_covers_required_ops::<avx2::Avx2>("Avx2");
-        }
-
-        #[test]
-        fn avx512_backend_covers_required_ops() {
-            assert_covers_required_ops::<avx512::Avx512>("Avx512");
-        }
-
-        #[test]
-        fn aarch64_backend_covers_required_ops() {
-            assert_covers_required_ops::<aarch64::Neon>("Neon");
         }
     }
 }

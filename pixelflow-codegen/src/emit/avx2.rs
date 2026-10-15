@@ -202,10 +202,15 @@ impl X86 for Avx2 {
             LaneOp::Unary(op, src) => x86_64::unary(b, op, src)?,
             // A comparison is an ordinary all-ones/all-zeros vector directly
             // (no k-register step, unlike AVX-512).
-            LaneOp::Binary(op, a, c) => match Pred::of(op) {
-                Some(pred) => emit(b, |dst| Inst::Extra(Extra::Cmp { pred, dst, a, b: c })),
-                None => x86_64::arithmetic(b, op, (a, c)),
-            },
+            LaneOp::Binary(op, a, c) => x86_64::arithmetic(b, op, (a, c)),
+            LaneOp::Compare(op, a, c) => emit(b, |dst| {
+                Inst::Extra(Extra::Cmp {
+                    pred: op.into(),
+                    dst,
+                    a,
+                    b: c,
+                })
+            }),
             LaneOp::MulAdd(x, y, addend) => x86_64::mul_add(b, (x, y), addend),
             // `cond ? if_true : if_false`, bit by bit.
             LaneOp::Blend {
