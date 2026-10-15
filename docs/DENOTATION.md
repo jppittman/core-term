@@ -161,14 +161,17 @@ d(⊕_i f) = ⊕_i d(f)            for ⊕ = Σ only (linearity)
 - **A fold costs `len · cost(body) + (len − 1) · cost(⊕)`**, and its size for
   budgeting is the same product. This is totality cashed out: the number the
   type carries is the number the cost model multiplies.
-- **An integral is a fold.** There is no integral in the IR, the e-graph or
-  `kernel!` (deleted 2026-09-29). Where a quantity is an integral, the
+- **An integral is a fold over a continuous domain**, `∫_{[lo,hi)} body du`,
+  the same binder under the length measure instead of the counting measure.
+  It is **deferred, not refused**: the IR, the e-graph and `kernel!` carry no
+  integral today (deleted 2026-09-29; JP: "I liked the integral, it was just
+  hard and I didn't need it yet"), and where a quantity is an integral the
   closed form is written down and summed: glyph coverage is
   `min(|Σ_p σ_p·A_p|, 1)` over a set of monotone arcs, each piece's area
-  `A_p` in closed form, every term zero outside its piece's box. "A closed
-  form is a formula to write down, not a derivation to rediscover under a
-  saturation budget." Every range is constant: no indefinite integral, no
-  data-dependent bound, no accumulation from one pixel into the next.
+  `A_p` in closed form, every term zero outside its piece's box. When the
+  binder returns it returns with the fold's laws: every range constant, no
+  indefinite integral, no data-dependent bound, no accumulation from one
+  pixel into the next, and `at` never touching a bound index.
 - **A matrix is a discrete kernel, and a linear operator is a kernel of
   kernels.** `M : Lattice(n, m) → Real`. An operator on kernels with kernel
   `k` is `λf. λj. Σ_i k(j, i)·f(i)`: a fold of a product of two
@@ -177,10 +180,11 @@ d(⊕_i f) = ⊕_i d(f)            for ⊕ = Σ only (linearity)
   Whether the schedule turns a contraction into a blocked GEMM is a
   factorization of its domain (§7); the language has no `matmul` and never
   will. JP, 2026-10-15: "Matmul is an implementation detail and we're a pull
-  renderer." An inner product on a continuous domain would be an integral,
-  which the IR does not have; so the Hilbert space on offer is the one on
+  renderer." An inner product on a continuous domain is an integral, which the
+  IR does not carry yet; so the Hilbert space on offer today is the one on
   discrete kernels (sums) and on bases whose inner product has a closed form
-  (the spherical-harmonic feature maps in `pixelflow-ml`).
+  (the spherical-harmonic feature maps in `pixelflow-ml`), and the
+  continuous one arrives with the integral.
 
 Decided in: `plans/2026-09-09-a-fold-is-a-node.md`,
 `plans/2026-09-10-a-surviving-reduce-is-a-loop.md`,
@@ -502,7 +506,7 @@ Each of these was once a thing here. The date is when it stopped.
 | a second shape of `If`, `Guard`, a domain split, mispredict or coherence pricing | one shape, averaged cost | 2026-10-05, 2026-10-15 |
 | demand, placement that reads demand, park | ownership and the one placement rule | 2026-10-15 |
 | a scalar value distinct from a kernel | `λ_. c` | 2026-10-15 |
-| an integral, `area`, `Fold::Interval`, quadrature | a fold of a closed form | 2026-09-29 |
+| `area`, `Fold::Interval`, quadrature (the integral is deferred, not refused) | a fold of a closed form, until the continuous binder returns | 2026-09-29 |
 | a bespoke unrolling pass (`ExpandReduce`), unrolling at construction | extraction's choice | 2026-10-03 |
 | `iterate[N]`, `Fix`, `while`, recursion, `mut` | nothing: totality | 2026-07 |
 | a per-batch or per-point entry, an interpreter, `eval_scalar` | compile at a shape and collapse | 2026-09-06 |

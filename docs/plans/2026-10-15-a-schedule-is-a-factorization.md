@@ -132,12 +132,13 @@ place the schedule and the algorithm touch, and it is already where the
 language puts it: extraction decides the fold's shape by cost (DENOTATION
 §3), and the backend schedules whatever survives.
 
-The Hilbert-space part has one honest limit. An inner product `⟨f, g⟩` on a
-continuous domain is an integral, and the IR has none (deleted 2026-09-29,
-and not coming back). So the inner products available are sums over
-discrete kernels, which is the above, and closed forms over bases whose
-inner product is known analytically, which is what `pixelflow-ml`'s
-spherical-harmonic feature maps are. "ML on kernels" is then: a feature is
+The Hilbert-space part has one honest limit today. An inner product
+`⟨f, g⟩` on a continuous domain is an integral, and the IR carries none yet
+(deleted 2026-09-29 as not needed yet; it is the same binder under the
+length measure and is expected back, DENOTATION §3). So the inner products
+available now are sums over discrete kernels, which is the above, and closed
+forms over bases whose inner product is known analytically, which is what
+`pixelflow-ml`'s spherical-harmonic feature maps are. "ML on kernels" is then: a feature is
 a discrete kernel, a linear operator is a kernel of kernels, and the
 backend's factorization of its domain is the only sense in which a matmul
 exists.
