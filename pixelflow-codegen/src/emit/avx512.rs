@@ -23,23 +23,18 @@
 //! Spills use a real stack frame (a `zmm` is 64 bytes — far past the 128-byte
 //! red zone).
 
-use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller};
+use super::build::{Builder, Spiller};
 use super::regalloc::resource::FrameSlot;
-use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::x86_64;
 use super::x86_64::{
-    Alu, Direction, Evex, EvexPrefix, GENERAL, Imm32, Lanewise, Mem, NoDisp, Pred, Rounding, Vex,
-    X86,
+    Direction, Evex, EvexPrefix, Imm32, Lanewise, Mem, NoDisp, Pred, Sign, Vex, X86, emit,
 };
 use super::{
-    Bound, Class, ClassId, Edges, EncodedInst, Flags, Integer, IsaBackend, Label, LaneOp, Opmask,
-    Pointer, Rebind, Selected, Stage, Store, Target, Test, Value, ValueName, Vector, slot_disp,
-    unimplemented_op,
+    Bound, ClassId, Edges, EncodedInst, Flags, Integer, LaneOp, Opmask, Pointer, Rebind, Selected,
+    Stage, Store, Test, Value, ValueName, Vector, slot_disp,
 };
 use crate::error::CompileError;
 use crate::program::IfArm;
-use alloc::vec::Vec;
 use pixelflow_ir::OpKind;
 
 /// `vpternlogd`'s truth table for `A ? B : C` per bit, with `A` the
@@ -173,94 +168,9 @@ const K0: u8 = 0;
 /// `vpternlogd`'s truth table for all-ones.
 const TERNLOG_ONES: u8 = 0xFF;
 
-// =============================================================================
-// The store, and the iota
-// =============================================================================
-
 /// The bytes `0..8` and `8..16`, little end first: what two `movabs` carry
 /// in for `vpmovzxbd` to widen into the iota.
 const IOTA_BYTES: [u64; 2] = [0x0706_0504_0302_0100, 0x0F0E_0D0C_0B0A_0908];
-
-// =============================================================================
-// Masks & `If` — a mask is a bit per lane in the opmask file ([`Lane`]), or,
-// where an instruction has no `k` form, an ordinary vector (all-ones /
-// all-zeros lanes) in the zmm file, exactly like NEON. It flows through the
-// allocator as a normal value.
-// =============================================================================
-
-/// Map a comparison `OpKind` to its `vcmpps` predicate.
-fn cmp_pred(op: OpKind) -> Option<Pred> {
-    Some(match op {
-        OpKind::Eq => Pred::Eq,
-        OpKind::Ne => Pred::Ne,
-        OpKind::Lt => Pred::Lt,
-        OpKind::Le => Pred::Le,
-        OpKind::Gt => Pred::Nle,
-        OpKind::Ge => Pred::Ge,
-        _ => return None,
-    })
-}
-
-/// The vector ALU instruction of a non-comparison binary op.
-fn alu(op: OpKind) -> Alu {
-    match op {
-        OpKind::Add => Alu::Add,
-        OpKind::Sub => Alu::Sub,
-        OpKind::Mul => Alu::Mul,
-        OpKind::Div => Alu::Div,
-        OpKind::Min => Alu::Min,
-        OpKind::Max => Alu::Max,
-        OpKind::BitAnd => Alu::And,
-        OpKind::BitOr => Alu::Or,
-        // Integer add on lane bit patterns (exp/log exponent arithmetic).
-        OpKind::IAdd => Alu::IAdd,
-        _ => unimplemented_op("avx-512", op),
-    }
-}
-
-fn shift_direction(op: OpKind) -> Direction {
-    match op {
-        OpKind::Shl => Direction::Left,
-        OpKind::Shr => Direction::Right,
-        _ => unimplemented_op("avx-512", op),
-    }
-}
-
-/// The one instruction a unary op is.
-enum UnaryForm {
-    Lanewise(Lanewise),
-    Round(Rounding),
-    /// `Neg` and `Abs` xor or and the sign bit, which is a constant to hold in
-    /// a register first: all-ones shifted by `shift`.
-    Signed {
-        op: Alu,
-        shift: (Direction, u8),
-    },
-}
-
-fn unary_form(op: OpKind) -> UnaryForm {
-    match op {
-        OpKind::Sqrt => UnaryForm::Lanewise(Lanewise::Sqrt),
-        OpKind::Neg => UnaryForm::Signed {
-            op: Alu::Xor,
-            shift: (Direction::Left, 31),
-        },
-        OpKind::Abs => UnaryForm::Signed {
-            op: Alu::And,
-            shift: (Direction::Right, 1),
-        },
-        OpKind::Floor => UnaryForm::Round(Rounding::Floor),
-        OpKind::Ceil => UnaryForm::Round(Rounding::Ceil),
-        OpKind::Round => UnaryForm::Round(Rounding::Nearest),
-        OpKind::Recip => UnaryForm::Lanewise(Lanewise::Recip),
-        OpKind::Rsqrt => UnaryForm::Lanewise(Lanewise::Rsqrt),
-        // Int/float domain crossings, exactly the hardware's cvttps2dq /
-        // cvtdq2ps — the primitives exp/log lower to.
-        OpKind::TruncToInt => UnaryForm::Lanewise(Lanewise::ToInt),
-        OpKind::IntToFloat => UnaryForm::Lanewise(Lanewise::FromInt),
-        _ => unimplemented_op("avx-512", op),
-    }
-}
 
 // =============================================================================
 // Selection
@@ -291,53 +201,44 @@ impl Lane {
     }
 }
 
-/// Define a value of class `C` with `make`, which builds the instruction that
-/// writes it.
-fn emit<C: Class>(
-    b: &mut Builder<Avx512>,
-    make: impl FnOnce(Def<C>) -> Inst<Selected>,
-) -> Value<C> {
-    let dst = b.def();
-    let value = dst.value();
-    b.push(Op::Vector(make(dst)));
-    value
-}
-
-/// `value` splatted: the zero and all-ones idioms, else one pool entry.
-fn constant(b: &mut Builder<Avx512>, value: f32) -> Result<Value<Vector>, CompileError> {
-    Ok(match value.to_bits() {
-        0 => emit(b, |dst| Inst::Zero { dst }),
-        u32::MAX => emit(b, |dst| Inst::Ones { dst }),
-        bits => {
-            let at = b.constant(bits)?.label;
-            emit(b, |dst| Inst::LoadConst { dst, at })
-        }
-    })
-}
-
-/// The sign bit, or all that is below it, as a shift of all-ones: two
-/// instructions and no read of the pool, where a loop would read it every trip.
-fn sign_mask(b: &mut Builder<Avx512>, (direction, amount): (Direction, u8)) -> Value<Vector> {
-    let ones = emit(b, |dst| Inst::Ones { dst });
-    emit(b, |dst| Inst::Shift {
-        direction,
-        dst,
-        src: ones,
-        amount,
-    })
-}
-
 impl X86 for Avx512 {
     type Prefix = EvexPrefix;
     type Extra<S: Stage> = Extra<S>;
+    type Held = Lane;
 
-    fn general(inst: x86_64::Gp<Selected>) -> Op<Selected> {
-        Op::General(inst)
-    }
+    // All thirty-two `zmm`. `k0` is not an opmask member: an EVEX `aaa` of 0
+    // means "no mask".
+    const VECTORS: &'static [u8] = &[
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31,
+    ];
+    const OPMASKS: &'static [u8] = &[1, 2, 3, 4, 5, 6, 7];
+    const VECTOR_BYTES: u64 = 64;
 
     /// `vpternlogd dst, dst, dst, 0xFF`
     fn ones(dst: u8) -> EncodedInst {
         Evex::m0f3a_66(0x25).imm(TERNLOG_ONES).rrr(dst, dst, dst)
+    }
+
+    /// All-ones shifted by the amount that leaves the sign bit, or all that is
+    /// below it: two instructions and no read of the pool, where a loop would
+    /// read it every trip.
+    fn sign_mask(b: &mut Builder<Self>, sign: Sign) -> Result<Value<Vector>, CompileError> {
+        let (direction, amount) = match sign {
+            Sign::Negate => (Direction::Left, 31),
+            Sign::Magnitude => (Direction::Right, 1),
+        };
+        let ones = emit(b, |dst| Inst::Ones { dst });
+        Ok(emit(b, |dst| Inst::Shift {
+            direction,
+            dst,
+            src: ones,
+            amount,
+        }))
+    }
+
+    fn rematerializable_extra(extra: &Extra<Selected>) -> bool {
+        matches!(extra, Extra::KOnes { .. })
     }
 
     fn walk_extra<To: Stage>(extra: &Extra<Selected>, f: &mut impl Rebind<To>) -> Extra<To> {
@@ -508,39 +409,10 @@ impl X86 for Avx512 {
             }
         }
     }
-}
-
-impl IsaBackend for Avx512 {
-    type Inst<S: Stage> = Op<S>;
-    type Constant = u32;
-    type Anchors = ();
-    type Lane = Lane;
-
-    // SysV has no callee-saved vector registers and the collapse ABI passes
-    // no vector, so all thirty-two `zmm` are the allocator's. `k0` is not a
-    // member: an EVEX `aaa` of 0 means "no mask".
-    const FILE: RegisterFile = RegisterFile::new(
-        Members {
-            vector: &[
-                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                23, 24, 25, 26, 27, 28, 29, 30, 31,
-            ],
-            general: GENERAL,
-            opmask: &[1, 2, 3, 4, 5, 6, 7],
-            flags: &[0],
-        },
-        EntryRegisters {
-            ctx: x86_64::gpr::RDI,
-            out: x86_64::gpr::RSI,
-            pitch: x86_64::gpr::RDX,
-        },
-        64,
-    );
-    const POOL_REACH: u64 = i32::MAX as u64 / 4;
 
     fn lane(b: &mut Builder<Self>, op: LaneOp<Self>) -> Result<Lane, CompileError> {
         Ok(match op {
-            LaneOp::Const(value) => Lane::Vector(constant(b, value)?),
+            LaneOp::Const(value) => Lane::Vector(x86_64::constant(b, value)?),
             // The bytes `0..16` in through two general registers, widened to
             // dwords, converted.
             LaneOp::Lanes => {
@@ -554,32 +426,11 @@ impl IsaBackend for Avx512 {
                     dst: joined,
                     src: high,
                 })));
-                let widened = emit(b, |dst| Inst::Unary {
-                    op: Lanewise::WidenBytes,
-                    dst,
-                    src: halves,
-                });
-                Lane::Vector(emit(b, |dst| Inst::Unary {
-                    op: Lanewise::FromInt,
-                    dst,
-                    src: widened,
-                }))
+                Lane::Vector(x86_64::iota(b, halves))
             }
             LaneOp::Unary(op, src) => {
                 let src = src.vector(b);
-                Lane::Vector(match unary_form(op) {
-                    UnaryForm::Lanewise(op) => emit(b, |dst| Inst::Unary { op, dst, src }),
-                    UnaryForm::Round(mode) => emit(b, |dst| Inst::Round { mode, dst, src }),
-                    UnaryForm::Signed { op, shift } => {
-                        let mask = sign_mask(b, shift);
-                        emit(b, |dst| Inst::Alu {
-                            op,
-                            dst,
-                            a: src,
-                            b: mask,
-                        })
-                    }
-                })
+                Lane::Vector(x86_64::unary(b, op, src)?)
             }
             LaneOp::Binary(op, a, c) => match (KOp::of(op), a, c) {
                 (Some(op), Lane::Opmask(x), Lane::Opmask(y)) => Lane::Opmask(emit(b, |dst| {
@@ -592,25 +443,17 @@ impl IsaBackend for Avx512 {
                 })),
                 _ => {
                     let (a, c) = (a.vector(b), c.vector(b));
-                    match cmp_pred(op) {
+                    match Pred::of(op) {
                         Some(pred) => Lane::Opmask(emit(b, |dst| {
                             Inst::Extra(Extra::CmpK { pred, dst, a, b: c })
                         })),
-                        None => Lane::Vector(emit(b, |dst| Inst::Alu {
-                            op: alu(op),
-                            dst,
-                            a,
-                            b: c,
-                        })),
+                        None => Lane::Vector(x86_64::arithmetic(b, op, (a, c))),
                     }
                 }
             },
             LaneOp::MulAdd(x, y, addend) => {
                 let (x, y, addend) = (x.vector(b), y.vector(b), addend.vector(b));
-                let acc = b.tie(addend);
-                let result = acc.write();
-                b.push(Op::Vector(Inst::Fma231 { acc, a: x, b: y }));
-                Lane::Vector(result)
+                Lane::Vector(x86_64::mul_add(b, (x, y), addend))
             }
             // `cond ? if_true : if_false`: `vblendmps` under a mask register,
             // else `vpternlogd` bit by bit.
@@ -643,21 +486,9 @@ impl IsaBackend for Avx512 {
             }
             LaneOp::Shift(op, src, amount) => {
                 let src = src.vector(b);
-                Lane::Vector(emit(b, |dst| Inst::Shift {
-                    direction: shift_direction(op),
-                    dst,
-                    src,
-                    amount,
-                }))
+                Lane::Vector(x86_64::shift(b, op, src, amount))
             }
-            // `vbroadcastss dst, [block + 4·element]`.
-            LaneOp::Uniform { base, element } => {
-                let disp = x86_64::displacement(element, x86_64::F32_BYTES)?;
-                Lane::Vector(emit(b, |dst| Inst::Broadcast {
-                    dst,
-                    src: Mem { base, disp },
-                }))
-            }
+            LaneOp::Uniform { base, element } => Lane::Vector(x86_64::uniform(b, base, element)?),
             // `vgatherdps` under an all-ones mask: the indices are floats, so
             // they are truncated first, and the instruction clears the mask
             // as it completes lanes.
@@ -679,12 +510,9 @@ impl IsaBackend for Avx512 {
                 })));
                 Lane::Vector(gathered)
             }
-            // One element, the same in every lane: the index is lane 0,
-            // truncated.
             LaneOp::Broadcast { base, index } => {
                 let index = index.vector(b);
-                let index = emit(b, |dst| Inst::Cvtt { dst, src: index });
-                Lane::Vector(emit(b, |dst| Inst::BroadcastIndexed { dst, base, index }))
+                Lane::Vector(x86_64::broadcast(b, base, index))
             }
         })
     }
@@ -700,17 +528,8 @@ impl IsaBackend for Avx512 {
         Lane::Vector(param.typed())
     }
 
-    fn context(
-        b: &mut Builder<Self>,
-        ctx: Value<Pointer>,
-        slot: u64,
-    ) -> Result<Value<Pointer>, CompileError> {
-        x86_64::context(b, ctx, slot)
-    }
-
-    /// `out + 4·(row·pitch + col)`: each index is lane 0 of its binder,
-    /// truncated. A full batch is one `vmovups`; a remainder is the same
-    /// store under a writemask of its lanes.
+    /// A full batch is one `vmovups`; a remainder is the same store under a
+    /// writemask of its lanes.
     fn store(b: &mut Builder<Self>, store: Store<Self>) {
         let Store {
             out,
@@ -721,11 +540,9 @@ impl IsaBackend for Avx512 {
             lanes,
         } = store;
         let (row, col, value) = (row.vector(b), col.vector(b), value.vector(b));
-        let row = emit(b, |dst| Inst::Cvtt { dst, src: row });
-        let col = emit(b, |dst| Inst::Cvtt { dst, src: col });
         let base = x86_64::element_address(b, out, pitch, (row, col));
         let dst = Mem { base, disp: NoDisp };
-        if u64::from(lanes) == Self::FILE.vector_bytes() / 4 {
+        if u64::from(lanes) == Self::VECTOR_BYTES / 4 {
             b.push(Op::Vector(Inst::StoreBatch { dst, src: value }));
             return;
         }
@@ -764,96 +581,37 @@ impl IsaBackend for Avx512 {
         x86_64::branch(b, cond, tested, edges);
     }
 
-    fn jump(b: &mut Builder<Self>, to: Target, next: Label) {
-        x86_64::jump(b, to, next);
-    }
-
-    fn enter(b: &mut Builder<Self>) {
-        x86_64::enter(b);
-    }
-
-    fn ret(b: &mut Builder<Self>) {
-        x86_64::ret(b);
-    }
-
-    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+    fn copy_other(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
         match src.class {
-            ClassId::Vector => b.define::<Vector>(|dst| {
-                Op::Vector(Inst::Mov {
-                    dst,
-                    src: src.typed(),
-                })
-            }),
             ClassId::Opmask => b.define::<Opmask>(|dst| {
                 Op::Vector(Inst::Extra(Extra::KMov {
                     dst,
                     src: src.typed(),
                 }))
             }),
-            ClassId::Pointer | ClassId::Integer => x86_64::copy_general(b, src),
-            ClassId::Flags => unreachable!("the flags are not copied"),
+            class => unreachable!("{class:?} is not copied"),
         }
     }
 
-    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
+    fn spill_other(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
         match src.class {
-            ClassId::Vector => b.push(Op::Vector(Inst::SpillVector {
-                src: src.typed(),
-                slot: slot.name(),
-            })),
             ClassId::Opmask => b.push(Op::Vector(Inst::Extra(Extra::SpillMask {
                 src: src.typed(),
                 slot: slot.name(),
             }))),
-            ClassId::Pointer | ClassId::Integer => x86_64::spill_general(b, src, slot),
-            ClassId::Flags => unreachable!("the flags are not spilled"),
+            class => unreachable!("{class:?} is not spilled"),
         }
     }
 
-    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
+    fn reload_other(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
         match class {
-            ClassId::Vector => b.define::<Vector>(|dst| {
-                Op::Vector(Inst::ReloadVector {
-                    dst,
-                    slot: slot.name(),
-                })
-            }),
             ClassId::Opmask => b.define::<Opmask>(|dst| {
                 Op::Vector(Inst::Extra(Extra::ReloadMask {
                     dst,
                     slot: slot.name(),
                 }))
             }),
-            ClassId::Pointer | ClassId::Integer => x86_64::reload_general(b, class, slot),
-            ClassId::Flags => unreachable!("the flags are not reloaded"),
+            class => unreachable!("{class:?} is not reloaded"),
         }
-    }
-
-    fn rematerializable(inst: &Op<Selected>) -> bool {
-        matches!(
-            inst,
-            Op::Vector(
-                Inst::LoadConst { .. }
-                    | Inst::Zero { .. }
-                    | Inst::Ones { .. }
-                    | Inst::Extra(Extra::KOnes { .. })
-            )
-        )
-    }
-
-    fn reads_pool<S: Stage>(inst: &Op<S>) -> bool {
-        matches!(inst, Op::Vector(Inst::LoadConst { .. }))
-    }
-
-    fn walk<T: Stage>(inst: &Op<Selected>, f: &mut impl Rebind<T>) -> Op<T> {
-        inst.walk(f)
-    }
-
-    fn encode(inst: &Op<Bound<'_, Self>>, out: &mut Encoding<'_>) {
-        inst.assemble(out);
-    }
-
-    fn constant_bytes(constant: u32) -> Vec<u8> {
-        constant.to_le_bytes().to_vec()
     }
 }
