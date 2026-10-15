@@ -28,6 +28,12 @@ preserves a value from its definition to every read.
   contain.
 - No knowledge of what a value means. It sees classes, lives and
   constraints, never an `OpKind`, a mask's domain or a lattice.
+- No register is guessed behind the scan. A store placed after a definition
+  names the stored value's register and, for a slot past the store's reach,
+  one the allocator's own record of that point says was lent to nothing
+  (`Life::free_general`, `Scan::free_general_at_entry`) — never one picked
+  for having gone unused so far (JP, 2026-10-15: "ask the allocator for a
+  register, or don't have one").
 - Never silent: running out of frame is `Err(BudgetExceeded)`; failing to
   find a register for a value is a panic naming the instruction, a selection
   bug, never a fact about a kernel. It never picks a register outside its
@@ -54,8 +60,6 @@ preserves a value from its definition to every read.
   `residency.rs`, `loops.rs`; `docs/process/2026-10-13-tests-check-the-as-if-contract.md`).
 
 ## Behind
-- `unused_general` picks a general register by number inside the allocator
-  itself; one raw choice left (regalloc plan v2, S2, JP decision pending).
 - An encoder's register field takes a bare `u8` from `Reg::number`, so the
   header's promise is one step weaker than it reads (S3).
 - Nothing in CI checks the ABI's callee-saved registers (S1).
