@@ -200,9 +200,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// identity), so a term *around* units shares a saturation only with a term
 /// around the same units. The units themselves are keyed like any term.
 ///
-/// [`saturation_count`] counts the saturations this process has run, for a
-/// test that wants to assert the second shape did not pay one.
-///
 /// # Saturation telemetry
 ///
 /// With `--features saturation-telemetry`, one record per *saturation* —
@@ -229,17 +226,6 @@ fn optimize_runtime_arena_uncached(
 ) -> Option<(ExprArena, ExprId)> {
     Program::of(arena, root).optimize(Run::new(shape, saturate_fresh))
 }
-
-/// How many terms this process has saturated.
-///
-/// The cache's own measure, for a test: a second shape, or a second
-/// composition, of a structure already saturated leaves it unchanged.
-#[must_use]
-pub fn saturation_count() -> usize {
-    SATURATIONS.load(Ordering::Relaxed)
-}
-
-static SATURATIONS: AtomicUsize = AtomicUsize::new(0);
 
 // ──────────────────────────────── the unit walk ──────────────────────────────
 
@@ -734,7 +720,6 @@ fn saturate(
     #[cfg(feature = "saturation-telemetry")]
     let started = std::time::Instant::now();
     let stats = optimizer.saturate_term(&mut egraph);
-    SATURATIONS.fetch_add(1, Ordering::Relaxed);
 
     Ok(Saturated {
         frozen: Frozen::new(egraph.into_graph(), root_class),
@@ -932,11 +917,10 @@ mod tests {
     }
 
     /// One structure, two compositions: fresh buffer identities, and a
-    /// uniform with a different default in each. The second saturates
-    /// nothing (the count is process-global, so `one_compile_per_shape`
-    /// asserts it alone in its own binary) and gets the term back in its
-    /// *own* names — its identities, its slot order, its default — never the
-    /// first composition's, whose names are what the shared graph carries.
+    /// uniform with a different default in each. The second gets the term
+    /// back in its *own* names — its identities, its slot order, its default —
+    /// never the first composition's, whose names are what the shared graph
+    /// carries.
     #[test]
     fn a_second_composition_of_one_structure_keeps_its_own_names() {
         use pixelflow_ir::arena::{BufferIdentity, UniformIdentity};

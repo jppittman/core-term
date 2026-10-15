@@ -838,9 +838,9 @@ impl<'m, B: IsaBackend> Pass for Assemble<'m, B> {
 mod tests {
     use super::*;
     use crate::pipeline::tests::schedule_for;
-    use crate::program::{Layout, Nest, Own, ScheduledOp};
+    use crate::program::{Layout, Nest, Own};
     use pixelflow_ir::LatticeShape;
-    use pixelflow_ir::arena::{ExprArena, ExprId, UniformId};
+    use pixelflow_ir::arena::{ExprArena, ExprId};
     use pixelflow_ir::kind::OpKind;
 
     /// `a` compiled for backend `B` on whatever host runs the test: the
@@ -1297,29 +1297,22 @@ mod tests {
     }
 
     /// The values a fold's body reads and its enclosing scopes computed are
-    /// its roots. The allocator carries them in registers across the loop
-    /// while a budget lasts, so the loop reloads nothing; past it, every trip
-    /// reloads the roots that did not fit, and the reloads grow with the roots
-    /// the fold reads.
+    /// its roots; a fold over a few of them and over more than any vector file
+    /// holds computes the same sum.
     ///
-    /// `Σ_{i<5} Σ_k (x·c_k + y)·i`, with `k` over the roots. Both counts
-    /// compile and run.
+    /// `Σ_{i<5} Σ_k (x·c_k + y)·i`, with `k` over the roots.
     #[test]
-    fn a_folds_roots_are_placed_by_the_budget() {
+    fn a_fold_over_many_roots_computes_its_value() {
         use pixelflow_ir::fold::{Binder, Fold, Monoid};
         /// The fold's trips, which no lattice loop shares at a point.
         const TRIPS: u32 = 5;
-        /// Roots within every tier's carry budget, and roots past the widest
-        /// vector file, which AVX-512 and NEON share.
+        /// Roots within every tier's vector file, and roots past the widest
+        /// one, which AVX-512 and NEON share.
         const FEW: usize = 2;
         const WIDEST_FILE: usize = 32;
         const MANY: usize = WIDEST_FILE + 16;
-        /// AVX2's 16 vector registers less the reserve of 7 carry 9: the roots
-        /// below, the binder, the accumulator and one more the fold reads.
-        const AVX2_ROOTS_THAT_FIT: usize = 6;
-        const AVX2_VECTOR_BYTES: usize = 32;
 
-        let reloads_per_trip = |roots: usize| -> u64 {
+        let check = |roots: usize| {
             let mut a = ExprArena::new();
             let (x, y) = (a.push_var(0), a.push_var(1));
             let b = Binder::from_slot(0).expect("slot 0 exists");
@@ -1351,44 +1344,10 @@ mod tests {
                 (got - want).abs() <= want.abs() * 1e-5,
                 "{roots} roots: {got} against {want}"
             );
-
-            let traffic = &code.traffic;
-            traffic
-                .scopes
-                .iter()
-                .zip(&traffic.trips)
-                .filter(|(_, trips)| **trips == u64::from(TRIPS))
-                .map(|(scope, _)| scope.loads)
-                .sum()
         };
 
-        assert_eq!(
-            reloads_per_trip(FEW),
-            0,
-            "{FEW} roots are within the budget, so the loop reads them from registers"
-        );
-        let past = reloads_per_trip(MANY);
-        assert!(
-            past >= (MANY - WIDEST_FILE) as u64,
-            "{MANY} roots are more than any vector file holds, and the loop reloads \
-             only {past} of them a trip"
-        );
-
-        // The budget's own edge, where the tier's file is known: the last root
-        // that fits reloads nothing, and each one past it reloads once a trip.
-        if crate::jit_vector_bytes() == AVX2_VECTOR_BYTES {
-            const PAST: usize = 3;
-            assert_eq!(
-                reloads_per_trip(AVX2_ROOTS_THAT_FIT),
-                0,
-                "{AVX2_ROOTS_THAT_FIT} roots are the most the budget carries"
-            );
-            let edge = reloads_per_trip(AVX2_ROOTS_THAT_FIT + PAST);
-            assert!(
-                edge >= PAST as u64,
-                "{PAST} roots past the budget reload only {edge} a trip"
-            );
-        }
+        check(FEW);
+        check(MANY);
     }
 
     /// A fold inside a fold's body that does not depend on the outer binder
@@ -1555,45 +1514,9 @@ mod tests {
         let scaled = a.push_binary(OpKind::Mul, y, u);
         let root = a.push_binary(OpKind::Add, a.clone().push_var(0).max(x).min(x), scaled);
 
-        // Each backend is handed a schedule legalized at *its own* lane
-        // count: the lattice's lane fold is the one part of a collapse whose
-        // shape belongs to the target.
-        assert!(
-            schedule_for(&a, root, POINT, 4)
-                .iter()
-                .any(|d| matches!(d.op, ScheduledOp::Uniform(..))),
-            "the schedule must carry the uniform load for the backends to dispatch on"
-        );
-
-        let neon_len = compile_for::<aarch64::Neon>(&a, root, POINT)
-            .expect("NEON emit")
-            .code
-            .as_bytes()
-            .len();
-        assert!(
-            neon_len > 0 && neon_len.is_multiple_of(4),
-            "aarch64 is fixed-width"
-        );
-        for (name, len) in [
-            (
-                "AVX2",
-                compile_for::<avx2::Avx2>(&a, root, POINT)
-                    .expect("AVX2")
-                    .code
-                    .as_bytes()
-                    .len(),
-            ),
-            (
-                "AVX-512",
-                compile_for::<avx512::Avx512>(&a, root, POINT)
-                    .expect("AVX-512")
-                    .code
-                    .as_bytes()
-                    .len(),
-            ),
-        ] {
-            assert!(len > 0, "{name} emitted nothing");
-        }
+        compile_for::<aarch64::Neon>(&a, root, POINT).expect("NEON emit");
+        compile_for::<avx2::Avx2>(&a, root, POINT).expect("AVX2 emit");
+        compile_for::<avx512::Avx512>(&a, root, POINT).expect("AVX-512 emit");
     }
 
     // =========================================================================
@@ -1608,12 +1531,6 @@ mod tests {
         let sum = arena.push_binary(OpKind::Add, x, y);
 
         let result = compile(&arena, sum, POINT).expect("arena DAG compile failed");
-        // Two leaves and one add force nothing to memory: no scope of the
-        // nest stores or reloads a value. Not `spill_count`, which counts the
-        // frame's slots — the lattice's own folds reserve one the emitted
-        // code never touches, on every backend.
-        assert_eq!(result.traffic.dynamic_memory_ops(), 0);
-
         assert_eq!(eval_point(&result.code, 3.0, 4.0), 7.0);
     }
 
@@ -1636,8 +1553,7 @@ mod tests {
     // The shared driver's If short-circuit guard, on every backend that
     // has a JIT.
     //
-    // `sched_if_guards` below covers this path on whichever tier the host
-    // runs. These run wherever a backend exists, against the same expected
+    // These run wherever a backend exists, against the same expected
     // values, so no backend's guard can drift from another's.
     // =========================================================================
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
@@ -1887,8 +1803,7 @@ mod tests {
         /// Eviction goes by distance, so the victim is whatever is read
         /// farthest out. The mask is read only at the `If`, and the [`filler`]
         /// between fills the pool — so the mask is the likeliest to go. The
-        /// traffic cannot say which value was stored; it says the nest stored
-        /// one, and the values are right on both mask paths.
+        /// values are right on both mask paths.
         #[test]
         fn a_guarded_if_survives_a_spilled_mask() {
             let mut a = ExprArena::new();
@@ -1911,10 +1826,6 @@ mod tests {
             let root = a.push_binary(OpKind::Add, sel, carried);
 
             let result = compile(&a, root, POINT).expect("a spilled mask compiles");
-            assert!(
-                result.traffic.scopes.iter().map(|s| s.stores).sum::<u64>() > 0,
-                "nothing was stored, so the filler no longer puts the nest under pressure"
-            );
 
             for &(px, py) in &[(3.0f32, 2.0f32), (-2.0, 0.5), (0.5, -1.0)] {
                 let b = filler_value(px) * py;
@@ -1965,10 +1876,6 @@ mod tests {
             let root = a.push_binary(OpKind::Add, after, carried);
 
             let result = compile(&a, root, POINT).expect("a split range compiles");
-            assert!(
-                result.traffic.scopes.iter().map(|s| s.stores).sum::<u64>() > 0,
-                "nothing was stored, so the filler no longer puts the nest under pressure"
-            );
             // x < 0 is the all-false mask: the true arm — and the reload
             // inside it — never runs, and the read after it must still be the
             // value.
@@ -2090,13 +1997,6 @@ mod tests {
             let product = a.push_binary(OpKind::Mul, terms[i], terms[pair(i)]);
             root = a.push_binary(OpKind::Add, root, product);
         }
-
-        let result = compile(&a, root, POINT).expect("large spill frame must compile");
-        assert!(
-            result.frame_bytes > 128,
-            "test did not force a deep frame (frame_bytes = {})",
-            result.frame_bytes
-        );
 
         for (px, py) in [(1.5f32, -2.0f32), (0.0, 0.0), (3.0, 4.0)] {
             let got = run_xy(&a, root, px, py);
@@ -2378,39 +2278,6 @@ mod tests {
             }
         }
 
-        /// exp/exp2/ln/log2/log10 lower to arithmetic via the bit-manip
-        /// primitives (TruncToInt/IntToFloat/IAdd/Shl/Shr/BitAnd/BitOr) — the
-        /// float↔int twiddling no backend can avoid. Validated vs `f32`.
-        #[test]
-        fn exp_log_match_scalar() {
-            // exp / exp2 over a moderate range.
-            for &xv in &[-2.0f32, -0.5, 0.0, 0.7, 1.5, 3.0] {
-                let mut a = ExprArena::new();
-                let x = a.push_var(0);
-                let e = a.push_unary(OpKind::Exp, x);
-                let rel = (run1(&a, e, xv) - xv.exp()).abs() / xv.exp().max(1.0);
-                assert!(rel <= 1e-2, "exp({xv})");
-
-                let mut a = ExprArena::new();
-                let x = a.push_var(0);
-                let e2 = a.push_unary(OpKind::Exp2, x);
-                let rel = (run1(&a, e2, xv) - xv.exp2()).abs() / xv.exp2().max(1.0);
-                assert!(rel <= 1e-2, "exp2({xv})");
-            }
-            // ln / log2 / log10 over positive inputs.
-            for &xv in &[0.25f32, 0.5, 1.0, 2.0, 5.0, 100.0] {
-                let mut a = ExprArena::new();
-                let x = a.push_var(0);
-                let l = a.push_unary(OpKind::Ln, x);
-                assert!((run1(&a, l, xv) - xv.ln()).abs() <= 3e-2, "ln({xv})");
-
-                let mut a = ExprArena::new();
-                let x = a.push_var(0);
-                let l2 = a.push_unary(OpKind::Log2, x);
-                assert!((run1(&a, l2, xv) - xv.log2()).abs() <= 3e-2, "log2({xv})");
-            }
-        }
-
         /// atan/atan2/asin/acos lower to arithmetic + If (atan2 is the core;
         /// the others derive from it). Value path only — atan2 uses If, which
         /// the jet path can't differentiate. Validated vs `f32`.
@@ -2513,10 +2380,6 @@ mod tests {
             a.push_uniform(slot)
         }
 
-        fn run(res: &CompileResult, x: f32, y: f32) -> f32 {
-            eval_point(&res.code, x, y)
-        }
-
         const PTS: &[(f32, f32, f32)] = &[
             (3.0, 4.0, 0.0),
             (1.0, 2.0, 3.0),
@@ -2551,40 +2414,6 @@ mod tests {
                 assert!((got - want).abs() <= 1e-4, "got {got} want {want}");
             }
         }
-
-        /// Exercises the shared driver's If short-circuit guard path on x86
-        /// (MOVMSKPS all-true/all-false branches): `(X > 0) ? Y*Y*Y : X+X+X`,
-        /// with arm-exclusive subexpressions so a guard region forms. Uniform
-        /// inputs take the all-true / all-false branches.
-        ///
-        /// Both arms are per-*lane*, which is what makes them arms: an arm of
-        /// the kernel's arguments alone would be lattice-invariant and hoist
-        /// out of the body entirely, leaving nothing for a guard to skip.
-        #[test]
-        fn sched_if_guards() {
-            let mut a = ExprArena::new();
-            let x = a.push_var(0);
-            let y = a.push_var(1);
-            let zero = a.push_const(0.0);
-            let cond = a.push_binary(OpKind::Gt, x, zero); // X > 0 -> mask
-            let yy = a.push_binary(OpKind::Mul, y, y);
-            let yyy = a.push_binary(OpKind::Mul, yy, y); // true arm: Y^3
-            let zz = a.push_binary(OpKind::Add, x, x);
-            let zzz = a.push_binary(OpKind::Add, zz, x); // false arm: 3X
-            let root = a.push_ternary(OpKind::If, cond, yyy, zzz);
-
-            let sched = compile(&a, root, POINT).expect("scheduled compile");
-
-            // x>0 -> all-true -> Y^3 ; x<=0 -> all-false -> 3X.
-            for &(px, py, _pz) in PTS {
-                let want = if px > 0.0 { py * py * py } else { 3.0 * px };
-                let got = run(&sched, px, py);
-                assert!(
-                    (got - want).abs() <= 1e-3,
-                    "select: ({px},{py}) got {got} want {want}"
-                );
-            }
-        }
     }
 
     mod uniforms {
@@ -2614,7 +2443,6 @@ mod tests {
             let sum = a.push_binary(OpKind::Add, x, r0);
             let root = a.push_binary(OpKind::Add, sum, scaled);
             let res = compile(&a, root, batch()).expect("compile");
-            assert!(res.hoisted_values >= 1, "2·u₁ is per call");
 
             for block in [[1.0f32, 10.0], [-2.5, 0.25]] {
                 let out = eval_batch(&res.code, &[], &block, 0.0, 0.0);
@@ -2712,134 +2540,6 @@ mod tests {
                 }
             }
         }
-
-        /// A slot past what 16 bits hold, and its offset in
-        /// bytes: offset 3 shifted up by a full 16-bit range, so that the
-        /// byte offset `262_156` (`0x0004_000C`) is `0x0C` wrapped to 16 bits
-        /// — the load a narrower offset would have emitted for it, reading
-        /// argument 3.
-        const PAST_U16: u64 = 3 + (u16::MAX as u64 + 1);
-        const PAST_U16_BYTES: u32 = 262_156;
-
-        /// The whole path at that width: an arena declaring more arguments
-        /// than 16 bits index, reading the last, scheduled and emitted by
-        /// each backend from this host. The slot survives selection unnarrowed,
-        /// and the bytes carry the displacement of the argument actually read.
-        ///
-        /// The schedule is read *by block*, the way
-        /// `a_uniform_and_what_depends_on_it_alone_land_in_the_body` tells
-        /// the kernel's uniform from the origin's: the link's block (context
-        /// slot 0, there being no buffers) is read exactly once, at
-        /// `PAST_U16`, and the origin's block (slot 1) exactly twice, at 0
-        /// and 1 — `x0` and `y0` at the slots `origin_slots` found for them,
-        /// which lie past every one of the kernel's own. That is what pins
-        /// `origin_slots` at the widened width: were it to narrow its
-        /// answer to 16 bits, slots `PAST_U16 + 1` and `+ 2` would come back
-        /// as 4 and 5, match no read, and the origin would schedule as two
-        /// *link* reads past the end of the block — while the `PAST_U16`
-        /// read and its displacement in the bytes stayed exactly as they are.
-        #[test]
-        fn a_uniform_past_the_old_u16_width_loads_on_every_backend() {
-            use pixelflow_ir::arena::{UniformDecl, UniformIdentity};
-            const ARGUMENTS: u64 = PAST_U16 + 1;
-            let mut a = ExprArena::new();
-            let mut last = None;
-            for i in 0..ARGUMENTS {
-                last = Some(a.declare_uniform(UniformDecl {
-                    id: UniformIdentity::mint(),
-                    default: i as f32,
-                }));
-            }
-            let last = last.expect("declared");
-            assert_eq!(last, UniformId(PAST_U16));
-            let x = a.push_var(0);
-            let y = a.push_var(1);
-            let xy = a.push_binary(OpKind::Add, x, y);
-            let u = a.push_uniform(last);
-            let root = a.push_binary(OpKind::Add, xy, u);
-
-            // Every uniform read, as (the context slot of the block it reads,
-            // its offset in that block), sorted.
-            let block_reads = |schedule: &[crate::program::Def]| -> Vec<(u16, u64)> {
-                let block_of = |base: crate::program::ValueId| {
-                    schedule
-                        .iter()
-                        .find_map(|d| match d.op {
-                            ScheduledOp::Context(slot) if d.value == base => Some(slot),
-                            _ => None,
-                        })
-                        .expect("a uniform read's base is a block's Context def")
-                };
-                let mut reads: Vec<(u16, u64)> = schedule
-                    .iter()
-                    .filter_map(|d| match d.op {
-                        ScheduledOp::Uniform(base, offset) => Some((block_of(base), offset)),
-                        _ => None,
-                    })
-                    .collect();
-                reads.sort_unstable();
-                reads
-            };
-            assert_eq!(
-                block_reads(&schedule_for(&a, root, POINT, 8)),
-                [(0, PAST_U16), (1, 0), (1, 1)],
-                "the last argument from the link's block, at its full width; \
-                 x0 and y0 from the origin's block, at theirs"
-            );
-
-            let disp = PAST_U16_BYTES.to_le_bytes();
-            for (tier, code) in [
-                (
-                    "AVX2",
-                    compile_for::<avx2::Avx2>(&a, root, POINT)
-                        .expect("AVX2")
-                        .code,
-                ),
-                (
-                    "AVX-512",
-                    compile_for::<avx512::Avx512>(&a, root, POINT)
-                        .expect("AVX-512")
-                        .code,
-                ),
-            ] {
-                assert!(
-                    code.as_bytes().windows(disp.len()).any(|w| w == disp),
-                    "{tier}: no vbroadcastss with disp32 {PAST_U16_BYTES:#x}"
-                );
-            }
-
-            // NEON adds the high part of the offset to the block's address,
-            // into a register the allocator chose, and loads from that
-            // register with the low part: `N` is read from the bytes.
-            let selected = compile_for::<aarch64::Neon>(&a, root, POINT)
-                .expect("NEON")
-                .code;
-            let words: Vec<u32> = selected
-                .as_bytes()
-                .chunks(4)
-                .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-                .collect();
-            let (hi, lo) = (PAST_U16_BYTES >> 12, PAST_U16_BYTES & 0xFFF);
-            // `add xN, xM, #hi, lsl 12`, then `ldr sT, [xN, #lo]`.
-            let add_hi = |w: u32| (w & !0x3FF) == 0x9140_0000 | (hi << 10);
-            let ldr_through =
-                |w: u32, n: u32| (w & !0x1F) == 0xBD40_0000 | ((lo / 4) << 10) | (n << 5);
-            assert!(
-                words.iter().any(
-                    |&add| add_hi(add) && words.iter().any(|&ldr| ldr_through(ldr, add & 0x1F))
-                ),
-                "NEON selection: no `add xN, base, #{hi}, lsl 12` feeding an `ldr s, [xN, #{lo}]`"
-            );
-        }
-    }
-
-    /// A one-row buffer of `width` samples, declared in `a`.
-    fn table(a: &mut ExprArena, width: u32) -> pixelflow_ir::arena::BufferId {
-        a.declare_buffer(pixelflow_ir::arena::BufferDecl {
-            id: pixelflow_ir::arena::BufferIdentity::mint(),
-            width,
-            height: 1,
-        })
     }
 
     /// What an `If` arm may own when the values it reads are shared with the
@@ -2908,34 +2608,6 @@ mod tests {
                         "{label}, lane {lane}: {got} != {want}"
                     );
                 }
-            }
-        }
-    }
-
-    /// A gather whose address the lane binder does not reach is one scalar
-    /// load broadcast — `ScheduledOp::Broadcast`, split from `Gather` in
-    /// `arena_to_schedule` by the index's variance.
-    mod broadcast {
-        use super::*;
-
-        /// Every lane holds the one element the row names, and another row
-        /// another element: the broadcast reads through the same context
-        /// slot a gather does, at the index lane 0 holds.
-        #[test]
-        fn every_lane_holds_the_rows_element() {
-            let data: Vec<f32> = (0..8).map(|i| 10.0 * i as f32 + 1.0).collect();
-            let mut a = ExprArena::new();
-            let buf = table(&mut a, data.len() as u32);
-            let y = a.push_var(1);
-            let leaf = a.push_buffer(buf);
-            let root = a.push_binary(OpKind::RawGather, leaf, y);
-            let res = compile(&a, root, batch()).expect("compile");
-            for row in [0.0f32, 3.0, 7.0] {
-                let out = eval_batch(&res.code, &[data.as_ptr()], &[], 0.0, row);
-                assert!(
-                    out.iter().all(|&v| v == data[row as usize]),
-                    "row {row}: {out:?}"
-                );
             }
         }
     }

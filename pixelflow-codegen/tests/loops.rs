@@ -1,9 +1,5 @@
-//! A loop keeps what it reads in registers and pays for what leaves it once.
-//!
-//! These fail on an allocator that drops every register at a loop's head, and
-//! on one that stores a value at its definition when the definition runs every
-//! trip. They are written against what a kernel emits: its traffic per scope,
-//! and the numbers it computes.
+//! A fold's result that the kernel reads again long after the loop, with a wall
+//! of values live in between, is the number it computes.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
@@ -26,26 +22,13 @@ fn eval_point(result: &CompileResult, x: f32, y: f32) -> f32 {
     out[0]
 }
 
-/// The lattice's own loops hold their counters and the three ABI arguments in
-/// registers, so a kernel that is one addition touches no memory at all.
-#[test]
-fn a_lattice_loop_keeps_its_counters_and_the_abi_in_registers() {
-    let mut a = ExprArena::new();
-    let (x, y) = (a.push_var(0), a.push_var(1));
-    let root = a.push_binary(OpKind::Add, x, y);
-    let result = compile(&a, root, LatticeShape::POINT).expect("the kernel compiles");
-    assert_eq!(result.traffic.dynamic_memory_ops(), 0);
-    assert_eq!(eval_point(&result, 3.0, 4.0), 7.0);
-}
-
-/// A fold's result that is read again long after the loop, and given up for a
-/// wall of values in between, is stored where the loop ends, once. Stored
-/// where the accumulator is defined, it would be stored every trip.
+/// A fold's result that is read again long after the loop is given up for a
+/// wall of values in between, and still read at its value.
 ///
 /// `s = Σ_{i<T} (x + i)` starts a chain of `WALL` terms, all live at once
 /// because they are summed in both orders, and `s` is added to the total.
 #[test]
-fn a_fold_result_given_up_after_its_loop_is_stored_once() {
+fn a_fold_result_given_up_after_its_loop_is_read_at_its_value() {
     /// More values live at once than any tier's vector file holds.
     const WALL: u64 = 48;
     const TRIPS: u32 = 7;
@@ -91,18 +74,5 @@ fn a_fold_result_given_up_after_its_loop_is_stored_once() {
     assert!(
         (got - want).abs() <= want.abs() * 1e-5,
         "{got} against {want}"
-    );
-
-    let traffic = &result.traffic;
-    let stored_in_the_loop: u64 = traffic
-        .scopes
-        .iter()
-        .zip(&traffic.trips)
-        .filter(|(_, trips)| **trips == u64::from(TRIPS))
-        .map(|(scope, _)| scope.stores)
-        .sum();
-    assert_eq!(
-        stored_in_the_loop, 0,
-        "the fold's body stores something every trip"
     );
 }

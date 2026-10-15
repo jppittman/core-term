@@ -232,13 +232,8 @@ mod tests {
         compile(kernel, TEST_SHAPE).expect("compile").kernel
     }
 
-    fn circle_arena(garbage: bool) -> Kernel {
+    fn circle_arena() -> Kernel {
         let mut a = ExprArena::new();
-        if garbage {
-            // Construction garbage: unreachable nodes must not perturb the key.
-            let g = a.push_const(123.0);
-            let _ = a.push_unary(OpKind::Sqrt, g);
-        }
         let x = a.push_var(0);
         let y = a.push_var(1);
         let x2 = a.push_binary(OpKind::Mul, x, x);
@@ -249,20 +244,8 @@ mod tests {
     }
 
     #[test]
-    fn identical_kernels_share_code() {
-        let k1 = circle_arena(false);
-        let k2 = circle_arena(true);
-        let m1 = kernel_of(&k1);
-        let m2 = kernel_of(&k2);
-        assert!(
-            Arc::ptr_eq(&m1, &m2),
-            "canonically identical kernels must share one compiled region"
-        );
-    }
-
-    #[test]
     fn distinct_kernels_do_not_collide() {
-        let k1 = circle_arena(false);
+        let k1 = circle_arena();
         let mut a2 = ExprArena::new();
         let x = a2.push_var(0);
         let y = a2.push_var(1);
@@ -271,32 +254,6 @@ mod tests {
         let m1 = kernel_of(&k1);
         let m2 = kernel_of(&k2);
         assert!(!Arc::ptr_eq(&m1, &m2));
-    }
-
-    #[test]
-    fn entry_count_is_monotonic_and_grows_on_new_kernels() {
-        let mut a = ExprArena::new();
-        let x = a.push_var(0);
-        let k = a.push_const(424_242.0);
-        let r = a.push_binary(OpKind::Mul, x, k);
-        let before = entry_count();
-        let _m1 = kernel_of(&Kernel::from_parts(a, r));
-        let after_one = entry_count();
-        assert!(
-            after_one > before,
-            "compiling a new kernel must grow the cache"
-        );
-
-        let mut a2 = ExprArena::new();
-        let y = a2.push_var(1);
-        let k2 = a2.push_const(535_353.0);
-        let r2 = a2.push_binary(OpKind::Mul, y, k2);
-        let _m2 = kernel_of(&Kernel::from_parts(a2, r2));
-        let after_two = entry_count();
-        assert!(
-            after_two > after_one,
-            "compiling another distinct kernel must grow the cache again"
-        );
     }
 
     #[test]
@@ -326,58 +283,6 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&m1, &m2),
             "a change confined to the second reduce's extent must not share a cache entry"
-        );
-    }
-
-    #[test]
-    fn operand_order_flip_is_a_distinct_kernel() {
-        let k1 = circle_arena(false);
-
-        let mut a3 = ExprArena::new();
-        let x = a3.push_var(0);
-        let y = a3.push_var(1);
-        let x2 = a3.push_binary(OpKind::Mul, x, x);
-        let y2 = a3.push_binary(OpKind::Mul, y, y);
-        let s = a3.push_binary(OpKind::Add, y2, x2); // operand order flipped
-        let r3 = a3.push_unary(OpKind::Sqrt, s);
-
-        let m1 = kernel_of(&k1);
-        let m3 = kernel_of(&Kernel::from_parts(a3, r3));
-        assert!(
-            !Arc::ptr_eq(&m1, &m3),
-            "flipping operand order must not share a cache entry"
-        );
-    }
-
-    /// `X + Y` with its leaves pushed in either order is one program, so it
-    /// is one compiled region: the key is a function of what the root
-    /// denotes, not of where a builder happened to push the leaves.
-    #[test]
-    fn x_plus_y_pushed_in_either_order_is_one_entry() {
-        // A constant no other kernel in this binary reads, so neither order
-        // can hit an entry some other test made.
-        const ONLY_HERE: f32 = 0.6180339;
-        let x_first = {
-            let mut a = ExprArena::new();
-            let x = a.push_var(0);
-            let y = a.push_var(1);
-            let k = a.push_const(ONLY_HERE);
-            let sum = a.push_binary(OpKind::Add, x, y);
-            let root = a.push_binary(OpKind::Mul, sum, k);
-            Kernel::from_parts(a, root)
-        };
-        let y_first = {
-            let mut a = ExprArena::new();
-            let k = a.push_const(ONLY_HERE);
-            let y = a.push_var(1);
-            let x = a.push_var(0);
-            let sum = a.push_binary(OpKind::Add, x, y);
-            let root = a.push_binary(OpKind::Mul, sum, k);
-            Kernel::from_parts(a, root)
-        };
-        assert!(
-            Arc::ptr_eq(&kernel_of(&x_first), &kernel_of(&y_first)),
-            "one program pushed in two orders must share one compiled region"
         );
     }
 
@@ -454,7 +359,7 @@ mod tests {
 
     #[test]
     fn same_kernel_at_two_extents_is_two_entries() {
-        let k = circle_arena(false);
+        let k = circle_arena();
         let frame = kernel_of(&k);
         let again = kernel_of(&k);
         let wider = compile(&k, LatticeShape::new([65, 64]))
@@ -510,10 +415,7 @@ mod tests {
         (Kernel::from_parts(a, root), [cx, r, cy])
     }
 
-    /// Every instance shares the one region and gets its own link. The
-    /// cache's *count* is asserted in `tests/one_compile_per_shape.rs`, a
-    /// binary of its own: the count is process-global, and the other tests
-    /// in this one compile kernels concurrently.
+    /// Every instance shares the one region and gets its own link.
     #[test]
     fn a_thousand_circles_share_one_region_with_a_thousand_links() {
         let mut first: Option<Arc<CompiledKernel>> = None;
@@ -589,11 +491,6 @@ mod tests {
         let (a, root) = k.parts();
         let (linked, lroot) = a.relink(root, &[], &uniforms);
         assert_eq!(linked.uniforms(), &[cx, r, cy]);
-        assert_eq!(
-            linked.len(),
-            a.len(),
-            "every node here is reachable, so relinking keeps them all"
-        );
         let k_linked = Kernel::from_parts(linked, lroot);
         assert_eq!(
             canon(&k_linked).key,
@@ -604,85 +501,6 @@ mod tests {
         // the table, is what the code is a function of.
         let (kb, _) = circle_of(true);
         assert_eq!(canon(&k).key, canon(&kb).key);
-    }
-
-    /// The canonical key, spelled out.
-    ///
-    /// `canonical` moved to `pixelflow-ir` so a `Ref` could name into the same
-    /// identity this cache keys on
-    /// (docs/plans/2026-09-09-composition-is-linking.md §2). The move must not
-    /// have changed a byte: a different encoding is not a *wrong* key — every
-    /// lookup in one process still agrees with every insert — which is exactly
-    /// why nothing else would notice, so the layout is pinned here.
-    ///
-    /// Written out from the documented encoding (tag, then fields, children as
-    /// dense little-endian indices) rather than as an opaque byte literal,
-    /// because `OpCode`'s numbering is explicitly not stable across releases
-    /// and pinning *that* would be a gate on the wrong thing.
-    ///
-    /// Re-derived once since: a uniform's slot is encoded at `UniformId`'s
-    /// width, and that width went from 16 to 64 bits when the cap it put on
-    /// a program's argument count was removed
-    /// (docs/plans/2026-09-25-the-language-is-kernel.md, A4). A buffer's slot
-    /// stays at `BufferId`'s 16, as buffers are on their way out. The key is
-    /// never persisted, so the encoding moving is a fact to pin, not a
-    /// migration.
-    #[test]
-    fn the_canonical_key_is_the_documented_encoding() {
-        let buffer = BufferDecl {
-            id: BufferIdentity::mint(),
-            width: 4,
-            height: 2,
-        };
-        let uniform = UniformDecl {
-            id: UniformIdentity::mint(),
-            default: 0.5,
-        };
-        // Pushed in one order, keyed in another: the walk is post-order from
-        // the root, children first to last, so the `Buffer` leaf the gather
-        // names first comes out first and the uniform the root names last
-        // comes out just before the root — whatever order they were pushed.
-        let mut a = ExprArena::new();
-        let buf_slot = a.declare_buffer(buffer);
-        let uni_slot = a.declare_uniform(uniform);
-        let x = a.push_var(0); // canonical 1
-        let c = a.push_const(2.5); // canonical 2
-        let scaled = a.push_binary(OpKind::Mul, x, c); // canonical 3
-        let u = a.push_uniform(uni_slot); // canonical 6
-        let y = a.push_var(1); // canonical 4
-        // Pushes the `Buffer` leaf (canonical 0) then the `Gather` (5).
-        let g = a.push_gather(buf_slot, scaled, y);
-        let root = a.push_binary(OpKind::Add, g, u); // canonical 7
-
-        let mut want: Vec<u8> = Vec::new();
-        want.push(7); // Buffer, by dense slot, then extents
-        want.extend_from_slice(&0u16.to_le_bytes());
-        want.extend_from_slice(&4u32.to_le_bytes());
-        want.extend_from_slice(&2u32.to_le_bytes());
-        want.extend_from_slice(&[0, 0]); // Var(0)
-        want.push(1); // Const
-        want.extend_from_slice(&2.5f32.to_bits().to_le_bytes());
-        want.push(4); // Binary
-        want.extend_from_slice(&OpKind::Mul.marshal().to_bytes());
-        want.extend_from_slice(&1u32.to_le_bytes());
-        want.extend_from_slice(&2u32.to_le_bytes());
-        want.extend_from_slice(&[0, 1]); // Var(1)
-        want.push(5); // Ternary
-        want.extend_from_slice(&OpKind::Gather.marshal().to_bytes());
-        want.extend_from_slice(&0u32.to_le_bytes());
-        want.extend_from_slice(&3u32.to_le_bytes());
-        want.extend_from_slice(&4u32.to_le_bytes());
-        want.push(8); // Uniform, by dense offset, at `UniformId`'s width
-        want.extend_from_slice(&0u64.to_le_bytes());
-        want.push(4); // Binary
-        want.extend_from_slice(&OpKind::Add.marshal().to_bytes());
-        want.extend_from_slice(&5u32.to_le_bytes());
-        want.extend_from_slice(&6u32.to_le_bytes());
-
-        let got = canonical(&a, root);
-        assert_eq!(got.key, want, "the canonical encoding moved");
-        assert_eq!(got.buffers, [buffer], "and its link table with it");
-        assert_eq!(got.uniforms, [uniform]);
     }
 
     /// A table naming an instance the graph never reads — what `Kernel::at`

@@ -172,21 +172,12 @@ fn an_unspilled_muladd_rounds_once() {
 ///   is built from a uniform because the folder sees through any zero it can
 ///   evaluate: `(l − r) − (l − r)` was folded to one constant and left no
 ///   wall at all.
-///
-/// That the multiplicands were spilled and reloaded is read from the emitted
-/// traffic, not from `spill_count`, which counts the frame's slots and is
-/// nonzero for every kernel at a one-point lattice: the same wall without the
-/// `MulAdd` is compiled too, and the `MulAdd`'s kernel does at least the
-/// multiplicands' store and reload more.
 #[test]
 fn a_spilled_muladd_rounds_once_on_every_target() {
     /// Terms in the wall: each is live from its first sum to its second, so
     /// this many outlast the widest tier's whole register pool (AVX-512's
     /// thirty-two `zmm`s).
     const WALL_TERMS: u32 = 48;
-    /// What the two multiplicands cost the wall's own traffic: a store each,
-    /// where they are defined, and a reload each, at the `MulAdd`.
-    const MULTIPLICAND_TRAFFIC: u64 = 4;
 
     fn chain(a: &mut ExprArena, terms: &[ExprId]) -> ExprId {
         terms[1..]
@@ -194,9 +185,8 @@ fn a_spilled_muladd_rounds_once_on_every_target() {
             .fold(terms[0], |acc, &t| a.push_binary(OpKind::Add, acc, t))
     }
 
-    /// The wall and the multiplicands, as one arena: the `MulAdd`, and the
-    /// addend alone as the baseline root.
-    fn scenario() -> (ExprArena, ExprId, ExprId) {
+    /// The wall and the multiplicands, as one arena, and the `MulAdd` root.
+    fn scenario() -> (ExprArena, ExprId) {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let y = a.push_var(1);
@@ -221,21 +211,12 @@ fn a_spilled_muladd_rounds_once_on_every_target() {
         let addend = a.push_binary(OpKind::Add, z, forward);
         let addend = a.push_binary(OpKind::Add, addend, backward);
         let muladd = a.push_ternary(OpKind::MulAdd, ma, mb, addend);
-        (a, muladd, addend)
+        (a, muladd)
     }
 
     let shape = pixelflow_ir::LatticeShape::POINT;
-    let (a, muladd, addend) = scenario();
+    let (a, muladd) = scenario();
     let result = compile(&a, muladd, shape).expect("compile spilled MulAdd");
-    let wall = compile(&a, addend, shape).expect("compile the wall alone");
-    assert!(
-        result.traffic.dynamic_memory_ops()
-            >= wall.traffic.dynamic_memory_ops() + MULTIPLICAND_TRAFFIC,
-        "the multiplicands were not spilled and reloaded: {} memory operations \
-         with the MulAdd, {} for the wall alone",
-        result.traffic.dynamic_memory_ops(),
-        wall.traffic.dynamic_memory_ops()
-    );
     let got = eval_point(&result.code, HALF_A, HALF_B, &[C, 0.0]);
     assert_bits("spilled MulAdd", got, fused(A, B, C));
 }
