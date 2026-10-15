@@ -513,22 +513,23 @@ impl EGraph {
             // the same slot.
             self.queued[id.index()] = false;
             let id = self.find(id);
-            let nodes = std::mem::take(&mut self.classes[id.index()].nodes);
-            // `tags` must stay zipped with `nodes` through this loop: no
-            // reordering happens (nodes are only appended to `new_nodes` in
-            // the same order they're drained from `nodes`), so zipping by
-            // index here and pushing to `new_tags` in lockstep with
-            // `new_nodes` keeps every tag pointed at the right node.
-            let tags = std::mem::take(&mut self.classes[id.index()].tags);
+            let mut nodes = std::mem::take(&mut self.classes[id.index()].nodes);
+            // `tags` must stay zipped with `nodes` through this loop: both
+            // are compacted in place, a kept node moving from index `read` to
+            // `kept` together with its tag, in the order they were drained,
+            // so every tag stays pointed at the right node. Compacting the
+            // taken buffers (rather than building fresh ones) is what spares
+            // this hot loop two allocations and two frees per worklist item.
+            let mut tags = std::mem::take(&mut self.classes[id.index()].tags);
             debug_assert_eq!(
                 nodes.len(),
                 tags.len(),
                 "EClass.nodes and EClass.tags must never desync"
             );
-            let mut new_nodes = Vec::new();
-            let mut new_tags = Vec::new();
-            for (node, tag) in nodes.into_iter().zip(tags) {
-                let node = self.canonical_node(node);
+            let mut kept = 0;
+            for read in 0..nodes.len() {
+                let node = self.canonical_node(nodes[read]);
+                let tag = tags[read];
                 if let Some(&existing) = self.memo.get(&node) {
                     let existing = self.find(existing);
                     if existing != id {
@@ -570,9 +571,12 @@ impl EGraph {
                 } else {
                     self.memo.insert(node, id);
                 }
-                new_nodes.push(node);
-                new_tags.push(tag);
+                nodes[kept] = node;
+                tags[kept] = tag;
+                kept += 1;
             }
+            nodes.truncate(kept);
+            tags.truncate(kept);
             // Write back to the class `id` CANONICALIZES TO, not to `id`.
             // A mid-loop union() above picks `min(id, existing)` as the
             // surviving parent, so when `existing.0 < id.0` it is `id` that
@@ -584,14 +588,15 @@ impl EGraph {
             // only provably-equal terms) but lost *silently*, which this
             // project forbids.
             //
-            // And extend, never assign: in the mirror case, where `id`
-            // survives, union()'s extend() has already appended `existing`'s
-            // nodes and tags onto this very vector (which mem::take emptied
-            // above), and an assignment would clobber them. `find(id) == id`
-            // there, so one write-back handles both directions.
+            // And extend, never assign over a non-empty vector: in the mirror
+            // case, where `id` survives, union()'s extend() has already
+            // appended `existing`'s nodes and tags onto this very vector
+            // (which mem::take emptied above), and an assignment would
+            // clobber them. `find(id) == id` there, so one write-back handles
+            // both directions.
             let dest = self.find(id);
-            self.classes[dest.index()].nodes.extend(new_nodes);
-            self.classes[dest.index()].tags.extend(new_tags);
+            restore_after_rebuild(&mut self.classes[dest.index()].nodes, nodes);
+            restore_after_rebuild(&mut self.classes[dest.index()].tags, tags);
             self.track_liveness(dest);
         }
         if self.worklist.is_empty() {
@@ -1257,6 +1262,27 @@ impl NodeSink for GrowthPredictor<'_> {
 struct Distributive {
     outer: OpKind,
     inner: OpKind,
+}
+
+/// A rebuilt buffer is shrunk when its unused capacity exceeds `1 /
+/// REBUILT_SLACK_DIVISOR` of its length.
+const REBUILT_SLACK_DIVISOR: usize = 2;
+
+/// Put a rebuilt buffer back into a class slot. A slot that is still empty
+/// takes the buffer as is; one a mid-rebuild `union` already appended onto
+/// keeps those entries and gains the rebuilt ones after them.
+fn restore_after_rebuild<T: Copy>(slot: &mut Vec<T>, mut rebuilt: Vec<T>) {
+    if slot.is_empty() {
+        // The buffer was grown by pushes and keeps that slack; a class lives
+        // for the whole saturation, so slack is peak memory. Only a buffer
+        // with a large share unused is worth a realloc to give it back.
+        if rebuilt.capacity() - rebuilt.len() > rebuilt.len() / REBUILT_SLACK_DIVISOR {
+            rebuilt.shrink_to_fit();
+        }
+        *slot = rebuilt;
+        return;
+    }
+    slot.extend(rebuilt);
 }
 
 /// `Distribute`: `A * (B + C) -> A*B + A*C`, with `ops` = (outer `*`, inner
