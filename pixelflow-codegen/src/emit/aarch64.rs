@@ -1455,7 +1455,7 @@ mod tests {
 /// AAPCS64's argument registers and the stack pointer, by hardware number.
 /// Every other register is the allocator's choice.
 mod abi {
-    /// 1st argument: context pointer — array of bound buffer bases, then
+    /// 1st argument: context pointer — array of buffer base pointers, then
     /// the uniform and origin blocks.
     pub(super) const X0: u8 = 0;
     /// 2nd argument: the output plane.

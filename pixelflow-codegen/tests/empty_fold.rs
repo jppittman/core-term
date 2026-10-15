@@ -157,7 +157,7 @@ fn dx_of_a_read_addressed_by_a_fold(trips: u32) -> (ExprArena, ExprId) {
 /// is a fold over nothing is the monoid's identity, a constant, whatever its
 /// never-evaluated body reads: the derivative compiles, and is `0` at every
 /// sample. Read off the body it would name `x`, and the compile would be
-/// refused as a derivative through a bound-memory read.
+/// refused as a derivative through a table read.
 #[test]
 fn the_derivative_of_a_read_addressed_by_a_fold_over_nothing_is_zero() {
     let (a, root) = dx_of_a_read_addressed_by_a_fold(0);

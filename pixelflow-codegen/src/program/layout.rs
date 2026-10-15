@@ -1,15 +1,15 @@
 //! The blocks of a scope: which arms are skipped by a branch, and where each
 //! sits among the scope's values.
 //!
-//! **What earns a block.** An arm region that owns a value of this scope
+//! **What gets a block.** An arm region that owns a value of this scope
 //! (`ownership`; an `If` nested in it is one). There is no price: an arm is
 //! skipped when no lane selects it, however little it holds. Where its mask
 //! was computed does not matter, since selection reads the mask from whichever
 //! enclosing scope defined it. An arm with nothing of its own has no block.
 //!
 //! **Where a block goes.** Every value stays in the order it was constructed,
-//! within the block that owns it. An `If`'s earning arms go immediately before
-//! the `If`, the true arm first. That is always after everything an arm reads:
+//! within the block that owns it. An `If`'s arms that own work go immediately
+//! before the `If`, the true arm first. That is always after everything an arm reads:
 //! an arm-owned value is read only inside its arm, by a loop whose `Reduce` the
 //! arm holds, or by its `If`, so what it reads from the region around it was
 //! constructed before it, hence before the `If`; and the mask is read by the
@@ -50,8 +50,8 @@ impl Flow {
             owns[own.region_of(pos).0] = true;
         }
         let earning: Vec<&Arm> = own.arms().iter().filter(|arm| owns[arm.region.0]).collect();
-        // The items of each region's block: the scope's is block 0, and an
-        // earning arm's is one past its index in `earning`.
+        // The items of each region's block: the scope's is block 0, and an arm
+        // that owns work is one past its index in `earning`.
         let mut block = alloc::vec![0; owns.len()];
         for (i, arm) in earning.iter().enumerate() {
             block[arm.region.0] = i + 1;

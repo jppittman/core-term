@@ -120,7 +120,7 @@ fn evaluate(
     ctx.push(origin.as_ptr());
 
     let mut out = vec![f32::NAN; rows * WIDTH];
-    // SAFETY: each bound buffer holds `rows * WIDTH` samples and is read at the
+    // SAFETY: each buffer holds `rows * WIDTH` samples and is read at the
     // lattice's own positions; the uniform block is never read (none is
     // declared); the origin is two floats; `out` holds `rows * WIDTH` with
     // pitch `WIDTH`.

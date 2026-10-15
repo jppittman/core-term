@@ -23,7 +23,7 @@ use pixelflow_codegen::jit_vector_bytes;
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprArena, ExprId};
 use pixelflow_ir::{LatticeShape, OpKind};
 
-/// Bound buffers, each an address live across the column loop: more than the
+/// Buffer base addresses, each live across the column loop: more than the
 /// general file of any tier.
 const TABLES: usize = 24;
 /// Products live at once: more than the vector file of any tier.
@@ -124,7 +124,8 @@ fn reference(tables: &[Vec<f32>], x: f32, y: f32) -> f64 {
     }
 }
 
-/// `result` called over `ROWS` rows of `width()` samples, `tables` bound.
+/// `result` called over `ROWS` rows of `width()` samples, with `tables` as its
+/// buffers.
 fn run(result: &CompileResult, tables: &[Vec<f32>]) -> Vec<f32> {
     let mut out = vec![f32::NAN; ROWS * pitch()];
     let origin = ORIGIN;

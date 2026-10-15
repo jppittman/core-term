@@ -141,7 +141,7 @@ pub fn parked_roots(terms: u64) -> (ExprArena, ExprId) {
 }
 
 /// An `If` inside a fold's body whose mask varies by lane and whose arms are
-/// each several transcendentals deep, so each is worth a branch: the guard
+/// each several transcendentals deep, so each owns work of its own: the guard
 /// the emitter puts *in the fold's own scope*, where the point-shaped
 /// `if_guard` row's is in the body's.
 ///

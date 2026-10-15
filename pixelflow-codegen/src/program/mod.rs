@@ -65,7 +65,7 @@ pub(crate) enum ScheduledOp {
     /// shift count is folded out of the `Const` RHS by `lower::arena_to_schedule`
     /// (so it never becomes a scheduled value / register).
     ShiftImm(ShiftOp, ValueId, u8),
-    /// Bound-memory gather: read the buffer whose base is the second operand
+    /// Table gather: read the buffer whose base is the second operand
     /// at the lane index computed by the first. Lowered from
     /// `RawGather(Buffer(slot), index)`; the `Buffer` leaf *is* the base — a
     /// [`ScheduledOp::Context`] def, a pointer value
@@ -325,15 +325,15 @@ pub(crate) enum IfArm {
     False,
 }
 
-/// How a scope's schedule runs: its defs in order, with each arm that earns a
-/// branch nested as the block it is, immediately before its `If` (`layout`).
+/// How a scope's schedule runs: its defs in order, with each arm that owns
+/// work nested as the block it is, immediately before its `If` (`layout`).
 /// Selection walks it and emits the guard and the block after it around each
 /// arm; nothing recovers a region from a position.
 #[derive(Debug)]
 pub(crate) struct Flow {
     /// What the scope runs, outermost.
     pub(super) items: Vec<Item>,
-    /// Every arm that earns a block, in the order of their `If`s.
+    /// Every arm that owns work, in the order of their `If`s.
     pub(super) arms: Vec<ArmBlock>,
 }
 
