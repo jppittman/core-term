@@ -67,8 +67,10 @@
 - **Is:** a kernel compiled at a lattice's shape, "the thing you can sample
   over a domain". It knows its extents and its code
   bytes. It has no `eval` and is not batch-shaped, and it keeps a table of
-  the shapes it was compiled at. `bake = collapse(compile(k, extent))`: there is
-  no bind and no `BoundManifold` in the language (kernels-evaluate-kernels §2).
+  the shapes it was compiled at. `bake = collapse(compile(k, extent))`: sugar for
+  applying a program to the lattice's schedule. Tabulation is trivial and nothing
+  chooses it; there is no bind and no `BoundManifold` in the language
+  (kernels-evaluate-kernels §2).
 - **Is not:** the per-batch trait `eval(point) -> value`: "That had the word
   bound to the wrong level." That trait is what forced a Rust loop around
   the JIT and the per-batch ABI cost ("every vector register caller-saved,

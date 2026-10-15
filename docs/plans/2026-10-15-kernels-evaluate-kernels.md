@@ -38,6 +38,10 @@ select(m, a, b)
   block with work deserves its guard. Any such machinery is deleted on sight.
 - The guards read `m` at runtime, per batch. Nothing in the compiler
   estimates how often `m` is true.
+- The **domain split** (a mask that implies an index range emits two
+  specialized programs, the region's and the complement's) is retired with the
+  other shapes. JP, 2026-10-15: "Domain split retire ... let's retire it if we
+  don't need it right now." `mask_support.rs`'s range analysis goes with it.
 
 ### Cost
 
@@ -100,6 +104,14 @@ a kernel is handed is a discrete manifold; there is no untyped buffer, and the
 ABI's `out` pointer is the tabulation in progress. `Write`/`Seq` nodes are the
 CPU scheduler's mechanics for performing an application, inside its own
 chain: not a language effect, not a concept.
+
+**Tabulation is trivial.** JP, 2026-10-15: "bake is just tabulation, and
+tabulation is like trivial ... once you have a discrete manifold, it's
+referentially transparent with the tabulation." So nothing chooses it: not
+the user as a scheduling decision, not extraction as a rewrite. A `bake` call
+is sugar in the graphics library for executing a schedule, not a language
+construct. And "let's not have derivatives of discrete kernels for now":
+`Dwrt` of a discrete kernel is refused by name.
 
 Consequences:
 
