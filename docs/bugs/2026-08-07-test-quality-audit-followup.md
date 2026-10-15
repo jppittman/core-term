@@ -12,7 +12,7 @@ passes to date.
 
 ## Static audit: one violation, fixed independently by #985
 
-An `Explore` sub-agent swept `git diff eb03ee9..HEAD` against docs/STYLE.md's
+An `Explore` sub-agent swept `git diff eb03ee9..HEAD` against docs/process/STYLE.md's
 "Test Public API" rule, cross-checked against every prior pass's accepted
 exceptions (`spatial_bsp.rs` interiors indexing, `create_test_app()`/
 `new_registered`, `chunked_bake_matches_whole_stripe`, actor-scheduler's two

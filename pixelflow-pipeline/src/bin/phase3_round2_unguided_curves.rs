@@ -1,5 +1,5 @@
 //! Round 2 UNGUIDED anytime curves vs rule count, modes (i)/(ii)
-//! (`docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2, §5, §9 step 2).
+//! (`docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2, §5, §9 step 2).
 //!
 //! This is the pre-registration data: unguided-only curves at every |R|
 //! grid point of mode (i) (exact duplicates) and mode (ii) (mechanical

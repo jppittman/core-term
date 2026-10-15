@@ -198,7 +198,7 @@ fn a_reference_is_declined_by_every_vocabulary() {
 
 /// A `Write` is declined for a standing reason: an effect is not a value
 /// any rule may rewrite, and the legalize passes build one *after*
-/// extraction (docs/plans/2026-09-16-collapse-is-a-fold.md §2.4), so a term
+/// extraction (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.4), so a term
 /// carrying one into saturation skipped the pipeline. `Seq`, the unit
 /// monoid's combine, is declined as an op no vocabulary resolves.
 #[test]
@@ -248,7 +248,7 @@ fn the_runtime_pipeline_optimizes_a_named_body() {
 /// L3a, materialisation: `embed` after `project` reconstructs the same term.
 ///
 /// The optimizer-api plan recorded this law as UNREPRESENTABLE AS STATED
-/// (docs/plans/2026-09-02-optimizer-api.md:188) because there was no boundary
+/// (docs/archive/plans/2026-09-02-optimizer-api.md:188) because there was no boundary
 /// to state it against. There is one now, and it is generic over any `Ir`.
 #[test]
 fn project_then_embed_round_trips() {

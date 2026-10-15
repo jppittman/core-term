@@ -49,7 +49,7 @@
 //! exact over-approximation made and why it is safe.
 //!
 //! [`derivation_ancestors_tight`] is a second, narrower walk over the same
-//! records (`docs/plans/2026-08-31-guide-design-revision.md` §3, option 3):
+//! records (`docs/archive/plans/2026-08-31-guide-design-revision.md` §3, option 3):
 //! it exists **alongside** `derivation_ancestors`, not in place of it, so both
 //! can be computed on the same episode and compared. It narrows all three
 //! named over-approximation axes but does not eliminate them — see its doc
@@ -408,7 +408,7 @@ impl Provenance {
     /// e.g. "which e-nodes did this `ApplicationId` create?" — without
     /// changing what gets recorded or how ancestry is computed. Added for the
     /// guided-saturation scoping measurements (`derivation_ancestors`'s
-    /// over-approximation looseness, docs/plans/2026-07-07-guided-saturation-redesign.md
+    /// over-approximation looseness, docs/compiler/2026-07-07-guided-saturation-redesign.md
     /// lines 88-90): purely additive, no existing behavior touched.
     #[cfg(feature = "provenance-journal")]
     pub fn origins(&self) -> impl Iterator<Item = (ENodeId, Origin)> + '_ {

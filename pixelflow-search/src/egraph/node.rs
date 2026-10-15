@@ -14,7 +14,7 @@ use super::shift::ShiftDirection;
 /// reason (2026-10-14). The field was widened to `u64` and measured on a
 /// native release build: the cold compile of the 29 programs ASCII needs, and
 /// of the n=40 program (a per-count program of n pieces,
-/// docs/plans/2026-09-25-the-language-is-kernel.md), in interleaved
+/// docs/language/2026-09-25-the-language-is-kernel.md), in interleaved
 /// before/after pairs, each in its own process, peak RSS read from the parent
 /// (`ru_maxrss`, KiB, shown here divided by 1000). The harness is out of tree.
 ///
@@ -239,7 +239,7 @@ pub enum ENode {
     Reduce { fold: Fold, body: EClassId },
     /// A **unit**: a kernel named by content, optimized by itself and linked
     /// in after extraction (`crate::runtime`;
-    /// docs/plans/2026-09-25-the-language-is-kernel.md §4, O1). A leaf here,
+    /// docs/language/2026-09-25-the-language-is-kernel.md §4, O1). A leaf here,
     /// opaque to every rule as a [`ENode::Uniform`] is: its body is not in
     /// this graph, so no rewrite can reach inside it, and extraction hands
     /// back the name.

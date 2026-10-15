@@ -95,7 +95,7 @@ pub(crate) enum ScheduledOp {
     /// pointer value; no operands, variance `CONST`,
     /// so it is placed in the per-call scope and carried into the loops
     /// inside by `plan_carries` on the strength of its reads there — one
-    /// load per call (docs/plans/2026-09-22-a-pointer-is-a-value.md).
+    /// load per call (docs/archive/plans/2026-09-22-a-pointer-is-a-value.md).
     Context(u16),
     /// The lane fold's binder: the constant `[0, 1, …, L−1]`. The fold
     /// whose binder this is executes by lanes (its body is inlined into its
@@ -200,7 +200,7 @@ fn not_legal(op: OpKind) -> ! {
 ///
 /// The nest is a **tree**: every fold hangs off whichever scope holds its
 /// def. The lattice's own rows and columns are folds too
-/// (docs/plans/2026-09-16-collapse-is-a-fold.md), so there is the body, run
+/// (docs/archive/plans/2026-09-16-collapse-is-a-fold.md), so there is the body, run
 /// once per call, and folds all the way down. The derived `Ord` is therefore **not** nesting order — it
 /// is a total order over names, for deterministic keying.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -221,7 +221,7 @@ pub(crate) enum Scope {
 /// is what happens once per trip of its loop. A value is computed by the
 /// outermost scope binding every binder it depends on, so a value depending
 /// on nothing is computed once per call and one depending only on the row
-/// binder once per row (docs/plans/2026-09-16-collapse-is-a-fold.md §2.2);
+/// binder once per row (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.2);
 /// a fold that reads it names it in [`ScopeFold::outer`]. A scope's roots —
 /// what it computes for the scopes inside it — are its defs some fold inside
 /// names there: derived, not stored.

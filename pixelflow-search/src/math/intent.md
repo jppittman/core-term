@@ -55,5 +55,5 @@ rule implements `Rewrite`. `derivative_rules` and `fold_rules` live in `egraph/`
   grids pin `all_rules`, so fold rules live in `egraph/fold_rules.rs`.
 
 ## Decided in
-`docs/DENOTATION.md` §8, `docs/plans/2026-09-02-optimizer-api.md` (L1),
-`docs/plans/2026-09-24-one-pipeline.md` §1.1.
+`docs/DENOTATION.md` §8, `docs/archive/plans/2026-09-02-optimizer-api.md` (L1),
+`docs/language/2026-09-24-one-pipeline.md` §1.1.

@@ -79,7 +79,7 @@ pub struct Limits {
 /// key the guided loop dedups on — so no re-derivation by that route can put
 /// the node back. The gap between the two Δs is this program's measurement
 /// of leave-one-out's confluence blindness
-/// (docs/plans/2026-09-01-guide-return-to-go.md §4).
+/// (docs/archive/plans/2026-09-01-guide-return-to-go.md §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaskScope {
     /// Skip only the application that would be assigned `skip_ordinal`.
@@ -92,7 +92,7 @@ pub enum MaskScope {
 
 /// Names the application to skip in a counterfactual replay, and how far the
 /// skip reaches — see [`Optimizer::mask`](crate::egraph::optimizer::Optimizer::mask)
-/// and docs/plans/2026-09-01-guide-return-to-go.md §4.1.
+/// and docs/archive/plans/2026-09-01-guide-return-to-go.md §4.1.
 ///
 /// `skip_ordinal` counts in [`Saturation::application_count`]'s currency, the
 /// unconditional budget denominator — the same numbering
@@ -253,7 +253,7 @@ pub struct SaturationStats {
 /// (`usize::MAX`, or a number derived from an unbounded input). It lives
 /// here — at the growth decision — and NOT inside [`EGraph::add`], because
 /// `add` is the homomorphism onto the semantic quotient (law L1,
-/// `docs/plans/2026-09-02-optimizer-api.md` §1): a budget that stops `add`
+/// `docs/archive/plans/2026-09-02-optimizer-api.md` §1): a budget that stops `add`
 /// must hand the caller something that is not the class of the node it
 /// asked for, and there is no such thing. A budget that stops the *driver*
 /// leaves every class the graph does hold correct, which is what
@@ -340,7 +340,7 @@ pub struct Saturation {
     /// funnels through.
     ///
     /// This is the matches enumerated
-    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1), counted
+    /// (docs/archive/plans/2026-09-01-phase3-round2-registration-v2.md §7.1), counted
     /// as `apply` calls. The Guide-cost-flatness precondition needs it
     /// denominated per application, and per application needs it cumulative
     /// across the resumed budget calls an anytime curve makes, the same way
@@ -350,7 +350,7 @@ pub struct Saturation {
     /// A name-keyed map collapsed all four `Commutative` instances into one
     /// bucket, so every per-rule report built on it was wrong by aggregation.
     match_counts: HashMap<RuleId, usize>,
-    /// Counterfactual-replay mask (docs/plans/2026-09-01-guide-return-to-go.md
+    /// Counterfactual-replay mask (docs/archive/plans/2026-09-01-guide-return-to-go.md
     /// §4.1): when `Some`, the application that would otherwise be assigned
     /// this ordinal is skipped entirely by [`Self::commit`] — not counted,
     /// not recorded, not applied — and the ordinal it would have consumed is
@@ -365,7 +365,7 @@ pub struct Saturation {
     /// once" from "the mask matched eleven times", and must never have to
     /// infer that a mask fired at all.
     mask_skips: usize,
-    /// Per-application growth telemetry (`docs/plans/2026-08-31-guide-design-revision.md`
+    /// Per-application growth telemetry (`docs/archive/plans/2026-08-31-guide-design-revision.md`
     /// §4.1): `None` until [`Self::enable_growth_telemetry`] turns it on.
     /// Compiled in only under `saturation-telemetry`, and checked with a bare
     /// `is_some()` on every committed application even then — see
@@ -955,7 +955,7 @@ impl Saturation {
                     // given can be led to a worse answer by more choices.
                     // So the estimator tells the truth and the extractor
                     // owns the regression — decision JP, 2026-09-09; see
-                    // docs/plans/2026-08-31-guide-design-revision.md §4.2.
+                    // docs/archive/plans/2026-08-31-guide-design-revision.md §4.2.
                     //
                     // Sound as an upper bound on the whole scan's real
                     // growth even though sibling actions found later in this
@@ -1096,7 +1096,7 @@ impl Saturation {
     /// class the rule matched against, i.e. `class_id` as passed in (cheap:
     /// already in hand at the call site).
     fn commit(&mut self, rule_idx: RuleIdx, class_id: EClassId, action: RewriteAction) -> usize {
-        // Counterfactual replay (docs/plans/2026-09-01-guide-return-to-go.md
+        // Counterfactual replay (docs/archive/plans/2026-09-01-guide-return-to-go.md
         // §4.1): a masked application is not counted, not recorded and not
         // applied, so everything downstream — the rest of this scan, the
         // rest of this sweep, later sweeps — proceeds exactly as it would

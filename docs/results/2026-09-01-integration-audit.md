@@ -211,7 +211,7 @@ program produced — the trained extraction head, incremental extraction, the Gu
 either behind an env var nobody sets or has no caller outside research binaries. Provenance recording
 is the odd one out: paid on every production compile, read by nothing production-facing. Two things
 should temper "the table does 95%": the 0.9438/0.9486 Spearman comparison
-([`docs/plans/2026-08-17-egraph-vsa-nnue-research-notes.md:105-106`](../plans/2026-08-17-egraph-vsa-nnue-research-notes.md#L105-L106))
+([`docs/archive/plans/2026-08-17-egraph-vsa-nnue-research-notes.md:105-106`](../archive/plans/2026-08-17-egraph-vsa-nnue-research-notes.md#L105-L106))
 was measured under a saturation budget production does not use (§2), and the `Dwrt` path shows the
 macro tier is not one e-graph but two, with different budgets and only one of them honoring the
 extraction-policy switch.
@@ -236,7 +236,7 @@ extraction-policy switch.
 
 ### 2b. What the research harnesses ran, and what the pre-registration assumes
 
-The "registration doc" is [`docs/plans/2026-08-31-guide-design-revision.md`](../plans/2026-08-31-guide-design-revision.md)
+The "registration doc" is [`docs/archive/plans/2026-08-31-guide-design-revision.md`](../archive/plans/2026-08-31-guide-design-revision.md)
 §5 ("Pre-registered Phase 3 experiment"). Its three supporting measurements are listed in its §1 table
 (lines 19-30).
 
@@ -247,7 +247,7 @@ The "registration doc" is [`docs/plans/2026-08-31-guide-design-revision.md`](../
 | `guide_scope_saturation_delta.rs` (§2.2 incrementality) | CLI defaults `max_iterations = 100`, `max_classes = 3000`, timeout 3600 s, driven one `saturate_with_limits(1, ..)` round at a time ([`:150-157,299,310`](../../pixelflow-pipeline/src/bin/guide_scope_saturation_delta.rs#L150-L157)) | **MISMATCH** on class cap (3,000 vs 500/2,000/5,000) and timeout; the batched per-round algorithm itself is the production one. |
 | `oracle_filtered_budget_curves.rs` (§2.3 anytime curves) | `FRACS = [0.25, 0.5, 1.0, 2.0, 3.0]` × the expression's own `config_for_node_count` nominal iterations and classes; 300 s safety ceiling ([`pixelflow-search/examples/oracle_filtered_budget_curves.rs:140-147,495-519`](../../pixelflow-search/examples/oracle_filtered_budget_curves.rs#L140-L147)) | **MATCH on iteration and class nominals** (the only harness that reads the production tiers). Wall-clock ceiling deliberately not production's. Its own report calls the run inconclusive as calibrated (97.8% of expressions quiesce before the first checkpoint). |
 | `training/episodes.rs` (corpus generation) | randomized per episode: 10–60 iterations, 50–2,000 classes, ≤5 s ([`episodes.rs:236-247`](../../pixelflow-pipeline/src/training/episodes.rs#L236-L247)) | **MISMATCH by design** — documented as "budget-capped for training-corpus diversity". |
-| §5 pre-registered experiment | Budget **denominated in rule applications** ("median ~195, heavy-tailed"), cost = `CostModel::latency_prior()`, "no wall-clock timing", family-held-out split ([`guide-design-revision.md:289-345`](../plans/2026-08-31-guide-design-revision.md#L289-L345)) | **MISMATCH in the budget's unit.** Production budgets rounds, classes, and milliseconds, selected by node count. It does count rule applications — every rule action calls `Provenance::record_application` ([`graph.rs:1014`](../../pixelflow-search/src/egraph/graph.rs#L1014)), and the public `application_count()` reports the running total ([`provenance.rs:158-182`](../../pixelflow-search/src/egraph/provenance.rs#L158-L182)) — but that count is not used as a stop condition and is not surfaced in `SaturationStats`/`SaturationResult` (the loop's own counters remain just `iterations`/`total_unions`, [`graph.rs:881-884`](../../pixelflow-search/src/egraph/graph.rs#L881-L884)). The wall-clock ceiling that production has (10/50/200 ms) is excluded from the experiment by construction. The cost model matches. |
+| §5 pre-registered experiment | Budget **denominated in rule applications** ("median ~195, heavy-tailed"), cost = `CostModel::latency_prior()`, "no wall-clock timing", family-held-out split ([`guide-design-revision.md:289-345`](../archive/plans/2026-08-31-guide-design-revision.md#L289-L345)) | **MISMATCH in the budget's unit.** Production budgets rounds, classes, and milliseconds, selected by node count. It does count rule applications — every rule action calls `Provenance::record_application` ([`graph.rs:1014`](../../pixelflow-search/src/egraph/graph.rs#L1014)), and the public `application_count()` reports the running total ([`provenance.rs:158-182`](../../pixelflow-search/src/egraph/provenance.rs#L158-L182)) — but that count is not used as a stop condition and is not surfaced in `SaturationStats`/`SaturationResult` (the loop's own counters remain just `iterations`/`total_unions`, [`graph.rs:881-884`](../../pixelflow-search/src/egraph/graph.rs#L881-L884)). The wall-clock ceiling that production has (10/50/200 ms) is excluded from the experiment by construction. The cost model matches. |
 
 What the mismatch means: a Guide validated under §5's protocol is validated on a machine whose budget
 is "N applications, unlimited time" while production's is "≤100 rounds, ≤5,000 classes, ≤200 ms". Until
@@ -348,7 +348,7 @@ production compile, and unlike the table its cost was never measured.
    describes the common path as "through `GlyphCache`"; core-term has no `GlyphCache` reference
    (`grep -rn GlyphCache core-term/src pixelflow-runtime/src` → none) and uses `GlyphAtlas`.
 10. **The duplicate saturation loop** flagged as J11 in
-    [`2026-08-17-cost-model-domain.md`](../plans/2026-08-17-cost-model-domain.md) is not dead after
+    [`../archive/plans/2026-08-17-cost-model-domain.md`](../archive/plans/2026-08-17-cost-model-domain.md) is not dead after
     all: `graph.rs::saturate()` is a live production entry via the `Dwrt` path, so unifying it with
     `saturate_with_full_budget` is a behavior change for `DX`/`DY` kernels, not a cleanup.
 11. **`bench_extraction_3way.rs` retains no termination telemetry.** `saturate_with_limit(40)` can

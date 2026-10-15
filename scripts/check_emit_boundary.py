@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Enforce the emit boundary of pixelflow-codegen.
 
-docs/plans/2026-09-12-emit-should-just-emit.md: the emitter -- `emit/`, the
+docs/archive/plans/2026-09-12-emit-should-just-emit.md: the emitter -- `emit/`, the
 register allocator included -- is handed a finished program and turns it into
 bytes. It names nothing upstream of it: no optimizer, no lowering, no scoping,
 no driver. And `program/`, the vocabulary and the stages that build it, names

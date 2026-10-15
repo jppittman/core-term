@@ -1,5 +1,5 @@
 //! Candidate-local features for the saturation Guide
-//! (`docs/plans/2026-08-31-guide-design-revision.md` §4, Phase 3 task 1).
+//! (`docs/archive/plans/2026-08-31-guide-design-revision.md` §4, Phase 3 task 1).
 //!
 //! The strict extracted-path label itself lives in
 //! [`super::labeler::EpisodeLabels::compute_strict`] (alongside the loose
@@ -52,7 +52,7 @@
 //! and [`Firing::registered_budget`], both supplied by the caller from
 //! [`super::provenance::ApplicationId`]/[`super::provenance::ApplicationRecord`]
 //! — exact regardless of when `observe` is called. Per the design's binding
-//! budget-only framing (`docs/plans/2026-07-07-guided-saturation-redesign.md`
+//! budget-only framing (`docs/compiler/2026-07-07-guided-saturation-redesign.md`
 //! §0): denominated in rule-application ordinal only, never an
 //! iteration/sweep counter and never wall-clock.
 
@@ -63,7 +63,7 @@ use super::node::{EClassId, ENode};
 use super::rules::RuleId;
 
 /// The pre-registered Phase 3 primary budget tier B for the classical band
-/// (`docs/plans/2026-09-01-phase3-registration.md` §4: "classical: B = 100
+/// (`docs/archive/plans/2026-09-01-phase3-registration.md` §4: "classical: B = 100
 /// (primary), B = 200 (secondary)"). This is the ONE denominator
 /// [`Firing::registered_budget`]/[`CandidateFeatures::budget_fraction`] means
 /// when the design doc talks about "budget spent, in units of B": both the

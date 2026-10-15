@@ -3,7 +3,7 @@
 //! Mirrors the `VsyncCore`/`RenderCore`/`CoordinatorCore` split: a `step_*` call takes a message
 //! and **returns** what to emit, so the app/vsync/driver relays left once rendering moved to its
 //! own node (`coordinator_node.rs`, step 5c of
-//! `docs/designs/pixelflow-runtime-engine-mesh-migration.md`) are table-testable with no
+//! `docs/runtime/pixelflow-runtime-engine-mesh-migration.md`) are table-testable with no
 //! scheduler, no handles, and no threads in the loop. `EngineHandler` shrinks to the thin
 //! adapter that owns the real channels and flushes the returned word.
 //!

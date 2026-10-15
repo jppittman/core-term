@@ -27,12 +27,12 @@
   - So a `Dwrt` survives composition, and the chain rule holds under a warp.
   - Nothing downstream may assume a composed arena is already inlined.
   - The only way to numbers is compile → collapse; there is no bind
-    (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2).
+    (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2).
   - The fluent constructors leave the public API (Phase D-d), and only
     compiler crates may depend on `pixelflow-ir` (D16, enforced in CI).
 - **Lives:** `pixelflow_ir::Kernel` (`pixelflow-ir/src/kernel.rs`),
   re-exported by `pixelflow_core` (`pixelflow-core/src/lib.rs`). Decided in
-  `docs/plans/2026-09-25-the-language-is-kernel.md` §0–§1.1,
+  `docs/language/2026-09-25-the-language-is-kernel.md` §0–§1.1,
   `2026-09-24-one-pipeline.md` §1.2, and `2026-09-06-kernel-with-a-lattice.md`
   "The shape". Today these contradict the entry:
   - `select`, `at`, `over`, `sum_over`, `dwrt` and `by_ref` are still public.
@@ -603,7 +603,7 @@
 
 - **Is:** dispatch: `if m then a else b`, two cases, both arms defined at
   every index. "Choosing among alternatives is `if`." It has one lowering,
-  for every `m` (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §1):
+  for every `m` (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §1):
 
   ```
   if any(m)  { a's own block }
@@ -681,7 +681,7 @@
   (`pixelflow-ir/src/arena.rs`), `ENode::Const(u32)`
   (`pixelflow-search/src/egraph/node.rs`), `pixelflow_ir::dyadic::Dyadic`
   (`pixelflow-ir/src/dyadic.rs`); decided in
-  `docs/plans/2026-08-08-egraph-constant-domain-spike.md` §4 and §6. Today
+  `docs/archive/plans/2026-08-08-egraph-constant-domain-spike.md` §4 and §6. Today
   there is still one variant "stored as f32 bits". The split is unbuilt, so
   the code stopped at the first link. `library::derivative`
   (`pixelflow-ir/src/library.rs`) still passes `Dwrt`'s axis as a `Const`
@@ -905,8 +905,8 @@
   fixpoint, so the optimizer is budget-only. Ranges are constant, and
   uniforms are never extents. Complex numbers, quaternions, polar
   coordinates, fract, hypot and clamp are library code.
-- **Lives:** `docs/designs/2026-07-24-totality-and-the-cost-model.md`;
-  `docs/plans/2026-07-20-kernel-unification.md` "Root axiom";
+- **Lives:** `docs/language/2026-07-24-totality-and-the-cost-model.md`;
+  `docs/language/2026-07-20-kernel-unification.md` "Root axiom";
   the-language-is-kernel §1.5 (JP: "ranges have to be constant … we may
   relax this at some point").
 
@@ -945,7 +945,7 @@
 - **Follows:** per-op tables are `OpMap<T>`, and `index()`/`from_index` are
   `pub(crate)`.
 - **Lives:** `pixelflow-ir/src/kind.rs`;
-  `docs/designs/opkind-numbering-is-private.md`.
+  `docs/archive/designs/opkind-numbering-is-private.md`.
 
 ### Retired: Field, the combinator tier, the integral
 

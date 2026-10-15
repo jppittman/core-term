@@ -45,7 +45,7 @@ use pixelflow_search::egraph::{
 use pixelflow_search::nnue::guide::SaturationGuide;
 use pixelflow_search::nnue::guide::linear::PerRuleRateGuide;
 
-/// The registered guided grid (docs/plans/2026-09-01-phase3-registration.md).
+/// The registered guided grid (docs/archive/plans/2026-09-01-phase3-registration.md).
 const GRID: &[usize] = &[25, 50, 100, 200, 400, 800];
 const SWEEP_SAFETY_CEILING: usize = 10_000;
 const SAFETY_TIMEOUT: Duration = Duration::from_secs(1800);

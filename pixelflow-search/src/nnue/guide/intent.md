@@ -53,7 +53,7 @@ cost and compile time, never meaning. Trained offline; inert in production.
   callers, the whole-graph Judge seam (J10, ROADMAP-ADMITTED).
 
 ## Decided in
-`docs/DENOTATION.md` §8, `docs/plans/2026-09-02-optimizer-api.md` §1 (L4),
-`docs/plans/2026-07-07-guided-saturation-redesign.md`,
-`docs/plans/2026-08-31-guide-design-revision.md` §4, `docs/plans/2026-09-01-guide-return-to-go.md`,
-`docs/plans/2026-09-02-bilinear-guide-registration.md` §4, `docs/plans/2026-09-07-benchmark-correction.md` §E.
+`docs/DENOTATION.md` §8, `docs/archive/plans/2026-09-02-optimizer-api.md` §1 (L4),
+`docs/compiler/2026-07-07-guided-saturation-redesign.md`,
+`docs/archive/plans/2026-08-31-guide-design-revision.md` §4, `docs/archive/plans/2026-09-01-guide-return-to-go.md`,
+`docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §4, `docs/compiler/2026-09-07-benchmark-correction.md` §E.

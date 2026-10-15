@@ -5,7 +5,7 @@ mod tests {
     //! This file used to stand up an entire engine actor, a `MockEngine` to capture events, a
     //! background scheduler thread, and a 100ms sleep — all of it existing only to observe the
     //! `WindowCreated` event that `MetalOps` sent. Since rollout step 4
-    //! (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5.1) `PlatformOps` *returns*
+    //! (`docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §5.1) `PlatformOps` *returns*
     //! its outbound events in a `DriverOut` instead of sending them, so all of that apparatus is
     //! gone: the events are read directly out of the value the call fills in.
     //!

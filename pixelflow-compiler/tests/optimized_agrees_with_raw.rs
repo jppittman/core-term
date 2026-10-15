@@ -1,7 +1,7 @@
 //! `kernel!` (optimized) agrees with `kernel_raw!` (the `Identity` optimizer),
 //! and both agree with a closed-form oracle.
 //!
-//! This is the as-if contract of docs/plans/2026-10-13-tests-check-the-as-if-contract.md
+//! This is the as-if contract of docs/process/2026-10-13-tests-check-the-as-if-contract.md
 //! applied across optimization: the e-graph may fuse, reassociate and pick
 //! equivalent forms, and this file asserts nothing about which form it picked.
 //! It asserts only that the value a caller gets is the value the expression

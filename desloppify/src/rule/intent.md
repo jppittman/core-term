@@ -53,7 +53,7 @@ and `snippet/` read them.
   gives the crate call no root (`review/plan.rs`), so the context is dropped
   silently. No plan or BACKLOG item.
 - `Surroundings` is `None` or `ModuleRoot`; the nearest `intent.md` is not one
-  yet (`docs/plans/2026-10-15-intent-lives-with-the-module.md` §4, §6).
+  yet (`docs/process/2026-10-15-intent-lives-with-the-module.md` §4, §6).
 
 ## Decided in
 `desloppify/README.md` "Rules"; no plan decides the rule shape.

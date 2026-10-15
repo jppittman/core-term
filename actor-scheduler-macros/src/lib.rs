@@ -513,14 +513,14 @@ struct Port {
 /// confusing parse error: droppable ports have no production user, the one real shedding
 /// instance in the runtime was a bypass of this very macro (a hand-rolled `try_send`, not a
 /// declared `[drop]` port), and every port now parks (see
-/// `docs/designs/actor-scheduler-mealy-transducer.md` §7.2).
+/// `docs/runtime/actor-scheduler-mealy-transducer.md` §7.2).
 fn parse_port_kind(group_str: &str, port: &str) -> PortKind {
     let mut kind = PortKind::Blocking;
     for part in group_str.split(',') {
         match part.trim() {
             "drop" => panic!(
                 "ports! `{port}`: droppable ports are gone; every port parks. \
-                 See docs/designs/actor-scheduler-mealy-transducer.md §7.2."
+                 See docs/runtime/actor-scheduler-mealy-transducer.md §7.2."
             ),
             "self" => kind = PortKind::SelfPort,
             "" => {}

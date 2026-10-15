@@ -55,5 +55,5 @@ from `mod.rs`.
 
 ## Decided in
 `desloppify/skills/behavioral-contracts/SKILL.md` ("Tests only ever see the
-production API"), `docs/plans/2026-10-13-tests-check-the-as-if-contract.md`. No
+production API"), `docs/process/2026-10-13-tests-check-the-as-if-contract.md`. No
 plan decides this module's existence.

@@ -3,7 +3,7 @@
 //! A glyph is its pieces' terms summed under its box, written once in
 //! `kernel!` below: [`one_piece`] is a piece's term over its own ten
 //! uniforms, [`sum2`] the monoid the host folds a glyph's pieces with, and
-//! [`glyph`] coverage under the box (docs/plans/2026-09-25-the-language-is-kernel.md
+//! [`glyph`] coverage under the box (docs/language/2026-09-25-the-language-is-kernel.md
 //! §1.7). Every value a glyph holds is a uniform, so two glyphs with the
 //! same number of pieces are the same program over different blocks: the
 //! font at a tile size is the program for each piece count its glyphs have,

@@ -283,7 +283,7 @@ fn representative(egraph: &EGraph, class: EClassId) -> Option<&ENode> {
 /// 23–42% more emitted nodes on production glyphs, because the graph then has
 /// to reassociate an n-deep chain to reach the shape the cost model and the
 /// fusion rules were tuned on, and spends its class budget doing it. See
-/// docs/plans/2026-09-09-a-fold-is-a-node.md §9.
+/// docs/archive/plans/2026-09-09-a-fold-is-a-node.md §9.
 ///
 /// [`HalveFold`]'s epilogue for an odd trip count, at whatever level of the
 /// halving recursion it arises — declines outright on a fold

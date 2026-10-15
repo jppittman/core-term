@@ -51,5 +51,5 @@ desloppify is not a pixelflow crate, so this cites its README, not DENOTATION.
 
 ## Decided in
 desloppify/README.md "Rules" (the `skills` field) and "Skills";
-`docs/plans/2026-10-15-intent-lives-with-the-module.md` §5 (skills as
+`docs/process/2026-10-15-intent-lives-with-the-module.md` §5 (skills as
 symlinks to their source).

@@ -48,11 +48,11 @@ for (§4); that is the input of `select` (§10).
   called from `pipeline.rs`'s `Legalize`, so `Nest` receives the lattice
   already folded into the arena; `ScheduledOp::Write`, `Seq`, `Lanes` and the
   lane-fold inlining in `lower.rs` carry that CPU schedule. They move into
-  `Nest` (`docs/plans/2026-10-15-a-schedule-is-a-factorization.md` §1, §4).
+  `Nest` (`docs/codegen/2026-10-15-a-schedule-is-a-factorization.md` §1, §4).
 - `ScheduledOp::Context(u16)` and `Write { lanes: u32 }` are narrower than the
   control plane's 64 bits with no measurement cited; no plan closes it.
 
 ## Decided in
-`docs/DENOTATION.md` §4, §7, §10; `docs/plans/2026-10-08-selection-is-a-phase.md`
-§0.13, §0.14; `docs/plans/2026-10-15-kernels-evaluate-kernels.md` §1, §3;
-`docs/plans/2026-10-15-a-schedule-is-a-factorization.md`.
+`docs/DENOTATION.md` §4, §7, §10; `docs/archive/plans/2026-10-08-selection-is-a-phase.md`
+§0.13, §0.14; `docs/language/2026-10-15-kernels-evaluate-kernels.md` §1, §3;
+`docs/codegen/2026-10-15-a-schedule-is-a-factorization.md`.

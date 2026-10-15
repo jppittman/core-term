@@ -1,6 +1,6 @@
 //! A program too big for one e-graph compiles, a unit at a time.
 //!
-//! docs/plans/2026-09-25-the-language-is-kernel.md §4, O1: Noto's ASCII
+//! docs/language/2026-09-25-the-language-is-kernel.md §4, O1: Noto's ASCII
 //! inlined is 169,263 classes before any rule fires, over the e-graph's hard
 //! class limit, so its saturation stops at once and the whole font is
 //! emitted as written. Each glyph is a *unit* (`Kernel::by_ref`): saturated and extracted

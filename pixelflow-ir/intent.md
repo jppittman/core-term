@@ -68,7 +68,7 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   tree and not concepts (DENOTATION §11).
 
 ## Decided in
-`docs/DENOTATION.md` §1–§3, `docs/plans/2026-09-25-the-language-is-kernel.md`,
-`docs/plans/2026-09-09-exprarena-on-dag.md`, `docs/plans/2026-09-09-a-fold-is-a-node.md`,
-`docs/plans/2026-09-09-composition-is-linking.md`,
-`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
+`docs/DENOTATION.md` §1–§3, `docs/language/2026-09-25-the-language-is-kernel.md`,
+`docs/archive/plans/2026-09-09-exprarena-on-dag.md`, `docs/archive/plans/2026-09-09-a-fold-is-a-node.md`,
+`docs/language/2026-09-09-composition-is-linking.md`,
+`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.

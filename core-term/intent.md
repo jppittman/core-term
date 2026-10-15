@@ -54,6 +54,6 @@ uniforms and a shape.
   does not exist; no plan names them.
 
 ## Decided in
-`docs/plans/2026-09-25-the-language-is-kernel.md` D13,
-`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2,
-`docs/plans/2026-09-24-one-pipeline.md` U3, CLAUDE.md "Critical Constraints".
+`docs/language/2026-09-25-the-language-is-kernel.md` D13,
+`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2,
+`docs/language/2026-09-24-one-pipeline.md` U3, CLAUDE.md "Critical Constraints".

@@ -29,7 +29,7 @@ use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, OpKind, Shape,
 /// What extraction *returns* is not this type: a settlement makes its term
 /// directly, and a `Selection` is the term. `Extraction::to_selection`
 /// converts, and the conversion cannot fail for a value of this type. See
-/// docs/plans/2026-08-17-cost-model-domain.md §1 "Extraction (J2)".
+/// docs/archive/plans/2026-08-17-cost-model-domain.md §1 "Extraction (J2)".
 pub struct Extraction<'g> {
     egraph: &'g EGraph,
     root: EClassId,
@@ -91,7 +91,7 @@ impl<'g> Extraction<'g> {
     /// (`EGraph::variance`, an intersection over every member).
     ///
     /// Materialises the term once and classifies that arena — P1(c) of
-    /// docs/plans/2026-08-17-cost-model-domain.md: once a rewrite merges a
+    /// docs/archive/plans/2026-08-17-cost-model-domain.md: once a rewrite merges a
     /// pixel-varying node into a class alongside a constant one, the
     /// class-wide fact reports CONST regardless of which node the
     /// extraction actually chose, so only the materialised DAG describes
@@ -202,7 +202,7 @@ impl<'g> Extraction<'g> {
 // The extraction-head program that used to drive this search with a trained
 // NNUE tied the static table on schedule-free kernels (workshop paper on
 // branch `claude/workshop-writeup`, PR #1072, closed without merging — not
-// in this tree; see docs/plans/2026-09-01-schedule-cost-model-denotation.md)
+// in this tree; see docs/compiler/2026-09-01-schedule-cost-model-denotation.md)
 // — but JP's ruling on the
 // program's SHAPE was narrower than "delete everything it touched":
 // "I don't think what we have was the correct shape. I think it's right as
@@ -1645,7 +1645,7 @@ fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize 
 ///
 /// An `If(m, a, b)` compiles to one shape: its mask, each arm's own block
 /// under a guard that skips it when no lane selects it, and the select
-/// (docs/plans/2026-10-15-kernels-evaluate-kernels.md §1). How often `m` is
+/// (docs/language/2026-10-15-kernels-evaluate-kernels.md §1). How often `m` is
 /// true is unknown and nothing estimates it, so the arms are **averaged**:
 /// `cost(m) + (cost(a) + cost(b)) / 2`, rounded half up. Average, not max:
 /// with no information it is the unbiased guess, and max would push

@@ -2,7 +2,7 @@
 //! through the production pipeline and judged by scalar `f64` Rust.
 //!
 //! This is the gate for `FactorFold` (`pixelflow-search`'s
-//! `egraph::fold_rules`), step 2 of docs/plans/2026-09-23-an-integral-is-a-fold.md
+//! `egraph::fold_rules`), step 2 of docs/archive/plans/2026-09-23-an-integral-is-a-fold.md
 //! §8: the runtime tier may now rewrite `⊕_i (c ⊗ f)` into `c ⊗ ⊕_i f`
 //! whenever the class variance fact clears `c` of the binder, so a kernel
 //! built through the `Kernel` API can come back out of `Lattice::bake`

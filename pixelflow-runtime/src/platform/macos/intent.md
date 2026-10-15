@@ -54,6 +54,6 @@ change of either is a new extent and a recompile) and presents the lent frame th
   `tests/macos_integration_tests.rs` need a window server and are `#[ignore]`d.
 
 ## Decided in
-`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5.1 (`PlatformOps` returns its events);
+`docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §5.1 (`PlatformOps` returns its events);
 the `CocoaWaker` header in `pixelflow-runtime/src/platform/waker.rs` (the `dispatch_async` hop);
 CLAUDE.md "Platform Notes".

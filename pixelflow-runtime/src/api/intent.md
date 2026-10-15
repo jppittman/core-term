@@ -55,5 +55,5 @@ variant's doc carries its contract (**Engine** / **Application**).
   the mesh (mesh-migration design, Draft 2026-07-25).
 
 ## Decided in
-`docs/designs/pixelflow-runtime-engine-mesh-migration.md` (Draft),
-`docs/designs/actor-scheduler-mealy-transducer.md` (Draft); CLAUDE.md "Actor Model".
+`docs/runtime/pixelflow-runtime-engine-mesh-migration.md` (Draft),
+`docs/runtime/actor-scheduler-mealy-transducer.md` (Draft); CLAUDE.md "Actor Model".

@@ -6,7 +6,7 @@
 //! Which rule fires *first* inside a round, when several match the same
 //! e-class, changes what an early-terminated sweep (an iteration cap, a
 //! class cap, a wall-clock deadline) has done by the time it stops. Round 2
-//! v3 (`docs/plans/2026-09-01-phase3-round2-registration-v3.md` §6b) found
+//! v3 (`docs/archive/plans/2026-09-01-phase3-round2-registration-v3.md` §6b) found
 //! this order effect dominant on synthetic classical expressions; this
 //! module is the harness-scale piece that lets
 //! `docs/results/2026-09-01-rule-order-real-kernels.md` re-measure it on
@@ -74,7 +74,7 @@ pub fn build_rule_set(order: RuleOrder) -> Vec<Box<dyn Rewrite>> {
 /// Deterministic Fisher-Yates shuffle, seeded by a small xorshift64 PRNG —
 /// no external `rand` dependency, and no reliance on any particular crate
 /// version's shuffle algorithm (a portability concern for a *pinned*
-/// ordering: `docs/plans/2026-09-01-phase3-round2-registration-v3.md` uses
+/// ordering: `docs/archive/plans/2026-09-01-phase3-round2-registration-v3.md` uses
 /// the same construction for its `Interleave`/`Shuffled` orders, reproduced
 /// here rather than imported since that plan's `inflate.rs` never shipped
 /// to `main`).

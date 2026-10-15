@@ -137,7 +137,7 @@ pub fn saturate_with_full_budget(
     // One call drives the entire multi-round run — the loop that decides
     // when to stop (timeout, class limit, or convergence) lives exactly
     // once, in `Saturation::saturate_with_limits`
-    // (docs/plans/2026-08-17-cost-model-domain.md, J11). This module
+    // (docs/archive/plans/2026-08-17-cost-model-domain.md, J11). This module
     // previously re-decided the same stopping conditions in a second,
     // hand-rolled outer loop that drove the e-graph one round at a time —
     // the duplicate-loop drift the domain model doc calls out by name.
@@ -180,7 +180,7 @@ pub struct SaturationConfig {
     pub max_minted: usize,
     /// Rule-application budget — deterministic replacement for wall clock
     /// as a *stopping condition*. See
-    /// `docs/plans/2026-09-01-production-budget-determinism.md` for the
+    /// `docs/archive/plans/2026-09-01-production-budget-determinism.md` for the
     /// calibration (40 applications per e-class of the tier's own class
     /// cap, 1.9x the highest applications-per-class ratio ever observed).
     pub max_applications: u64,
@@ -198,7 +198,7 @@ pub struct SaturationConfig {
 
 /// The application budget per e-class of a tier's class cap — 1.9× the
 /// highest applications-per-class ratio ever observed at a tier's own cap
-/// (docs/plans/2026-09-01-production-budget-determinism.md, "Decision: the
+/// (docs/archive/plans/2026-09-01-production-budget-determinism.md, "Decision: the
 /// application budgets").
 pub const APPLICATIONS_PER_CLASS: u64 = 40;
 

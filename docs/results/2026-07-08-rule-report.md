@@ -25,7 +25,7 @@ latency-prior extraction → provenance labels.)
 1. **Saturation blowup is real at 61 rules**: `circle_sdf` (trivial SDF) →
    47,630 applications / 2,579 classes; `(x+y)²+2(x+y)` → 39,987 applications.
    Empirical support for the guided-expansion thesis
-   (docs/plans/2026-07-07-guided-saturation-redesign.md) before any ML.
+   (docs/compiler/2026-07-07-guided-saturation-redesign.md) before any ML.
 2. **Clear stratification**: assoc/comm/FMA rules dominate load-bearing;
    halving/canonicalize/constant-fold rarely matter; distribute/factor are
    situational.

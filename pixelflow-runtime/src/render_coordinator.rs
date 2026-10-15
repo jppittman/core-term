@@ -9,7 +9,7 @@
 //! caller delivers, which is what lets the whole protocol — including the resize and
 //! render-in-flight races that are awkward to provoke through a live troupe — be tested as plain
 //! function calls. It is also the precondition for the coordinator becoming its own node
-//! (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §8): a node cannot be carved out of
+//! (`docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §8): a node cannot be carved out of
 //! logic that is interleaved with the mediator's handles.
 
 use crate::display::messages::{Window, WindowMeta};

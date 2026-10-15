@@ -51,7 +51,7 @@ preserves a value from its definition to every read.
 - The as-if contract: tests observe values, refusals and no-crash through
   the production API, never spill counts or register choices
   (`pixelflow-codegen/tests/register_pressure.rs`, `deep_frame.rs`,
-  `residency.rs`, `loops.rs`; `docs/plans/2026-10-13-tests-check-the-as-if-contract.md`).
+  `residency.rs`, `loops.rs`; `docs/process/2026-10-13-tests-check-the-as-if-contract.md`).
 
 ## Behind
 - `unused_general` picks a general register by number inside the allocator
@@ -61,8 +61,8 @@ preserves a value from its definition to every read.
 - Nothing in CI checks the ABI's callee-saved registers (S1).
 
 ## Decided in
-`docs/plans/2026-10-08-selection-is-a-phase.md` (§0.5 fixed registers, §2.1
-classes, the allocation guarantees), `docs/plans/2026-09-01-register-allocation-escape-hatches.md`,
-`docs/plans/2026-09-22-a-pointer-is-a-value.md`,
-`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §3 (the CPU module alone
+`docs/archive/plans/2026-10-08-selection-is-a-phase.md` (§0.5 fixed registers, §2.1
+classes, the allocation guarantees), `docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md`,
+`docs/archive/plans/2026-09-22-a-pointer-is-a-value.md`,
+`docs/language/2026-10-15-kernels-evaluate-kernels.md` §3 (the CPU module alone
 owns register allocation).

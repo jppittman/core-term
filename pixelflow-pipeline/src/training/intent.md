@@ -54,6 +54,6 @@ here can change what a kernel means.
   re-validation item 5 may be re-taken.
 
 ## Decided in
-`docs/plans/2026-08-31-guide-design-revision.md`, `docs/plans/2026-09-01-guide-return-to-go.md`
-(design and pre-registration), `docs/plans/2026-09-02-bilinear-guide-registration.md`,
-`docs/plans/2026-08-17-cost-model-domain.md` (J7, J8), `docs/plans/2026-07-07-guided-saturation-redesign.md`.
+`docs/archive/plans/2026-08-31-guide-design-revision.md`, `docs/archive/plans/2026-09-01-guide-return-to-go.md`
+(design and pre-registration), `docs/archive/plans/2026-09-02-bilinear-guide-registration.md`,
+`docs/archive/plans/2026-08-17-cost-model-domain.md` (J7, J8), `docs/compiler/2026-07-07-guided-saturation-redesign.md`.

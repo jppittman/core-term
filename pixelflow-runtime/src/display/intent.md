@@ -54,6 +54,6 @@ the active `*DisplayDriver`); it declares no trait. `ops.rs`: `PlatformOps`,
 - `drivers::MetalDisplayDriver` and `platform::PlatformDriver` are the same type on macOS.
 
 ## Decided in
-`docs/designs/pixelflow-runtime-engine-mesh-migration.md` (Draft 2026-07-25): §5.1
+`docs/runtime/pixelflow-runtime-engine-mesh-migration.md` (Draft 2026-07-25): §5.1
 the send leaves the ops, §7.1 `Window::tear`, §8 the pull protocol;
-`docs/plans/2026-09-03-wayland-driver.md`.
+`docs/runtime/2026-09-03-wayland-driver.md`.

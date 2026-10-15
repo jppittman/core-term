@@ -28,11 +28,11 @@ direct Kernel construction ── splicing ── ExprArena
 There is one tier and one evaluation API: a kernel becomes numbers by being compiled at a
 lattice's shape and collapsed, or not at all. The type-level combinator tier — manifolds as
 zero-sized expression templates evaluated one SIMD batch at a time — was retired by
-[A Kernel with a Lattice](docs/plans/2026-09-06-kernel-with-a-lattice.md), which also records
+[A Kernel with a Lattice](docs/archive/plans/2026-09-06-kernel-with-a-lattice.md), which also records
 the measurements that decided it. The earlier plan of record is
-[One Kernel Language](docs/plans/2026-07-20-kernel-unification.md); the current language
+[One Kernel Language](docs/language/2026-07-20-kernel-unification.md); the current language
 axiom and intended cost boundary are described in
-[Totality and the Cost Model](docs/designs/2026-07-24-totality-and-the-cost-model.md).
+[Totality and the Cost Model](docs/language/2026-07-24-totality-and-the-cost-model.md).
 
 ## Why pull-based rendering
 
@@ -113,7 +113,7 @@ paths.
 A `Host` is itself an ordinary actor, so hosting can be nested in principle. Dynamic topology,
 migration, and a separate green-thread runtime are deliberately outside the current design.
 See [actor-scheduler](actor-scheduler/README.md) and the
-[Mealy-transducer design](docs/designs/actor-scheduler-mealy-transducer.md).
+[Mealy-transducer design](docs/runtime/actor-scheduler-mealy-transducer.md).
 
 ## Build and run
 
@@ -159,7 +159,7 @@ path do not depend on that research succeeding.
 Additional repository guidance:
 
 - [AGENTS.md](AGENTS.md) — repository boundaries, commands, and review conventions
-- [docs/STYLE.md](docs/STYLE.md) — code style and design principles
+- [docs/process/STYLE.md](docs/process/STYLE.md) — code style and design principles
 - [docs/designs/](docs/designs/) — architecture and design records
 - [docs/plans/](docs/plans/) — active and superseded implementation plans
 - [docs/results/](docs/results/) — point-in-time measurements and experiment reports

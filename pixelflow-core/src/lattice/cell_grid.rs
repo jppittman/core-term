@@ -798,7 +798,7 @@ mod tests {
     /// inlining decision, and it belonged to the e-graph, which could not see
     /// this arena at all while `Gather` is unrepresentable there.
     ///
-    /// `ExprArena` now hash-conses (docs/plans/2026-09-09-exprarena-on-dag.md,
+    /// `ExprArena` now hash-conses (docs/archive/plans/2026-09-09-exprarena-on-dag.md,
     /// Stage C): `push_*` interns structurally, so the *within-one-splice*
     /// repetition this comment used to describe collapses for free, without
     /// the e-graph. 157 -> 69 (56%) on this fixture the day consing landed —
@@ -838,7 +838,7 @@ mod tests {
     /// Reachable nodes in one channel kernel. Pinned rather than derived:
     /// see `reads_of_one_buffer_share_a_slot_but_not_nodes`. Was 157 before
     /// `ExprArena` hash-consed (Stage C of
-    /// docs/plans/2026-09-09-exprarena-on-dag.md); consing collapsed the
+    /// docs/archive/plans/2026-09-09-exprarena-on-dag.md); consing collapsed the
     /// repeated coordinate-contramap fragments the old doc comment described.
     pub(crate) const CHANNEL_NODES: usize = 69;
 

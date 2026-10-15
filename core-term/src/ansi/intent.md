@@ -56,4 +56,4 @@ carries to the next call; a pending UTF-8 sequence does not.
 
 ## Decided in
 `desloppify/skills/behavioral-contracts/SKILL.md` (its worked example),
-`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`; no plan of its own.
+`docs/process/2026-10-13-tests-check-the-as-if-contract.md`; no plan of its own.

@@ -54,5 +54,5 @@ the kernel is collapsed over (§5). `fonts/`, `render/` have their own intent.
   is the CPU backend's (kernels-evaluate-kernels §3).
 
 ## Decided in
-`docs/plans/2026-09-06-kernel-with-a-lattice.md` (S3b, S4a), `docs/plans/2026-09-25-the-language-is-kernel.md`
-(D10, D13, D16), `docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
+`docs/archive/plans/2026-09-06-kernel-with-a-lattice.md` (S3b, S4a), `docs/language/2026-09-25-the-language-is-kernel.md`
+(D10, D13, D16), `docs/language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.

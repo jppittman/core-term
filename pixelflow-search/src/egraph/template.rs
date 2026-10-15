@@ -1,7 +1,7 @@
 //! Generic template rewrite: a rule whose LHS/RHS are data (an [`ExprArena`]
 //! pattern) rather than a hand-written combinator.
 //!
-//! Round 2's mode (ii) (docs/plans/2026-09-01-phase3-round2-rule-scaling.md
+//! Round 2's mode (ii) (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md
 //! §2.2, §8) generates rules by composing two existing rules' templates at
 //! harness startup — there is no `struct` to write per composition, only a
 //! pattern discovered at runtime. [`TemplateRewrite`] is the one executor
@@ -316,7 +316,7 @@ impl Rewrite for TemplateRewrite {
 }
 
 // ============================================================================
-// Composition: A∘B (docs/plans/2026-09-01-phase3-round2-rule-scaling.md §2.2)
+// Composition: A∘B (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md §2.2)
 // ============================================================================
 //
 // The validity argument (design doc §2.2) is a theorem about substitution:

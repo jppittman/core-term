@@ -25,7 +25,7 @@
 //! `>>` — and `pack` is exactly the chunking law
 //! `for_ [0,w) f = for_ [0,w−r) step L (\i -> for_ [0,L) (\l -> f(i+l))) >>
 //! for_ [w−r] (\i -> for_ [0,r) (\l -> f(i+l)))`
-//! (docs/plans/2026-09-16-collapse-is-a-fold.md §2.1–§2.4).
+//! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.1–§2.4).
 
 use crate::arena::{COORD_AXES, ExprArena, ExprId, ExprNode, UniformDecl};
 use crate::fold::{Binder, Fold, Monoid};

@@ -3,7 +3,7 @@
 //! An optimizer is an endomorphism on the IR. Writing one requires a type for
 //! "the IR" — and until this module there was none, only two hand-rolled
 //! arena↔e-graph conversions with different failure modes (see
-//! docs/plans/2026-09-04-ir-as-a-trait.md §2). [`Ir`] is that type.
+//! docs/archive/plans/2026-09-04-ir-as-a-trait.md §2). [`Ir`] is that type.
 //!
 //! Two operations, mutually inverse up to the equalities saturation adds:
 //!

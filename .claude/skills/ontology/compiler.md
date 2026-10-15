@@ -448,7 +448,7 @@
 - **Lives:** nowhere resident. `pixelflow-ir/src/passes/demand.rs` was deleted
   2026-10-03 as "a diagnostic that nothing reads" (ce3e9177, #1307; last
   present at `0459d2b3`). `pixelflow-codegen/src/program/ownership.rs` owns the
-  arm regions. Superseded by `docs/plans/2026-10-15-kernels-evaluate-kernels.md`
+  arm regions. Superseded by `docs/language/2026-10-15-kernels-evaluate-kernels.md`
   §1; `2026-09-07-demand-is-a-dag-property.md` keeps its denotation as history
   only, and `2026-10-12-placement-reads-demand.md` is superseded.
 

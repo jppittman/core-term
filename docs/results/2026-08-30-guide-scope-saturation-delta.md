@@ -67,11 +67,11 @@ re-measured rather than assumed away:
 
 The extraction-head program refuted NNUE incrementality for **extraction candidates**: sibling
 candidates at one e-class differ by a median **44.9%** of their edge multiset
-(`docs/plans/2026-08-17-egraph-vsa-nnue-research-notes.md`), so an incremental accumulator over
+(`docs/archive/plans/2026-08-17-egraph-vsa-nnue-research-notes.md`), so an incremental accumulator over
 extraction candidates buys ~2x, not the chess-engine ~98%
-(`docs/plans/2026-08-17-cost-model-domain.md`, item A6).
+(`docs/archive/plans/2026-08-17-cost-model-domain.md`, item A6).
 
-The Guide (Phase 3, `docs/plans/2026-07-07-guided-saturation-redesign.md`) scores a **different**
+The Guide (Phase 3, `docs/compiler/2026-07-07-guided-saturation-redesign.md`) scores a **different**
 object: not sibling extraction candidates, but the e-graph state as rewrite rules fire during
 saturation, which is monotone and append-only. Does the append-only structure actually buy back
 the incrementality the extraction study refuted, or does 44.9%-style churn show up here too?

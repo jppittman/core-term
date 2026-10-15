@@ -82,7 +82,7 @@
 //! rounding and far below anything a frame can show.
 //!
 //! The module keeps its name from the Loop–Blinn glyph it replaced
-//! (docs/plans/2026-09-08-loop-blinn-glyph.md): an exact winding number and
+//! (docs/archive/plans/2026-09-08-loop-blinn-glyph.md): an exact winding number and
 //! a ramp on the distance to the nearest edge, two folds where this is one.
 
 use super::monotone::MonotoneQuad;
@@ -168,7 +168,7 @@ const _: () = assert!(ROOT_FLOOR.is_normal() && ROOT_FLOOR == f32::from_bits(0x0
 /// is not a coverage — so a glyph that could only offer its finished
 /// coverage could not compose. The signed area *is* additive, and zero
 /// outside every closed contour, so keeping it until the last step is what
-/// makes a run a glyph (docs/plans/2026-09-09-a-run-is-a-glyph.md).
+/// makes a run a glyph (docs/archive/plans/2026-09-09-a-run-is-a-glyph.md).
 ///
 /// The area reads one piece table at its fold's binder ([`glyph`]); the
 /// table's data travels with the kernel itself (`Kernel::with_buffer_data`),
@@ -362,7 +362,7 @@ pub fn glyph(outline: &Outline) -> Glyph {
 /// buffer. Giving each character its own table is what a frame cannot afford
 /// — `Manifold` binds at most `MAX_BOUND_BUFFERS` slots without allocating,
 /// so a five-character run would not compile
-/// (docs/plans/2026-09-09-composition-is-linking.md §4 named this limit as
+/// (docs/language/2026-09-09-composition-is-linking.md §4 named this limit as
 /// the cost of naming memory a slot at a time). Concatenating the rows and
 /// folding each outline over its own range of them binds one slot however
 /// long the run is.
@@ -393,7 +393,7 @@ pub fn run(outlines: &[Outline]) -> Glyph {
         let count =
             u32::try_from(pieces.len()).expect("an outline has far fewer pieces than u32::MAX");
         // The fold's trip count is part of the JIT cache's key
-        // (`docs/plans/2026-09-09-glyph-as-a-fold-execution.md` §S3), so a
+        // (`docs/graphics/2026-09-09-glyph-as-a-fold-execution.md` §S3), so a
         // glyph's own piece count is rounded up to a shared bucket *before*
         // it becomes that trip count — otherwise every distinct piece count
         // in the font mints its own program. The gap between `count` and
@@ -1000,7 +1000,7 @@ fn piece_row(piece: Piece) -> [f32; PIECE_ROW_COLS] {
 /// count itself, rounded up to a shared bucket.
 ///
 /// The JIT cache keys a compiled program by canonical arena *and shape*
-/// (`docs/plans/2026-09-09-glyph-as-a-fold-execution.md` §S3), and a fold's
+/// (`docs/graphics/2026-09-09-glyph-as-a-fold-execution.md` §S3), and a fold's
 /// shape is its trip count, so two glyphs otherwise alike but for their
 /// piece count compile to two programs. Bucketing collapses the font-wide
 /// *set* of trip counts a piece count can land on, so unrelated glyphs whose
@@ -1009,7 +1009,7 @@ fn piece_row(piece: Piece) -> [f32; PIECE_ROW_COLS] {
 /// changing what the glyph draws.
 ///
 /// Powers of two, per
-/// `docs/plans/2026-09-09-glyph-as-a-fold-execution.md` §S3's own framing
+/// `docs/graphics/2026-09-09-glyph-as-a-fold-execution.md` §S3's own framing
 /// — see that section, and this crate's measurements in
 /// `docs/BACKLOG.md`, for the trade against a coarser bucket.
 fn bucketed_trip_count(pieces: u32) -> u32 {

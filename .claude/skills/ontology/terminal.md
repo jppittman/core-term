@@ -23,7 +23,7 @@ They are grouped here because the terminal is their consumer.
   invoking `P_N` is superseded. Not one fused program over the device frame
   gathering ten floats per cell from a buffer (the 2026-07-29 and 2026-09-06
   `CellGridProgram`, which is today's code), because the language has no memory
-  reads (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2). Not tree structure ("data beats structure"). Not a glyph id
+  reads (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2). Not tree structure ("data beats structure"). Not a glyph id
   chosen by an `if id < k` tree inside one font program (superseded
   2026-10-09; see "Font programs").
 - **Follows:** metric changes are uniform writes, and anything that moves an
@@ -169,7 +169,7 @@ They are grouped here because the terminal is their consumer.
 - **Follows:** every glyph is born placed. A zoom rescales the outlines and
   rewrites the uniforms.
 - **Lives:** `pixelflow-graphics/src/fonts/{ttf,outline,text}.rs`;
-  `docs/plans/2026-09-08-loop-blinn-glyph.md` §5.
+  `docs/archive/plans/2026-09-08-loop-blinn-glyph.md` §5.
 
 ### Run
 

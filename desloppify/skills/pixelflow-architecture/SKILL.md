@@ -12,7 +12,7 @@ description: Crate boundaries and design constraints of the pixelflow workspace 
   and `collapse`; it is `no_std` + `alloc` and has no vector type.
 - **The language.** Users compose `Kernel` values (or write `kernel!`); each
   backend's schedule owns the loop nest, packing and register allocation
-  (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §3). A kernel is a
+  (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §3). A kernel is a
   description, `Manifold::compile` specializes it at a lattice's shape,
   `Lattice::collapse` is the only verb that produces numbers. The language is a
   DAG: no iteration binder.

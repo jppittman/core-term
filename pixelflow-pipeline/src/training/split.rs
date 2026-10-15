@@ -122,7 +122,7 @@ impl SeedRange {
 }
 
 /// One generator family: a `(band, seed)` draw stream — the split unit
-/// (docs/plans/2026-08-17-cost-model-domain.md, J7). A newtype instead of a
+/// (docs/archive/plans/2026-08-17-cost-model-domain.md, J7). A newtype instead of a
 /// bare tuple so a swapped argument order (`(seed, band)`) is a type error
 /// at the call site instead of a silently wrong RNG seed or tier lookup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -202,7 +202,7 @@ pub struct SplitManifest {
     /// (`[dev] families = [...]`), entered the same way `final_kernels`
     /// enters FINAL: a mechanically real generator built once per name, not
     /// a `(band, seed)` draw stream from the shared `BwdGenerator`
-    /// (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md
+    /// (docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md
     /// §3, "Out-of-distribution families"). Optional — a manifest that
     /// declares none parses with an empty list. `families` is accepted only
     /// under `[dev]`; the key is unknown (and therefore rejected) under
@@ -714,7 +714,7 @@ impl HoldoutSide for FinalSide {
 /// A holdout fence: every [`FenceKey`] belonging to tier `T`'s corpus file,
 /// so a candidate expression from anywhere else can be checked for
 /// "structure (in feature-quotient space) the model has already seen"
-/// (docs/plans/2026-08-17-cost-model-domain.md, J7/J8/P1(d)).
+/// (docs/archive/plans/2026-08-17-cost-model-domain.md, J7/J8/P1(d)).
 ///
 /// # Direction
 ///

@@ -1,7 +1,7 @@
 //! Real spherical-harmonics expressions — the round 1b `sh` OOD family.
 //!
 //! Built for
-//! `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §3a,
+//! `docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §3a,
 //! testing JP's claim verbatim: *"The pythagorean identities are useless
 //! when trying to evaluate bezier curves, but i sure as shit want them
 //! firing when we're doing spherical harmonics."* This module is the
@@ -531,7 +531,7 @@ fn sh_power(arena: &mut ExprArena, rng: &mut Rng) -> ExprId {
 
 /// Draw one `sh` corpus candidate from `rng`: picks a form and a structure
 /// (single dot product / product of two / band energy) per
-/// docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §3a,
+/// docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §3a,
 /// and returns the arena and its root. Callers are responsible for node-count
 /// filtering, structural dedup, and the numeric quarantine — this function
 /// only builds the expression.

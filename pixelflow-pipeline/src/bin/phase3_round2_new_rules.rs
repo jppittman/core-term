@@ -1,6 +1,6 @@
 //! Round 2, mode (iii): unguided anytime curves at `|R|=62` vs `62+batch`.
 //!
-//! `docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3/§5/§8 — the
+//! `docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3/§5/§8 — the
 //! fidelity arm's own measurement (mode (iii) grid is the pair {62, 62+batch}
 //! per §3, distinct from the {62,93,124,186,248} grid used by modes (i)/(ii)).
 //!
@@ -420,7 +420,7 @@ fn main() {
     let mut md = String::new();
     md.push_str("## Round 2, mode (iii): unguided anytime curves, |R|=62 vs 62+batch\n\n");
     md.push_str(&format!(
-        "Agent: rule-batch implementation + unguided curves (docs/plans/2026-09-01-phase3-round2-rule-scaling.md \
+        "Agent: rule-batch implementation + unguided curves (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md \
          §2.3, §8). Base arm `|R|={base_count}` (`all_rules()`, unchanged production set); batch arm \
          `|R|={total_count}` (`all_rules() + pixelflow_search::math::round2_rules::experimental_rules()`, \
          `+{batch_count}` new rules, harness-only — never added to `all_rules()`). Same Round-1 400-expression \
@@ -578,7 +578,7 @@ fn main() {
         header.push_str("# Round 2: unguided anytime curves vs rule count\n\n");
         header.push_str(
             "Per-mode sections appended by each agent's binary as it completes its run \
-             (docs/plans/2026-09-01-phase3-round2-rule-scaling.md §9). This file did not exist \
+             (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md §9). This file did not exist \
              when the mode (iii) section below was written — it was created with mode (iii)'s \
              section only.\n\n",
         );

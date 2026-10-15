@@ -15,7 +15,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 /// Evaluate a coverage kernel at a single point, binding `glyph`'s piece
 /// table if it has one (`glyph`'s `Kernel::sum_over` reads a bound piece
 /// table — S1a of
-/// docs/plans/2026-09-09-glyph-as-a-fold-execution.md). The compile cache
+/// docs/graphics/2026-09-09-glyph-as-a-fold-execution.md). The compile cache
 /// makes repeated samples of the same kernel cheap.
 fn sample(glyph: &Glyph, x: f32, y: f32) -> f32 {
     glyph.bound(&glyph.kernel(), [1, 1]).eval_at(x, y)

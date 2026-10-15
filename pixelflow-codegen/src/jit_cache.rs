@@ -9,7 +9,7 @@
 //! The key is [`pixelflow_ir::key::canonical`]'s — a kernel's identity is not
 //! codegen's private business, so it lives at the bottom of the dependency
 //! graph where a `Ref` can name into it too
-//! (docs/plans/2026-09-09-composition-is-linking.md §2). This cache is one
+//! (docs/language/2026-09-09-composition-is-linking.md §2). This cache is one
 //! consumer of it.
 //!
 //! Keys are the [`LatticeShape`] the kernel is compiled for — its extents,
@@ -126,7 +126,7 @@ pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Lin
     // The optimizer is handed the arena *as written*, references and all: a
     // reference is a unit, optimized by itself and linked back in after
     // extraction (`pixelflow_search::runtime`'s units;
-    // docs/plans/2026-09-25-the-language-is-kernel.md §4, O1).
+    // docs/language/2026-09-25-the-language-is-kernel.md §4, O1).
     //
     // It bails for constructs the e-graph does not model
     // (`egraph::insert`'s `Declined`: a `Param`, an op
@@ -197,7 +197,7 @@ pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Lin
 /// unit.
 ///
 /// The cost of keying on identity, recorded in
-/// docs/plans/2026-09-25-the-language-is-kernel.md §4 O1: a unit's identity
+/// docs/language/2026-09-25-the-language-is-kernel.md §4 O1: a unit's identity
 /// digests the uniforms it was minted with, so a font rebuilt over fresh
 /// uniforms is a new entry here, where the same structure without units
 /// would hit. A structural key that walks through the units is the caching

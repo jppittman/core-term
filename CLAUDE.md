@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **NO TERMINAL LOGIC GOES IN PIXELFLOW.** PixelFlow is a general-purpose graphics library being extracted to its own crate/repo. Keep it terminal-agnostic.
 - Exporting direct manipulation of fields from pixelflow-core is strictly forbidden. Construct compute kernels at load time and render them.
 - **NO RAW LANE ARITHMETIC.** Do not perform raw operations on SIMD values without explicit direction. ALWAYS build the arena — `Kernel` values and the `kernel!` macro — and let the compiler emit the instructions.
-- **SIMD is an implementation detail.** pixelflow-core holds no vector type and no width. The one width in the workspace is the JIT's (`pixelflow_codegen::jit_vector_bytes()`), and which tier that is — AVX2+FMA as the floor and AVX-512 where the host has it on x86-64; NEON on aarch64 — is decided once, at process startup, by CPUID (`pixelflow_codegen::isa::detect`), never by build flags (docs/plans/2026-09-22-the-isa-is-decided-at-startup.md). Nothing outside `pixelflow-codegen`'s emitters names a lane. Do not change that. pixelflow-core is an algebra; writing it should look like Halide, not assembly. Nothing crosses the compiled kernel's ABI as a vector: a collapse is `fn(ctx, out, pitch)`. Today the lattice's rows, batches and lanes are folds the kernel is wrapped in before it is scheduled (docs/plans/2026-09-16-collapse-is-a-fold.md); that is the CPU schedule baked into a target-agnostic crate, and it moves into the CPU backend's own pass chain (docs/plans/2026-10-15-kernels-evaluate-kernels.md §3).
+- **SIMD is an implementation detail.** pixelflow-core holds no vector type and no width. The one width in the workspace is the JIT's (`pixelflow_codegen::jit_vector_bytes()`), and which tier that is — AVX2+FMA as the floor and AVX-512 where the host has it on x86-64; NEON on aarch64 — is decided once, at process startup, by CPUID (`pixelflow_codegen::isa::detect`), never by build flags (docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md). Nothing outside `pixelflow-codegen`'s emitters names a lane. Do not change that. pixelflow-core is an algebra; writing it should look like Halide, not assembly. Nothing crosses the compiled kernel's ABI as a vector: a collapse is `fn(ctx, out, pitch)`. Today the lattice's rows, batches and lanes are folds the kernel is wrapped in before it is scheduled (docs/archive/plans/2026-09-16-collapse-is-a-fold.md); that is the CPU schedule baked into a target-agnostic crate, and it moves into the CPU backend's own pass chain (docs/language/2026-10-15-kernels-evaluate-kernels.md §3).
 - **Minimal public API** - Do NOT change visibility of internal APIs without explicit permission. Keep `pub(crate)` and private items encapsulated. Compose `Kernel` values instead of exposing internals.
 - **Subtract before you add.** The good version of a primitive is reached by removing machinery, not stacking it. If a type's signature already refuses the wrong shape, you don't need a macro, a lint, or a doc to forbid it — the opinion lives in the types. Reach for a new dependency or a new abstraction only after subtraction has failed.
 
@@ -84,7 +84,7 @@ Behavior that differs by target, because the instructions do:
 
 (This table had a third column, for a combinator tier that evaluated the same ops in Rust one
 SIMD batch at a time. That tier is retired — see
-`docs/plans/2026-09-06-kernel-with-a-lattice.md` — so there is one answer per target.)
+`docs/archive/plans/2026-09-06-kernel-with-a-lattice.md` — so there is one answer per target.)
 
 The `Recip` row is the reminder that "target" is finer than "architecture": it
 differs between *ISA tiers of the same machine*, which is what
@@ -220,7 +220,7 @@ symbolically, `Kernel::sum_over` and friends are bounded reductions.
 
 A **discrete kernel** — a kernel on a lattice, a value, which may be tabulated in
 memory — is a different type from a continuous one; lifting between them is explicit
-(docs/plans/2026-10-15-kernels-evaluate-kernels.md §2). There are no bound buffers and
+(docs/language/2026-10-15-kernels-evaluate-kernels.md §2). There are no bound buffers and
 no memory reads in the language.
 
 ### Actor Model
@@ -245,7 +245,7 @@ It used to run on the AST — `kernel!` went AST → e-graph → extracted DAG �
 synthesized AST → and only then to the arena the e-graph had already built and discarded.
 Each boundary was a place two stages could disagree about what the language is, and three
 defects were found there in one week, every one a stage accepting what a later stage
-refused. See docs/plans/2026-09-08-macro-tier-is-arena-native.md.
+refused. See docs/archive/plans/2026-09-08-macro-tier-is-arena-native.md.
 
 Both macros are `expand(input, optimizer)`; the optimizer is the only difference, and
 "do not optimize" is a value rather than a skipped branch — `kernel_raw!` passes
@@ -272,18 +272,18 @@ The compiler uses e-graphs (equality graphs) to find optimal instruction sequenc
 A learned NNUE extraction cost model was tried (2026-07 to 2026-09) and measured a tie with
 the static table on schedule-free expression kernels (the workshop paper on branch
 `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree; see
-docs/plans/2026-09-01-schedule-cost-model-denotation.md for the citations and numbers in-repo).
+docs/compiler/2026-09-01-schedule-cost-model-denotation.md for the citations and numbers in-repo).
 That closed its *shape* — a bag-of-edges MLP predicting total cost in place of the table — not
 the idea: extraction is where codegen's schedule choice will be made, and a non-additive
 schedule cost belongs there as a residual over the table. The shape is deleted (history in
 VCS); the seams it needs are kept — the `Reranker` trait over the swap-refinement search
 (`egraph/extract.rs`, no implementation shipped), the prior-seeded `OpEmbeddings`, the typed
 edge stream, and per-node variance classification (`Extraction::chosen_variance`). The
-successor is denoted, not built: docs/plans/2026-09-01-schedule-cost-model-denotation.md.
+successor is denoted, not built: docs/compiler/2026-09-01-schedule-cost-model-denotation.md.
 The e-graph also records **rule provenance** (node origins + union journal,
 `pixelflow-search/src/egraph/provenance.rs`), enabling hindsight labeling of which rule
 applications were load-bearing for an extraction (`labeler.rs`) — the substrate for the
-successor program, the saturation Guide (docs/plans/2026-08-31-guide-design-revision.md).
+successor program, the saturation Guide (docs/archive/plans/2026-08-31-guide-design-revision.md).
 
 ### ExprArena
 
@@ -350,7 +350,7 @@ cargo bundle-run --features profiling  # Flamegraph on exit
 
 ### Build Profiles
 
-- **dev** - opt-level=0, panic=abort. The former opt-level=1/2 workaround for deeply nested expression-template types is obsolete: the JIT-first `Kernel`/`ExprArena` architecture superseded that layer (see `docs/plans/2026-07-20-kernel-unification.md`).
+- **dev** - opt-level=0, panic=abort. The former opt-level=1/2 workaround for deeply nested expression-template types is obsolete: the JIT-first `Kernel`/`ExprArena` architecture superseded that layer (see `docs/language/2026-07-20-kernel-unification.md`).
 - **release** - opt-level=3, panic=abort
 - **bench** - LTO, codegen-units=1
 - **dist** - LTO, strip, codegen-units=1, panic=abort
@@ -385,7 +385,7 @@ the host can also run (diagnosis, and how `xtask isa-matrix` runs both x86
 backends on one machine); naming one the host cannot run is refused, never
 downgraded. The width follows the tier (`pixelflow_codegen::jit_vector_bytes()`)
 and nothing else in the workspace holds one. See
-docs/plans/2026-09-22-the-isa-is-decided-at-startup.md.
+docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md.
 
 ## Code Style
 
@@ -439,7 +439,7 @@ docs/plans/2026-09-22-the-isa-is-decided-at-startup.md.
   stay live until the select, so `If` is dispatch, not a fold. There is no
   uniform-only path, no blend-only path and no mispredict pricing, and nothing in
   the compiler estimates how often `m` is true. See
-  docs/plans/2026-10-15-kernels-evaluate-kernels.md §1. The version before it
+  docs/language/2026-10-15-kernels-evaluate-kernels.md §1. The version before it
   bought a branch per `If` by pricing mispredicts and searched the schedule for
   contiguous arms (`emit/guards.rs`, deleted): 73% of a glyph bake to find 282
   bytes (docs/BACKLOG.md, X1).
@@ -548,7 +548,7 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 - **Cocoa main thread panic**: Ensure `pixelflow_runtime::run()` called from `fn main()`, not a spawned thread.
 - **Looking for `Field`**: there is none. pixelflow-core holds no vector; the width is the JIT's (`pixelflow_codegen::jit_vector_bytes()`). Compose `Kernel` values and collapse them; there is no per-batch value to hold.
 - **Why did the e-graph pick that?**: Build with `--features saturation-telemetry` (e.g. `cargo run -p core-term --features saturation-telemetry`) and every production saturation run — macro-tier `kernel!` expansions and runtime-tier `Lattice::bake`/glyph bakes alike — appends a JSONL record (budget, stop reason, cost, wall clock) to `$PIXELFLOW_SATURATION_TELEMETRY` if set, else stderr; see `pixelflow-search/src/telemetry.rs`.
-- **A kernel built differently on two machines?** By design it should not be, and a difference is worth investigating — but it is engineering intent, not a promise to callers: output is promised only within tolerance (`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`, item 4). Production saturation budgets are denominated in **rule applications** (`SaturationConfig::max_applications`: 20,000/80,000 blitz/rapid; classical 200,000, rising to 2,000,000 with the input's inserted classes past 625), plus the minted-id cap (`max_minted`: e-class ids ever minted, which only rises) and the iteration cap — all three deterministic functions of the input, with the tier read off the class count the input inserts to. Wall clock is **not** a budget dimension; it is `SaturationConfig::safety_ceiling` (30s/120s, classical 300s–3,000s), a fail-loud assertion that **panics the build** rather than silently truncating saturation and emitting a worse kernel. A panic there means the budget is wrong for that input or the host is pathologically slow — investigate it, don't raise it. `PIXELFLOW_SATURATION_CEILING_MS` (ms; `0`/`off` disables) overrides the ceiling *for diagnosis only*: it can change whether the build panics, never which kernel is emitted. See `docs/plans/2026-09-01-production-budget-determinism.md`.
+- **A kernel built differently on two machines?** By design it should not be, and a difference is worth investigating — but it is engineering intent, not a promise to callers: output is promised only within tolerance (`docs/process/2026-10-13-tests-check-the-as-if-contract.md`, item 4). Production saturation budgets are denominated in **rule applications** (`SaturationConfig::max_applications`: 20,000/80,000 blitz/rapid; classical 200,000, rising to 2,000,000 with the input's inserted classes past 625), plus the minted-id cap (`max_minted`: e-class ids ever minted, which only rises) and the iteration cap — all three deterministic functions of the input, with the tier read off the class count the input inserts to. Wall clock is **not** a budget dimension; it is `SaturationConfig::safety_ceiling` (30s/120s, classical 300s–3,000s), a fail-loud assertion that **panics the build** rather than silently truncating saturation and emitting a worse kernel. A panic there means the budget is wrong for that input or the host is pathologically slow — investigate it, don't raise it. `PIXELFLOW_SATURATION_CEILING_MS` (ms; `0`/`off` disables) overrides the ceiling *for diagnosis only*: it can change whether the build panics, never which kernel is emitted. See `docs/archive/plans/2026-09-01-production-budget-determinism.md`.
 - **Need rule provenance (origins, union journal, derivation ancestry, the hindsight labeler)?**: build `pixelflow-search` with `--features provenance-journal` (default OFF; `pixelflow-pipeline` and `pixelflow-search`'s own tests enable it already) — without it, `Provenance::origins`/`applications`/`unions` and friends don't exist as types, they don't just return empty; `Saturation::application_count()` (the saturation budget's denominator) stays available either way. The journal is chosen when the graph is built: `Optimizer::egraph()` keeps one exactly when an observer is attached, and a graph built without one has no journal to query (`EGraph::provenance()` is `None`).
 
 ## Execution Notes
@@ -563,13 +563,13 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 
 Two learned programs have had their code removed here, each with its record in the tree:
 - The AlphaZero-style self-play/critic/REINFORCE loop, removed July 2026 after a four-agent
-  audit found it methodologically unsound (docs/plans/2026-07-07-guided-saturation-redesign.md).
+  audit found it methodologically unsound (docs/compiler/2026-07-07-guided-saturation-redesign.md).
 - The extraction head (learned NNUE cost model for extraction): its shape was deleted in
   September 2026 after it tied the static table on schedule-free kernels (workshop paper on
   branch `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree); its
   denotation — schedule cost as the analytic table plus a learned residual that reranks
   extractions — is kept behind the `Reranker` seam and specified in
-  docs/plans/2026-09-01-schedule-cost-model-denotation.md, which also carries the citations and
+  docs/compiler/2026-09-01-schedule-cost-model-denotation.md, which also carries the citations and
   numbers in-repo. Not built until codegen gives the e-graph schedules to choose.
 
 What remains:
@@ -581,4 +581,4 @@ What remains:
   acceptance by comparing against the scalar interpreter, so it went with it.
   A corpus needs a new acceptance criterion before that tooling comes back.
 - The saturation Guide trains on hindsight provenance labels from `pixelflow-search`'s
-  `egraph::labeler` — no critic, no RL (docs/plans/2026-08-31-guide-design-revision.md).
+  `egraph::labeler` — no critic, no RL (docs/archive/plans/2026-08-31-guide-design-revision.md).

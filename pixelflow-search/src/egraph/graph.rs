@@ -68,7 +68,7 @@ pub struct EGraph {
     /// nodes.
     const_fact: Vec<Option<u32>>,
     /// Which binders each class may depend on, indexed by class id — the
-    /// per-class variance fact (docs/plans/2026-09-23-an-integral-is-a-fold.md
+    /// per-class variance fact (docs/archive/plans/2026-09-23-an-integral-is-a-fold.md
     /// §1, §3), kept beside `const_fact` and out of `EClass::nodes` for the
     /// same reason: a guard read mid-`rebuild` must not see a drained class.
     ///
@@ -101,7 +101,7 @@ pub struct EGraph {
     /// computed here; and a
     /// reference the graph was not told about is one [`insert`](super::insert)
     /// declines, which is what keeps every other path — the macro tier,
-    /// research tools — exactly as it was (docs/plans/2026-09-25-the-language-is-kernel.md
+    /// research tools — exactly as it was (docs/language/2026-09-25-the-language-is-kernel.md
     /// §4, O1).
     units: BTreeMap<KernelKey, Variance>,
     /// Unions REFUSED because they would assert two numerically unequal
@@ -167,7 +167,7 @@ const NO_JOURNAL: &str = "this graph was built without a journal (Saturation::wi
 /// per-rule value could go stale unnoticed: every rule is checked to this
 /// depth regardless of what it actually needs, so a new rule that matches
 /// deeper than this is caught the same way `Pythagorean` would be — by
-/// `docs/plans/2026-09-08-egraph-cpu-memory-profile.md`'s methodology
+/// `docs/archive/plans/2026-09-08-egraph-cpu-memory-profile.md`'s methodology
 /// (compare extracted cost with dirty-tracking on vs. off), not by silent
 /// trust in a number nobody re-audits. Raise it if that audit is ever
 /// redone and finds a deeper rule; do not lower it without redoing the
@@ -275,7 +275,7 @@ impl EGraph {
     /// The runtime tier's unit walk calls this once per unit a term reads,
     /// before inserting the term: it is the walk that holds each unit's body,
     /// and so the only place its variance can be computed
-    /// (docs/plans/2026-09-25-the-language-is-kernel.md §4, O1).
+    /// (docs/language/2026-09-25-the-language-is-kernel.md §4, O1).
     ///
     /// # Panics
     ///
@@ -328,7 +328,7 @@ impl EGraph {
     /// which `add` returns something else, because there is nothing else
     /// it could correctly return — this is law L1 (`add` is a homomorphism
     /// from the term algebra onto the e-graph quotient,
-    /// `docs/plans/2026-09-02-optimizer-api.md` §1), and L4 (any saturation
+    /// `docs/archive/plans/2026-09-02-optimizer-api.md` §1), and L4 (any saturation
     /// policy preserves denotation) is proved from it.
     ///
     /// The class budget therefore is not enforced here. It is enforced
@@ -2637,7 +2637,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // The laws. `docs/plans/2026-09-02-optimizer-api.md` §1 states each one
+    // The laws. `docs/archive/plans/2026-09-02-optimizer-api.md` §1 states each one
     // and names the test that should pin it; these are those tests. They
     // assert the *property*, never the mechanism — a future fix that moves
     // the class budget somewhere else entirely should keep them passing.

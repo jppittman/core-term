@@ -56,4 +56,4 @@ is the context the rule field `module_root` names: the outline of the nearest
 
 ## Decided in
 `desloppify/README.md` ("How a review runs", "Layout"); §4 of
-`docs/plans/2026-10-15-intent-lives-with-the-module.md`.
+`docs/process/2026-10-15-intent-lives-with-the-module.md`.

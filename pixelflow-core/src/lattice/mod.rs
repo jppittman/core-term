@@ -155,7 +155,7 @@ impl DiscreteManifold {
 /// used to go, a contramap does instead — pixel-center sampling is
 /// `f ∘ (+½)`, a placed glyph is `f ∘ (−pos)` — composed on the *kernel*
 /// with [`Kernel::at`](pixelflow_ir::Kernel::at) before it ever reaches a
-/// lattice (docs/plans/2026-09-06-lattice-is-the-index.md). There were also
+/// lattice (docs/archive/plans/2026-09-06-lattice-is-the-index.md). There were also
 /// four axes; Z and W left the same way, one stage earlier, because an axis
 /// that never varies is a [`Uniform`](pixelflow_ir::Uniform), not an axis.
 #[derive(Copy, Clone, Debug, PartialEq)]

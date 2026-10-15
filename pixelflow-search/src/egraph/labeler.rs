@@ -2,7 +2,7 @@
 //! supervised training labels for the future Guide (match scorer).
 //!
 //! This is Phase 1's final piece (see
-//! `docs/plans/2026-07-07-guided-saturation-redesign.md`): the e-graph is an
+//! `docs/compiler/2026-07-07-guided-saturation-redesign.md`): the e-graph is an
 //! audit log, and after an episode the winning extraction's derivation DAG
 //! gives every fired rewrite an exact, observed label — *load-bearing* (it
 //! contributed to the chosen extraction) or *wasted* (it fired but the
@@ -42,7 +42,7 @@
 //! `derivation_ancestors` — a narrower, still-safe over-approximation (see
 //! that function's doc comment for exactly which axes are narrowed). It
 //! exists **alongside** `compute`, not in place of it
-//! (`docs/plans/2026-08-31-guide-design-revision.md` §3, option 3): both can
+//! (`docs/archive/plans/2026-08-31-guide-design-revision.md` §3, option 3): both can
 //! be run on the same episode so the tightened labels can be compared
 //! directly against the original ones, and `compute`'s existing behavior and
 //! tests are untouched.

@@ -66,7 +66,7 @@ show:
 Dropped the `// Test the hinge penalty function` / `// Shallow model should
 have aggressive depth penalty` / `// Below threshold: no penalty` / `//
 Above threshold: linear penalty` / `// Penalty kicks in after 16` comments
-along with the renames — STYLE.md's comments section: prefer a name that
+along with the renames — ../process/STYLE.md's comments section: prefer a name that
 makes the comment redundant. This is a real, still-open fix (verified
 against current `main`, not the stale base). No behavior change.
 

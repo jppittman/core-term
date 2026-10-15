@@ -6,7 +6,7 @@
 //! the whole frame — and attributing the delta to the boundary. The collapse
 //! ABI does not have two granularities to compare any more: the lattice's
 //! row, column and lane folds are wrapped around the kernel and compiled
-//! into the loop nest itself (docs/plans/2026-09-16-collapse-is-a-fold.md),
+//! into the loop nest itself (docs/archive/plans/2026-09-16-collapse-is-a-fold.md),
 //! so a compiled kernel's `call` always fills its whole shape in exactly one
 //! crossing — there is no narrower call to time it against.
 //!

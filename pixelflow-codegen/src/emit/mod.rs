@@ -26,7 +26,7 @@
 //! inside names as its lane, and it is executed *by lanes*: its binder is the
 //! constant `[0, 1, …, L−1]`, it has no counter and no back edge, and its body
 //! is inlined into the column fold's
-//! (docs/plans/2026-09-16-collapse-is-a-fold.md §2.2).
+//! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.2).
 //!
 //! ## Spilling
 //!
@@ -757,7 +757,7 @@ pub struct CompileResult {
 /// so no arm carries a `cfg`: the other architecture's backend is typechecked
 /// and unit-tested on this host, and its arm is never taken. There is no tier
 /// below AVX2+FMA on x86-64
-/// (docs/plans/2026-09-22-the-isa-is-decided-at-startup.md).
+/// (docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md).
 ///
 /// Genuinely host-bound code lives in [`executable`] (the `KernelFn` ABI types
 /// and the `mmap`/`mprotect` that makes bytes callable) and nowhere else.

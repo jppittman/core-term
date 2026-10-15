@@ -1,5 +1,5 @@
 //! Coverage table for the saturation Guide's candidate-local context
-//! (`docs/plans/2026-09-01-guide-candidate-context.md` §2–§3).
+//! (`docs/compiler/2026-09-01-guide-candidate-context.md` §2–§3).
 //!
 //! # Scope: a proxy cell over the CURRENT record schema
 //!
@@ -364,7 +364,7 @@ fn parse_record(line: &str, path: &str, line_no: usize) -> Record {
         .to_string();
     // The label is the key; the id in the row is checked against it rather
     // than trusted, so a dataset whose two halves of the identity disagree
-    // stops here (docs/plans/2026-09-02-phase3-forward-port.md §2.2).
+    // stops here (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2).
     let rule = RuleId::from_label(&rule_name);
     assert_eq!(
         rule.get(),
@@ -600,7 +600,7 @@ fn share_reachable_cells_at_least_n(
 /// quotes: the indices are kept in the prose because that is where the
 /// selection came from, but a same-length reorder of `all_rules()` would
 /// repoint every one of them silently
-/// (docs/plans/2026-09-02-phase3-forward-port.md §2.2), and this table's
+/// (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2), and this table's
 /// whole purpose is to name specific rewrites.
 const TRIG_RULES: &[(&str, &str)] = &[
     ("odd-negation(Sin)", "odd-negation (Sin)"),

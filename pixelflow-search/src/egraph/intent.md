@@ -54,6 +54,6 @@ under a cost. `Optimizer::run` is its one entry; the five laws of §8 are its co
   says `all_rules` has 42 rules; `rule_order.rs` asserts 62.
 
 ## Decided in
-`docs/DENOTATION.md` §3, §4, §8; `docs/plans/2026-09-02-optimizer-api.md`, `2026-09-01-production-budget-determinism.md`,
+`docs/DENOTATION.md` §3, §4, §8; `docs/archive/plans/2026-09-02-optimizer-api.md`, `2026-09-01-production-budget-determinism.md`,
 `2026-09-04-ir-as-a-trait.md`, `2026-09-08-extraction-witnesses.md`, `2026-09-09-a-fold-is-a-node.md`,
 `2026-10-15-kernels-evaluate-kernels.md` §1.

@@ -55,5 +55,5 @@ its own `intent.md`. The CLI is `src/main.rs` (`Args`): paths to review;
   intent check, `scripts/check-intent.sh`, is called by no workflow yet (§4.2).
 
 ## Decided in
-`desloppify/README.md`; `docs/plans/2026-10-15-intent-lives-with-the-module.md`
+`desloppify/README.md`; `docs/process/2026-10-15-intent-lives-with-the-module.md`
 (§4, §5). No other plan.

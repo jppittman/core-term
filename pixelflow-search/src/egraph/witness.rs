@@ -16,7 +16,7 @@
 //! (`Dp`, `TieBreak`, `StageRecorder`) are monomorphized so production's
 //! instantiation is byte-identical to the passes before they existed.
 //!
-//! Denotation: `docs/plans/2026-09-08-extraction-witnesses.md`.
+//! Denotation: `docs/archive/plans/2026-09-08-extraction-witnesses.md`.
 
 use std::collections::HashMap;
 

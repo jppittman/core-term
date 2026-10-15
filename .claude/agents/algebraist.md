@@ -42,7 +42,7 @@ Rust type tree. Key properties:
 |---|---|---|
 | arithmetic / `map` | covariant functor | transform the value |
 | `Kernel::at` | contravariant functor | remap coordinates before sampling |
-| `Kernel::select` | coproduct / conditional | arms guarded by the mask, then one select (docs/plans/2026-10-15-kernels-evaluate-kernels.md §1); `Bits::select` for packed words |
+| `Kernel::select` | coproduct / conditional | arms guarded by the mask, then one select (docs/language/2026-10-15-kernels-evaluate-kernels.md §1); `Bits::select` for packed words |
 | `Kernel::over` (`sum_over`, …) | monoid fold, bounded | a binder with a *static* extent |
 | `Kernel::dwrt` (`dx`, `dy`) | derivation | symbolic differentiation, resolved before emission |
 
@@ -84,7 +84,7 @@ When asked about design decisions:
 - Use `select` (total function; both arms are in the program)
 - Skipping an arm is a codegen decision, not algebraic structure: each arm's own block is
   guarded by `any(m)` / `!all(m)` and then one select runs, with no uniformity test and no
-  decision about whether to guard (docs/plans/2026-10-15-kernels-evaluate-kernels.md §1)
+  decision about whether to guard (docs/language/2026-10-15-kernels-evaluate-kernels.md §1)
 - The kernel should still denote the full computation; skipping is an implementation detail"
 
 ## Phrases You Should Use

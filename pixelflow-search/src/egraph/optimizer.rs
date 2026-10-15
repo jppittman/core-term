@@ -17,7 +17,7 @@
 //!
 //! # Why an optional lever is safe without a correctness review
 //!
-//! The laws are audited in `docs/plans/2026-09-02-optimizer-api.md`. The one
+//! The laws are audited in `docs/archive/plans/2026-09-02-optimizer-api.md`. The one
 //! that makes this API worth having is **L4, guide neutrality**:
 //!
 //! 1. Every rewrite rule preserves denotation, so every equality in the graph
@@ -213,7 +213,7 @@ impl Budget {
                 iterations: preset.max_iterations,
                 minted: preset.max_minted,
                 // Deterministic replacement for the wall clock this used to
-                // carry (docs/plans/2026-09-01-production-budget-determinism.md):
+                // carry (docs/archive/plans/2026-09-01-production-budget-determinism.md):
                 // calibrated per tier so it binds strictly after the class
                 // cap or quiescence on every kernel measured 2026-09-01.
                 applications: Some(preset.max_applications),
@@ -522,7 +522,7 @@ impl Optimizer {
     /// every later application that would re-derive the same thing), so a
     /// harness can measure what that application was worth:
     /// `Δ_a = R(τ\a,B) − R(τ,B)`
-    /// (docs/plans/2026-09-01-guide-return-to-go.md §4.1).
+    /// (docs/archive/plans/2026-09-01-guide-return-to-go.md §4.1).
     ///
     /// A field, not a second saturation entry point, for the same reason
     /// [`Self::rerank`] and [`Self::guide`] are fields: withholding an

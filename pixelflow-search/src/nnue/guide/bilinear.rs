@@ -1,5 +1,5 @@
 //! Deployment and training of the **bilinear** saturation Guide — the arm
-//! `docs/plans/2026-09-02-bilinear-guide-registration.md` §4 names as "the
+//! `docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §4 names as "the
 //! thing under test", and the only implementation of [`SaturationGuide`]
 //! whose rule-by-context second difference is not identically zero.
 //!

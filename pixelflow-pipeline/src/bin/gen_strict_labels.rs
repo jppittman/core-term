@@ -1,5 +1,5 @@
 //! Strict-label dataset minting for the saturation Guide's cold start
-//! (`docs/plans/2026-08-31-guide-design-revision.md` §3 option 3 stage 1,
+//! (`docs/archive/plans/2026-08-31-guide-design-revision.md` §3 option 3 stage 1,
 //! §4, §5).
 //!
 //! For every TRAIN-family corpus expression, this runs budgeted saturation
@@ -33,7 +33,7 @@
 //! against" — a live guided loop's budget tier `B`. This offline,
 //! full-saturation replay has no live per-call budget to report, so it uses
 //! [`REGISTERED_PRIMARY_BUDGET_APPLICATIONS`] — the classical-band primary
-//! tier B=100 fixed by `docs/plans/2026-09-01-phase3-registration.md` §4 —
+//! tier B=100 fixed by `docs/archive/plans/2026-09-01-phase3-registration.md` §4 —
 //! exactly the same constant [`saturate_guided_until_applications`] imports
 //! for the live guided loop. This dataset's earlier mint (see git history)
 //! used a 195-application placeholder (this round's measured per-expression
@@ -89,7 +89,7 @@ use pixelflow_search::math::all_rules;
 /// Every rule-keyed table in this binary is keyed by [`RuleId`], never by a
 /// position in `all_rules()`: a same-length reorder of that vector repoints
 /// every positional row silently, and nothing anywhere is the wrong length
-/// (docs/plans/2026-09-02-phase3-forward-port.md §2.2). The label is what
+/// (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2). The label is what
 /// the JSON carries, because a label is what a downstream loader can hash
 /// back into the same `RuleId`.
 fn label_of(rules: &RuleSet, id: RuleId) -> String {

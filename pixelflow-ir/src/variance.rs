@@ -34,7 +34,7 @@
 //!
 //! The rule: the shallowest scope that binds every variable in the bitset. That
 //! one rule is loop-invariant code motion, hoisting out of a reduction, and
-//! constant folding — see `docs/designs/lattice-scheduling-types.md`.
+//! constant folding — see `docs/archive/designs/lattice-scheduling-types.md`.
 
 /// Which variables an expression depends on: one bit per variable.
 ///
@@ -396,7 +396,7 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
 /// with `origin` erased and nothing else erased. It is part of every compile
 /// cache key, so a lattice of a different size is a different kernel:
 /// resizing is recompilation, by decision
-/// (`docs/plans/2026-09-01-loop-aware-codegen.md`).
+/// (`docs/archive/plans/2026-09-01-loop-aware-codegen.md`).
 ///
 /// An axis of extent 1 is a per-call constant; an axis of larger extent is a
 /// binder the emitted code loops over: `passes::lattice::collapse` wraps the

@@ -55,5 +55,5 @@ Option<EmulatorAction>` and `get_render_snapshot() -> Option<TerminalSnapshot>`
 
 ## Decided in
 `desloppify/skills/behavioral-contracts/SKILL.md` ("Tight contracts"),
-`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`,
-`docs/plans/2026-09-25-the-language-is-kernel.md` D13, CLAUDE.md.
+`docs/process/2026-10-13-tests-check-the-as-if-contract.md`,
+`docs/language/2026-09-25-the-language-is-kernel.md` D13, CLAUDE.md.

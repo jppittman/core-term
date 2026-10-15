@@ -1,5 +1,5 @@
 //! Production's application-budget calibration
-//! (`docs/plans/2026-09-01-production-budget-determinism.md`), pinned as
+//! (`docs/archive/plans/2026-09-01-production-budget-determinism.md`), pinned as
 //! tests rather than left as prose two commits could quietly drift apart
 //! from.
 
@@ -48,7 +48,7 @@ fn arena_shape(arena: &ExprArena, root: ExprId) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// One row of the calibration table in
-/// `docs/plans/2026-09-01-production-budget-determinism.md`'s "Applications
+/// `docs/archive/plans/2026-09-01-production-budget-determinism.md`'s "Applications
 /// at a deterministic stop, per tier" section: the highest application count
 /// either corpus observed at a deterministic stop (class cap or quiescence,
 /// never a clock) for that tier.

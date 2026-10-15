@@ -54,6 +54,6 @@ language: it is the actors, threads and drivers around a collapse.
   legacy `DisplayDriver` trait, and discards send results (`display/drivers/web/mod.rs`).
 
 ## Decided in
-`docs/designs/pixelflow-runtime-engine-mesh-migration.md`,
-`docs/designs/actor-scheduler-mealy-transducer.md`,
-`docs/plans/2026-09-22-the-isa-is-decided-at-startup.md`; CLAUDE.md "Platform Notes".
+`docs/runtime/pixelflow-runtime-engine-mesh-migration.md`,
+`docs/runtime/actor-scheduler-mealy-transducer.md`,
+`docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md`; CLAUDE.md "Platform Notes".

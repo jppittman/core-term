@@ -217,7 +217,7 @@ artifact is not recoverable.
 ## #1213 — a semantic conflict underneath a one-hunk textual one
 
 The textual conflict is one paragraph in
-`docs/plans/2026-09-06-lattice-is-the-index.md`; both sides amend it
+`docs/archive/plans/2026-09-06-lattice-is-the-index.md`; both sides amend it
 independently and both edits can stand.
 
 Underneath it, the merged tree **does not compile**. This branch changes

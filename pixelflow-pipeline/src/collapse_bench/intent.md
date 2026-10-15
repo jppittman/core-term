@@ -38,7 +38,7 @@ Consumers: `src/bin/collapse_cost.rs`, `src/bin/corpus_gaps.rs`.
 - Tests: `the_visit_order_is_a_permutation_and_does_not_move` (`mod.rs`),
   `a_written_corpus_reads_back_identical` (`corpus.rs`).
 - The as-if contract: `EmitTraffic` is an instrument the benchmarks read, not a
-  test target (`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`).
+  test target (`docs/process/2026-10-13-tests-check-the-as-if-contract.md`).
 - `scripts/check-bin-declarations.sh`, `scripts/check-doc-paths.sh` (rust.yaml).
 
 ## Behind
@@ -54,6 +54,6 @@ Consumers: `src/bin/collapse_cost.rs`, `src/bin/corpus_gaps.rs`.
   today's pass order; it moves with the schedule (kernels-evaluate-kernels §3).
 
 ## Decided in
-`docs/plans/2026-09-01-register-allocation-escape-hatches.md`,
-`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`,
-`docs/plans/2026-09-01-schedule-cost-model-denotation.md`.
+`docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md`,
+`docs/process/2026-10-13-tests-check-the-as-if-contract.md`,
+`docs/compiler/2026-09-01-schedule-cost-model-denotation.md`.

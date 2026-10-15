@@ -54,6 +54,6 @@ lines in `mod.rs` are commented out.
   it as "pixelflow-runtime web driver".
 
 ## Decided in
-`docs/plans/2026-09-03-wayland-driver.md` (the seam, the coverage ledger),
-`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5.1 (ops decide, the
+`docs/runtime/2026-09-03-wayland-driver.md` (the seam, the coverage ledger),
+`docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §5.1 (ops decide, the
 adapter sends); CLAUDE.md "Platform cfg is encapsulation, not sprinkle" and "Platform Notes".

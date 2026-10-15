@@ -26,7 +26,7 @@ use crate::pass::Pass;
 /// schedule holds only what the fold defines. That is loop-invariant code
 /// motion out of every fold at once — the lattice's rows and columns
 /// included, so a per-call value is computed per call and a per-row one per
-/// row (docs/plans/2026-09-16-collapse-is-a-fold.md §2.2) — asked as one
+/// row (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.2) — asked as one
 /// question of the variance rather than as a tier per loop.
 pub(crate) struct Nest;
 

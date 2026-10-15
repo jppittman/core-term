@@ -1,8 +1,8 @@
 //! Anytime (quality-at-budget) curve sampling for e-graph saturation.
 //!
 //! ONE definition of the guided-saturation program's anytime metric
-//! (docs/plans/2026-08-31-guide-design-revision.md §0/§5, and the Phase 3
-//! pre-registration docs/plans/2026-09-01-phase3-registration.md): best
+//! (docs/archive/plans/2026-08-31-guide-design-revision.md §0/§5, and the Phase 3
+//! pre-registration docs/archive/plans/2026-09-01-phase3-registration.md): best
 //! extraction cost under a static, deterministic cost model, plotted against
 //! work performed, where work is denominated in **rule applications** — never
 //! wall-clock, never sweeps. Every harness imports this module instead of
@@ -87,7 +87,7 @@ pub struct AnytimeCheckpoint {
     /// Cumulative rule-match ATTEMPTS at the sample
     /// ([`Saturation::total_evals`]) — `apply` calls, the denominator Round 2's
     /// Guide-overhead-flatness precondition needs
-    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1). A node
+    /// (docs/archive/plans/2026-09-01-phase3-round2-registration-v2.md §7.1). A node
     /// outside a rule's [`super::Rewrite::root_shapes`] is not a call, so curves
     /// recorded before root shapes existed counted more and do not compare
     /// with these directly.
@@ -277,7 +277,7 @@ pub fn run_anytime_curve(
 /// own (the curve supplies one per checkpoint).
 ///
 /// A named constructor rather than a comment on every harness, because it is
-/// a **registered constant** — `docs/plans/2026-09-01-phase3-registration.md`
+/// a **registered constant** — `docs/archive/plans/2026-09-01-phase3-registration.md`
 /// — and a harness that spells its own is a harness that can drift from the
 /// registration silently.
 #[must_use]

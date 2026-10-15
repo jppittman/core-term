@@ -9,11 +9,11 @@
 > tree total (#1117). Full statement:
 > [docs/results/2026-09-02-phase3-instrument-changes.md](2026-09-02-phase3-instrument-changes.md).
 
-Per-mode sections appended by each agent's binary as it completes its run (docs/plans/2026-09-01-phase3-round2-rule-scaling.md §9). This file did not exist when the mode (iii) section below was written — it was created with mode (iii)'s section only.
+Per-mode sections appended by each agent's binary as it completes its run (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md §9). This file did not exist when the mode (iii) section below was written — it was created with mode (iii)'s section only.
 
 ## Round 2, mode (iii): unguided anytime curves, |R|=62 vs 62+batch
 
-Agent: rule-batch implementation + unguided curves (docs/plans/2026-09-01-phase3-round2-rule-scaling.md §2.3, §8). Base arm `|R|=62` (`all_rules()`, unchanged production set); batch arm `|R|=95` (`all_rules() + pixelflow_search::math::round2_rules::experimental_rules()`, `+33` new rules, harness-only — never added to `all_rules()`). Same Round-1 400-expression stratified sample (stride 10.36 over 4143 TRAIN+DEV expressions), same shared `run_anytime_curve`/`APP_CHECKPOINT_GRID`, deterministic `CostModel::latency_prior()` — UNGUIDED only, no Guide loaded or trained. Batch arm's per-curve safety ceiling scaled by `95/62` per §5 (still panics if it binds; it did not bind on this run).
+Agent: rule-batch implementation + unguided curves (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md §2.3, §8). Base arm `|R|=62` (`all_rules()`, unchanged production set); batch arm `|R|=95` (`all_rules() + pixelflow_search::math::round2_rules::experimental_rules()`, `+33` new rules, harness-only — never added to `all_rules()`). Same Round-1 400-expression stratified sample (stride 10.36 over 4143 TRAIN+DEV expressions), same shared `run_anytime_curve`/`APP_CHECKPOINT_GRID`, deterministic `CostModel::latency_prior()` — UNGUIDED only, no Guide loaded or trained. Batch arm's per-curve safety ceiling scaled by `95/62` per §5 (still panics if it binds; it did not bind on this run).
 
 ### Tier: blitz (n=23)
 
@@ -77,7 +77,7 @@ _Grid: `[25, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200, 1024
 ## Round 2, modes (i)/(ii): unguided anytime curves vs rule count
 
 Agent: rule-set inflation harness (modes i/ii) + unguided curves
-(docs/plans/2026-09-01-phase3-round2-rule-scaling.md §2.1, §2.2, §8). Mode (i)
+(docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md §2.1, §2.2, §8). Mode (i)
 (exact duplicates, the "learnable overhead" control) via
 `pixelflow_search::math::inflate::DuplicateRule`: a duplicate delegates
 `apply`/`is_destructive`/templates straight to its inner rule, under a new

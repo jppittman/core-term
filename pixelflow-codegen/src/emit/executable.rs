@@ -9,7 +9,7 @@ use crate::error::CompileError;
 /// The memory is allocated as read-write, code is written to it, then it is
 /// flipped to read-execute (W^X). The loop nest is inside the code — the
 /// lattice's rows, batches and lanes are folds the kernel was wrapped in
-/// before it was scheduled (docs/plans/2026-09-16-collapse-is-a-fold.md) — so
+/// before it was scheduled (docs/archive/plans/2026-09-16-collapse-is-a-fold.md) — so
 /// [`call`](Self::call) is the whole collapse, and the lattice shape is what
 /// the code *is*: its loop bounds are the extent it was compiled at. No cache;
 /// the caller decides its lifetime.
@@ -128,7 +128,7 @@ type NativeCodePage = linux::LinuxCodePage;
 ///
 /// One signature on every target, because the loop nest, the coordinates and
 /// the lane width are all inside the emitted code — the lattice's folds wrap
-/// the kernel before it is scheduled (docs/plans/2026-09-16-collapse-is-a-fold.md
+/// the kernel before it is scheduled (docs/archive/plans/2026-09-16-collapse-is-a-fold.md
 /// §2.1), so nothing about the batch reaches the boundary. What does:
 ///
 /// - `ctx`: one base pointer per declared buffer, in slot order; then the

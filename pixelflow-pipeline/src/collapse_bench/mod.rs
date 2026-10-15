@@ -6,7 +6,7 @@
 //! Three register-allocator policies were built and rejected in September 2026
 //! on quantities that turned out not to be time: static memory operations,
 //! then dynamic memory operations per call, then code bytes
-//! (`docs/plans/2026-09-01-register-allocation-escape-hatches.md`, the
+//! (`docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md`, the
 //! 2026-09-04 blocks). The sharpest of them cut dynamic memory operations by
 //! 6.6% on AVX-512 and ran **13–18% slower** on the glyph bench, outside the
 //! run-to-run spread, while being flat-to-faster on SSE2. The conclusion
@@ -29,7 +29,7 @@
 //! separately afterwards — so there is no scalar tail outside the kernel any
 //! more; the row/column/lane folds `Lattice::bake` used to hand off the
 //! remainder to are baked into the same emitted function
-//! (docs/plans/2026-09-16-collapse-is-a-fold.md). So the number is the
+//! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md). So the number is the
 //! emitted code's own cost at that shape — which is the thing an allocator's
 //! cost model is supposed to predict, with the per-bake allocation that would
 //! otherwise dilute it held out.

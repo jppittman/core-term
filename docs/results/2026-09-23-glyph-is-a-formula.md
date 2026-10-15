@@ -4,14 +4,14 @@
 AVX-512 (F, DQ). The JIT's tier is the host's, AVX-512; the AVX2 figures
 are the same binaries under `PIXELFLOW_ISA=avx2`.
 **Tree:** `claude/integral-area-work-ojiej6` plus step 6 of
-[an integral is a fold](../plans/2026-09-23-an-integral-is-a-fold.md) §8.
+[an integral is a fold](../archive/plans/2026-09-23-an-integral-is-a-fold.md) §8.
 *Before* is `0df10f6` (the compound-transform fix, output-neutral for this
 font); *after* is `594ab82` (the formula glyph, the regenerated golden and
 the re-baselined pins). Both bench binaries carry the same `font_rendering`
 source, `'8'` included.
 **Font:** the crate's `DejaVuSansMono-Fallback.ttf`, printable ASCII.
 
-The change ([a glyph is a formula](../plans/2026-09-23-a-glyph-is-a-formula.md)):
+The change ([a glyph is a formula](../archive/plans/2026-09-23-a-glyph-is-a-formula.md)):
 a glyph's coverage of a pixel was a ramp on the distance to the nearest
 edge, `inside ? min(1, ½ + d) : max(0, ½ − d)`, from two folds — an exact
 winding and a distance. It is now the area of the pixel under ink,

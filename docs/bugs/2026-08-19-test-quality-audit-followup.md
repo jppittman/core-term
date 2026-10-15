@@ -15,12 +15,12 @@ landed (`ce2df0e`), `main` moved by 5 commits to `9576ee1`:
 - `9576ee1` refactor: the four P1 defect classes die to denotations (J2-J4,
   J7-J9, J14, J15) (#1019)
 
-## Delta audit: STYLE.md compliance for every new/changed test in the range
+## Delta audit: ../process/STYLE.md compliance for every new/changed test in the range
 
 Reviewed all ~296 `#[test]` functions that are new or were modified across
 `ce2df0e..9576ee1` (confirmed per-function via `git log -S`, to separate
 genuinely new/changed tests from code that only moved during the two large
-refactors), against STYLE.md's two testing rules: descriptive "it should"
+refactors), against ../process/STYLE.md's two testing rules: descriptive "it should"
 names, and public-API-only test surfaces.
 
 **8 violations found, 7 fixed:**

@@ -1143,7 +1143,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// Cooperative multiplexing of multiple actors on one thread is the green
     /// tier's job (`Host` in `host.rs`; see
-    /// `docs/designs/actor-scheduler-mealy-transducer.md`), not this method's.
+    /// `docs/runtime/actor-scheduler-mealy-transducer.md`), not this method's.
     /// Its remaining real callers are test fixtures that need to step an
     /// actor's message loop by hand; it is expected to leave the public API
     /// once those callers migrate to `Host`.

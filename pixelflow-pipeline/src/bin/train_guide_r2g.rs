@@ -1,5 +1,5 @@
 //! Linear return-to-go regressor for the saturation Guide
-//! (`docs/plans/2026-09-01-guide-return-to-go.md` §3/§8 — the "linear model
+//! (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §3/§8 — the "linear model
 //! first" half of the redirect: hindsight return-to-go as the training
 //! target, in place of the strict/tight/loose hand-drawn bounds).
 //!
@@ -155,7 +155,7 @@ struct Args {
 
     /// Lower bound (inclusive) on the source expression's arena node count.
     /// `0` = unbounded. Round 3's registered training regime
-    /// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3) is node band
+    /// (docs/archive/plans/2026-09-01-guide-return-to-go.md §2b.3) is node band
     /// 101-1000, i.e. `--min-expr-nodes 101 --max-expr-nodes 1000`: the
     /// cells where guided orderings measurably disagree.
     #[arg(long, default_value_t = 0)]
@@ -189,7 +189,7 @@ struct Args {
 // ── Loading ──────────────────────────────────────────────────────────────
 
 /// The record-level selection that defines a training regime
-/// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3). One struct rather
+/// (docs/archive/plans/2026-09-01-guide-return-to-go.md §2b.3). One struct rather
 /// than four loose arguments so a caller cannot pass the bounds in the wrong
 /// order, and so the report can print the regime that actually ran instead
 /// of the flags someone believes they passed.
@@ -535,7 +535,7 @@ fn write_md_report(path: &str, report: &Report) {
         report.objective, report.regression_target, report.label_b
     ));
     md.push_str(&format!(
-        "Training regime (docs/plans/2026-09-01-guide-return-to-go.md §2b.3): **{}**.\n\n",
+        "Training regime (docs/archive/plans/2026-09-01-guide-return-to-go.md §2b.3): **{}**.\n\n",
         report.regime
     ));
     md.push_str(&format!(

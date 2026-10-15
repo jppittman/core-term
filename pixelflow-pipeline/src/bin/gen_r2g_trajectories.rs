@@ -1,5 +1,5 @@
 //! Trajectory minting for the Guide's return-to-go objective
-//! (`docs/plans/2026-09-01-guide-return-to-go.md` §2/§5): for every corpus
+//! (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §2/§5): for every corpus
 //! expression, run `K` differently-ordered saturation trajectories to a
 //! generous ceiling budget, and emit one JSONL record per recorded
 //! rewrite-rule application carrying its trajectory's hindsight return at
@@ -22,7 +22,7 @@
 //!
 //! Every trajectory runs through every rung of `--budgets` (default
 //! [`BUDGET_LADDER`] = `100,200,400,800,1600,3200`), extracting at each —
-//! round 3 (`docs/plans/2026-09-01-guide-return-to-go.md` §2b) generalized
+//! round 3 (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §2b) generalized
 //! this from round 1/2's fixed B=100/B=200/ceiling-at-4B trio specifically
 //! to measure where, if anywhere, return spread survives into the budget
 //! regime production actually runs classical kernels in (median ≈ 1,671
@@ -51,7 +51,7 @@
 //! added to it by a LATER application in the same trajectory. The
 //! alternative — an in-loop observer hook threaded through
 //! `GuidedSaturation` and a parallel one through the unguided sweep — is
-//! `docs/plans/2026-09-01-guide-return-to-go.md` §1.5's skew-free design;
+//! `docs/archive/plans/2026-09-01-guide-return-to-go.md` §1.5's skew-free design;
 //! it is not built here because doing so for `Unguided` requires
 //! instrumenting `EGraph`'s production sweep loop, and the smallest thing
 //! that answers this task's question (does trajectory-level ordering
@@ -113,7 +113,7 @@ const SATURATE_MAX_ITERS: usize = 2_000;
 /// of a trajectory's [`BUDGET_LADDER`] stages shares this budget.
 const SATURATE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Round-3 task's per-expression wall-clock safety ceiling
-/// (`docs/plans/2026-09-01-guide-return-to-go.md` §2b): minting one
+/// (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §2b): minting one
 /// expression (every ordering policy, run out to the full
 /// [`BUDGET_LADDER`]) that has not finished within this long is ABANDONED —
 /// the outer loop stops launching further policies for that expression,
@@ -287,7 +287,7 @@ enum BuiltGuide {
     Linear(LinearCandidateGuide),
     Random(UniformRandomGuide),
     /// A rank-mix of `base`'s score with a per-candidate uniform term —
-    /// `docs/plans/2026-09-01-guide-return-to-go.md` §2's `RankMixGuide`
+    /// `docs/archive/plans/2026-09-01-guide-return-to-go.md` §2's `RankMixGuide`
     /// row, computed inline here rather than as a separate
     /// `pixelflow-search` type (see this binary's module doc: the smallest
     /// thing that answers the question).

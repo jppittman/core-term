@@ -55,5 +55,5 @@ and `consume_wake_token` (`use_cocoa_display`).
 
 ## Decided in
 CLAUDE.md "Code Style" (platform `cfg` is encapsulation) and "Platform Notes";
-`docs/plans/2026-09-03-wayland-driver.md` (`PlatformOps` as the driver seam);
-`docs/designs/pixelflow-runtime-engine-mesh-migration.md`.
+`docs/runtime/2026-09-03-wayland-driver.md` (`PlatformOps` as the driver seam);
+`docs/runtime/pixelflow-runtime-engine-mesh-migration.md`.

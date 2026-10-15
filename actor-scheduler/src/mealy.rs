@@ -12,7 +12,7 @@
 //! the runtime, invisible to the handler author, and an actor can never outrun its slowest
 //! consumer.
 //!
-//! Design: `docs/designs/actor-scheduler-mealy-transducer.md`.
+//! Design: `docs/runtime/actor-scheduler-mealy-transducer.md`.
 //!
 //! # Status
 //!

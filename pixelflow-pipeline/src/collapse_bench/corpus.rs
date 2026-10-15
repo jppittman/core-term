@@ -7,7 +7,7 @@
 //! against. Each entry carries the **shape** it is baked at, because that is
 //! what turns a static count into a dynamic one — the omission that made the
 //! previous allocator measurements unable to see their own units
-//! (`docs/plans/2026-09-01-register-allocation-escape-hatches.md`, 3″).
+//! (`docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md`, 3″).
 //!
 //! Capture writes the corpus once, to files; the bench replays those files.
 //! So the corpus is a fixture with a diff, not a side effect of whichever

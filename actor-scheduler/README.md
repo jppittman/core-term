@@ -162,7 +162,7 @@ The current scope does not add dynamic spawning, migration, work stealing, or au
 hierarchical topology construction.
 
 The full design and its non-goals are recorded in
-[`docs/designs/actor-scheduler-mealy-transducer.md`](../docs/designs/actor-scheduler-mealy-transducer.md).
+[`docs/runtime/actor-scheduler-mealy-transducer.md`](../docs/runtime/actor-scheduler-mealy-transducer.md).
 
 ## Lifecycle and shutdown
 

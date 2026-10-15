@@ -12,7 +12,7 @@ kinds of document surround it and are not it:
   this page for the meaning and records where the code is behind it.
 - The **plans** (`docs/plans/`) say how a meaning was reached and what was
   built toward it. Where a plan and this page disagree, the plan is history,
-  and `docs/plans/2026-10-15-kernels-evaluate-kernels.md` is the ruling that
+  and `docs/language/2026-10-15-kernels-evaluate-kernels.md` is the ruling that
   settled most of the disagreements.
 - **CLAUDE.md** says how to work here. Its "Floating point at the edges" is
   the one piece of denotation kept there, because every session needs it.
@@ -76,9 +76,9 @@ not optimize, inline or compute. "A kernel is a function, and everything it
 does not contain is a parameter." It becomes numbers exactly once, when it
 is compiled at a lattice's shape and collapsed.
 
-Decided in: `plans/2026-10-15-kernels-evaluate-kernels.md` §2,
-`designs/2026-07-24-totality-and-the-cost-model.md`,
-`plans/2026-09-25-the-language-is-kernel.md`.
+Decided in: `language/2026-10-15-kernels-evaluate-kernels.md` §2,
+`language/2026-07-24-totality-and-the-cost-model.md`,
+`language/2026-09-25-the-language-is-kernel.md`.
 
 ## 2. Application, names and parameters
 
@@ -124,9 +124,9 @@ unknown on `P` (it is never a `Const`, never folded). Its identity is the
 instance, not the name and not the index. Loop bounds, extents and ranges
 are never uniforms.
 
-Decided in: `plans/2026-09-06-lattice-is-the-index.md`,
-`plans/2026-09-09-composition-is-linking.md`, `plans/2026-09-10-one-name-bound-later.md`,
-`plans/2026-09-06-uniform-slot-identity.md`,
+Decided in: `archive/plans/2026-09-06-lattice-is-the-index.md`,
+`language/2026-09-09-composition-is-linking.md`, `language/2026-09-10-one-name-bound-later.md`,
+`archive/plans/2026-09-06-uniform-slot-identity.md`,
 `pixelflow-compiler/tests/derivative_under_warp.rs` (the guard).
 
 ## 3. The fold
@@ -186,10 +186,10 @@ d(⊕_i f) = ⊕_i d(f)            for ⊕ = Σ only (linearity)
   (the spherical-harmonic feature maps in `pixelflow-ml`), and the
   continuous one arrives with the integral.
 
-Decided in: `plans/2026-09-09-a-fold-is-a-node.md`,
-`plans/2026-09-10-a-surviving-reduce-is-a-loop.md`,
-`plans/2026-09-23-an-integral-is-a-fold.md`, `plans/2026-09-23-a-glyph-is-a-formula.md`,
-`designs/2026-07-24-totality-and-the-cost-model.md`.
+Decided in: `archive/plans/2026-09-09-a-fold-is-a-node.md`,
+`codegen/2026-09-10-a-surviving-reduce-is-a-loop.md`,
+`archive/plans/2026-09-23-an-integral-is-a-fold.md`, `archive/plans/2026-09-23-a-glyph-is-a-formula.md`,
+`language/2026-07-24-totality-and-the-cost-model.md`.
 
 ## 4. Mask and the conditional
 
@@ -228,8 +228,8 @@ value an arm defines is read by that `If`'s select, so a definition
 dominates every read that *observes* it, not every syntactic read, and no
 phi is inserted for it.
 
-Decided in: `plans/2026-10-15-kernels-evaluate-kernels.md` §1,
-`plans/2026-10-08-selection-is-a-phase.md` §0.12–§0.13, CLAUDE.md
+Decided in: `language/2026-10-15-kernels-evaluate-kernels.md` §1,
+`archive/plans/2026-10-08-selection-is-a-phase.md` §0.12–§0.13, CLAUDE.md
 "Floating point at the edges".
 
 ## 5. The lattice and evaluation
@@ -285,10 +285,10 @@ pitch)` once per stripe, and nothing crosses it as a vector. There is no
 per-point entry, no per-batch entry and no interpreter. A single point is a
 contramap over a 1×1 extent.
 
-Decided in: `plans/2026-09-06-kernel-with-a-lattice.md`,
-`plans/2026-09-06-lattice-is-the-index.md`, `plans/2026-09-16-collapse-is-a-fold.md`
+Decided in: `archive/plans/2026-09-06-kernel-with-a-lattice.md`,
+`archive/plans/2026-09-06-lattice-is-the-index.md`, `archive/plans/2026-09-16-collapse-is-a-fold.md`
 (denotation; its traversal is the CPU backend's, §7),
-`plans/2026-10-15-kernels-evaluate-kernels.md` §2.
+`language/2026-10-15-kernels-evaluate-kernels.md` §2.
 
 ## 6. Discrete kernels
 
@@ -316,7 +316,7 @@ evaluating a kernel runs arithmetic or reads a table.
 - **No `Dwrt` of a discrete kernel.** Differentiating `D ∘ floor` is
   differentiating a step function; refused by name for now.
 
-Decided in: `plans/2026-10-15-kernels-evaluate-kernels.md` §2.
+Decided in: `language/2026-10-15-kernels-evaluate-kernels.md` §2.
 
 ## 7. Variance is factorization; the schedule is a factorization of the domain
 
@@ -369,11 +369,11 @@ code`, with its own `Pass` chain; the CPU module's is Nest → Own → Layout �
 Select → Allocate → Assemble, and it alone owns register allocation,
 rematerialization and carries. On a GPU the vendor compiler allocates. The
 full table of concept → algorithm / schedule / backend is the schedule note,
-`plans/2026-10-15-a-schedule-is-a-factorization.md`.
+`codegen/2026-10-15-a-schedule-is-a-factorization.md`.
 
-Decided in: `designs/lattice-scheduling-types.md` (right about factoring,
-wrong about the mechanism), `plans/2026-09-23-an-integral-is-a-fold.md` §1
-(the variance law), `plans/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
+Decided in: `archive/designs/lattice-scheduling-types.md` (right about factoring,
+wrong about the mechanism), `archive/plans/2026-09-23-an-integral-is-a-fold.md` §1
+(the variance law), `language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
 
 ## 8. The optimizer and the as-if contract
 
@@ -390,7 +390,7 @@ budget is denominated in rule applications, deterministic in the input;
 wall clock is a fail-loud ceiling that panics the build, never a budget
 dimension and never a reason to emit a worse kernel.
 
-**The five laws** (`plans/2026-09-02-optimizer-api.md`, as audited):
+**The five laws** (`archive/plans/2026-09-02-optimizer-api.md`, as audited):
 
 1. **Soundness.** Every rule preserves denotation on its documented domain,
    so an e-class *is* a semantic equivalence class and `add` is a
@@ -434,9 +434,9 @@ instruction or register was chosen, or the shape of any intermediate
 structure. A same-form check cannot see a shared-definition bug; only an
 external bound can. "Precision is on the table; range is not."
 
-Decided in: `plans/2026-09-02-optimizer-api.md`,
-`plans/2026-09-24-one-pipeline.md` §1, `plans/2026-09-01-production-budget-determinism.md`,
-`plans/2026-10-13-tests-check-the-as-if-contract.md`, CLAUDE.md.
+Decided in: `archive/plans/2026-09-02-optimizer-api.md`,
+`language/2026-09-24-one-pipeline.md` §1, `archive/plans/2026-09-01-production-budget-determinism.md`,
+`process/2026-10-13-tests-check-the-as-if-contract.md`, CLAUDE.md.
 
 ## 9. What the types ask of the IR (proposed, not yet ruled)
 
@@ -490,10 +490,10 @@ assemble : assembly program → binary          stateless; encode is total and m
   never hand-roll something worse": edge IEEE conformance is not on offer,
   and portable code does not depend on a platform-divergent row.
 
-Decided in: `designs/assembler-as-functor.md`,
-`plans/2026-10-08-selection-is-a-phase.md`,
-`plans/2026-09-22-the-isa-is-decided-at-startup.md`,
-`plans/2026-09-12-emit-should-just-emit.md`.
+Decided in: `archive/designs/assembler-as-functor.md`,
+`archive/plans/2026-10-08-selection-is-a-phase.md`,
+`codegen/2026-09-22-the-isa-is-decided-at-startup.md`,
+`archive/plans/2026-09-12-emit-should-just-emit.md`.
 
 ## 11. Not concepts
 

@@ -1,6 +1,6 @@
 //! Round 2, mode (iii): genuinely new rewrite rules.
 //!
-//! `docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3 — the fidelity
+//! `docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3 — the fidelity
 //! arm of Phase 3 Round 2 ("does the Guide's advantage grow with the rule
 //! count?"). This module is **harness-only**: `experimental_rules` is not
 //! called by `super::all_rules` or `super::all_math_rules`, and nothing
@@ -10,7 +10,7 @@
 //! ## The algebraic-validity contract
 //!
 //! Every rule below is a theorem over the reals on the *documented domain*
-//! of the ops it touches (`docs/plans/2026-08-05-egraph-nnue-research-workflow.md`
+//! of the ops it touches (`docs/archive/plans/2026-08-05-egraph-nnue-research-workflow.md`
 //! §0.4; CLAUDE.md "Precision is on the table; range is not"). No domain
 //! guard is added to make an identity "safer" than the ops it is built from
 //! — divergence outside a documented domain (e.g. `sqrt` of a negative
@@ -497,7 +497,7 @@ impl Rewrite for IfSameBranch {
         // strict-label datasets and `rule_set_fingerprint` (a frozen registered
         // constant, registration-v2 §2) all hash it — so it keeps the spelling
         // the method `.select` has until Phase B of
-        // docs/plans/2026-09-25-the-language-is-kernel.md renames both.
+        // docs/language/2026-09-25-the-language-is-kernel.md renames both.
         "select-same-branch"
     }
 
@@ -1343,7 +1343,7 @@ impl Rewrite for DivByLiteral {
 // ============================================================================
 
 /// The Round 2 mode-(iii) batch: genuinely new rules the production 62 lack
-/// (`docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3).
+/// (`docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3).
 ///
 /// **Harness-only.** Not called by [`super::all_rules`] or
 /// [`super::all_math_rules`]; nothing in production behavior changes by this

@@ -55,5 +55,5 @@ and `Troupe` (`new`, `new_with_wakers`, `new_with_waker`, `exposed`, `play`).
   `Wakers` and `[waker]`.
 
 ## Decided in
-`docs/designs/pty-actor-troupe.md` (`[waker]`, Done);
-`docs/designs/actor-scheduler-mealy-transducer.md` §7.2 (`ports!`; Draft).
+`docs/archive/designs/pty-actor-troupe.md` (`[waker]`, Done);
+`docs/runtime/actor-scheduler-mealy-transducer.md` §7.2 (`ports!`; Draft).

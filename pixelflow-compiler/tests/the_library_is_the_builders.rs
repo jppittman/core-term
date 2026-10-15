@@ -3,7 +3,7 @@
 //! `Kernel`'s method builds — the same arena, by
 //! `pixelflow_ir::key::canonical` — because both call
 //! `pixelflow_ir::library`'s one definition of it
-//! (docs/plans/2026-09-25-the-language-is-kernel.md §1.1, B5).
+//! (docs/language/2026-09-25-the-language-is-kernel.md §1.1, B5).
 //!
 //! `fract`, `hypot` and `clamp` are library, not primitives; `DX`, `DY`
 //! and the Hessian family are `Dwrt` chains, one per axis. Each used to be

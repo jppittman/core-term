@@ -54,6 +54,6 @@ and to the baked tiles a frame reads today.
   `text()` "a sum of advance-translated glyph kernels"; it is one `run`.
 
 ## Decided in
-`docs/plans/2026-09-23-a-glyph-is-a-formula.md`, `docs/plans/2026-09-09-a-run-is-a-glyph.md`,
-`docs/plans/2026-09-25-the-language-is-kernel.md` (§1.7, C1, C2, D10, D16),
-`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2.
+`docs/archive/plans/2026-09-23-a-glyph-is-a-formula.md`, `docs/archive/plans/2026-09-09-a-run-is-a-glyph.md`,
+`docs/language/2026-09-25-the-language-is-kernel.md` (§1.7, C1, C2, D10, D16),
+`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2.

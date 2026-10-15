@@ -15,7 +15,7 @@
 //!
 //! # Why this exists
 //!
-//! `docs/plans/2026-08-31-guide-design-revision.md` §4.1: before any policy
+//! `docs/archive/plans/2026-08-31-guide-design-revision.md` §4.1: before any policy
 //! gates a rewrite on "will this grow the graph and give me nothing, or grow
 //! it a little and give me something useful", growth has to be *measured*,
 //! not guessed. A rewrite's RHS is a template of known size and the e-graph
@@ -64,7 +64,7 @@ use super::rules::RuleId;
 /// [`RewriteAction`](super::rewrite::RewriteAction) adds at most a handful of
 /// nodes) no matter how many times the rule fires, which matters here: one
 /// kernel can drive hundreds of thousands of applications
-/// (`docs/plans/2026-08-31-guide-design-revision.md` §2.1's heavy tail).
+/// (`docs/archive/plans/2026-08-31-guide-design-revision.md` §2.1's heavy tail).
 #[derive(Clone, Debug, Default)]
 pub struct RuleGrowth {
     /// Applications recorded for this rule — committed applications, not
@@ -74,7 +74,7 @@ pub struct RuleGrowth {
     /// Applications that changed nothing at all: zero nodes created AND the
     /// closing union did not merge two previously-distinct classes. This is
     /// the idempotent-refire case
-    /// `docs/plans/2026-08-31-guide-design-revision.md` §2.2 measures at
+    /// `docs/archive/plans/2026-08-31-guide-design-revision.md` §2.2 measures at
     /// 91.1% of all applications.
     no_op: u64,
     /// `nodes_added -> application count`. Doubles as the `classes_added`

@@ -35,7 +35,7 @@ pub mod derivative;
 pub(crate) mod extract;
 pub mod fold_rules;
 mod graph;
-// Per-application growth telemetry (docs/plans/2026-08-31-guide-design-revision.md
+// Per-application growth telemetry (docs/archive/plans/2026-08-31-guide-design-revision.md
 // §4.1) has no production consumer yet, exactly like `crate::telemetry` —
 // gated behind the same `saturation-telemetry` feature so a build that
 // doesn't ask for it doesn't carry the module at all.
@@ -60,7 +60,7 @@ pub mod saturate;
 mod shift;
 pub mod template;
 // Research only: the read-only half of the extraction-witness instrument
-// (docs/plans/2026-09-08-extraction-witnesses.md). Gated behind the feature
+// (docs/archive/plans/2026-09-08-extraction-witnesses.md). Gated behind the feature
 // every `pixelflow-pipeline` harness already builds with, so nothing here
 // reaches a downstream build.
 #[cfg(feature = "provenance-journal")]

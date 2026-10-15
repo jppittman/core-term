@@ -18,7 +18,7 @@
 //! everything; a derivative is taken with respect to `X` before `collapse`
 //! substitutes `X` away, and a read's address arithmetic is built
 //! over the lattice's binders after it, so the two lattice passes sit between
-//! (docs/plans/2026-09-16-collapse-is-a-fold.md §2.3). Every pass is
+//! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.3). Every pass is
 //! idempotent and has an identity fast-path, so running one that has nothing
 //! to do is free — except the two lattice passes, which always wrap: after
 //! them no coordinate `Var` exists and the root is a `Reduce` over the unit
@@ -211,7 +211,7 @@ where
 ///
 /// `source` is `node`'s own id — needed only for the `Nary` arm, to read its
 /// children through [`ExprArena::children`] rather than the n-ary slab's raw
-/// offsets (docs/plans/2026-09-09-exprarena-on-dag.md, Stage A).
+/// offsets (docs/archive/plans/2026-09-09-exprarena-on-dag.md, Stage A).
 fn copy_node(
     arena: &mut ExprArena,
     source: ExprId,
@@ -259,7 +259,7 @@ fn copy_node(
 /// memory keeps naming the same memory. The runtime tier links each body as
 /// *optimized* instead, through [`link`] itself: the store is where a unit's
 /// body is found, not the only thing a name may be linked to
-/// (docs/plans/2026-09-25-the-language-is-kernel.md §4, O1).
+/// (docs/language/2026-09-25-the-language-is-kernel.md §4, O1).
 ///
 /// Recursive: a referent may itself hold references, and each is expanded
 /// before its body is spliced. That terminates because references form a DAG
@@ -297,7 +297,7 @@ pub fn expand_refs(arena: &mut ExprArena, root: ExprId) -> ExprId {
 /// tier is it over each unit's body as *optimized* — a unit is saturated
 /// and extracted by itself, its own references held as opaque leaves, and
 /// linked here after extraction and before legalization, so the emitter
-/// sees one program (docs/plans/2026-09-25-the-language-is-kernel.md §4,
+/// sees one program (docs/language/2026-09-25-the-language-is-kernel.md §4,
 /// O1). A body may hold references of its own, and each is linked through
 /// `bodies` before the body is spliced. A name is spliced once per key, as
 /// in [`expand_refs`].
@@ -634,7 +634,7 @@ impl Rules<'_> {
     ///
     /// An index that does move is still refused: differentiating through it
     /// needs the code the tabulation replaced, and a bound buffer does not
-    /// carry it (docs/plans/2026-09-09-the-graph-differentiates.md §3).
+    /// carry it (docs/archive/plans/2026-09-09-the-graph-differentiates.md §3).
     fn tabulation(&self, arena: &mut ExprArena, index: &[ExprId]) -> Result<ExprId, &'static str> {
         let moves = index.iter().any(|id| {
             !self
