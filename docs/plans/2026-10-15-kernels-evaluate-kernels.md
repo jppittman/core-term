@@ -91,7 +91,7 @@ JP, 2026-10-15:
 
 ```
 apply : Program × Schedule → DiscreteManifold
-DiscreteManifold ⊂ Kernel            (sampled at lattice points)
+DiscreteManifold = Kernel<L>         (a kernel whose domain is the lattice L)
 index(apply(f, s)) = f  on the lattice
 ```
 
@@ -113,17 +113,106 @@ is sugar in the graphics library for executing a schedule, not a language
 construct. And "let's not have derivatives of discrete kernels for now":
 `Dwrt` of a discrete kernel is refused by name.
 
+### Everything is a kernel: the types
+
+JP, 2026-10-15:
+
+> I never wanna make a distinction between a memory read and a discrete
+> function. ... The way I intend to do memory reads is to pass discrete
+> kernels that happen to be tabulated. The language doesn't have arrays
+> ever. ... I use kernel and function interchangeably.
+
+> In the original pixelflow everything was a manifold. Even a regular float.
+> It's arrows all the way down in a real lambda calculus language. So 5 is a
+> kernel with an infinite domain and a range of, well, just 5.
+
+A kernel is a function, and the language is the typed lambda calculus, so
+the types are base sorts and arrows and nothing else:
+
+```
+S ::= Real | Int | Mask              base sorts: what one lane holds
+D ::= S | D × D | Lattice(w, h)      domains: R² is Real × Real, Z² is Int × Int,
+                                     a lattice is a bounded Z²
+T ::= S | D → T                      a kernel is a value of arrow type
+```
+
+- A continuous kernel is `R² → Real`. A **discrete kernel** is `L → Real`
+  for a lattice `L`. A comparison is a kernel `R² → Mask`. The floor of a
+  coordinate is a kernel `R² → Int`, which is exactly what a discrete kernel
+  can be applied to. They differ in their domain and in nothing else; there
+  is no subtype relation, and the earlier "`DiscreteManifold ⊂ Kernel`" meant
+  this and said it badly.
+- **A constant is a kernel.** `5` is `λ_. 5 : D → Real` for every `D`: the
+  global element `1 → Real` composed with the unique `D → 1`. There is no
+  separate "scalar" sort of value in the language; a scalar is a kernel that
+  does not read its argument.
+- **Variance is factorization.** A kernel is *uniform* when it factors
+  through `D → 1` (a constant), *row-invariant* when it factors through the
+  projection onto one axis, and lane-varying otherwise. The CPU backend's
+  choice of broadcast, contiguous load or gather for evaluating a discrete
+  kernel is reading which projection its index factors through. The analysis
+  the backend already runs is this factorization, not a separate concept.
+- **There is no array.** The grammar has no `Array` type former, only
+  `L → S`. A table in memory is a representation of a value of that type
+  (`Vector α n ≅ Fin n → α`, which is `index(collapse(f)) = f`), and a
+  "memory read" is application. The tabulation may or may not have happened;
+  the type is the same.
+- **The lift is precomposition.** `nearest(D) = D ∘ floor` with
+  `floor : R² → Z²`; bilinear is four precompositions with weights. `at` is
+  `contramap`, so no new construct is needed. What happens outside the
+  lattice is decided by the `R² → Z²` function (clamp to the edge, or a mask
+  to zero), not by `D`, which is total on its lattice and says nothing about
+  outside.
+- **A per-frame table is a parameter of arrow type**, `(L → Real) → R² → Real`,
+  as `Uniform` is a parameter of base type. Not a memory concept.
+- **`Dwrt` is defined on `Real → _` only.** Differentiating a discrete kernel
+  is a type error; differentiating `D ∘ floor` is differentiating a step
+  function, zero almost everywhere, and is refused by name for now.
+- **The extent is a value, not a type.** Lean would write `Fin w → Fin h → ℝ`
+  and carry `w` in the type; Rust can only do that with const generics, which
+  would forbid runtime-sized frames. So the *sort* of the domain is a type
+  (`R²`, `Z²`, `L`) and the extent of `L` travels with the kernel as a value;
+  applying a discrete kernel over the wrong extent is a bake-time refusal by
+  name. Every ML-shaped mistake (a table read at a real coordinate, a
+  derivative through a table, a wrong-rank composition) is then a compile
+  error, and only "wrong size" reaches runtime.
+
+What this asks of the IR, in order (proposed 2026-10-15, not yet ruled):
+
+1. **Base sorts on arena nodes.** Today one `f32` lane is a real, an integer
+   and a mask by convention, and `OpKind::is_bitwise_domain()`, the folder's
+   non-finite exemption and the `OpKind::mask(bool)` convention recover at
+   runtime what a sort would make unbuildable. With `Real`/`Int`/`Mask` on
+   every node, `Lt` returns `Mask`, `If` and `select` demand one,
+   `BitAnd` is `Mask × Mask` or `Int × Int`, `floor`/`TruncToInt` are the only
+   bridges `Real → Int`, and rewrite rules are sort-preserving. The discrete
+   kernel's index is typed for free and the plan's "structural integrality
+   guard" is never written.
+2. **Arrow sorts on binders.** The arena is first-order today; arrows live in
+   the Rust `Kernel<D>` wrapper. `Var`, `Uniform` and a discrete-kernel
+   parameter are binders of types `Real`, `Real` and `L → Real`; a `Ref` is
+   application of an arrow. This is BACKLOG N1–N3 ("one kind of name",
+   "composition is linking") stated in these words.
+3. **Predicate domains, later.** A domain that is a set with a predicate
+   (`{x : ℝ // x ≠ 0}`; `|x| < 2²⁰` for `sin`) lives naturally in the e-graph's
+   class analysis, seeded by the domain declared on the inputs and
+   propagated through ops, with rewrites conditional on it: `sqrt(x·x) → x`
+   on `x ≥ 0`, the `asin` guard dropped on `[−1, 1]`, a mask the domain
+   already implies making its `If` unconditional. Kept decidable by keeping
+   the fact lattice small (sign, interval, a finite set of exclusions).
+
 Consequences:
 
 - **"Bound buffer", `BoundManifold`, `bind(&[(id, buf)])` are not concepts.**
   A discrete kernel is a `Kernel` and composes like one. The ABI still hands
   the compiled code the tables it reads, as it hands it the output; that is
   the backend's business, not the language's.
-- **Discrete and continuous are distinct types.** JP: "It's a type error."
-  Evaluating a discrete kernel at a continuous coordinate is refused. Lifting
-  it to a continuous kernel is explicit and names the sampling
-  (`nearest()`, `bilinear()`, ...), so the opinion lives in the type. A
-  discrete kernel composed with an integer translation stays discrete.
+- **Discrete and continuous kernels have different domains.** JP: "It's a
+  type error." Evaluating `L → Real` at an `R²` coordinate does not
+  typecheck. Lifting is explicit precomposition with an `R² → Z²` function
+  that names the sampling (`nearest()`, `bilinear()`, ...), so the opinion
+  lives in the type. A discrete kernel composed with an integer translation
+  (`Z² → Z²`) stays discrete.
 - **`Gather`, `Broadcast` and a plain load are not language ops.** They are
   three realizations of one thing, "evaluate discrete kernel `D` at
   `(u, v)`", and the CPU scheduler picks one from the variance it already
