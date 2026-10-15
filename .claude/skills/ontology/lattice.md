@@ -272,9 +272,8 @@
   domain split, which emits a second program. `If` has one shape, guards and
   one select (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §1), so the
   split is deleted.
-- **Lives:** `pixelflow-ir/src/mask_support.rs` (`mask_support`,
-  `MaskSupport`; D1, symbolic tier only) is the analysis still in code; the
-  split was never built (D2) and is not to be built.
+- **Lives:** nothing. The range analysis (D1) was deleted with the split;
+  the split was never built (D2) and is not to be built.
 
 ### Region. Homonym
 
@@ -289,8 +288,7 @@
   demand", which became arm regions in code.
 - **Follows:** whenever code says "region", ask which sense it means.
 - **Lives:** `pixelflow-codegen/src/program/ownership.rs`,
-  `pixelflow-codegen/src/program/mod.rs` (`ScopeRegion`),
-  `pixelflow-ir/src/mask_support.rs`, `PlaneRegion`
+  `pixelflow-codegen/src/program/mod.rs` (`ScopeRegion`), `PlaneRegion`
   (`pixelflow-core/src/lattice/manifold.rs`).
 
 ### Scene (channel kernels, pack, colour)
