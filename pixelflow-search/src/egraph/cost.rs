@@ -137,11 +137,11 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
         OpKind::Ge => 3,
         OpKind::Eq => 3,
         OpKind::Ne => 3,
-        OpKind::If => 4,
-        OpKind::Tuple => 0,      // free (structural)
+        OpKind::If => 4, // the select; the arms are averaged where the DP adds them (`extract.rs`'s `below`)
+        OpKind::Tuple => 0, // free (structural)
         OpKind::TruncToInt => 1, // cvttps2dq
         OpKind::IntToFloat => 1, // cvtdq2ps
-        OpKind::IAdd => 1,       // paddd
+        OpKind::IAdd => 1, // paddd
         OpKind::Shl => 1,
         OpKind::Shr => 1,
         OpKind::BitAnd => 1,
@@ -368,7 +368,7 @@ impl CostModel {
             // evaluations are not here — a node's cost cannot see its
             // children's — they are applied where the DP adds the body in,
             // which is the one place that number exists. See
-            // `extract.rs`'s `fold_body_multiple`.
+            // `extract.rs`'s `below`.
             //
             // This was `usize::MAX / 4`, the prohibitive sentinel `Dwrt` also
             // carried then (it costs its table entry now, above), on the
@@ -405,8 +405,7 @@ impl CostModel {
     /// halves, because a node's own cost cannot see its children's:
     /// [`node_op_cost`](Self::node_op_cost) is `fold_cost(fold, 0)`, the
     /// combiner chain, and the DP multiplies the body's price by the trip
-    /// count where it has that price in hand (`extract.rs`'s
-    /// `fold_body_multiple`).
+    /// count where it has that price in hand (`extract.rs`'s `below`).
     ///
     /// Saturating: a nest of long folds over an expensive body is a price
     /// past any budget, not an overflow.
