@@ -1387,10 +1387,10 @@ cargo test --target aarch64-unknown-linux-gnu -p pixelflow-codegen   # + the V s
 
 | Crate | Suites |
 |---|---|
-| `pixelflow-codegen/tests/` | `collapse_paths`, `collapse_abi_smoke`, `halve_fold_jit`, `prod_kernel_jit`, `transcendental_jit`, `trig_range_jit`, `muladd_rounding`, `one_compile_per_shape`, `deep_frame`, `empty_fold` |
+| `pixelflow-codegen/tests/` | `collapse_paths`, `collapse_abi_smoke`, `halve_fold_jit`, `prod_kernel_jit`, `transcendental_jit`, `trig_range_jit`, `muladd_rounding`, `jit_cache_sharing` (was `one_compile_per_shape`; T5 deleted that suite), `deep_frame`, `empty_fold` |
 | `pixelflow-core/tests/` | `fold_factoring`, `guard_fold_price`, `guard_parked_reads`, `guard_sibling_fold`, `reduce_binder_reads_bound_buffer`, `kernel_bake`, `mask_support_of_a_built_kernel` |
 | `pixelflow-graphics/tests/` | `glyph_exact_area`, `glyph_area_edge_cases`, `glyph_atlas_golden`, `freetype_oracle`, `loop_blinn_winding`, `rendering_contract`, `pixel_contract` |
-| `emit/mod.rs` | `a_surviving_reduce_compiles_and_runs` (`2624`), `a_folds_spill_slots_do_not_alias_its_parents` (`2783`), `a_reduce_three_deep_compiles_and_runs` (`2910`), `sibling_folds_sharing_a_binder_node_read_their_own_counters` (`2962`), `a_folds_roots_are_placed_by_the_budget` (`3055`), `a_fold_owned_by_an_arm_is_guarded` (`4355`), `a_deep_spill_frame_compiles_correctly` (`4797`), `a_uniform_past_the_old_u16_width_loads_on_every_backend` (`5699`) |
+| `emit/mod.rs` | `a_surviving_reduce_compiles_and_runs` (`2624`), `a_folds_spill_slots_do_not_alias_its_parents` (`2783`), `a_reduce_three_deep_compiles_and_runs` (`2910`), `sibling_folds_sharing_a_binder_node_read_their_own_counters` (`2962`), `a_fold_over_many_roots_computes_its_value` (was `a_folds_roots_are_placed_by_the_budget`; T5 kept its value check over FEW and MANY roots), `a_fold_owned_by_an_arm_is_guarded` (`4355`), `a_deep_spill_frame_compiles_correctly` (`4797`), `a_uniform_past_the_old_u16_width_loads_on_every_backend` (`5699`; replaced by `tests/uniform_past_u16.rs`, T5) |
 
 **K(tier)**: V run with `PIXELFLOW_CODEGEN=selection PIXELFLOW_ISA=<tier>`, through the production API. In B4–B8, K names the subset that commit makes pass. In B9 and later it is all of V.
 
@@ -1639,7 +1639,7 @@ Every commit in this phase is live in production.
   - The back edge's parallel move. Its cycle break waits for a producer (§2.11, step 5).
   - The latch hint.
   - Join invariant 1 asserted at each latch.
-- **Gate:** K(avx2) as in B4, plus `a_folds_roots_are_placed_by_the_budget` rewritten as `traffic.loads` before and after a carry-budget-sized root count. `tests/loops.rs` guards nothing under the default pipeline. It is in K(avx2) from B6 by name, beside `tests/residency.rs`, and in B10's `isa-matrix` knob step.
+- **Gate:** K(avx2) as in B4. (`a_folds_roots_are_placed_by_the_budget` was stripped to its value check and renamed `a_fold_over_many_roots_computes_its_value` by T5; the carry-mechanism assertions went.) `tests/loops.rs` guards nothing under the default pipeline. It is in K(avx2) from B6 by name, beside `tests/residency.rs`, and in B10's `isa-matrix` knob step.
 
 #### B7: Rematerialization
 
@@ -1652,7 +1652,7 @@ Every commit in this phase is live in production.
     - The allocator asserts that the instruction defines one value, first, and otherwise only reads, and does not define `Flags`. B7 asserted that it reads none; C4 places what it reads first.
 - **Check:** the `parked_roots_w37` row, which B6 left about 1% above legacy in bytes and memory operations (nine pinned registers over one long straight-line fold body). It is below legacy in both now (bytes 249,664 to 204,768 against legacy's 247,328; loads plus stores 212,099 to 112,090 against 209,915), because a constant is no longer stored and reloaded. The loads that remain are remats, which legacy folds into memory operands and does not count.
   - Remat of a carried constant instead of carrying it was tried and measured: it shrinks the glyph row's code (768 bytes against 880) but nearly doubles its trip-weighted traffic (634 against 340), since the hot scope then redefines each constant every trip. Carrying stays priced as in B6.
-- **Gate:** K(avx2) as in B4, plus `constants_are_rematerialized_rather_than_spilled` in `tests/residency.rs`, against a compiled kernel's `traffic`. B5's `the_value_read_farthest_out_is_the_one_given_up` there is sized from `traffic.pool`, and replaces the in-file `belady_evicts_the_value_used_farthest_out`, which is deleted. Both run under either pipeline.
+- **Gate:** K(avx2) as in B4, plus `constants_past_the_file_are_read_at_their_values` in `tests/residency.rs` (was `constants_are_rematerialized_rather_than_spilled`; T5 dropped its traffic assertion, values only). B5's `the_value_read_farthest_out_is_the_one_given_up` there is sized from `traffic.pool`, and replaces the in-file `belady_evicts_the_value_used_farthest_out`, which is deleted. Both run under either pipeline.
 
 #### B8: AVX2 memory operations
 
@@ -1739,7 +1739,7 @@ Every commit in this phase is live in production.
 - **Tests:**
   - New, value: `a_context_slot_past_imm12_loads` (`tests/context_past_imm12.rs`), at slot 4,096 (this panics on legacy NEON).
   - The deep vector slot's value test is `tests/deep_frame.rs`, now at an eighth more terms than the pinned row: selection's frame for the pinned row is 61,104 bytes on NEON, a few KiB under `ldr q`'s reach, where legacy's was 125 KB. It replaces `a_deep_frame_addresses_through_ip0`, which tests legacy's chain of `add`s and goes with legacy in D1.
-  - Rewritten: `a_uniform_past_the_old_u16_width_loads_on_every_backend` (`mod.rs:5699`, asserts at `5785-5789`) also asserts `add xN, base, #hi, lsl 12; ldr s, [xN, #lo]` of the selected code, with `N` read from the bytes, not fixed.
+  - Superseded by T5: `a_uniform_past_the_old_u16_width_loads_on_every_backend` is deleted; `pixelflow-codegen/tests/uniform_past_u16.rs` guards the value through the public API (no instruction-bytes assertion).
   - `tests/stack_probe.rs` runs on aarch64 Linux too (`uc_mcontext.sp`).
   - **`GOLDEN_SELECTED[neon]`** (`tests/golden_selected.rs`'s third table). The `neon+selection` tiers of the graphics pins (`glyph_branches`, `the_scenes_emit_their_pinned_code`) are new rows.
 - **Gate:** G Q QK L, and M (plus the knob step).

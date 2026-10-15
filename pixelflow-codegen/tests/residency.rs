@@ -1,9 +1,8 @@
-//! A value stays in its register until something needs the register.
+//! A kernel computes its values under register pressure.
 //!
-//! These fail on an allocator that stores every value to the frame when it is
-//! defined and reloads it at every read. They are written against what a
-//! kernel emits, not against the allocator: its traffic, its frame, and the
-//! numbers it computes.
+//! The values a kernel computes while more values are live than the machine
+//! has registers, the pressure sized from the pool. Only the numbers are
+//! asserted; no claim is made about the traffic or the frame.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
@@ -56,7 +55,7 @@ fn an_operand_overwritten_in_place_survives_when_it_is_read_again() {
 /// they are read. The count past the file is sized from the pool, so the
 /// pressure is real on every tier; only the value is asserted.
 #[test]
-fn constants_are_rematerialized_rather_than_spilled() {
+fn constants_past_the_file_are_read_at_their_values() {
     /// Constants that fit every tier's vector file with room to spare.
     const FEW: usize = 4;
     /// Constants past the vector file.

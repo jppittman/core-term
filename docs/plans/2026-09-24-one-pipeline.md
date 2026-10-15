@@ -848,8 +848,8 @@ computations at the same commit:
 2. **Across hosts.** Each runner uploads its `program()` digests, and one
    job compares them at the same commit.
 3. **Preloaded code is used.** There are zero saturations after preload
-   (`saturation_count`, `runtime.rs:267`; `entry_count`,
-   `jit_cache.rs:186`).
+   (`entry_count`, `jit_cache.rs:186`; the saturation counter was
+   deleted by selection-phase T5).
 4. **Scope.** `check-provenance-journal-scope.sh` covers the macro crate's
    dependencies.
 

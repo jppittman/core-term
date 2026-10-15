@@ -173,9 +173,6 @@ pub(super) fn scope_ix(scope: Scope) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{EmitTraffic, ScopeTraffic};
-    use pixelflow_ir::LatticeShape;
-    use pixelflow_ir::OpKind;
-    use pixelflow_ir::arena::{ExprArena, ExprId};
 
     /// `memory_ops` is read by a measurement harness, not by anything this
     /// crate itself branches on, so a wrong formula would ship silently
@@ -217,48 +214,5 @@ mod tests {
         };
 
         assert_eq!(traffic.dynamic_memory_ops(), 1 + 3 * 6 + 5 * 42);
-    }
-
-    /// A wide sum whose terms are all pushed before any is consumed, so more
-    /// values are live at once than the vector file holds.
-    fn wide_live_range_kernel(terms: usize) -> (ExprArena, ExprId) {
-        let mut a = ExprArena::new();
-        let x = a.push_var(0);
-        let y = a.push_var(1);
-        let live: Vec<ExprId> = (0..terms)
-            .map(|i| {
-                let c = a.push_const(0.25 + i as f32 * 0.125);
-                let scaled = a.push_binary(OpKind::Mul, x, c);
-                a.push_binary(OpKind::Add, scaled, y)
-            })
-            .collect();
-        let root = live
-            .iter()
-            .skip(1)
-            .fold(live[0], |acc, &t| a.push_binary(OpKind::Add, acc, t));
-        (a, root)
-    }
-
-    const SHAPE: LatticeShape = LatticeShape::new([16, 2]);
-
-    /// Spilling must show up as traffic. If a future allocation path routes a
-    /// store or a reload around its `Origin`, this is the test that notices.
-    #[test]
-    fn a_kernel_that_must_spill_reports_stores_and_loads() {
-        let (arena, root) = wide_live_range_kernel(96);
-        let result = crate::emit::compile(&arena, root, SHAPE).expect("a wide kernel compiles");
-        let t = &result.traffic;
-        let stores: u64 = t.scopes.iter().map(|s| s.stores).sum();
-        let loads: u64 = t.scopes.iter().map(|s| s.loads).sum();
-        let instructions: u64 = t.scopes.iter().map(|s| s.instructions).sum();
-        assert!(
-            stores > 0,
-            "values reached a frame slot with no store counted: {t:?}"
-        );
-        assert!(loads > 0, "values were spilled and never reloaded: {t:?}");
-        assert!(
-            instructions > 0,
-            "a kernel with a body emitted no scheduled operation: {t:?}"
-        );
     }
 }

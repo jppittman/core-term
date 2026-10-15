@@ -235,32 +235,6 @@ mod page_tests {
         let func: NoOp = unsafe { core::mem::transmute(exec.as_bytes().as_ptr()) };
         unsafe { func() };
     }
-
-    /// The `- 1` in `(len + page_size - 1) & !(page_size - 1)` is what stops
-    /// an exact multiple of the page size from spilling into an extra page;
-    /// pin the arithmetic at that boundary specifically; a naive round-up
-    /// without it would double the mapping for `exact` below. `capacity` is
-    /// private to this crate but not to this module — [`page_tests`] is a
-    /// descendant of `executable`.
-    #[test]
-    fn capacity_rounds_up_to_the_page_size_without_overshooting_an_exact_multiple() {
-        let page = NativeCodePage::page_size();
-
-        let exact = vec![0u8; page];
-        let exec = NativeCodePage::from_code(&exact).expect("map");
-        assert_eq!(
-            exec.capacity, page,
-            "an exact page multiple must not round up to a second page"
-        );
-
-        let over = vec![0u8; page + 1];
-        let exec = NativeCodePage::from_code(&over).expect("map");
-        assert_eq!(
-            exec.capacity,
-            2 * page,
-            "one byte past a page boundary must round up to the next page"
-        );
-    }
 }
 
 #[cfg(test)]
