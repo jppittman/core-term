@@ -3,8 +3,10 @@
 //! The widest of the x86-64 tiers (`crate::isa`), above the AVX2 VEX
 //! encoders (`avx2.rs`, 256-bit). It targets the full `zmm0..zmm31` register
 //! file via EVEX, so it can also use the extended registers (`zmm16..31`)
-//! that VEX cannot reach; the general-register half of every kernel is
-//! `x86_64.rs`'s, shared with AVX2.
+//! that VEX cannot reach; the general-register half of every kernel and the
+//! vector instructions both tiers have are `x86_64.rs`'s, shared with AVX2.
+//! What is this file's is the EVEX prefix, the instructions only AVX-512 has
+//! ([`Extra`]), and how it selects.
 //!
 //! Scope: arithmetic, FMA, sqrt/recip/rsqrt, min/max, bitwise, comparisons,
 //! `If`, constant broadcast, the integer bit-manipulation atoms
@@ -27,7 +29,8 @@ use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::x86_64;
 use super::x86_64::{
-    Alu, Direction, Evex, GENERAL, Imm32, Lanewise, Mem, NoDisp, Pred, Rounding, Vex, X86,
+    Alu, Direction, Evex, EvexPrefix, GENERAL, Imm32, Lanewise, Mem, NoDisp, Pred, Rounding, Vex,
+    X86,
 };
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Flags, Integer, IsaBackend, Label, LaneOp, Opmask,
@@ -43,69 +46,19 @@ use pixelflow_ir::OpKind;
 /// destination (the mask), `B` the first source and `C` the second.
 const TERNLOG_SELECT: u8 = 0xCA;
 
-/// An AVX-512 instruction: EVEX, and the VEX-encoded mask-register forms.
-///
-/// Generic over what its operands are ([`Stage`]), like [`x86_64::Gp`] and
-/// AVX2's `Inst`. EVEX is three-operand and non-destructive, so an operand may
-/// be the register the result is written to; the instructions below whose
-/// destination is also a source say so with a `Tie`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum Inst<S: Stage> {
-    /// `op dst, a, b`
-    Alu {
-        op: Alu,
-        dst: S::Write<Vector>,
-        a: S::Read<Vector>,
-        b: S::Read<Vector>,
-    },
-    /// `op dst, src`
-    Unary {
-        op: Lanewise,
-        dst: S::Write<Vector>,
-        src: S::Read<Vector>,
-    },
-    /// `vrndscaleps dst, src, mode`: scale 0, so an integer. (Opcode `08` is
-    /// packed-single; `09` is packed-double and needs `W1`.)
-    Round {
-        mode: Rounding,
-        dst: S::Write<Vector>,
-        src: S::Read<Vector>,
-    },
-    /// `vpslld`/`vpsrld dst, src, amount`
-    Shift {
-        direction: Direction,
-        dst: S::Write<Vector>,
-        src: S::Read<Vector>,
-        amount: u8,
-    },
-    /// `vfmadd231ps acc, a, b`: `acc = a·b + acc`, one rounding.
-    Fma231 {
-        acc: S::Tie<Vector>,
-        a: S::Read<Vector>,
-        b: S::Read<Vector>,
-    },
+type Inst<S> = x86_64::Inst<S, Avx512>;
+type Op<S> = x86_64::Op<S, Avx512>;
+
+/// The instructions only AVX-512 has: EVEX forms with no VEX twin, and the
+/// VEX-encoded mask-register forms. A destination that is also a source says
+/// so with a `Tie`.
+pub(super) enum Extra<S: Stage> {
     /// `vpternlogd dst, if_true, if_false, 0xCA`: `dst = dst ? if_true :
     /// if_false` per bit, `dst` holding an all-ones/all-zeros mask going in.
     Blend {
         dst: S::Tie<Vector>,
         if_true: S::Read<Vector>,
         if_false: S::Read<Vector>,
-    },
-    /// `vmovaps dst, src`
-    Mov {
-        dst: S::Write<Vector>,
-        src: S::Read<Vector>,
-    },
-    /// `vcvttss2si dst, src`: lane 0, truncated to a 64-bit integer. EVEX
-    /// rather than VEX so the source may be `zmm16..31`.
-    Cvtt {
-        dst: S::Write<Integer>,
-        src: S::Read<Vector>,
-    },
-    /// `vmovq dst, src`: eight bytes into the low lanes, the rest zeroed.
-    Movq {
-        dst: S::Write<Vector>,
-        src: S::Read<Integer>,
     },
     /// `vpinsrq dst, dst, src, 1`: eight bytes into the high half of the low
     /// 128 bits.
@@ -158,41 +111,6 @@ pub(super) enum Inst<S: Stage> {
         src: S::Read<Vector>,
         mask: S::Read<Opmask>,
     },
-    /// `vmovups [dst], src` with no displacement: a whole batch to the
-    /// address the store's arithmetic computed.
-    StoreBatch {
-        dst: Mem<S, NoDisp>,
-        src: S::Read<Vector>,
-    },
-    /// `vbroadcastss dst, [src]`: one `f32`, a pool entry or a uniform, into
-    /// every lane. A full `disp32`, never EVEX's compressed `disp8`, which
-    /// scales the byte by the tuple's element size.
-    Broadcast {
-        dst: S::Write<Vector>,
-        src: Mem<S, Imm32>,
-    },
-    /// `vbroadcastss dst, [base + index*4]`: one element of a plane.
-    BroadcastIndexed {
-        dst: S::Write<Vector>,
-        base: S::Read<Pointer>,
-        index: S::Read<Integer>,
-    },
-    /// `vxorps dst, dst, dst`: zero, whatever `dst` held. Its reads are not
-    /// operands, because the result does not depend on them.
-    Zero { dst: S::Write<Vector> },
-    /// `vpternlogd dst, dst, dst, 0xFF`: all-ones, whatever `dst` held. Its
-    /// reads are not operands, because the result does not depend on them.
-    Ones { dst: S::Write<Vector> },
-    /// `vbroadcastss dst, [rip + at]`: one pool entry, whose label the
-    /// kernel's constants bind.
-    LoadConst { dst: S::Write<Vector>, at: Label },
-    /// `vmovups [rsp + slot], src`: the allocator's spill.
-    SpillVector { src: S::Read<Vector>, slot: S::Slot },
-    /// `vmovups dst, [rsp + slot]`: the allocator's reload.
-    ReloadVector {
-        dst: S::Write<Vector>,
-        slot: S::Slot,
-    },
     /// `vblendmps dst{k}, if_false, if_true`: `if_true` where the bit is set,
     /// `if_false` where it is not.
     BlendK {
@@ -227,7 +145,7 @@ pub(super) enum Inst<S: Stage> {
     },
 }
 
-/// The bitwise operations on mask registers that [`Inst::KLogic`] spells.
+/// The bitwise operations on mask registers that [`Extra::KLogic`] spells.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum KOp {
     And = 0x41,
@@ -254,332 +172,6 @@ const K0: u8 = 0;
 
 /// `vpternlogd`'s truth table for all-ones.
 const TERNLOG_ONES: u8 = 0xFF;
-
-impl Inst<Selected> {
-    /// Rebuild at stage `T`, visiting each operand once, in field order.
-    fn walk<T: Stage>(&self, f: &mut impl Rebind<T>) -> Inst<T> {
-        match self {
-            Inst::Alu { op, dst, a, b } => Inst::Alu {
-                op: *op,
-                dst: f.write(dst),
-                a: f.read(*a),
-                b: f.read(*b),
-            },
-            Inst::Unary { op, dst, src } => Inst::Unary {
-                op: *op,
-                dst: f.write(dst),
-                src: f.read(*src),
-            },
-            Inst::Round { mode, dst, src } => Inst::Round {
-                mode: *mode,
-                dst: f.write(dst),
-                src: f.read(*src),
-            },
-            Inst::Shift {
-                direction,
-                dst,
-                src,
-                amount,
-            } => Inst::Shift {
-                direction: *direction,
-                dst: f.write(dst),
-                src: f.read(*src),
-                amount: *amount,
-            },
-            Inst::Fma231 { acc, a, b } => Inst::Fma231 {
-                acc: f.tie(acc),
-                a: f.read(*a),
-                b: f.read(*b),
-            },
-            Inst::Blend {
-                dst,
-                if_true,
-                if_false,
-            } => Inst::Blend {
-                dst: f.tie(dst),
-                if_true: f.read(*if_true),
-                if_false: f.read(*if_false),
-            },
-            Inst::Mov { dst, src } => Inst::Mov {
-                dst: f.write(dst),
-                src: f.read(*src),
-            },
-            Inst::Cvtt { dst, src } => Inst::Cvtt {
-                dst: f.write(dst),
-                src: f.read(*src),
-            },
-            Inst::Movq { dst, src } => Inst::Movq {
-                dst: f.write(dst),
-                src: f.read(*src),
-            },
-            Inst::InsertHigh { dst, src } => Inst::InsertHigh {
-                dst: f.tie(dst),
-                src: f.read(*src),
-            },
-            Inst::CmpK { pred, dst, a, b } => Inst::CmpK {
-                pred: *pred,
-                dst: f.write(dst),
-                a: f.read(*a),
-                b: f.read(*b),
-            },
-            Inst::Movm2d { dst, k } => Inst::Movm2d {
-                dst: f.write(dst),
-                k: f.read(*k),
-            },
-            Inst::Ptestm { dst, a, b } => Inst::Ptestm {
-                dst: f.write(dst),
-                a: f.read(*a),
-                b: f.read(*b),
-            },
-            Inst::KorTest { flags, k } => Inst::KorTest {
-                flags: f.write(flags),
-                k: f.read(*k),
-            },
-            Inst::KFromGpr { dst, src } => Inst::KFromGpr {
-                dst: f.write(dst),
-                src: f.read(*src),
-            },
-            Inst::Gather {
-                dst,
-                base,
-                index,
-                mask,
-            } => Inst::Gather {
-                dst: f.early(dst),
-                base: f.read(*base),
-                index: f.read(*index),
-                mask: f.tie(mask),
-            },
-            Inst::StoreMasked { dst, src, mask } => Inst::StoreMasked {
-                dst: dst.walk(f),
-                src: f.read(*src),
-                mask: f.read(*mask),
-            },
-            Inst::StoreBatch { dst, src } => Inst::StoreBatch {
-                dst: dst.walk(f),
-                src: f.read(*src),
-            },
-            Inst::Broadcast { dst, src } => Inst::Broadcast {
-                dst: f.write(dst),
-                src: src.walk(f),
-            },
-            Inst::BroadcastIndexed { dst, base, index } => Inst::BroadcastIndexed {
-                dst: f.write(dst),
-                base: f.read(*base),
-                index: f.read(*index),
-            },
-            Inst::Zero { dst } => Inst::Zero { dst: f.write(dst) },
-            Inst::Ones { dst } => Inst::Ones { dst: f.write(dst) },
-            Inst::LoadConst { dst, at } => Inst::LoadConst {
-                dst: f.write(dst),
-                at: *at,
-            },
-            Inst::SpillVector { src, slot } => Inst::SpillVector {
-                src: f.read(*src),
-                slot: f.slot(*slot),
-            },
-            Inst::ReloadVector { dst, slot } => Inst::ReloadVector {
-                dst: f.write(dst),
-                slot: f.slot(*slot),
-            },
-            Inst::BlendK {
-                dst,
-                k,
-                if_true,
-                if_false,
-            } => Inst::BlendK {
-                dst: f.write(dst),
-                k: f.read(*k),
-                if_true: f.read(*if_true),
-                if_false: f.read(*if_false),
-            },
-            Inst::KLogic { op, dst, a, b } => Inst::KLogic {
-                op: *op,
-                dst: f.write(dst),
-                a: f.read(*a),
-                b: f.read(*b),
-            },
-            Inst::KOnes { dst } => Inst::KOnes { dst: f.write(dst) },
-            Inst::KMov { dst, src } => Inst::KMov {
-                dst: f.write(dst),
-                src: f.read(*src),
-            },
-            Inst::SpillMask { src, slot } => Inst::SpillMask {
-                src: f.read(*src),
-                slot: f.slot(*slot),
-            },
-            Inst::ReloadMask { dst, slot } => Inst::ReloadMask {
-                dst: f.write(dst),
-                slot: f.slot(*slot),
-            },
-        }
-    }
-}
-
-impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
-    fn encode(&self) -> EncodedInst {
-        match self {
-            Inst::Alu { op, dst, a, b } => Evex::alu(*op).rrr(dst.number(), a.number(), b.number()),
-            Inst::Unary { op, dst, src } => Evex::lanewise(*op).rr(dst.number(), src.number()),
-            Inst::Round { mode, dst, src } => Evex::m0f3a_66(0x08)
-                .imm(*mode as u8)
-                .rr(dst.number(), src.number()),
-            // The destination is `vvvv` and the `/digit` is `reg`.
-            Inst::Shift {
-                direction,
-                dst,
-                src,
-                amount,
-            } => Evex::m0f_66(0x72)
-                .imm(*amount)
-                .rrr(*direction as u8, dst.number(), src.number()),
-            Inst::Fma231 { acc, a, b } => {
-                Evex::m0f38_66(0xB8).rrr(acc.number(), a.number(), b.number())
-            }
-            Inst::Blend {
-                dst,
-                if_true,
-                if_false,
-            } => Evex::m0f3a_66(0x25).imm(TERNLOG_SELECT).rrr(
-                dst.number(),
-                if_true.number(),
-                if_false.number(),
-            ),
-            Inst::Mov { dst, src } => Evex::m0f(0x28).rr(dst.number(), src.number()),
-            Inst::Cvtt { dst, src } => Evex::m0f_f3(0x2C).w1().rr(dst.number(), src.number()),
-            Inst::Movq { dst, src } => Evex::m0f_66(0x6E).w1().xmm().rr(dst.number(), src.number()),
-            Inst::InsertHigh { dst, src } => {
-                let dst = dst.number();
-                Evex::m0f3a_66(0x22)
-                    .w1()
-                    .xmm()
-                    .imm(1)
-                    .rrr(dst, dst, src.number())
-            }
-            Inst::CmpK { pred, dst, a, b } => {
-                Evex::m0f(0xC2)
-                    .imm(*pred as u8)
-                    .rrr(dst.number(), a.number(), b.number())
-            }
-            Inst::Movm2d { dst, k } => Evex::m0f38_f3(0x38).rr(dst.number(), k.number()),
-            Inst::Ptestm { dst, a, b } => {
-                Evex::m0f38_66(0x27).rrr(dst.number(), a.number(), b.number())
-            }
-            // Both operands the one mask register.
-            Inst::KorTest { k, .. } => Vex::m0f(0x98).xmm().rr(k.number(), k.number()),
-            Inst::KFromGpr { dst, src } => Vex::m0f(0x92).xmm().rr(dst.number(), src.number()),
-            Inst::Gather {
-                dst,
-                base,
-                index,
-                mask,
-            } => {
-                let (dst, index) = (dst.number(), index.number());
-                debug_assert!(dst != index, "vgatherdps: dst and index must differ");
-                // `base` is never `rbp`/`r13` (`GENERAL` excludes them), so
-                // the SIB's no-base encoding is unreachable.
-                Evex::m0f38_66(0x92).masked(mask.number()).vsib_scaled4(
-                    dst,
-                    None,
-                    base.number(),
-                    index,
-                )
-            }
-            Inst::StoreMasked { dst, src, mask: k } => {
-                Evex::m0f(0x11)
-                    .masked(k.number())
-                    .rm(src.number(), dst.base.number(), dst.disp)
-            }
-            Inst::StoreBatch { dst, src } => {
-                Evex::m0f(0x11).rm(src.number(), dst.base.number(), dst.disp)
-            }
-            Inst::Broadcast { dst, src } => {
-                Evex::m0f38_66(0x18).rm(dst.number(), src.base.number(), src.disp)
-            }
-            Inst::BroadcastIndexed { dst, base, index } => {
-                Evex::m0f38_66(0x18).rm_scaled4(dst.number(), base.number(), index.number())
-            }
-            Inst::Zero { dst } => {
-                let dst = dst.number();
-                Evex::alu(Alu::Xor).rrr(dst, dst, dst)
-            }
-            Inst::Ones { dst } => {
-                let dst = dst.number();
-                Evex::m0f3a_66(0x25).imm(TERNLOG_ONES).rrr(dst, dst, dst)
-            }
-            Inst::LoadConst { dst, .. } => Evex::m0f38_66(0x18).rip(dst.number()),
-            Inst::SpillVector { src: v, slot: s } => {
-                Evex::m0f(0x11).rm(v.number(), x86_64::gpr::RSP, Imm32(slot_disp(s)))
-            }
-            Inst::ReloadVector { dst, slot: s } => {
-                Evex::m0f(0x10).rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(s)))
-            }
-            // `vvvv` is the lanes the mask leaves, and `rm` the ones it takes.
-            Inst::BlendK {
-                dst,
-                k,
-                if_true,
-                if_false,
-            } => Evex::m0f38_66(0x65).masked(k.number()).rrr(
-                dst.number(),
-                if_false.number(),
-                if_true.number(),
-            ),
-            Inst::KLogic { op, dst, a, b } => {
-                Vex::m0f(*op as u8).rrr(dst.number(), a.number(), b.number())
-            }
-            Inst::KOnes { dst } => Vex::m0f(KXNOR).rrr(dst.number(), K0, K0),
-            Inst::KMov { dst, src } => Vex::m0f(0x90).xmm().rr(dst.number(), src.number()),
-            Inst::SpillMask { src, slot } => {
-                Vex::m0f(0x91)
-                    .xmm()
-                    .rm(src.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
-            }
-            Inst::ReloadMask { dst, slot } => {
-                Vex::m0f(0x90)
-                    .xmm()
-                    .rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
-            }
-        }
-    }
-
-    /// The instruction's bytes, and the label fields in them.
-    fn assemble(&self, out: &mut Encoding<'_>) {
-        let inst = self.encode();
-        out.bytes(inst.as_bytes());
-        if let Inst::LoadConst { at, .. } = self {
-            // The displacement is the instruction's last four bytes.
-            out.field(inst.as_bytes().len() - 4, *at, x86_64::patch_rel32);
-        }
-    }
-}
-
-/// What the selection pipeline builds for AVX-512: a vector instruction or a
-/// general-register one (the loop nest's, and the store's address
-/// arithmetic). One type so a block holds both; no derives, because a
-/// selected instruction owns its definitions.
-pub(super) enum Op<S: Stage> {
-    Vector(Inst<S>),
-    General(x86_64::Gp<S>),
-}
-
-impl Op<Selected> {
-    fn walk<T: Stage>(&self, f: &mut impl Rebind<T>) -> Op<T> {
-        match self {
-            Op::Vector(inst) => Op::Vector(inst.walk(f)),
-            Op::General(gp) => Op::General(gp.walk(f)),
-        }
-    }
-}
-
-impl<'m> Op<Bound<'m, Avx512>> {
-    fn assemble(&self, out: &mut Encoding<'_>) {
-        match self {
-            Op::Vector(inst) => inst.assemble(out),
-            Op::General(gp) => gp.assemble(out),
-        }
-    }
-}
 
 // =============================================================================
 // The store, and the iota
@@ -694,7 +286,7 @@ impl Lane {
     fn vector(self, b: &mut Builder<Avx512>) -> Value<Vector> {
         match self {
             Lane::Vector(vector) => vector,
-            Lane::Opmask(k) => emit(b, |dst| Inst::Movm2d { dst, k }),
+            Lane::Opmask(k) => emit(b, |dst| Inst::Extra(Extra::Movm2d { dst, k })),
         }
     }
 }
@@ -736,8 +328,185 @@ fn sign_mask(b: &mut Builder<Avx512>, (direction, amount): (Direction, u8)) -> V
 }
 
 impl X86 for Avx512 {
+    type Prefix = EvexPrefix;
+    type Extra<S: Stage> = Extra<S>;
+
     fn general(inst: x86_64::Gp<Selected>) -> Op<Selected> {
         Op::General(inst)
+    }
+
+    /// `vpternlogd dst, dst, dst, 0xFF`
+    fn ones(dst: u8) -> EncodedInst {
+        Evex::m0f3a_66(0x25).imm(TERNLOG_ONES).rrr(dst, dst, dst)
+    }
+
+    fn walk_extra<To: Stage>(extra: &Extra<Selected>, f: &mut impl Rebind<To>) -> Extra<To> {
+        match extra {
+            Extra::Blend {
+                dst,
+                if_true,
+                if_false,
+            } => Extra::Blend {
+                dst: f.tie(dst),
+                if_true: f.read(*if_true),
+                if_false: f.read(*if_false),
+            },
+            Extra::InsertHigh { dst, src } => Extra::InsertHigh {
+                dst: f.tie(dst),
+                src: f.read(*src),
+            },
+            Extra::CmpK { pred, dst, a, b } => Extra::CmpK {
+                pred: *pred,
+                dst: f.write(dst),
+                a: f.read(*a),
+                b: f.read(*b),
+            },
+            Extra::Movm2d { dst, k } => Extra::Movm2d {
+                dst: f.write(dst),
+                k: f.read(*k),
+            },
+            Extra::Ptestm { dst, a, b } => Extra::Ptestm {
+                dst: f.write(dst),
+                a: f.read(*a),
+                b: f.read(*b),
+            },
+            Extra::KorTest { flags, k } => Extra::KorTest {
+                flags: f.write(flags),
+                k: f.read(*k),
+            },
+            Extra::KFromGpr { dst, src } => Extra::KFromGpr {
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Extra::Gather {
+                dst,
+                base,
+                index,
+                mask,
+            } => Extra::Gather {
+                dst: f.early(dst),
+                base: f.read(*base),
+                index: f.read(*index),
+                mask: f.tie(mask),
+            },
+            Extra::StoreMasked { dst, src, mask } => Extra::StoreMasked {
+                dst: dst.walk(f),
+                src: f.read(*src),
+                mask: f.read(*mask),
+            },
+            Extra::BlendK {
+                dst,
+                k,
+                if_true,
+                if_false,
+            } => Extra::BlendK {
+                dst: f.write(dst),
+                k: f.read(*k),
+                if_true: f.read(*if_true),
+                if_false: f.read(*if_false),
+            },
+            Extra::KLogic { op, dst, a, b } => Extra::KLogic {
+                op: *op,
+                dst: f.write(dst),
+                a: f.read(*a),
+                b: f.read(*b),
+            },
+            Extra::KOnes { dst } => Extra::KOnes { dst: f.write(dst) },
+            Extra::KMov { dst, src } => Extra::KMov {
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Extra::SpillMask { src, slot } => Extra::SpillMask {
+                src: f.read(*src),
+                slot: f.slot(*slot),
+            },
+            Extra::ReloadMask { dst, slot } => Extra::ReloadMask {
+                dst: f.write(dst),
+                slot: f.slot(*slot),
+            },
+        }
+    }
+
+    fn encode_extra(extra: &Extra<Bound<'_, Self>>) -> EncodedInst {
+        match extra {
+            Extra::Blend {
+                dst,
+                if_true,
+                if_false,
+            } => Evex::m0f3a_66(0x25).imm(TERNLOG_SELECT).rrr(
+                dst.number(),
+                if_true.number(),
+                if_false.number(),
+            ),
+            Extra::InsertHigh { dst, src } => {
+                let dst = dst.number();
+                Evex::m0f3a_66(0x22)
+                    .w1()
+                    .xmm()
+                    .imm(1)
+                    .rrr(dst, dst, src.number())
+            }
+            Extra::CmpK { pred, dst, a, b } => {
+                Evex::m0f(0xC2)
+                    .imm(*pred as u8)
+                    .rrr(dst.number(), a.number(), b.number())
+            }
+            Extra::Movm2d { dst, k } => Evex::m0f38_f3(0x38).rr(dst.number(), k.number()),
+            Extra::Ptestm { dst, a, b } => {
+                Evex::m0f38_66(0x27).rrr(dst.number(), a.number(), b.number())
+            }
+            // Both operands the one mask register.
+            Extra::KorTest { k, .. } => Vex::m0f(0x98).xmm().rr(k.number(), k.number()),
+            Extra::KFromGpr { dst, src } => Vex::m0f(0x92).xmm().rr(dst.number(), src.number()),
+            Extra::Gather {
+                dst,
+                base,
+                index,
+                mask,
+            } => {
+                let (dst, index) = (dst.number(), index.number());
+                debug_assert!(dst != index, "vgatherdps: dst and index must differ");
+                // `base` is never `rbp`/`r13` (`GENERAL` excludes them), so
+                // the SIB's no-base encoding is unreachable.
+                Evex::m0f38_66(0x92).masked(mask.number()).vsib_scaled4(
+                    dst,
+                    None,
+                    base.number(),
+                    index,
+                )
+            }
+            Extra::StoreMasked { dst, src, mask: k } => {
+                Evex::m0f(0x11)
+                    .masked(k.number())
+                    .rm(src.number(), dst.base.number(), dst.disp)
+            }
+            // `vvvv` is the lanes the mask leaves, and `rm` the ones it takes.
+            Extra::BlendK {
+                dst,
+                k,
+                if_true,
+                if_false,
+            } => Evex::m0f38_66(0x65).masked(k.number()).rrr(
+                dst.number(),
+                if_false.number(),
+                if_true.number(),
+            ),
+            Extra::KLogic { op, dst, a, b } => {
+                Vex::m0f(*op as u8).rrr(dst.number(), a.number(), b.number())
+            }
+            Extra::KOnes { dst } => Vex::m0f(KXNOR).rrr(dst.number(), K0, K0),
+            Extra::KMov { dst, src } => Vex::m0f(0x90).xmm().rr(dst.number(), src.number()),
+            Extra::SpillMask { src, slot } => {
+                Vex::m0f(0x91)
+                    .xmm()
+                    .rm(src.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
+            }
+            Extra::ReloadMask { dst, slot } => {
+                Vex::m0f(0x90)
+                    .xmm()
+                    .rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
+            }
+        }
     }
 }
 
@@ -781,10 +550,10 @@ impl IsaBackend for Avx512 {
                 let high = x86_64::define(b, |dst| x86_64::Gp::Movabs { dst, imm: high });
                 let joined = b.tie(packed);
                 let halves = joined.write();
-                b.push(Op::Vector(Inst::InsertHigh {
+                b.push(Op::Vector(Inst::Extra(Extra::InsertHigh {
                     dst: joined,
                     src: high,
-                }));
+                })));
                 let widened = emit(b, |dst| Inst::Unary {
                     op: Lanewise::WidenBytes,
                     dst,
@@ -813,20 +582,20 @@ impl IsaBackend for Avx512 {
                 })
             }
             LaneOp::Binary(op, a, c) => match (KOp::of(op), a, c) {
-                (Some(op), Lane::Opmask(x), Lane::Opmask(y)) => {
-                    Lane::Opmask(emit(b, |dst| Inst::KLogic {
+                (Some(op), Lane::Opmask(x), Lane::Opmask(y)) => Lane::Opmask(emit(b, |dst| {
+                    Inst::Extra(Extra::KLogic {
                         op,
                         dst,
                         a: x,
                         b: y,
-                    }))
-                }
+                    })
+                })),
                 _ => {
                     let (a, c) = (a.vector(b), c.vector(b));
                     match cmp_pred(op) {
-                        Some(pred) => {
-                            Lane::Opmask(emit(b, |dst| Inst::CmpK { pred, dst, a, b: c }))
-                        }
+                        Some(pred) => Lane::Opmask(emit(b, |dst| {
+                            Inst::Extra(Extra::CmpK { pred, dst, a, b: c })
+                        })),
                         None => Lane::Vector(emit(b, |dst| Inst::Alu {
                             op: alu(op),
                             dst,
@@ -852,20 +621,22 @@ impl IsaBackend for Avx512 {
             } => {
                 let (if_true, if_false) = (if_true.vector(b), if_false.vector(b));
                 Lane::Vector(match cond {
-                    Lane::Opmask(k) => emit(b, |dst| Inst::BlendK {
-                        dst,
-                        k,
-                        if_true,
-                        if_false,
+                    Lane::Opmask(k) => emit(b, |dst| {
+                        Inst::Extra(Extra::BlendK {
+                            dst,
+                            k,
+                            if_true,
+                            if_false,
+                        })
                     }),
                     Lane::Vector(mask) => {
                         let dst = b.tie(mask);
                         let blended = dst.write();
-                        b.push(Op::Vector(Inst::Blend {
+                        b.push(Op::Vector(Inst::Extra(Extra::Blend {
                             dst,
                             if_true,
                             if_false,
-                        }));
+                        })));
                         blended
                     }
                 })
@@ -897,15 +668,15 @@ impl IsaBackend for Avx512 {
                     dst,
                     src: index,
                 });
-                let ones = emit(b, |dst| Inst::KOnes { dst });
+                let ones = emit(b, |dst| Inst::Extra(Extra::KOnes { dst }));
                 let (dst, mask) = (b.early(), b.tie(ones));
                 let gathered = dst.value();
-                b.push(Op::Vector(Inst::Gather {
+                b.push(Op::Vector(Inst::Extra(Extra::Gather {
                     dst,
                     base,
                     index: indices,
                     mask,
-                }));
+                })));
                 Lane::Vector(gathered)
             }
             // One element, the same in every lane: the index is lane 0,
@@ -962,12 +733,12 @@ impl IsaBackend for Avx512 {
             dst,
             imm: (1u32 << lanes) - 1,
         });
-        let mask = emit(b, |dst| Inst::KFromGpr { dst, src: bits });
-        b.push(Op::Vector(Inst::StoreMasked {
+        let mask = emit(b, |dst| Inst::Extra(Extra::KFromGpr { dst, src: bits }));
+        b.push(Op::Vector(Inst::Extra(Extra::StoreMasked {
             dst,
             src: value,
             mask,
-        }));
+        })));
     }
 
     /// `kortestw` of the mask (`vptestmd` first when it is a vector), then
@@ -975,15 +746,17 @@ impl IsaBackend for Avx512 {
     fn branch(b: &mut Builder<Self>, test: Test<Self>, edges: Edges) {
         let k = match test.cond {
             Lane::Opmask(k) => k,
-            Lane::Vector(mask) => emit(b, |dst| Inst::Ptestm {
-                dst,
-                a: mask,
-                b: mask,
+            Lane::Vector(mask) => emit(b, |dst| {
+                Inst::Extra(Extra::Ptestm {
+                    dst,
+                    a: mask,
+                    b: mask,
+                })
             }),
         };
         let flags = b.def();
         let tested = flags.value();
-        b.push(Op::Vector(Inst::KorTest { flags, k }));
+        b.push(Op::Vector(Inst::Extra(Extra::KorTest { flags, k })));
         let cond = match test.dead {
             IfArm::True => x86_64::Cond::E,
             IfArm::False => x86_64::Cond::B,
@@ -1012,10 +785,10 @@ impl IsaBackend for Avx512 {
                 })
             }),
             ClassId::Opmask => b.define::<Opmask>(|dst| {
-                Op::Vector(Inst::KMov {
+                Op::Vector(Inst::Extra(Extra::KMov {
                     dst,
                     src: src.typed(),
-                })
+                }))
             }),
             ClassId::Pointer | ClassId::Integer => x86_64::copy_general(b, src),
             ClassId::Flags => unreachable!("the flags are not copied"),
@@ -1028,10 +801,10 @@ impl IsaBackend for Avx512 {
                 src: src.typed(),
                 slot: slot.name(),
             })),
-            ClassId::Opmask => b.push(Op::Vector(Inst::SpillMask {
+            ClassId::Opmask => b.push(Op::Vector(Inst::Extra(Extra::SpillMask {
                 src: src.typed(),
                 slot: slot.name(),
-            })),
+            }))),
             ClassId::Pointer | ClassId::Integer => x86_64::spill_general(b, src, slot),
             ClassId::Flags => unreachable!("the flags are not spilled"),
         }
@@ -1046,10 +819,10 @@ impl IsaBackend for Avx512 {
                 })
             }),
             ClassId::Opmask => b.define::<Opmask>(|dst| {
-                Op::Vector(Inst::ReloadMask {
+                Op::Vector(Inst::Extra(Extra::ReloadMask {
                     dst,
                     slot: slot.name(),
-                })
+                }))
             }),
             ClassId::Pointer | ClassId::Integer => x86_64::reload_general(b, class, slot),
             ClassId::Flags => unreachable!("the flags are not reloaded"),
@@ -1060,7 +833,10 @@ impl IsaBackend for Avx512 {
         matches!(
             inst,
             Op::Vector(
-                Inst::LoadConst { .. } | Inst::Zero { .. } | Inst::Ones { .. } | Inst::KOnes { .. }
+                Inst::LoadConst { .. }
+                    | Inst::Zero { .. }
+                    | Inst::Ones { .. }
+                    | Inst::Extra(Extra::KOnes { .. })
             )
         )
     }

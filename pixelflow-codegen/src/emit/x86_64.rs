@@ -14,7 +14,8 @@ use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
-    Pointer, Rebind, STACK_PAGE, Selected, Stage, Target, Value, ValueName, frame_bytes, slot_disp,
+    Pointer, Rebind, STACK_PAGE, Selected, Stage, Target, Value, ValueName, Vector, frame_bytes,
+    slot_disp,
 };
 use crate::error::CompileError;
 use alloc::vec::Vec;
@@ -391,10 +392,30 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
 /// prologue, and `rsp` is the frame's.
 pub(super) const GENERAL: &[u8] = &[0, 1, 2, 6, 7, 8, 9, 10, 11];
 
-/// An x86 backend: its instructions are its vector ones and these.
-pub(super) trait X86: IsaBackend {
+/// An x86 tier: its instructions are [`Op`], the shared vector ones
+/// ([`Inst`]) and the general-register ones ([`Gp`]).
+///
+/// What a tier says is what the two differ in: the prefix its vector
+/// instructions carry, the instructions only it has, and how it spells
+/// all-ones. A tier cannot select the other's instruction because it is not a
+/// variant of its [`X86::Extra`].
+pub(super) trait X86: IsaBackend + Sized {
+    /// The prefix scheme of its vector instructions.
+    type Prefix: Scheme;
+    /// The vector instructions only this tier has.
+    type Extra<S: Stage>;
+
     /// `inst` as this backend's instruction.
     fn general(inst: Gp<Selected>) -> Self::Inst<Selected>;
+    /// All-ones in register `dst`, whatever it held.
+    fn ones(dst: u8) -> EncodedInst;
+    /// [`Inst::walk`] for an instruction only this tier has.
+    fn walk_extra<To: Stage>(
+        extra: &Self::Extra<Selected>,
+        f: &mut impl Rebind<To>,
+    ) -> Self::Extra<To>;
+    /// [`Inst::encode`] for an instruction only this tier has.
+    fn encode_extra(extra: &Self::Extra<Bound<'_, Self>>) -> EncodedInst;
 }
 
 /// Define a value of class `C` with `make`, which builds the
@@ -1082,6 +1103,286 @@ impl Evex {
                 ..self.scheme
             },
             ..self
+        }
+    }
+}
+
+// =============================================================================
+// The vector instructions both tiers share
+// =============================================================================
+
+/// The opcode of tier `T`'s prefix scheme.
+type Code<T> = Opcode<<T as X86>::Prefix>;
+
+/// An x86 vector instruction, generic over what its operands are ([`Stage`]),
+/// like [`Gp`], and over the tier that selects it. VEX and EVEX are both
+/// three-operand and non-destructive, so no destination is tied to a source
+/// unless it says so with a `Tie`, and an operand may be the register the
+/// result is written to.
+///
+/// The variants are the instructions both tiers have; an instruction only one
+/// has is a variant of that tier's [`X86::Extra`], which the other tier's
+/// type does not contain.
+pub(super) enum Inst<S: Stage, T: X86> {
+    /// `op dst, a, b`
+    Alu {
+        op: Alu,
+        dst: S::Write<Vector>,
+        a: S::Read<Vector>,
+        b: S::Read<Vector>,
+    },
+    /// `op dst, src`
+    Unary {
+        op: Lanewise,
+        dst: S::Write<Vector>,
+        src: S::Read<Vector>,
+    },
+    /// `vroundps`/`vrndscaleps dst, src, mode`: scale 0, so an integer.
+    /// (Opcode `08` is packed-single; `09` is packed-double and needs `W1`.)
+    Round {
+        mode: Rounding,
+        dst: S::Write<Vector>,
+        src: S::Read<Vector>,
+    },
+    /// `vpslld`/`vpsrld dst, src, amount`
+    Shift {
+        direction: Direction,
+        dst: S::Write<Vector>,
+        src: S::Read<Vector>,
+        amount: u8,
+    },
+    /// `vfmadd231ps acc, a, b`: `acc = a·b + acc`, one rounding. FMA3 is not
+    /// implied by AVX2 in CPUID, which is why `crate::isa`'s x86-64 probe asks
+    /// for both before either tier can be selected.
+    Fma231 {
+        acc: S::Tie<Vector>,
+        a: S::Read<Vector>,
+        b: S::Read<Vector>,
+    },
+    /// All-ones, whatever `dst` held ([`X86::ones`]). Its reads are not
+    /// operands, because the result does not depend on them.
+    Ones { dst: S::Write<Vector> },
+    /// `vxorps dst, dst, dst`: zero, whatever `dst` held. Its reads are not
+    /// operands, because the result does not depend on them.
+    Zero { dst: S::Write<Vector> },
+    /// `vmovaps dst, src`
+    Mov {
+        dst: S::Write<Vector>,
+        src: S::Read<Vector>,
+    },
+    /// `vbroadcastss dst, [rip + at]`: one pool entry, whose label the
+    /// kernel's constants bind.
+    LoadConst { dst: S::Write<Vector>, at: Label },
+    /// `vmovups [rsp + slot], src`: the allocator's spill.
+    SpillVector { src: S::Read<Vector>, slot: S::Slot },
+    /// `vmovups dst, [rsp + slot]`: the allocator's reload.
+    ReloadVector {
+        dst: S::Write<Vector>,
+        slot: S::Slot,
+    },
+    /// `vcvttss2si dst, src`: lane 0, truncated to a 64-bit integer. EVEX
+    /// where the tier is AVX-512, so the source may be `zmm16..31`.
+    Cvtt {
+        dst: S::Write<Integer>,
+        src: S::Read<Vector>,
+    },
+    /// `vmovq dst, src`: eight bytes into the low lanes, the rest zeroed.
+    Movq {
+        dst: S::Write<Vector>,
+        src: S::Read<Integer>,
+    },
+    /// `vmovups [dst], src` with no displacement: a whole batch to the
+    /// address the store's arithmetic computed.
+    StoreBatch {
+        dst: Mem<S, NoDisp>,
+        src: S::Read<Vector>,
+    },
+    /// `vbroadcastss dst, [src]`: one `f32`, a pool entry or a uniform, into
+    /// every lane. A full `disp32`, never EVEX's compressed `disp8`, which
+    /// scales the byte by the tuple's element size.
+    Broadcast {
+        dst: S::Write<Vector>,
+        src: Mem<S, Imm32>,
+    },
+    /// `vbroadcastss dst, [base + index*4]`: one element of a plane.
+    BroadcastIndexed {
+        dst: S::Write<Vector>,
+        base: S::Read<Pointer>,
+        index: S::Read<Integer>,
+    },
+    /// An instruction only tier `T` has.
+    Extra(T::Extra<S>),
+}
+
+impl<T: X86> Inst<Selected, T> {
+    /// Rebuild at stage `To`, visiting each operand once, in field order.
+    fn walk<To: Stage>(&self, f: &mut impl Rebind<To>) -> Inst<To, T> {
+        match self {
+            Inst::Alu { op, dst, a, b } => Inst::Alu {
+                op: *op,
+                dst: f.write(dst),
+                a: f.read(*a),
+                b: f.read(*b),
+            },
+            Inst::Unary { op, dst, src } => Inst::Unary {
+                op: *op,
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::Round { mode, dst, src } => Inst::Round {
+                mode: *mode,
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::Shift {
+                direction,
+                dst,
+                src,
+                amount,
+            } => Inst::Shift {
+                direction: *direction,
+                dst: f.write(dst),
+                src: f.read(*src),
+                amount: *amount,
+            },
+            Inst::Fma231 { acc, a, b } => Inst::Fma231 {
+                acc: f.tie(acc),
+                a: f.read(*a),
+                b: f.read(*b),
+            },
+            Inst::Ones { dst } => Inst::Ones { dst: f.write(dst) },
+            Inst::Zero { dst } => Inst::Zero { dst: f.write(dst) },
+            Inst::Mov { dst, src } => Inst::Mov {
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::LoadConst { dst, at } => Inst::LoadConst {
+                dst: f.write(dst),
+                at: *at,
+            },
+            Inst::SpillVector { src, slot } => Inst::SpillVector {
+                src: f.read(*src),
+                slot: f.slot(*slot),
+            },
+            Inst::ReloadVector { dst, slot } => Inst::ReloadVector {
+                dst: f.write(dst),
+                slot: f.slot(*slot),
+            },
+            Inst::Cvtt { dst, src } => Inst::Cvtt {
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::Movq { dst, src } => Inst::Movq {
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::StoreBatch { dst, src } => Inst::StoreBatch {
+                dst: dst.walk(f),
+                src: f.read(*src),
+            },
+            Inst::Broadcast { dst, src } => Inst::Broadcast {
+                dst: f.write(dst),
+                src: src.walk(f),
+            },
+            Inst::BroadcastIndexed { dst, base, index } => Inst::BroadcastIndexed {
+                dst: f.write(dst),
+                base: f.read(*base),
+                index: f.read(*index),
+            },
+            Inst::Extra(extra) => Inst::Extra(T::walk_extra(extra, f)),
+        }
+    }
+}
+
+impl<'m, T: X86> Inst<Bound<'m, T>, T> {
+    fn encode(&self) -> EncodedInst {
+        match self {
+            Inst::Alu { op, dst, a, b } => {
+                Code::<T>::alu(*op).rrr(dst.number(), a.number(), b.number())
+            }
+            Inst::Unary { op, dst, src } => Code::<T>::lanewise(*op).rr(dst.number(), src.number()),
+            Inst::Round { mode, dst, src } => Code::<T>::m0f3a_66(0x08)
+                .imm(*mode as u8)
+                .rr(dst.number(), src.number()),
+            // The destination is `vvvv` and the `/digit` is `reg`.
+            Inst::Shift {
+                direction,
+                dst,
+                src,
+                amount,
+            } => Code::<T>::m0f_66(0x72).imm(*amount).rrr(
+                *direction as u8,
+                dst.number(),
+                src.number(),
+            ),
+            Inst::Fma231 { acc, a, b } => {
+                Code::<T>::m0f38_66(0xB8).rrr(acc.number(), a.number(), b.number())
+            }
+            Inst::Ones { dst } => T::ones(dst.number()),
+            Inst::Zero { dst } => {
+                let dst = dst.number();
+                Code::<T>::alu(Alu::Xor).rrr(dst, dst, dst)
+            }
+            Inst::Mov { dst, src } => Code::<T>::m0f(0x28).rr(dst.number(), src.number()),
+            Inst::LoadConst { dst, .. } => Code::<T>::m0f38_66(0x18).rip(dst.number()),
+            Inst::SpillVector { src, slot } => {
+                Code::<T>::m0f(0x11).rm(src.number(), gpr::RSP, Imm32(slot_disp(slot)))
+            }
+            Inst::ReloadVector { dst, slot } => {
+                Code::<T>::m0f(0x10).rm(dst.number(), gpr::RSP, Imm32(slot_disp(slot)))
+            }
+            Inst::Cvtt { dst, src } => Code::<T>::m0f_f3(0x2C).w1().rr(dst.number(), src.number()),
+            Inst::Movq { dst, src } => Code::<T>::m0f_66(0x6E)
+                .w1()
+                .xmm()
+                .rr(dst.number(), src.number()),
+            Inst::StoreBatch { dst, src } => {
+                Code::<T>::m0f(0x11).rm(src.number(), dst.base.number(), dst.disp)
+            }
+            Inst::Broadcast { dst, src } => {
+                Code::<T>::m0f38_66(0x18).rm(dst.number(), src.base.number(), src.disp)
+            }
+            Inst::BroadcastIndexed { dst, base, index } => {
+                Code::<T>::m0f38_66(0x18).rm_scaled4(dst.number(), base.number(), index.number())
+            }
+            Inst::Extra(extra) => T::encode_extra(extra),
+        }
+    }
+
+    /// The instruction's bytes, and the label fields in them.
+    fn assemble(&self, out: &mut Encoding<'_>) {
+        let inst = self.encode();
+        out.bytes(inst.as_bytes());
+        if let Inst::LoadConst { at, .. } = self {
+            // The displacement is the instruction's last four bytes.
+            out.field(inst.as_bytes().len() - 4, *at, patch_rel32);
+        }
+    }
+}
+
+/// What the selection pipeline builds for tier `T`: a vector instruction or a
+/// general-register one (the loop nest's, and the store's address
+/// arithmetic). One type so a block holds both; no derives, because a
+/// selected instruction owns its definitions.
+pub(super) enum Op<S: Stage, T: X86> {
+    Vector(Inst<S, T>),
+    General(Gp<S>),
+}
+
+impl<T: X86> Op<Selected, T> {
+    pub(super) fn walk<To: Stage>(&self, f: &mut impl Rebind<To>) -> Op<To, T> {
+        match self {
+            Op::Vector(inst) => Op::Vector(inst.walk(f)),
+            Op::General(gp) => Op::General(gp.walk(f)),
+        }
+    }
+}
+
+impl<'m, T: X86> Op<Bound<'m, T>, T> {
+    pub(super) fn assemble(&self, out: &mut Encoding<'_>) {
+        match self {
+            Op::Vector(inst) => inst.assemble(out),
+            Op::General(gp) => gp.assemble(out),
         }
     }
 }
