@@ -121,13 +121,13 @@
   decisions"). Not a separate hoist planner ("`plan_collapse_hoist` is
   placement, and placement exists").
 - **Follows:** eviction splits a life. The frame is laid out after every
-  placement is known. Today `place_roots` always takes the outer bound and
-  reads no demand, which lifted each piece's row work above its band select
+  placement is known. `place_roots` (deleted in the selection series) took
+  the outer bound and read no demand, which lifted each piece's row work above its band select
   (79% of executed instructions). Placement reads no demand: demand weighting
   is deleted (note §1).
 - **Lives:** `pixelflow-codegen/src/emit/regalloc/mod.rs` (`Placement`, `Span`,
-  `Point`, `Where`), `pixelflow-codegen/src/program/scopes.rs`
-  (`place_roots`); a-surviving-reduce-is-a-loop §4b; an-integral-is-a-fold
+  `Point`, `Where`), `pixelflow-codegen/src/program/scopes.rs` (`Nest`;
+  `place_roots` is deleted); a-surviving-reduce-is-a-loop §4b; an-integral-is-a-fold
   §4.
 
 ### Root. Homonym
@@ -150,7 +150,7 @@
   from outside in turn, and it reads nothing it does not define or name
   there — which `Own` asserts of every scope (`assert_closed`).
 - **Lives:** `ScopeFold::outer` (`pixelflow-codegen/src/program/mod.rs`),
-  `place_roots` and `assert_closed` (`program/scopes.rs`), `FoldReads`
+  `Nest` and `assert_closed` (`program/scopes.rs`; `place_roots` is deleted), `FoldReads`
   (`program/ownership.rs`). Selection has no root or park of its own: a value
   live into a loop's head is carried in a register or stored and dropped
   there (`plan_carries`, `emit/regalloc/local.rs`). The `roots` fields were
@@ -198,8 +198,8 @@
   skipped arm's result only through the select, which takes no lane from
   it (selection §0.12; note §1).
 - **Lives:** deleted with the legacy allocator (`NestAllocation::parks`,
-  `Allocation::park`); `place_roots` (`program/scopes.rs`) removes a root
-  from the folds that read it and names it in their `outer`;
+  `Allocation::park`); `Nest` (`program/scopes.rs`; `place_roots` is deleted)
+  removes a root from the folds that read it and names it in their `outer`;
   a-surviving-reduce-is-a-loop §3a (JP: "Register
   allocation is the job of the register allocator"), R1; demand §2 "Parks";
   one-conditional §4.

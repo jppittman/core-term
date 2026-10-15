@@ -95,9 +95,9 @@
   `CompileWorkspace` and `MAP_JIT` are deleted).
 - **Follows:** core holds it only in private fields. The width it was
   compiled for belongs to the JIT.
-- **Lives:** `pixelflow-codegen/src/compiled_kernel.rs`,
-  `pixelflow-codegen/src/emit/executable.rs`. Renamed from `JitManifold` in
-  S4b-1.
+- **Lives:** `pixelflow-codegen/src/emit/executable.rs` (there is no
+  `compiled_kernel.rs`; an earlier entry named one). Renamed from
+  `JitManifold` in S4b-1.
 
 ### Collapse
 

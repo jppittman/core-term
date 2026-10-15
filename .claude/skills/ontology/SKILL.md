@@ -22,6 +22,10 @@ How to read the entries:
 - **Lives** names the type or module and the document that decided it. A
   "today … contradicts this entry" note marks code or prose known to be
   behind the decision.
+- **Lives** also points, where one exists, at the module's own `intent.md`
+  (beside its `mod.rs`, or beside `Cargo.toml` for a crate): what the module
+  owns, never does, and is behind on, in its own words
+  (`docs/plans/2026-10-15-intent-lives-with-the-module.md`).
 - **Homonyms** are marked. One word in this project often names several
   unrelated things, and each sense is listed separately: tier, region, slot,
   shape, root, guard, arm, block, phase, pass, frame, lane, park, label, fold,

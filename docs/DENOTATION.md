@@ -407,9 +407,11 @@ dimension and never a reason to emit a worse kernel.
    truncates.
 5. **Cost and extraction.** A non-additive cost enters as a `Reranker` over
    whole extractions, never as a pass. The first half, "an additive cost
-   makes `extract_dag` an argmin", is **violated**: extraction prices a
-   tree, sharing is never priced, and the DFS is a heuristic. Said so in
-   the doc comment; nothing may assume otherwise.
+   makes `extract_dag` an argmin", is **violated**: extraction runs a tree
+   DP and a shared-DAG DP (#1116) and keeps the cheaper by true DAG cost,
+   but both choose greedily bottom-up, so neither is an argmin and no
+   sharing is charged for. Said so in `extract.rs`; nothing may assume
+   otherwise.
 
 Because rules are equalities of meaning, the optimizer may produce a
 different answer than the unoptimized term wherever no value was promised

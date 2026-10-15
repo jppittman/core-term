@@ -57,8 +57,8 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
 ## Behind
 - `ExprId(pub u32)` is public and forgeable, and `ExprArena`/`ExprNode` are
   re-exported, so the arena is visible to consumers; `pixelflow-graphics`
-  builds `ExprArena` directly in `fonts/loop_blinn.rs`, `render/cell_grid.rs`
-  and `render/packed.rs` (exprarena-on-dag Stage D, not started; D16).
+  uses `pixelflow_ir` directly in `fonts/loop_blinn.rs` (`ExprArena`) and
+  `render/packed.rs` (exprarena-on-dag Stage D, not started; D16).
 - One `f32` lane is a real, an integer and a mask by convention;
   `Real`/`Int`/`Mask` sorts on nodes are proposed, not ruled
   (kernels-evaluate-kernels §2, item 1).
