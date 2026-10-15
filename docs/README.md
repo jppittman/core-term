@@ -8,6 +8,13 @@ unstarted work, one line per item, each pointing at the document that owns the d
 Start there; this page is the map of what has been *written*, which is a different
 question. Edit the backlog in the same CL as the work.
 
+**[`DENOTATION.md`](DENOTATION.md) is what everything means** — the objects
+(kernel, lattice, fold, mask, `If`, discrete kernel, schedule), their laws, and
+the list of what is not a concept, on one page. Read it before any plan; where a
+plan disagrees with it, the plan is history. The schedule framing it points at is
+[`plans/2026-10-15-a-schedule-is-a-factorization.md`](plans/2026-10-15-a-schedule-is-a-factorization.md)
+(proposed).
+
 ## Classification vocabulary
 
 - **Current architecture** — describes the system as it exists now.
