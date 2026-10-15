@@ -19,7 +19,7 @@
 # The e-graph at production scale: the chrome scene as the case to optimize around
 
 **Audience:** the research arm. **Status:** a use case and a set of measured facts,
-not a plan. Everything numeric here was measured during the kernel-with-a-lattice
+not a plan. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** guard emission is not an extraction alternative and mask coherence is not a cost term, since `If` costs as the average of its arms and every arm is guarded by `any(m)` or `!all(m)` with no decision about whether to guard and no mispredict pricing. Everything numeric here was measured during the kernel-with-a-lattice
 programme (S1–S4b-2, `2026-09-06-kernel-with-a-lattice.md`) and is reproducible
 from the tree at `main`; the recipe for each number is named where it appears.
 

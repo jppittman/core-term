@@ -14,7 +14,7 @@
 # Pipeline → PixelFlow Rewrite: Design Spec
 
 **Date:** 2026-04-07  
-**Status:** Approved  
+**Status:** Approved. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** `DiscreteManifold` integer indexing is no longer a floor+clamp sample and `Gather` is not a language op, so the Team 1 `gather_exact` deliverable no longer holds.  
 **Approach:** Option B — Lattice + IR in parallel, forward pass third, backward + training loop fourth
 
 ---

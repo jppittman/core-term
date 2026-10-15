@@ -1,7 +1,7 @@
 # Totality Is the Root Axiom: Domains, Binders, and Why the Cost Model Exists
 
 **Date:** 2026-07-24
-**Status:** Design of record (axiom layer)
+**Status:** **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** consequence 2's "do not type the continuous kernel algebra" no longer holds, because discrete and continuous kernels are distinct types and lifting between them is explicit. Design of record (axiom layer)
 **Sits above:** `REDUCTIONS_AND_FOLDS.md`, `ML_AND_LINEAR_ALGEBRA.md`,
 `ML_AUTODIFF_PIPELINE.md`, `KERNELS_AND_LATTICES.md` — this note states the
 constraint those all descend from.

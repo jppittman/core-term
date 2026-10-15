@@ -8,10 +8,11 @@
   earlier phase owns. Other senses of the word: a saturation phase (a subset
   of one rule set), and plan or research phases (A–E, "Phase 3").
 - **Follows:** a count, reservation or size handed to an earlier stage by a
-  later one's needs means a phase is missing between them. Codegen's phases
-  are IR → instruction selection (instructions over values) → register
+  later one's needs means a phase is missing between them. The CPU backend's
+  phases are IR → instruction selection (instructions over values) → register
   allocation (and frame layout, and its own spill code) → assembly (labels,
-  sections) → encoding. The same rule applies upstream: an ordering stated
+  sections) → encoding; it alone allocates registers, and each backend is its
+  own module with its own chain (note §3). The same rule applies upstream: an ordering stated
   as a type removes the guard that defends it (the phase-typed arena, see
   Legality).
 - **Lives:** `pixelflow-codegen/src/pipeline.rs` (`compile`: the chain's
@@ -25,8 +26,9 @@
   `Output` and `run(self, input) -> Result<Output, CompileError>`, carrying
   its own parameters (shape, lanes, backend) as fields. Stages compose with
   `then`, Kleisli composition in `Result`: associative, and the first error
-  ends the chain. The chain is `Legalize → Lower → Nest → Own → Layout →
-  Select → Allocate → Assemble`, and each stage's output type is the next's
+  ends the chain. The CPU module's chain is `Nest → Own → Layout → Select →
+  Allocate → Assemble`, after `Legalize → Lower`; a GPU backend is another
+  module with its own chain (note §3). Each stage's output type is the next's
   input (JP, 2026-10-12: "I want all the passes pipelined/monadic/laid
   neatly", "I want a pass trait").
 - **Is not:** a pass manager. There is no `dyn Pass`, registry or list of
@@ -56,7 +58,8 @@
   algebra.
 - **Follows:** the e-graph reasons about the monoidal form, and the lowered
   form may fuse `acc + a[i]*b[i]` into an FMA. `arena_to_schedule` reads the
-  arena's variance once: the lane bit chooses between gather and broadcast,
+  arena's variance once, and the variance chooses the realization of a
+  discrete-kernel evaluation (broadcast, contiguous load or gather; note §2),
   and every `Def` carries its node's variance to scoping, which places by it.
   Nothing recomputes variance on the schedule.
 - **Lives:** `pixelflow-codegen/src/program/lower.rs` (`arena_to_schedule`);
@@ -72,7 +75,7 @@
   that has" a previous iteration. Other senses: the Halide sense, a form
   plus placement ("an extraction is no longer a form; it is a form **plus a
   schedule**"); and the loop nest ("the lattice is part of the schedule",
-  and schedule loops are folds).
+  and the lattice's traversal, which is not folds the kernel is wrapped in: kernels-evaluate-kernels §3).
 - **Is not:** an annotation on a previous schedule. Not sorted by demand
   (09-07, retracted 09-08). Not recovered by a search after flattening.
 - **Follows:** the schedule is never reordered: values stay in the order
@@ -120,7 +123,8 @@
 - **Follows:** eviction splits a life. The frame is laid out after every
   placement is known. Today `place_roots` always takes the outer bound and
   reads no demand, which lifted each piece's row work above its band select
-  (79% of executed instructions). Placement that reads demand is D1.
+  (79% of executed instructions). Placement reads no demand: demand weighting
+  is deleted (note §1).
 - **Lives:** `pixelflow-codegen/src/emit/regalloc/mod.rs` (`Placement`, `Span`,
   `Point`, `Where`), `pixelflow-codegen/src/program/scopes.rs`
   (`place_roots`); a-surviving-reduce-is-a-loop §4b; an-integral-is-a-fold
@@ -191,8 +195,8 @@
   read only inside the arm's block, which one branch skips whole. Its life,
   its slot's lease and its store end inside the block, a loop's exit store
   included, so the join after the arm never holds it. The `If` reads the
-  skipped arm's result only through a bitwise blend that takes no lane from
-  it (selection §0.12).
+  skipped arm's result only through the select, which takes no lane from
+  it (selection §0.12; note §1).
 - **Lives:** deleted with the legacy allocator (`NestAllocation::parks`,
   `Allocation::park`); `place_roots` (`program/scopes.rs`) removes a root
   from the folds that read it and names it in their `outer`;
@@ -281,7 +285,8 @@
   deleted). Not reloaded at every read (`MovLoadPtr` per read is deleted).
   Not a vector. Not allocated outside the allocator. JP: "it should know
   what a pointer register is, and our assembler should require one."
-- **Follows:** `Gather`, `Broadcast` and `Uniform` take the base as an
+- **Follows:** `Gather` and `Broadcast` (the backend's realizations of a
+  discrete-kernel evaluation, note §2) and `Uniform` take the base as an
   operand. Selection types the base as `Value<Pointer>`, so a wrong class
   is a type error, never a silently wrong address. Loads fell from 45 per batch to 3 per call. Open: fold binders
   as integers in GPRs, the pool anchor as a value, and callee-saved GPRs.
@@ -377,8 +382,10 @@
 ### Slot. Homonym
 
 - **Is:** a position in a table someone else owns. The senses:
-  1. **IR table slot**: `UniformId`/`BufferId`, "Slot index into one arena's
+  1. **IR table slot**: `UniformId`, "Slot index into one arena's
      uniform table. Not an identity". The link chooses each slot's offset.
+     A discrete kernel's table is not an IR slot: the IR names the kernel,
+     and the table is the backend's (note §2).
   2. **Binder slot**: the k-th reduction index.
   3. **Frame slot**: a stack location for a spill, a park, or a fold's
      accumulator or binder.
@@ -437,15 +444,16 @@
 - **Lives:** `pixelflow-codegen/src/program/ownership.rs` (#1311; `Own`, the
   backward pass), `program/layout.rs` (#1312, #1313; `Layout`, `Flow::of`: an
   `If`'s arms go immediately before it);
-  CLAUDE.md "`If` contains an if".
+  CLAUDE.md "`If` guards its arms".
 
 ### Guard. Homonym
 
 - **Is:** five senses:
   1. A **guard clause**, the strongest fold.
-  2. An **`If` guard**: the branch that skips an arm's owned block when a
-     batch's mask is uniform (an `ArmBlock` of the scope's `Flow`). Every arm
-     with work of its own has one; the `If` is a blend either way.
+  2. An **`If` guard**: the branch that runs an arm's owned block when some
+     lane takes it: `if any(m)` before the true arm's block, `if !all(m)`
+     before the false arm's (an `ArmBlock` of the scope's `Flow`; note §1). An
+     arm that owns nothing has none, and the `If` ends in one select.
   3. A **runtime guard**: a check "defending what a type should have made
      unrepresentable" (`retired_axis` in `emit::compile`).
   4. The retired IR node `ExprNode::Guard { mask, on, off }`, and D7's open
@@ -460,7 +468,7 @@
   it. A skipped arm leaves nothing anyone reads (see Park). A runtime guard
   is a symptom: fold it into a type wherever the wrong value would be
   silently representable.
-- **Lives:** `pixelflow-codegen/src/program/{guards,layout}.rs`, `Flow`
+- **Lives:** `pixelflow-codegen/src/program/layout.rs`, `Flow`
   and `ArmBlock` (`program/mod.rs`); `retired_axis` checked in `compile`
   (`pixelflow-codegen/src/pipeline.rs`); `FastMathGuard`
   (`pixelflow-core/src/fastmath.rs`); emit-should-just-emit status
@@ -471,7 +479,7 @@
 - **Is:** a block whose last instruction may branch back to its own label. A
   fold that survives optimization is a loop.
 - **Is not:** an instruction; a scaffold of verbs around a body. Not a
-  different kind of thing from the lattice's loops, which are folds. Not
+  different kind of thing from a fold's loop. The lattice's traversal is not a fold (kernels-evaluate-kernels §3). Not
   free: allocation across the back edge, the loop-carried accumulator, and
   lost CSE across copies are its costs.
 - **Follows:** the header is the block's label. The binder and accumulator are
@@ -595,10 +603,10 @@
   discriminants are the manual's values).
 - **Is not:** something that returns a position. Not hand-picked mnemonics
   over a private `jcc(code, cc: u8)`.
-- **Follows:** a loop's back edge is `Gp::Jmp { to: top }`. Arm skips are one
-  verb, `IsaBackend::branch(.., Test, Edges)`, "because they differed only in
-  which uniform mask lets an arm go, which is what `IfArm` already names". A
-  fold's trip test reuses `IfArm::False`'s test.
+- **Follows:** a loop's back edge is `Gp::Jmp { to: top }`. Arm guards are one
+  verb, `IsaBackend::branch(.., Test, Edges)`, with one test per arm: `any(m)`
+  for the true arm, `!all(m)` for the false arm (note §1). A fold's trip test
+  reuses `IfArm::False`'s test.
 - **Lives:** `pixelflow-codegen/src/emit/{x86_64,aarch64}.rs` (the
   instructions), `IsaBackend::{branch, jump}` (`emit/mod.rs`, implemented in
   `emit/{avx2,avx512,aarch64}.rs`), `IfArm` (`program/mod.rs`);

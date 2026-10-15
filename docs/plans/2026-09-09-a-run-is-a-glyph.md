@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-09
 **Status:** Executed. §9 records what execution found that §1–§7 did not
-anticipate — including one constraint that changed the shape of the change.
+anticipate — including one constraint that changed the shape of the change. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the `MISPREDICT_PENALTY_CYCLES` comparison in §6 no longer holds, since mispredict pricing is deleted and each arm is guarded by `any(m)` with no profitability test.
 **Author:** JP (the direction and the method), Claude (draft)
 **Supersedes:** `fonts/text.rs`'s merge argument — not its premise, which is
 correct, but the conclusion it draws from it (§4).

@@ -65,7 +65,7 @@ index for the word first.
 - Dwrt (derivative)
 - Ref, unit and link (composition)
 - Identity
-- Table, Buffer, Gather, Broadcast
+- Discrete kernel (table; Gather and Broadcast are backend realizations)
 - Library (vs primitive)
 - Transcendental expansion
 - Totality
@@ -77,7 +77,7 @@ index for the word first.
 
 - Lattice
 - Shape (extent). Homonym
-- Manifold (BoundManifold, bind, bake)
+- Manifold (bake)
 - CompiledKernel
 - Collapse
 - Write and Seq (effects)
@@ -112,7 +112,7 @@ index for the word first.
 - Cost model (latency prior, fold price)
 - Reranker
 - Variance
-- Demand
+- Demand (retired)
 - Widening and narrowing
 - Compile cache key (canonical)
 - Numeric contract (precision versus range)

@@ -7,6 +7,8 @@
 
 # Brainstorm: Variance Analysis via E-Graph Saturation
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the claim that the Lattice type determines evaluation scope ("Lattice type = schedule", the Const/Frame/Scanline/Pixel scope lattice, type-level scheduling) no longer holds, because lattice traversal belongs to each backend's schedule rather than to the target-agnostic lattice type.
+
 ## Context
 
 Pixelflow is a pull-based functional graphics engine built on manifold algebra. We have:

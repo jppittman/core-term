@@ -19,7 +19,7 @@
 
 ## Metadata
 - **Author**: JP (direction), Claude (draft)
-- **Status**: `Built through step 6` (§8). The denotation was proposed
+- **Status**: **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the demand machinery (§1, §4, D1) and the mispredict-priced jump (§4's exclusivity and §6's corrections) no longer hold; demand is deleted, and `If` has one guarded shape. `Built through step 6` (§8). The denotation was proposed
   2026-09-23; §2's node shape was decided by JP the same day: an integral
   is a fold whose domain is continuous, with no cell and no axis. Steps 1–6
   are built — a glyph's coverage is now the exact area of each pixel under

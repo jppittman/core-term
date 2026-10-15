@@ -1,7 +1,7 @@
 # One Kernel Language: Retiring the Combinator Emitter
 
 **Date:** 2026-07-20
-**Status:** Plan of record
+**Status:** Plan of record. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** bound buffers, `bind`, Gather as a language op (the table row "Enter the IR as bound buffers", the `expand_gather` peer in P2, and the bound-buffer narration in P5–P6), the uniform-mask guard gating in P5, and the "never materialized" claim in the root axiom no longer hold.
 **Supersedes:** the dual-backend framing of the 2025-02-21 kernel-jit-feature-parity plan (whose param-baking scope is done).
 
 ## Root axiom (2026-07-24): totality — see the design note

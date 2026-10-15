@@ -22,8 +22,8 @@ They are grouped here because the terminal is their consumer.
 - **Is not:** a fold iteration, for now. One-pipeline §1.6's fold over cells
   invoking `P_N` is superseded. Not one fused program over the device frame
   gathering ten floats per cell from a buffer (the 2026-07-29 and 2026-09-06
-  `CellGridProgram`, which is today's code), because buffers are leaving the
-  language. Not tree structure ("data beats structure"). Not a glyph id
+  `CellGridProgram`, which is today's code), because the language has no memory
+  reads (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2). Not tree structure ("data beats structure"). Not a glyph id
   chosen by an `if id < k` tree inside one font program (superseded
   2026-10-09; see "Font programs").
 - **Follows:** metric changes are uniform writes, and anything that moves an
@@ -85,8 +85,8 @@ They are grouped here because the terminal is their consumer.
   - Superseded: "a winding number about a reference point" (09-08: "there
     is no reference point"); "a circle that cannot read its own sign"
     (09-09).
-- **Follows:** a glyph is correct under translation only. A box test that is
-  uniform over a batch is a jump.
+- **Follows:** a glyph is correct under translation only. A box test is an
+  `If` whose arm is skipped on a batch where no lane is in the box (§1).
 - **Lives:** the language glyph's block (`one_piece`, `sum2`, `glyph`,
   `Row`, `Bounds`) in `pixelflow-graphics/src/fonts/loop_blinn/program.rs`,
   which the font's programs are written in; the builder glyph in
@@ -109,7 +109,8 @@ They are grouped here because the terminal is their consumer.
 - **Is not:** a table row read at a binder index. Not one body per kind of
   piece. Not `Support`'s dilated box with uniform edges (09-09), which is
   superseded.
-- **Follows:** the band's arms jump, and its guard belongs at row scope (D1).
+- **Follows:** the band is an `If` guard, `any(m)` at row scope, so a row outside
+  the band skips the piece's block (§1).
   Pruning is exact or it is not pruning: `FLAT_ENOUGH` changed an integer by
   dropping a nearly flat curve.
 - **Lives:** the-language-is-kernel §1.6–§1.7; `Row`, `Bounds`, `piece_area`,

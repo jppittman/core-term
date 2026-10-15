@@ -2,7 +2,7 @@
 
 ## Metadata
 - **Author**: JP (direction), Claude (draft)
-- **Status**: `Draft`
+- **Status**: `Draft`. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** there is no bound buffer, `bind` or `Buffer` leaf, and no `Bind` binding time; a discrete kernel is a `Kernel`, and sampling is named at the lift rather than carried by the referent.
 - **Created**: 2026-09-10
 - **Verified against**: `6f3eb619e314304149db65d71bafbe7c096cfd15`
 - **Supersedes**: the framing of L6 in

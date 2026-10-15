@@ -8,7 +8,7 @@
   After JP's ruling that there are no tables and the control points are
   uniforms, this plan's tables backed by uniforms are superseded too: §1.3,
   A8, CL8 and Q2, and the fold over pieces they fed. The frame (§1.6, Q3) is
-  superseded: a cell is one call.
+  superseded: a cell is one call. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the language has no bound buffers, `Gather` or memory reads (§1.3, §3.4, CL8), the pipeline is not one shared `P(k, s, t)` with the lattice folded in before extraction (§1.1, §1.5), and D1 is not placement that reads demand (§5).
 - **Per-`N` programs and uniform families are superseded** (2026-10-01;
   per-`N` is the ruling again, 2026-10-09, last bullet below).
   JP's Q1 ruling is one program per font per zoom level, and on 2026-10-01:

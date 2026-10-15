@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Author**: JP (design), Claude (draft)
-- **Status**: `Plan of record`. This is revision 3.
+- **Status**: `Plan of record`. This is revision 3. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** an `If` is guarded arm blocks and a select, with no blend-only shape and no scope condition on an arm's block (§0.12, §2.10), and the pass chain is per backend, with the CPU module alone owning register allocation (§0.14, §2.11, §2.12).
   - Revision 2 answered three reviews (allocation, closure and landing), and Appendix A records what was done with each point.
   - Revision 3 carries JP's decisions of 2026-10-08, which override anything below that disagrees with them (§0). §0.11 and §0.12 carry his rulings of 2026-10-11, and §0.13 and §0.14 the ones of 2026-10-12.
 - **Created**: 2026-10-08

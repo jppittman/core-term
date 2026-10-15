@@ -4,7 +4,7 @@
 **Status:** REGISTERED — committed before any stratified or out-of-distribution evaluation
 exists. No number in §1–§6 may be revised after the first such run; results are appended in
 §7 against the gates below. A different statistic, threshold, family, or size band is a new
-registration recorded as superseding this one.
+registration recorded as superseding this one. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the `Buffer` leaf that §2's stratifier excludes is not a language construct, since the language has no memory reads.
 **Authority:** `docs/plans/2026-09-01-phase3-registration.md` (Round 1, unchanged and still
 binding: budgets in rule applications, the one curve definition
 `egraph::anytime::run_anytime_curve`, deterministic cost regret under

@@ -13,7 +13,7 @@ when it is a language concern and that machinery is one of three lowerings
 of a single conditional. §1–§2 survive as the analysis the successor needs
 (they are its §6); §9–§10 remain the record of the glyph investigation. §3
 was corrected in place against what is actually on `main` and is kept for
-that record.
+that record. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** its cost consequences (demand-weighted cost, projected-region guards, `MISPREDICT_PENALTY_CYCLES` bounding and extraction choosing guarded forms) no longer hold, since `If` costs as the average of its arms and is guarded per arm with no profitability decision.
 **Author:** JP (direction), Claude (draft)
 **Refines:** §5 of [2026-09-06-lattice-is-the-index.md](2026-09-06-lattice-is-the-index.md)
 ("exclusivity does not survive the partition"). This plan's premise was that

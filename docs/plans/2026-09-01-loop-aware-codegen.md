@@ -1,7 +1,7 @@
 # Loop-aware codegen: giving the register allocator the lattice
 
 **Date:** 2026-09-01
-**Status:** design; revised 2026-09-02, twice (see below); stage 0 landed (#1092), stage 0′ in progress
+**Status:** design; revised 2026-09-02, twice (see below); stage 0 landed (#1092), stage 0′ in progress. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the lattice's binder nest is the CPU schedule's rather than part of the kernel that the e-graph reasons about and extraction costs, and a kernel reads no bound buffers or memory, so the "one unrolled program" denotation, the extent-weighted extraction cost and the "gather policy" no longer hold.
 **Depends on:** the one-kernel-ABI refactor (`#1077` and its in-flight
 follow-up), which retires `compile_arena_dag`/`compile_arena_dag_avx2`/
 `compile_arena_dag_avx512`/`compile_dag_via_backend` and the `PerBatch`

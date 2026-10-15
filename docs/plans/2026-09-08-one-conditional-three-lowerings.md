@@ -1,7 +1,7 @@
 # One conditional, three lowerings
 
 **Date:** 2026-09-08
-**Status:** Draft. Nothing built.
+**Status:** Draft. Nothing built. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the three-lowering thesis and the region, demand, interval and mispredict machinery throughout no longer hold: `If` compiles to a guarded true arm, a guarded false arm and one select, and is costed as the average of its arms.
 **Author:** JP (direction), Claude (draft)
 **Supersedes:** [2026-09-07-demand-is-a-dag-property.md](2026-09-07-demand-is-a-dag-property.md),
 whose §1–§2 survive as the *analysis* this plan needs and whose §9–§10
