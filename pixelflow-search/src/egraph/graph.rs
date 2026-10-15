@@ -613,6 +613,25 @@ impl EGraph {
         self.worklist.len()
     }
 
+    /// The nodes of the class `id` belongs to, in the order the graph gives
+    /// them. The order is semantics, not layout: rules that return on the
+    /// first matching node, the node substitution reads and the candidate
+    /// extraction keeps on a tie all depend on it.
+    ///
+    /// - [`add`](Self::add) gives `[node]`.
+    /// - [`union`](Self::union) gives the surviving class's nodes, then the
+    ///   merged-away class's.
+    /// - A [`rebuild`](Self::rebuild) item detaches the nodes of the class it
+    ///   processes, and any union inside the item appends to the class as
+    ///   `union` does. At the end the kept nodes, in the order they were
+    ///   walked, follow whatever the class then holds: `[absorbed] ++ [kept]`
+    ///   when the class survives its unions. When the class loses one, it is
+    ///   the survivor's prior nodes, then any the survivor absorbs later in
+    ///   the same item, then `[kept]`.
+    ///
+    /// A node whose canonical form collides with a class it cannot merge with
+    /// leaves the class, and rebuild deduplicates nothing: two members may be
+    /// equal.
     pub fn nodes(&self, id: EClassId) -> &[ENode] {
         let id = self.find(id);
         &self.classes[id.index()].nodes
@@ -2188,6 +2207,148 @@ mod tests {
             eg.nodes(eg.find(nc)),
             before.as_slice(),
             "rebuild must be idempotent once the worklist is drained"
+        );
+    }
+
+    /// `union` gives the surviving class's nodes, then the merged-away
+    /// class's, whichever argument order the caller used.
+    #[test]
+    fn union_gives_the_parent_then_the_child() {
+        for flipped in [false, true] {
+            let mut eg = EGraph::new();
+            let parent = eg.add(ENode::Var(0));
+            let parent_peer = eg.add(ENode::Var(1));
+            let child = eg.add(ENode::Var(2));
+            let child_peer = eg.add(ENode::Var(3));
+            let parent = eg.union(parent, parent_peer);
+            let child = eg.union(child, child_peer);
+            assert_eq!(
+                eg.nodes(parent),
+                [ENode::Var(0), ENode::Var(1)],
+                "a union of two classes gives the first then the second"
+            );
+
+            let survivor = if flipped {
+                eg.union(child, parent)
+            } else {
+                eg.union(parent, child)
+            };
+            assert_eq!(survivor, parent, "the smaller id survives");
+            assert_eq!(
+                eg.nodes(survivor),
+                [ENode::Var(0), ENode::Var(1), ENode::Var(2), ENode::Var(3)],
+                "parent then child (flipped argument order: {flipped})"
+            );
+            assert_eq!(eg.nodes(child), eg.nodes(parent));
+        }
+    }
+
+    /// A rebuild item whose class survives a union made during the item gives
+    /// `[absorbed] ++ [kept]`: what the union appended, then the item's own
+    /// nodes in the order they were walked. Built as the first regression test
+    /// above is: the item is class 3, it absorbs class 4, and 3 < 4.
+    #[test]
+    fn a_rebuild_item_that_survives_gives_absorbed_then_kept() {
+        let mut eg = EGraph::new();
+        let _a = eg.add(ENode::Var(0));
+        let b = eg.add(ENode::Var(1));
+        let c = eg.add(ENode::Var(2));
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 3, the item
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 4, absorbed
+        let d = eg.add(ENode::Var(3));
+        let marker = eg.add(ENode::Var(9));
+        eg.union(nc, d);
+        eg.union(nb, marker);
+        eg.union(b, c);
+        assert_eq!(
+            eg.nodes(nc),
+            [ENode::apply(OpKind::Neg, &[c]), ENode::Var(3)],
+            "the item's nodes before the rebuild, the first still naming c"
+        );
+        assert_eq!(
+            eg.nodes(nb),
+            [ENode::apply(OpKind::Neg, &[b]), ENode::Var(9)]
+        );
+
+        // The worklist is a stack of 3, 4, 1: class 1 pops, then 4, then 3.
+        assert_eq!(eg.pending_rebuilds(), 3);
+        assert_eq!(eg.rebuild_budgeted(3), 1, "the union in item 3 queues 3");
+        assert_eq!(eg.find(nb), nc, "the item absorbed class 4 and survived");
+
+        let neg_b = ENode::apply(OpKind::Neg, &[b]);
+        let expected = [neg_b, ENode::Var(9), neg_b, ENode::Var(3)];
+        assert_eq!(
+            eg.nodes(nc),
+            expected,
+            "[absorbed: Neg(b), Var(9)] ++ [kept: Neg(b), Var(3)]"
+        );
+        eg.rebuild();
+        assert_eq!(eg.nodes(nc), expected, "a further rebuild keeps the order");
+    }
+
+    /// A rebuild item whose class loses a union made during the item gives
+    /// the survivor's prior nodes, then whatever the survivor absorbs later in
+    /// the same item, then `[kept]`. The item is class 4. Its first node
+    /// canonicalizes into class 3, which survives with a prior member; its
+    /// second into class 5, which 3 then absorbs; its third is its own.
+    #[test]
+    fn a_rebuild_item_that_loses_gives_prior_then_later_absorbed_then_kept() {
+        let mut eg = EGraph::new();
+        let _a = eg.add(ENode::Var(0));
+        let b = eg.add(ENode::Var(1));
+        let c = eg.add(ENode::Var(2));
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3, survives
+        let neg_c = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 4, the item
+        let abs_b = eg.add(ENode::apply(OpKind::Abs, &[b])); // class 5, absorbed later
+        let abs_c = eg.add(ENode::apply(OpKind::Abs, &[c]));
+        let prior = eg.add(ENode::Var(7));
+        let later = eg.add(ENode::Var(8));
+        let marker = eg.add(ENode::Var(9));
+        eg.union(neg_b, prior);
+        eg.union(abs_b, later);
+        eg.union(neg_c, abs_c);
+        eg.union(neg_c, marker);
+        eg.union(b, c);
+        assert_eq!(
+            [neg_b, neg_c, abs_b].map(EClassId::index),
+            [3, 4, 5],
+            "the recipe assumes these ids"
+        );
+        assert_eq!(
+            eg.nodes(neg_c),
+            [
+                ENode::apply(OpKind::Neg, &[c]),
+                ENode::apply(OpKind::Abs, &[c]),
+                ENode::Var(9)
+            ]
+        );
+
+        // The worklist is a stack of 3, 5, 4, 1: class 1 pops, then 4.
+        assert_eq!(
+            eg.rebuild_budgeted(2),
+            2,
+            "the unions in item 4 queue nothing"
+        );
+        assert_eq!(eg.find(neg_c), neg_b, "the item lost to class 3");
+        assert_eq!(eg.find(abs_b), neg_b, "and 3 absorbed class 5 during it");
+
+        let neg = ENode::apply(OpKind::Neg, &[b]);
+        let abs = ENode::apply(OpKind::Abs, &[b]);
+        let expected = [
+            neg,
+            ENode::Var(7), // the survivor's prior nodes
+            abs,
+            ENode::Var(8), // absorbed later in the item
+            neg,
+            abs,
+            ENode::Var(9), // kept, in the order they were walked
+        ];
+        assert_eq!(eg.nodes(neg_b), expected);
+        eg.rebuild();
+        assert_eq!(
+            eg.nodes(neg_b),
+            expected,
+            "a further rebuild keeps the order"
         );
     }
 
