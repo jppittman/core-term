@@ -8,7 +8,7 @@ did not anticipate. C1 (§5) did not land as written — it was superseded by
 before merging; see that plan's amendment for what happened to the gate PR
 (#1187) along the way. G1 (§4) was executed on 2026-09-08 as its own plan,
 [2026-09-08-loop-blinn-glyph.md](2026-09-08-loop-blinn-glyph.md) (PR #1213);
-§4's own §9.6 below records what that execution found.
+§4's own §9.6 below records what that execution found. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** its `Gather`/gather-index vocabulary and the profitability-bounded, coherence-based guard in §3 and §5 no longer hold, since the language has no memory reads and `If` costs as the average of its arms with every arm guarded per its own block.
 **Author:** JP (direction), Claude (draft)
 **Refines:** [2026-09-06-kernel-with-a-lattice.md](2026-09-06-kernel-with-a-lattice.md),
 which defines a lattice as "extents and origin". This plan removes the

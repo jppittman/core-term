@@ -164,10 +164,13 @@ document is historical it now says so in a banner on line 1, which
 plan or design may only name a source file the tree lacks if it is bannered, says the file is
 gone, or is recorded in `scripts/doc-paths-baseline.txt`.
 
-**Current direction — read these first.** `plans/2026-09-06-kernel-with-a-lattice.md`
+**Current direction — read these first.** `plans/2026-10-15-kernels-evaluate-kernels.md`
+(accepted rulings, binding over any earlier plan where they disagree: `If` has one shape,
+discrete kernels replace bound buffers, the schedule is per backend), `plans/2026-09-06-kernel-with-a-lattice.md`
 (plan of record), `plans/2026-09-06-lattice-is-the-index.md` (landed),
 `plans/2026-09-06-uniform-slot-identity.md` (U0 landed),
-`plans/2026-09-08-one-conditional-three-lowerings.md` (draft, nothing built),
+`plans/2026-09-08-one-conditional-three-lowerings.md` (draft, nothing built; its three-lowering
+framing is superseded by §1 of `plans/2026-10-15-kernels-evaluate-kernels.md`),
 `plans/2026-09-09-exprarena-on-dag.md` (proposed),
 `plans/2026-09-08-macro-tier-is-arena-native.md`,
 `designs/2026-07-24-totality-and-the-cost-model.md` (axiom layer),

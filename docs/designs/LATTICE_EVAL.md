@@ -12,6 +12,8 @@
 
 # Lattice as Representable Functor: Unified Scheduling
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** a collapsed lattice is a discrete kernel, a distinct type that is not evaluated at continuous coordinates with implicit interpolation, and the loop nest and scheduler belong to each backend rather than to `Lattice::collapse` in `pixelflow-core`.
+
 ## The Idea (Apr 3, 2026)
 
 The Lattice doesn't just describe dimensions — it IS the evaluator. A manifold is a function. A Lattice is a demand for evaluation. Binding a kernel to a Lattice collapses it — like observation collapsing a wavefunction. Nothing computes until a Lattice demands it.

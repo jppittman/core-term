@@ -3,7 +3,7 @@
 **Date:** 2026-09-01
 **Status:** DESIGN — JP-approved denotation (2026-09-01), written before any code. The Build phase
 implements exactly the types, bucket rules, and entry points in §1–§6 and §8; a departure is a
-revision of this document, not a silent divergence in code.
+revision of this document, not a silent divergence in code. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the `Buffer` leaf and the `Gather`/`RawGather` ops that this note counts as language OpKinds (lines 220, 340, 347) do not exist in the language, which has no memory reads; gather is a backend realization of evaluating a discrete kernel.
 **Authority:** `docs/plans/2026-08-31-guide-design-revision.md` (§0 budget-only framing, §2.2 dedup
 finding, §4 candidate-local features, §5 protocol); `docs/plans/2026-09-01-phase3-registration.md`
 (Round 1 — FROZEN; B = 100/200, Y, the one curve definition, FINAL untouched);

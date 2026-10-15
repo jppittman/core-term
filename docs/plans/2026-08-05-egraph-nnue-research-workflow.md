@@ -10,7 +10,7 @@
 
 # E-graph NNUE research workflow: iterate to a publishable extraction-head result
 
-**Status:** Closed, 2026-09-01. The workflow below ran to completion: the workshop paper it
+**Status:** Closed, 2026-09-01. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** `Gather`, `Buffer` and binding tables as language primitives no longer hold (§0's matmul over a `Gather`, §4.4's memory ops). The workflow below ran to completion: the workshop paper it
 targets (branch `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree)
 found the NNUE extraction head ties `CostModel::latency_prior()` rather than beating it. JP's
 ruling ("delete the shape, keep the denotation") removed the extraction-head code this plan

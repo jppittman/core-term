@@ -8,6 +8,8 @@
 
 # Denotational Machine Learning & Symbolic Autodiff
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** inputs and weights are not `Lattice` values; a `Lattice` is only the domain, and the data is a discrete kernel over it.
+
 ## Vision
 PixelFlow models Neural Networks as pure mathematical functions (Manifolds). 
 To compute gradients for training, we do not use Reverse-Mode AD (tapes) or standard Forward-Mode AD loops. 

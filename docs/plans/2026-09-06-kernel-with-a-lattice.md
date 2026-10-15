@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Status:** plan of record (project direction, stated 2026-09-06; shape
-corrected the same day — see "The shape")
+corrected the same day — see "The shape"). **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** `bind`, `BoundManifold`, bound buffers and `Gather` as a language op no longer hold (the language has kernels and discrete kernels, and lookup is a backend realization), and mispredict-priced guards and mask coherence as a cost term are replaced by `If` costed as the average of its arms.
 **Supersedes, in scope:** the "Surface" lane of
 [2026-07-28-jit-performance-parity.md](2026-07-28-jit-performance-parity.md);
 completes P6 of [2026-07-20-kernel-unification.md](2026-07-20-kernel-unification.md)

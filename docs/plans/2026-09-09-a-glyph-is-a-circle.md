@@ -3,7 +3,7 @@
 **Date:** 2026-09-09
 **Status:** Denotation. No code. The implementation in
 `pixelflow-graphics/src/fonts/loop_blinn.rs` deviates from this, and most of
-the deviation is a misuse of the language rather than a limit of it.
+the deviation is a misuse of the language rather than a limit of it. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** §A's demand-driven pruning of a binder's range no longer holds, since demand and projected-region machinery are deleted, and §B's "gathered coefficient" is a discrete-kernel evaluation rather than a `Gather`.
 **Author:** JP (direction), Claude (draft)
 **Follows:** [2026-09-08-loop-blinn-glyph.md](2026-09-08-loop-blinn-glyph.md),
 which is what was built. This is what it should have been.

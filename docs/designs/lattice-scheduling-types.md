@@ -11,6 +11,8 @@
 
 # Lattice Scheduling via Types: Extraction as Factoring
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** lattice types do not decide materialization, scope or tiling, so the types are not the schedule; the schedule and lattice traversal are per backend.
+
 ## The Insight
 
 E-graph extraction is expression factoring. When the extractor discovers that `sin(t * 0.3)` appears in all three color channels, it's discovering that the computation factors:

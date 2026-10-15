@@ -4,7 +4,7 @@
 **Status:** L1–L3 executed — the reference, the store, shared expansion,
 and one composition site converted and measured (§2.1, §7). §5's first cost
 has its gate; the inlining rule (L4) waits on a kernel that composes
-identical referents, because §7 found the glyph is not one.
+identical referents, because §7 found the glyph is not one. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the language has no buffer read, no `bind` and no `Gather` node, since a discrete kernel is evaluated at coordinates and the backend alone chooses broadcast, load or gather, so the `BufferIdentity`/`Manifold::bind` link step and `MAX_BOUND_BUFFERS` describe the backend's ABI rather than the language.
 
 **Amended 2026-10-01: a reference is an optimization unit**
 ([the-language-is-kernel](2026-09-25-the-language-is-kernel.md) §4, O1,

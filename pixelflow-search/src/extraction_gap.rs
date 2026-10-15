@@ -94,7 +94,7 @@ struct Priced {
     /// The model prices an op or a leaf and has no fold semantics: it never
     /// charged a fold's body, and a fold's row is empty here as it was when
     /// rows were built from `Op` operands alone. Production's tree objective
-    /// charges the body once per iteration (`fold_body_multiple`), so the
+    /// charges the body once per iteration (`extract.rs`'s `below`), so the
     /// model's numbers on a graph with a fold are not production's tree
     /// objective; closing that is a change to this harness's results and
     /// not part of lifting its setup onto the shared problem.

@@ -8,6 +8,8 @@
 
 # Is the PixelFlow JIT orthodox? A survey against V8, LuaJIT, HotSpot, and Halide-class compilers
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the claim that the kernel is straight-line SIMD with `Select` instead of branches and no side exits no longer holds, because `If` always compiles to a guarded block per arm plus one select.
+
 **Date:** 2026-07-23
 **Question:** the kernel-unification work (P2–P4) built a JIT that compiles
 expression arenas at kernel-construction time, with an e-graph optimizer at

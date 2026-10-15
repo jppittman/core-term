@@ -1,5 +1,7 @@
 # Register allocation outside the register allocator
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** an `If` has one shape, with each arm's own block guarded by `any(m)` or `!all(m)` and then one select, so the 2026-09-04 note's "uniform-mask path" names the guard's skip rather than a separate path, and a mixed batch runs both arms.
+
 **Goal: no register allocation outside the register allocator.**
 
 Today two systems assign registers. The allocator assigns DAG values over the

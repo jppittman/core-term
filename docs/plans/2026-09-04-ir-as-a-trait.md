@@ -1,5 +1,7 @@
 # `Ir` as a trait: naming the term language the e-graph speaks
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the language has no memory reads, so `Buffer` is not an IR leaf, buffer-slot dedup is not an `embed` duty, and `Gather` is not an IR op; a discrete kernel is a `Kernel` and its lookup is a backend realization.
+
 ## 0. The inversion
 
 An optimizer is an endomorphism on the IR. The type named `Optimizer`

@@ -1,7 +1,7 @@
 # The graph differentiates; legalize is the fallback
 
 **Date:** 2026-09-09
-**Status:** Findings. No code. Three defects in the runtime pipeline's
+**Status:** Findings. No code. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** §5's rewrite pair that materializes `Gather` in the e-graph no longer holds, since `Gather` is not a language op and materialization is a per-backend schedule choice. Three defects in the runtime pipeline's
 ordering, and a criterion for when `Gather` is a leaf and when it is a
 scheduling decision wearing one.
 **Author:** JP (direction and both corrections), Claude (draft)

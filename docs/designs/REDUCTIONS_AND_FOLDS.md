@@ -10,6 +10,8 @@
 
 # Reductions, Folds, and Dimension Collapse
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the lattice does not determine materialization or loop order (scanline-by-scanline nesting is a backend schedule); a reduction is per-pixel algorithm, and materialization is chosen per backend.
+
 ## The Problem (Apr 2, 2026)
 
 Everything in PixelFlow is a Manifold — a function from coordinates to values. Composition, warping, selection all PRESERVE or GROW the variance set (which coordinates an expression depends on). But some operations CONSUME a dimension:

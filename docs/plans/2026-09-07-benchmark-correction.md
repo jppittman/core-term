@@ -1,7 +1,7 @@
 # Benchmark correction: real shaders are the corpus
 
 **Date:** 2026-09-07
-**Status:** plan of record for the measurement side of the e-graph program. Retractions in §D are applied in the same PR.
+**Status:** plan of record for the measurement side of the e-graph program. Retractions in §D are applied in the same PR. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** `Gather` as a priced IR op and the row-prologue guarded fraction as a primary metric no longer hold, since the language has no gather and no per-select guard decision to measure.
 **Authority:** JP, 2026-09-07 — *"It's an egraph for shaders project, and we have an app with shaders and the moment we pointed it at the real shaders it sucked. Fonts are real shaders. They're an example of what we're targeting. ... the synthetic benchmarks need to be made better. Gaps identified and closed. We need to act like when our research hit the real world, it shit the bed, so we need to go back and correct."*
 **Inputs (read in full, not restated here):**
 - `docs/results/2026-09-07-claims-ledger.md` (+ `.csv`, 91 rows; PR #1207, branch `claude/claims-ledger` until it merges) — every quantitative claim, its corpus, units, instrument and verdict.

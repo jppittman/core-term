@@ -2,7 +2,7 @@
 
 ## Metadata
 - **Author**: JP (decision), Claude (draft)
-- **Status**: `Done` — decided 2026-09-22; one PR
+- **Status**: `Done` — decided 2026-09-22; one PR. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the `Buffer` leaf of §1 is not a language concept, since there are no bound buffers; its context pointer is the backend's ABI.
 - **Created**: 2026-09-22
 - **Verified against**: `735cb9de` (main with #1286 and #1289)
 - **Continues**: [register-allocation-escape-hatches](2026-09-01-register-allocation-escape-hatches.md)

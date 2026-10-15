@@ -9,8 +9,7 @@ verb between a kernel and a buffer.
 place where a description of a computation becomes stored samples — and nothing else.
 
 ```text
-Kernel ──Manifold::compile(extent)──▶ Manifold ──bind(&[(id, buf)])──▶ BoundManifold
-       ──Lattice::collapse──▶ DiscreteManifold
+Kernel ──Manifold::compile(extent)──▶ Manifold ──Lattice::collapse──▶ DiscreteManifold
 ```
 
 ## What Lives Here
@@ -22,15 +21,18 @@ Kernel ──Manifold::compile(extent)──▶ Manifold ──bind(&[(id, buf)]
 - `Manifold` — a `Kernel` compiled at a lattice's shape, behind the global compile cache.
   It knows its extents, its buffer declarations and its code bytes. It has **no `eval`** and
   is **not batch-shaped**.
-- `BoundManifold` — a manifold with a buffer bound to every slot it declared. `bind`
-  panics *naming the slot* it cannot fill; nothing silently reads a null context.
 - `Lattice::collapse(&BoundManifold) -> DiscreteManifold` — the one verb. One call per
   stripe; the X/Y loop nest is inside the emitted code.
 - `Lattice::bake(&Kernel)` — `collapse(compile(k, extent).bind(&[]))`, one line, for the
-  buffer-free case that is most callers.
-- `DiscreteManifold` — the buffer that IS a manifold (`index(collapse(f)) = f`). It reads
-  back into the language as a gather (`kernel()`) or, through `BilinearSampler`, a 4-tap
-  blend.
+  common case.
+- `BoundManifold`, `bind`, `BufferIdentity`, `MAX_BOUND_BUFFERS` — still in the tree and
+  slated for deletion: a bound buffer is not a concept, a discrete kernel is
+  (docs/plans/2026-10-15-kernels-evaluate-kernels.md §2). Until that lands, `collapse`
+  takes the bound form and `bind` panics naming a slot it cannot fill.
+- `DiscreteManifold` — a discrete kernel, tabulated: `index(collapse(f)) = f`, so the table
+  is the function. It composes into the language as an ordinary kernel (`kernel()`). How an
+  evaluation at `(u, v)` is realized (broadcast, load or gather) is the backend's choice by
+  variance, not a language op (docs/plans/2026-10-15-kernels-evaluate-kernels.md §2).
 - `CellGridProgram` — the terminal's scene geometry as channel kernels over a cell buffer
   and a coverage atlas.
 - `fastmath.rs` — `FastMathGuard`, the scoped FTZ/DAZ switch the render path holds.
@@ -60,11 +62,12 @@ an argument (`Uniform`, written into a `UniformBlock`), not a third extent of 1.
 It says where a collapse *starts*, not what the code *is* — `LatticeShape` erases it, which
 is what lets the cache key on shape alone.
 
-### Memory binds by identity
+### Discrete kernels are values, not memory
 
-A kernel over a buffer names its memory by `BufferIdentity` and nothing else, so the kernel
-and the buffer must travel together to reach a collapse. `DiscreteManifold::binding()` is
-the other half. `MAX_BOUND_BUFFERS` is 4.
+A discrete kernel is a `Kernel` on a lattice. It is referentially transparent, so a collapse
+may tabulate it, but the language has no bound buffer, no `bind` and no memory read. The ABI
+still hands the compiled code the tables it reads; that is the backend's business
+(docs/plans/2026-10-15-kernels-evaluate-kernels.md §2).
 
 ## Key Files
 
@@ -72,7 +75,7 @@ the other half. `MAX_BOUND_BUFFERS` is 4.
 |------|---------|
 | `lib.rs` | `Field` (crate-private), SIMD backend selection, the prelude |
 | `lattice/mod.rs` | `Lattice`, `DiscreteManifold`, `BilinearSampler`, `bake` |
-| `lattice/manifold.rs` | `Manifold`, `BoundManifold`, `PlaneRegion`, the collapse driver |
+| `lattice/manifold.rs` | `Manifold`, `BoundManifold` (slated for deletion), `PlaneRegion`, the collapse driver |
 | `lattice/cell_grid.rs` | The terminal's cell-grid geometry and channel kernels |
 | `backend/` | SIMD implementations per architecture |
 | `backend/fastmath.rs` | FTZ/DAZ via `FastMathGuard` |
@@ -88,7 +91,7 @@ the other half. `MAX_BOUND_BUFFERS` is 4.
    numbers is `Lattice::collapse`, and its argument is compiled IR.
 6. **No dependency on pixelflow-compiler** — this crate does not use the macros. The one
    edge it has upward is `pixelflow-codegen`, for compilation.
-7. **Fail loud** — a degenerate extent, an unbound slot, a width mismatch with the JIT: all
+7. **Fail loud** — a degenerate extent, a table the ABI cannot supply, a width mismatch with the JIT: all
    panic with the reason, none fall back.
 
 ## Common Tasks
@@ -98,11 +101,11 @@ the other half. `MAX_BOUND_BUFFERS` is 4.
 It does not go here. Ops live in `pixelflow-ir` (`OpKind`, `Kernel`'s methods), their
 lowering in `pixelflow-ir/passes`, and their emission in `pixelflow-codegen/emit`.
 
-### Adding a way to read a buffer back
+### Adding a sampling
 
-Extend the arena fragment (`DiscreteManifold::kernel_for`, `BilinearSampler::kernel_for`) so
-the read is *in the language* and composes into a larger kernel with `.at()`. Do not add a
-Rust-side sampler.
+A discrete kernel is refused at a continuous coordinate by its type. Lift it through a named
+sampling (`BilinearSampler`) by extending the arena fragment (`BilinearSampler::kernel_for`),
+so the lift is in the language and composes with `.at()`. Do not add a Rust-side sampler.
 
 ## Anti-Patterns to Avoid
 

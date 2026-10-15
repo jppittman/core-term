@@ -1,6 +1,6 @@
 # `ExprArena` on `Dag`: staging the port
 
-**Status:** Stages A–C done. A (`55005739`), B (`9fdb6b37`), the demand-move
+**Status:** Stages A–C done. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** "buffer-bound piece data" and "buffer reads" name memory reads the language does not have, since a discrete kernel is evaluated at coordinates and its tabulation belongs to the backend. A (`55005739`), B (`9fdb6b37`), the demand-move
 follow-on (`a77e526a`), C — hash-consing (2026-09-20, this revision). D not
 started.
 **Date:** 2026-09-09

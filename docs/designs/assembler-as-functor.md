@@ -9,6 +9,8 @@
 
 # The Assembler as a Functor: Formalizing the Codegen Pipeline
 
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the IR has no gather and no bound buffers, and there is no one register allocator shared by every backend: each backend is one module with its own pass chain, and the CPU module alone owns register allocation.
+
 ## 1. Why this doc exists
 
 The compiler back-end is a pipeline, and everyone who has read it knows that

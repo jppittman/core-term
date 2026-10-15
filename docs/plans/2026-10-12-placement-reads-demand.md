@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Author**: JP (direction), Claude (draft)
-- **Status**: `Proposed`
+- **Status**: `Proposed`. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** demand weighting, arm probability and projected regions are deleted, so this plan's `Literal`, `Demand`, projected regions and demand-weighted price are withdrawn, and the per-batch test of a mask is the shape of `If` rather than a case to remove.
 - **Created**: 2026-10-12
 - **Verified against**: `7acdcaee`, which is `dd621dab` (#1367) plus β. β merged as #1368 (`d3a8fbe0`), whose tree is `7acdcaee`'s, so every citation here holds on `main` at `d3a8fbe0`.
   - β touched `pixelflow-codegen/src/program/{guards,layout,mod,ownership,scopes}.rs`, `pixelflow-core/tests/{guard_fold_price,guard_sibling_fold}.rs`, the ontology's `codegen.md`, `language.md` and `meta.md`, and the demand, one-conditional and selection plans. Every other `file:line` here is the same at `dd621dab`.

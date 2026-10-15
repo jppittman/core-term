@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-09
 **Status:** Plan. Staged, each stage independently landable and gated by the
-same test.
+same test. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** a table read is evaluation of a discrete kernel at the binder, not a `Gather` or a bound buffer, so `Gather` is not an IR op that the e-graph represents or the legalizer lowers, and `MAX_BOUND_BUFFERS` is a backend limit rather than a language one.
 **Author:** JP (direction), Claude (draft)
 **Executes:**
 [2026-09-09-a-glyph-is-a-circle.md](2026-09-09-a-glyph-is-a-circle.md)

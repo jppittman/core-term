@@ -3,7 +3,7 @@
 # The schedule cost model: denotation first, code when there is something to learn
 
 **Date:** 2026-09-01
-**Status:** denotation. No code is built on it today; it says what PR #1093
+**Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the schedule (levels, trips) is the CPU backend's and not the extractor's, and §9's mask-coherence and branch-reduced weights are deleted, since `cost(If) = cost(m) + (cost(a)+cost(b))/2 + cost(select)` with no estimate of how often a mask is true. **Status:** denotation. No code is built on it today; it says what PR #1093
 keeps as a seam, why, and what would have to be true before anything is
 trained again.
 **Decision it records (JP, 2026-09-01, one of three options):** *"Delete the

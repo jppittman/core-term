@@ -9,7 +9,7 @@
 # JIT Performance Parity: Scoping
 
 **Date:** 2026-07-28
-**Status:** Scoping (pre-implementation)
+**Status:** Scoping (pre-implementation). **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** `Buffer`/`Gather` as IR ops, the memory-speculation policy for loads, and the straight-blend alternative to `Select` no longer hold; a discrete-kernel read is realized by the backend.
 **Context:** feature parity (P6 of docs/plans/2026-07-20-kernel-unification.md)
 is close; this doc scopes the path back to *performance* parity with the
 monomorphized expression-template path the JIT replaced. Prior art:

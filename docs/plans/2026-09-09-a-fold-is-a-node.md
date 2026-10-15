@@ -5,7 +5,7 @@
 in the e-graph, and its decompositions are rules the runtime tier holds.
 **Phase 3 (the pipeline reorder) is written, measured, and not landed**: it
 costs 23–42% more emitted nodes on every production glyph. §9 has the numbers
-and the mechanism.
+and the mechanism. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the `RawGather` op grouped with `Reduce` in §1 and the "bound table" a fold body reads in §9 no longer hold, since the IR has no gather and the language reads discrete kernels rather than memory.
 **Author:** JP (the direction), Claude (draft)
 **Related:** [a-run-is-a-glyph](2026-09-09-a-run-is-a-glyph.md),
 [macro-tier-is-arena-native](2026-09-08-macro-tier-is-arena-native.md),

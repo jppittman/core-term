@@ -26,7 +26,8 @@
   - Composition substitutes and links, and never evaluates or optimizes.
   - So a `Dwrt` survives composition, and the chain rule holds under a warp.
   - Nothing downstream may assume a composed arena is already inlined.
-  - The only way to numbers is compile → bind → collapse.
+  - The only way to numbers is compile → collapse; there is no bind
+    (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2).
   - The fluent constructors leave the public API (Phase D-d), and only
     compiler crates may depend on `pixelflow-ir` (D16, enforced in CI).
 - **Lives:** `pixelflow_ir::Kernel` (`pixelflow-ir/src/kernel.rs`),
@@ -114,13 +115,13 @@
 
 ### Binding time (a name bound later)
 
-- **Is:** the one axis on which a kernel's parameters differ. There are five
-  spellings today, which "differ in **binding time**, not in kind":
+- **Is:** the one axis on which a kernel's parameters differ. There are four
+  spellings, which "differ in **binding time**, not in kind":
   - `Var` X/Y, bound per sample by collapse.
   - `Var` binders, bound per term by their fold.
   - `Uniform`, bound per call by the block.
-  - `Buffer`+`Gather`, bound per bind.
-  - `Ref`, bound at link.
+  - `Ref`, bound at link. A discrete kernel is a kernel, so it binds here too;
+    there is no memory to bind (kernels-evaluate-kernels §2).
 
   An author sees three binding times: **structural**, **uniform** and
   **kernel-typed**.
@@ -133,9 +134,9 @@
 - **Follows:** `Gather` leaving the algebra is a consequence of this, not
   the goal. Invariance is variance. A structural change recompiles and a
   uniform change never does. A uniform's default stays out of the key, while
-  a buffer's extents are in it. The instruction chosen for a binding time
+  a discrete kernel's lattice is in it, as an extent is. The instruction chosen for a binding time
   (gather, broadcast, uniform load) is codegen's business.
-- **Lives:** `ExprNode::{Var, Uniform, Buffer, Ref}`
+- **Lives:** `ExprNode::{Var, Uniform, Ref}` (no `Buffer`: bound buffers are retired, kernels-evaluate-kernels §2)
   (`pixelflow-ir/src/arena.rs`); `Variance` (`pixelflow-ir/src/variance.rs`).
   Decided in `2026-09-10-one-name-bound-later.md` §1–§5 (status Draft) and
   the-language-is-kernel §1.4, D1. `pixelflow-compiler/tests/binding_times.rs`.
@@ -173,11 +174,13 @@
   factor's offset.
 - **Is not:**
   - A constant. JP: "make the coordinates of the control points uniforms".
-  - An extent: "A uniform can be a gather index; it can never be an extent."
+  - An extent: a uniform can index a discrete kernel's evaluation, but it can
+    never be an extent.
   - An axis. Z and W and time became uniforms (L1).
   - An array, family or table. JP, 2026-10-01: "No arrays at all".
   - Identified by name or by a fragment-local index.
-  - A `Gather` from a 1×n buffer.
+  - A read from memory: a uniform is a scalar, and a table is a discrete kernel
+    (kernels-evaluate-kernels §2).
   - State on the program: the block is an argument of the call.
   - Part of the compile key, by value or by default.
   - An iteration marker or a template input. B3's NaN-default marker
@@ -198,8 +201,6 @@
   - Setting an unknown handle is an `Err`, because silence would give
     plausible pixels.
   - Defaults are in the IR, so a bake without a block is total.
-  - A range implied by a mask that depends on a uniform is known at bind
-    time.
   - A font holds about 16k uniforms, so the uniform chain is 64-bit.
   - `uniform_slot_for`'s linear search is quadratic on the zoom path, so how
     the host finds each instance's slots is open (O3).
@@ -227,15 +228,16 @@
   Not static coherence ("Whether a mask is coherent … is data, and no
   static analysis can know it"). Not implied by placement: a value placed
   inside the lane scope is not thereby lane-varying.
-- **Follows:** a lane-uniform `Gather` is emitted as a `Broadcast`. A
-  frame-uniform value is placed in the body, a row-uniform one in the row
-  fold. An `If` whose mask is uniform over a batch takes a jump. A
+- **Follows:** a lane-uniform evaluation of a discrete kernel is realized as a
+  broadcast (kernels-evaluate-kernels §2). A frame-uniform value is placed in
+  the body, a row-uniform one in the row fold. An `If` skips each arm that no
+  lane of its batch selects (§1). A
   row-uniform guard belongs at row scope. The retired axis bits 2–3 read as
   frame-uniform, which is why they are refused.
 - **Lives:** `Variance` (`pixelflow-ir/src/variance.rs`);
   `ScheduledOp::{Broadcast, Lanes}` (`pixelflow-codegen/src/program/mod.rs`).
   `2026-09-16-collapse-is-a-fold.md` §2.2 and step 6; CLAUDE.md "`If`
-  contains an if".
+  guards its arms".
 
 ### Kernel-typed parameter
 
@@ -285,7 +287,8 @@
     size.
   - `at` expands every `Ref` at construction, so a unit survives only when
     applied at exactly (X, Y). `Apply { inner: KernelKey, cx, cy }`, with
-    expand, call or tabulate chosen at extraction, is unbuilt
+    expand or call chosen at extraction, is unbuilt; tabulation is the
+    backend's materialization (kernels-evaluate-kernels §3).
     (composition-is-linking §8).
 - **Lives:** `Kernel::at` and `ExprArena::apply` (`pixelflow-ir/src/kernel.rs`),
   `ExprArena::substitute_vars_with` (`pixelflow-ir/src/arena.rs`). Decided in
@@ -378,7 +381,7 @@
   binder is the only thing in the language that *shrinks* a variance set."
   It is stored as a slot, so "an index outside the binder space is
   unrepresentable". In sema it has type `usize`, converted by an explicit
-  `i as f32`. The lattice's rows, batches and lanes are binders too.
+  `i as f32`. The lattice's rows, batches and lanes are schedule binders, not the language's (kernels-evaluate-kernels §3).
 - **Is not:**
   - A coordinate. Substituting a literal below the base would replace every
     X and give plausible but wrong pixels, which is why the binder gets a
@@ -402,7 +405,7 @@
     derived that way would be wrong too.
   - A binder is the loop counter: broadcast, stepped by 1.0, exact to 2²⁴.
   - The accumulator is a root when a fold inside reads it; the binder is
-    the fold's own `Var`, carried or stepped by the allocator.
+    the fold's own `Var`, carried or stepped by the CPU module's allocator (kernels-evaluate-kernels §3).
 - **Lives:** `pixelflow_ir::fold::{Binder, Placeholder}`
   (`pixelflow-ir/src/fold.rs`), `arena::{REDUCE_BINDER_BASE,
   REDUCE_BINDERS}` (both `pub(crate)`), `ExprArena::close_over`
@@ -560,10 +563,11 @@
   - `OpKind::mask(bool)` is the only constructor.
   - `is_bitwise_domain()` marks the ops whose results are patterns, and the
     folder's refuse-non-finite guard exempts them.
-  - `If`'s lane-varying path is a bitwise blend.
+  - `If` ends in one select on `m`, a bitwise blend; its guards read `any(m)`
+    and `!all(m)` (kernels-evaluate-kernels §1).
   - Through a commuted `Min`/`Max`, a NaN mask became the gather index
     `i32::MIN`.
-  - A mask that implies an index range yields a domain split.
+  - A mask implies no domain split: `If` has one shape (kernels-evaluate-kernels §1).
   - `X.select(Y, 7.0)` becomes a type error.
   - Past sema a mask is a lane again, so a `bool` entry's kernel passed
     where `-> f32` is expected reads all-ones as NaN. Refusing bitwise roots
@@ -598,21 +602,20 @@
 ### If
 
 - **Is:** dispatch: `if m then a else b`, two cases, both arms defined at
-  every index. "Choosing among alternatives is `if`." It has one meaning and
-  three lowerings, chosen by what is statically known about `m` and tried in
-  this order:
-  1. A domain split, when `m` implies an index range.
-  2. A jump, when `m` is uniform over a batch (hoist and guard).
-  3. A bitwise blend, when `m` varies by lane.
+  every index. "Choosing among alternatives is `if`." It has one lowering,
+  for every `m` (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §1):
 
-  Codegen emits 2 and 3 as one shape, always: a blend whose arms are blocks,
-  each skipped when no lane of `m` selects it. A uniform batch takes an arm by
-  skipping the other; the blend is the lane-varying path, and is harmless on a
-  uniform batch, because it is bitwise and takes every lane from the arm that
-  ran. There is no second shape for an arm that is "not worth" a branch.
+  ```
+  if any(m)  { a's own block }
+  if !all(m) { b's own block }
+  select(m, a, b)
+  ```
 
-  A mask built only from uniforms is lowering 2's best case, not lowering
-  3's.
+  An arm's own block is the nodes only that arm reads; an arm that owns nothing
+  (a constant, or a value the condition or the other arm also reads) has no
+  block and no guard. The guards read `m` at runtime, per batch. There is no
+  second shape: no uniform-only path, no blend-only path, and no decision about
+  whether to guard.
 - **Is not:**
   - A blend alone: its arms are blocks.
   - A fold.
@@ -628,30 +631,30 @@
     emit-should-just-emit's "Guard and If denote the same function", which
     is false for a lane-varying mask (Guard retired 2026-10-05).
 - **Follows:**
-  - A uniform mask takes an arm (a jump). The bitwise blend is the path for
-    a mask that varies by lane.
+  - Cost: `cost(If(m, a, b)) = cost(m) + (cost(a) + cost(b)) / 2 + cost(select)`.
+    Average, not max: nothing knows how often `m` is true. The cost steers
+    extraction and never changes which batches run which arm (§1).
   - The arms are blocks.
-  - The choice of lowering "changes what is computed, never what is
-    selected".
-  - Arms are total (gathers clamp), so demand is an optimization and
-    widening is always sound.
+  - No arm can fault: arithmetic on inactive lanes is NaN and the select
+    discards it; a discrete kernel's domain is its lattice (§2).
   - An arm's condition is a fact about the DAG, so ownership is read off
     the DAG in one pass, and contiguity follows from layout.
     `cluster_if_arms` was 73% of a glyph bake and is deleted (#1313).
   - `Union`, `IndexRange` used as a derived region, and `Support` are hand
-    spellings of lowering 1, to be subtracted.
+    spellings of the domain split, which is deleted (§1).
   - A tree of `if`s over a uniform, or over space, is a BSP nobody builds.
   - `IfHoistUnary` pulls shared work out of arms, against guarding, and no
     cost term opposes it (D7).
 - **Lives:** `OpKind::If` (`pixelflow-ir/src/kind.rs`);
-  `pixelflow-codegen/src/program/{ownership,layout,guards}.rs`; CLAUDE.md
-  "`If` contains an if"; `2026-09-08-one-conditional-three-lowerings.md`
+  `pixelflow-codegen/src/program/{ownership,layout}.rs`; CLAUDE.md
+  "`If` guards its arms"; `2026-09-08-one-conditional-three-lowerings.md`
   §1, §9 (JP: "Select contains an if"); the-language-is-kernel §1.6.
   Lowering 1's analysis exists (D1, `pixelflow-ir/src/mask_support.rs`); the
-  split itself, the bind-time tier, the interval tier and general guards are
-  unbuilt (D2–D5). Decided (JP, 2026-10-11): there is no bound. Layout
+  split and its tiers (D2–D5) are retired, and the per-arm guards of §1 are
+  unbuilt. Decided (JP, 2026-10-11): there is no bound. Layout
   (`program/layout.rs`) makes a block of every arm that owns a value, and
-  `emit/select.rs` selects every `If` as `LaneOp::Blend`, with no join.
+  `emit/select.rs` selects every `If` as `LaneOp::Blend`, with no guards and
+  no join; §1 of kernels-evaluate-kernels replaces that.
 
 ### Constant (Const) and its two domains
 
@@ -694,8 +697,8 @@
   - Resolvable at expansion: "Resolving derivatives at expansion time was a
     miscompilation for four months" (12 where the truth is 24).
   - A jet or dual-number domain (Jet2/Jet3 retired).
-  - Differentiable through a name (`Ref`), through memory (`Gather`), or by
-    default through a fold, since linearity holds for Σ only.
+  - Differentiable through a name (`Ref`), or by default through a fold, since
+    linearity holds for Σ only.
   - Priced prohibitively: it costs 1000, so extraction may keep one for
     `LowerDwrt`.
   - Superseded: 07-20's "the e-graph ChainRule … at macro-expansion time;
@@ -801,15 +804,17 @@
   bits by a 16-byte `ExprNode` cap that is now `<= 32`. The reason is
   stale; the width is correct.
 
-### Table, Buffer, Gather, Broadcast
+### Table, Buffer, Gather, Broadcast (not language ops)
 
 - **Is:** in the language, a table is nothing. JP: "We shouldn't have tables
-  at all." Data enters a program only as a scalar uniform or as structure.
-  In the IR today, a `Buffer` is bound memory with static extents and a
-  minted identity. `Gather(buf, x, y) = buf[clamp ⌊y⌋][clamp ⌊x⌋]` reads it,
-  with the base pointer bound per call, and is "the **one** dynamic-link node
-  the language has". A `Broadcast` is a gather whose index lacks the lane
-  binder's bit: one scalar load, splatted across lanes.
+  at all." Data enters a program as a scalar uniform, as structure, or as a
+  kernel. A **discrete kernel** is a kernel on a lattice, referentially
+  transparent, so an implementation may tabulate it in memory
+  (kernels-evaluate-kernels §2). The language has no read of memory. Evaluating
+  a discrete kernel at `(u, v)` is the one operation; the backend realizes it as
+  a broadcast, a contiguous load or a gather, chosen from variance. The IR has no
+  gather and no bound buffer; the backend does. Today `ExprNode::Buffer` and
+  `OpKind::Gather` still exist (see Lives).
 - **Is not:**
   - Something an author writes: "You should not know that you are doing a
     gather."
@@ -827,13 +832,13 @@
 - **Follows:**
   - No f32-lane index guard, no bound buffer, and no `MAX_BOUND_BUFFERS = 4`
     panic ("a limit on how many symbols one program may name").
-  - Choice is `if` plus bounding. "A fold's body reads nothing indexed by
-    its binder except the binder's own arithmetic."
+  - The realization is the backend's, chosen from variance
+    (kernels-evaluate-kernels §2), not `if` plus bounding.
   - Once the frame draws from the font's programs (C2), the frame's cells
-    and the atlas are the last buffers.
-  - Broadcast and Gather are split once, in `arena_to_schedule`, by the lane
-    bit: "decided once, where the DAG is read, not flagged per backend". The
-    base is a `Context` pointer operand.
+    and the atlas are the last tabulated inputs.
+  - The realization is the backend's, chosen from variance
+    (kernels-evaluate-kernels §2). Today `arena_to_schedule` makes the CPU's
+    split by the lane bit. The base is a `Context` pointer operand.
   - Where a tabulation is sampled off its lattice, JP's 2026-09-09 decision
     stands: "the API for bounding a kernel to a range should *require* the
     value outside it". Clamp-to-edge is "the instruction's answer, not the

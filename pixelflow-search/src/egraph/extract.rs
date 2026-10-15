@@ -11,7 +11,7 @@ use super::node::{EClassId, ENode};
 use alloc::collections::BinaryHeap;
 use alloc::vec::Vec;
 use core::cmp::Reverse;
-use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, Shape, Variance};
+use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, OpKind, Shape, Variance};
 
 /// A witnessed choice map: an e-graph, a root e-class, and a well-founded
 /// choice function from every e-class reachable from `root` to the node
@@ -996,19 +996,11 @@ impl Selection {
                 },
             );
             let own = weighted_own(costs, node, shape.evals(node_variance));
-            // A fold evaluates its body once per index — see `fold_body_multiple`.
-            let per_child = fold_body_multiple(node);
             // Saturating throughout: a tree cost is exponential in the sharing
             // it refuses to price, so it reaches the ceiling on real inputs,
             // and a fold whose monoid has no combiner is priced
             // `usize::MAX / 4` (`CostModel::node_op_cost`).
-            let below = operands
-                .iter()
-                .map(|&operand| {
-                    usize::try_from((tree[operand] as u64).saturating_mul(per_child))
-                        .unwrap_or(usize::MAX)
-                })
-                .fold(0usize, usize::saturating_add);
+            let below = below(node, operands.iter().map(|&operand| tree[operand]));
             tree.push(own.saturating_add(below));
             variance.push(node_variance);
             dag = dag.saturating_add(own);
@@ -1629,31 +1621,52 @@ fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize 
         .unwrap_or(usize::MAX)
 }
 
-/// **How many times `node`'s children are evaluated per evaluation of `node`.**
+/// **What `node`'s children cost per evaluation of `node`**, from each
+/// operand's cost in operand order: a tree cost, so an operand named twice is
+/// charged twice. Saturating throughout.
 ///
-/// One, for everything except a fold: `⊕_{[lo,hi)} f` evaluates `f` once per
-/// index, and codegen emits a surviving fold as a loop that runs its body
-/// exactly that many times (`pixelflow_ir::passes::legalize`). Pricing the
-/// body once would tell the extractor a 34-piece fold costs what one piece
-/// costs, which is how an unpriced fold turns the e-graph's unrolling
+/// Their sum, for everything but a fold and an `If`.
+///
+/// A fold `⊕_{[lo,hi)} f` evaluates `f` once per index, and codegen emits a
+/// surviving fold as a loop that runs its body exactly that many times
+/// (`pixelflow_ir::passes::legalize`), so its body is charged `len` times.
+/// Pricing it once would tell the extractor a 34-piece fold costs what one
+/// piece costs, which is how an unpriced fold turns the e-graph's unrolling
 /// (`PeelFold`, `HalveFold`) off — it would keep every fold, unconditionally,
-/// because folding would always look free.
+/// because folding would always look free. This is the multiplier the fold's
+/// own [`CostModel::node_op_cost`] arm deliberately leaves out: a node's cost
+/// cannot see its children's, and this is the one place that number is in
+/// hand. The two halves sum to [`CostModel::fold_cost`], the one formula for a
+/// fold's price. The trip count is *local to the fold node*, which is what
+/// makes it exact: `PeelFold` rewrites `⊕_{[lo,hi)} f` to
+/// `f(hi-1) ⊕ ⊕_{[lo,hi-1)} f`, keeping the same binder and the same body
+/// e-class, so after saturation one slot carries folds of many different
+/// lengths over one shared body and no per-slot number is right for it.
 ///
-/// This is the multiplier the fold's own [`CostModel::node_op_cost`] arm
-/// deliberately leaves out: a node's cost cannot see its children's, and this
-/// is the one place that number is in hand. The two halves sum to
-/// [`CostModel::fold_cost`], the one formula for a fold's price.
-///
-/// The trip count is *local to the fold node*, which is what makes it exact.
-/// A per-binder-slot table would not work: `PeelFold` rewrites
-/// `⊕_{[lo,hi)} f` to `f(hi-1) ⊕ ⊕_{[lo,hi-1)} f`, keeping the same binder
-/// and the same body e-class, so after saturation one slot carries folds of
-/// many different lengths over one shared body and no single number is right
-/// for it.
-fn fold_body_multiple(node: &ENode) -> u64 {
+/// An `If(m, a, b)` compiles to one shape: its mask, each arm's own block
+/// under a guard that skips it when no lane selects it, and the select
+/// (docs/plans/2026-10-15-kernels-evaluate-kernels.md §1). How often `m` is
+/// true is unknown and nothing estimates it, so the arms are **averaged**:
+/// `cost(m) + (cost(a) + cost(b)) / 2`, rounded half up. Average, not max:
+/// with no information it is the unbiased guess, and max would push
+/// extraction away from `If` toward computing both arms. The select itself
+/// is the node's own cost. This can price an `If` below one of its arms, so
+/// the settlement is no longer exact at an `If` — see [`Settling`].
+fn below(node: &ENode, mut operand: impl Iterator<Item = usize>) -> usize {
     match node {
-        ENode::Reduce { fold, .. } => u64::from(fold.len()),
-        _ => 1,
+        ENode::Reduce { fold, .. } => {
+            let body = operand.next().expect("a fold has a body");
+            usize::try_from((body as u64).saturating_mul(u64::from(fold.len())))
+                .unwrap_or(usize::MAX)
+        }
+        ENode::Op { op: OpKind::If, .. } => {
+            let mask = operand.next().expect("an If has a mask");
+            let if_true = operand.next().expect("an If has a true arm");
+            let if_false = operand.next().expect("an If has a false arm");
+            let arms = if_true.saturating_add(if_false).saturating_add(1) / 2;
+            mask.saturating_add(arms)
+        }
+        _ => operand.fold(0usize, usize::saturating_add),
     }
 }
 
@@ -1793,10 +1806,13 @@ impl StageRecorder for () {
 /// that needed it.
 ///
 /// Settling in cost order is exact whenever a candidate costs at least as
-/// much as each of its children, which both passes satisfy: the tree pass
-/// adds its children's costs to a non-negative own cost, and the shared pass
-/// prices the union of its children's reach sets, a superset of each of
-/// them. A candidate that mentions its own class is never admissible, and a
+/// much as each of its children: the shared pass prices the union of its
+/// children's reach sets, a superset of each of them, and the tree pass adds
+/// its children's costs to a non-negative own cost — except at an `If`,
+/// whose arms it averages ([`below`]), so an `If` can be priced below an arm
+/// that settles after its class does. The class keeps the choice it settled
+/// on; the term stays well-founded, and the extraction there is a floor, not
+/// an optimum. A candidate that mentions its own class is never admissible, and a
 /// class none of whose candidates ever becomes admissible is one no
 /// well-founded term reaches — [`settle_in_cost_order`] refuses to return
 /// with the root in that state rather than inventing a choice for it.
@@ -1995,7 +2011,7 @@ pub(crate) fn tree_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>(
 }
 
 /// [`tree_dp_pass`]'s pricing: a candidate costs its own weighted cost plus
-/// each child's settled cost, summed at every use.
+/// its children's settled costs, combined as [`below`] says.
 struct TreePricer<'a, 'c, C, T, R> {
     problem: Problem<'a>,
     dp: &'a mut Dp<'c, C, T, R>,
@@ -2016,27 +2032,25 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
             | ENode::Uniform(_)
             | ENode::Param(_)
             | ENode::Ref { .. } => own,
-            // Saturating fold, not `.sum()`: a child's own cost can already
-            // sit at a prohibitive sentinel (the `usize::MAX / 4`
-            // `CostModel::node_op_cost` gives a fold whose monoid has no
-            // combiner), so a node with several such children overflows a
-            // plain `usize` sum.
+            // Saturating: a child's own cost can already sit at a prohibitive
+            // sentinel (the `usize::MAX / 4` `CostModel::node_op_cost` gives
+            // a fold whose monoid has no combiner), so a node with several
+            // such children overflows a plain `usize` sum.
             ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => {
-                let per_child = fold_body_multiple(node);
-                own.saturating_add(
-                    self.problem
-                        .graph()
-                        .children(candidate)
+                let (egraph, graph) = (self.problem.egraph(), self.problem.graph());
+                // The row holds the candidate's distinct children; an operand
+                // finds its entry by class, so a class named twice is read
+                // twice, which is the tree cost.
+                let row = graph.children(candidate);
+                let settled = node.children_slice().iter().map(|&operand| {
+                    let class = egraph.find(operand);
+                    let child = row
                         .iter()
-                        .map(|child| {
-                            let sub = self.cost[child.live]
-                                .expect("a priced candidate's children are settled");
-                            usize::try_from((sub as u64).saturating_mul(per_child))
-                                .unwrap_or(usize::MAX)
-                                .saturating_mul(child.uses)
-                        })
-                        .fold(0usize, usize::saturating_add),
-                )
+                        .find(|child| graph.class(child.live) == class)
+                        .expect("an operand's class is in its candidate's row");
+                    self.cost[child.live].expect("a priced candidate's children are settled")
+                });
+                own.saturating_add(below(node, settled))
             }
         };
         self.dp
@@ -2892,6 +2906,10 @@ mod tests {
     }
 
     /// Recorded at the commit before the passes shared an [`AndOrGraph`].
+    /// The third row's tree and production digests were re-recorded when
+    /// the tree objective began averaging an `If`'s arms ([`below`]): on
+    /// that graph the tree arm then settles on the term the shared arm
+    /// already chose, so the two arms agree and production returns it.
     const SETTLEMENT_DIGESTS: [[u64; 3]; 3] = [
         [
             0x0126_79f9_2714_6ff2,
@@ -2904,9 +2922,9 @@ mod tests {
             0xf9d6_e836_a077_a4e6,
         ],
         [
-            0xf142_5de0_5476_17e6,
             0x4cc2_eca9_a5d6_21e4,
-            0xf142_5de0_5476_17e6,
+            0x4cc2_eca9_a5d6_21e4,
+            0x4cc2_eca9_a5d6_21e4,
         ],
     ];
 
@@ -4019,27 +4037,30 @@ mod tests {
         }
     }
 
-    /// The tree arm's DP objective **saturates** — its claim reaches
-    /// `usize::MAX` on a graph this size, at which point every candidate ties
-    /// at the ceiling and the settling keeps whichever the tie-break prefers.
-    /// A degenerate objective, pinned so the fact is a test rather than a
-    /// surprise.
+    /// The tree arm's DP objective is **astronomical** on a graph this size:
+    /// a tree cost doubles at every shared class, so the claim at the root is
+    /// a thousand million times the price of the term it names. It reached
+    /// `usize::MAX` itself until the objective began averaging an `If`'s arms
+    /// ([`below`]), which halves the doubling at every `If` and leaves the
+    /// claim short of the ceiling (1.1e15 when this was re-pinned). A
+    /// degenerate objective either way, pinned so the fact is a test rather
+    /// than a surprise.
     ///
     /// It cannot degrade production: the arms are chosen between by true
-    /// `dag_cost` (the test above), so a saturated tree claim buys the tree
-    /// arm nothing. The pin is what keeps that reasoning honest — if the
+    /// `dag_cost` (the test above), so an astronomical tree claim buys the
+    /// tree arm nothing. The pin is what keeps that reasoning honest — if the
     /// comparison ever moved onto the arms' own tables, this says what it
     /// would be comparing.
     #[test]
-    fn the_tree_arms_objective_saturates_on_a_real_sized_graph() {
+    fn the_tree_arms_objective_is_astronomical_on_a_real_sized_graph() {
         let costs = CostModel::latency_prior();
         let (egraph, root) = saturated_sdf_egraph(256);
         let tree = extract_dag_tree_arm(&egraph, root, &costs, LatticeShape::POINT);
         let audit = tree.report.audit.expect("the tree arm runs a DP");
         assert_eq!(audit.scale, CostScale::Tree);
         assert!(
-            audit.claimed > 1e18 as usize,
-            "the tree objective was expected at or near its ceiling, not {}",
+            audit.claimed > 1e12 as usize,
+            "the tree objective was expected a thousand million times past any real price, not {}",
             audit.claimed
         );
         assert_eq!(audit.claimed, tree.total_cost);

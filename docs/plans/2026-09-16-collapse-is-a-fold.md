@@ -2,7 +2,7 @@
 
 ## Metadata
 - **Author**: JP (design), Claude (draft)
-- **Status**: `In progress` — denotation settled 2026-09-17; implementation in
+- **Status**: `In progress` — **superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the lattice's traversal is the schedule's, per backend, so folding it into the IR and treating lanes as a language scope no longer holds; denotation settled 2026-09-17; implementation in
   the order of §5, one PR per row. Steps 1–6 and 5½ landed.
 - **Created**: 2026-09-16 (as "a uniform read is one load"; rewritten
   2026-09-17 around the decision below)

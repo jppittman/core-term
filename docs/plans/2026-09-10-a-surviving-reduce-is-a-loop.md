@@ -2,7 +2,7 @@
 
 ## Metadata
 - **Author**: JP (direction), Claude (draft)
-- **Status**: `Plan of record`
+- **Status**: `Plan of record`. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the uniform-mask skip of `branch_if_arm_is_dead` no longer holds; an `If` runs each arm's own block under `any(m)` and `!all(m)`, then one select.
 - **Created**: 2026-09-10
 - **Verified against**: `01f3d00`
 - **Executes**: the `Reduce` row of

@@ -13,7 +13,7 @@
 
 ## Metadata
 - **Author**: JP (direction), Claude (draft)
-- **Status**: §1 `Built`, §4.2–§4.4 not. The denotation was proposed
+- **Status**: **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** the demand-driven skipping of §4.1, the uniform-batch jump and mispredict-priced branch of §4.3, and the bind-time piece contents of §3 and §4.4 no longer hold. §1 `Built`, §4.2–§4.4 not. The denotation was proposed
   2026-09-23. §1 is built as amended by
   [an-integral-is-a-fold](2026-09-23-an-integral-is-a-fold.md) (§2's
   interval fold for §4.1's `Area`; §8 steps 3–6): a glyph's coverage is the

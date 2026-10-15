@@ -1,7 +1,7 @@
 # Lower/realize: the compilation boundary consumers never cross
 
 **Date:** 2026-07-23
-**Status:** Design for the P5 rebuild (supersedes the reverted `HasIr`-in-graphics attempt)
+**Status:** **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** lattice sampling does not lower to a `Gather` node, because `Gather` is not a language op and evaluating a discrete kernel at `(u, v)` is a backend realization chosen by variance. Design for the P5 rebuild (supersedes the reverted `HasIr`-in-graphics attempt)
 
 ## The failure being corrected
 

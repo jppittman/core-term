@@ -9,7 +9,7 @@
 # Two-level IR, backend completeness, and where the loop binder belongs
 
 **Date:** 2026-07-25
-**Status:** Design + landed slice (completeness check + first Instruction/
+**Status:** **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** `Gather` is not a language op, and the Part 3 proposal that a shared Stage 1 pass choose the lattice's coordinate loop for every backend no longer holds, because lattice traversal is the backend's schedule. Design + landed slice (completeness check + first Instruction/
 Assembler split). Binder-in-IR migration is NOT implemented here — see
 "What's follow-up" at the end.
 

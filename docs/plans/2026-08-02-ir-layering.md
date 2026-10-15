@@ -1,6 +1,6 @@
 # Plan: `pixelflow-ir` layering — subtract, then decide
 
-**Status:** Proposed
+**Status:** Proposed. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** `Gather` as an IR op (`expand_gather`, the `from_index(50..=52)` range) and a single IR-level lowering `PIPELINE` and ISA-keyed legality table no longer hold, since each backend owns its own Pass chain.
 **Date:** 2026-08-02
 **Supersedes nothing.** Complements `docs/plans/2026-07-20-kernel-unification.md` (P6/P7+).
 

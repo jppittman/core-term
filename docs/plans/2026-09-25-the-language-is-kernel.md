@@ -13,7 +13,7 @@
   2026-10-01: JP answered O1 and O2 "Yes and yes". Both are built: D-a,
   the O2 half (`feat(compiler): kernel-typed parameters, applied as
   contramap`), and O1, each glyph its own optimization unit in `P`
-  (`feat(search): a named kernel is its own optimization unit`; §4, O1).
+  (`feat(search): a named kernel is its own optimization unit`; §4, O1). **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** a uniform mask is not a jump and a lane-varying one a blend, since `If` is two guarded arms and a select (§1.6), D1 is not placement that reads demand (§3, §4 O4), and `P` is not one pipeline with the lattice folded in before extraction (§4 O1).
 - **No arrays** (2026-10-01). JP: *"Why do we have any arrays at all?"*
   and *"No arrays at all.. please go read recent docs about how this ought
   to work."*

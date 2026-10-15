@@ -10,7 +10,7 @@
 
 ## Metadata
 - **Author**: JP (direction), Claude (draft)
-- **Status**: Draft
+- **Status**: Draft. **Superseded in part by `docs/plans/2026-10-15-kernels-evaluate-kernels.md` (2026-10-15):** `Buffer` as an IR leaf and the `Gather`-index and bound-block vocabulary no longer hold, since the language has discrete kernels and no memory reads, and buffer lookup is a backend realization.
 - **Created**: 2026-09-06
 - **Reviewers**:
 - **Decision it records (JP, 2026-09-06):** *"My intent was actually for
