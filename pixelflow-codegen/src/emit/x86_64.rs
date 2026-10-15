@@ -6,19 +6,23 @@
 //! them), the memory-operand tail (`Mem`, `Disp`), and the vector encoder
 //! ([`Opcode`]) both tiers are written with: VEX and EVEX are two prefixes
 //! ([`Scheme`]) on one instruction set, so the instructions and their operand
-//! forms are named here once. The tiers choose a prefix and the instructions
-//! they select; the vector width is the prefix's, not this file's.
+//! forms are named here once. So are the selection rules the tiers agree on
+//! (`impl IsaBackend for` every [`X86`]): a tier chooses a prefix, the
+//! instructions only it has, and the few hooks where it selects differently;
+//! the vector width is the tier's, not this file's.
 
 use super::asm::Encoding;
 use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
+use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
-    Pointer, Rebind, STACK_PAGE, Selected, Stage, Target, Value, ValueName, Vector, frame_bytes,
-    slot_disp,
+    LaneOp, Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName,
+    Vector, frame_bytes, slot_disp, unimplemented_op,
 };
 use crate::error::CompileError;
 use alloc::vec::Vec;
+use pixelflow_ir::OpKind;
 
 // =============================================================================
 // The pointer class: an address between a general register and memory
@@ -393,22 +397,34 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
 pub(super) const GENERAL: &[u8] = &[0, 1, 2, 6, 7, 8, 9, 10, 11];
 
 /// An x86 tier: its instructions are [`Op`], the shared vector ones
-/// ([`Inst`]) and the general-register ones ([`Gp`]).
+/// ([`Inst`]) and the general-register ones ([`Gp`]), and every [`IsaBackend`]
+/// rule the two tiers agree on is written once, below, over the hooks here.
 ///
 /// What a tier says is what the two differ in: the prefix its vector
-/// instructions carry, the instructions only it has, and how it spells
-/// all-ones. A tier cannot select the other's instruction because it is not a
-/// variant of its [`X86::Extra`].
-pub(super) trait X86: IsaBackend + Sized {
+/// instructions carry, the instructions only it has, how it spells all-ones
+/// and a sign mask, how it holds a comparison, and what it does with a lane
+/// where the other does not. A tier cannot select the other's instruction
+/// because it is not a variant of its [`X86::Extra`].
+pub(super) trait X86: Sized + 'static {
     /// The prefix scheme of its vector instructions.
     type Prefix: Scheme;
     /// The vector instructions only this tier has.
     type Extra<S: Stage>;
+    /// One IR lane value as this tier holds it ([`IsaBackend::Lane`]).
+    type Held: Copy;
+    /// The allocatable vector registers, by number.
+    const VECTORS: &'static [u8];
+    /// The allocatable opmask registers, by number: none unless the tier has a
+    /// mask file.
+    const OPMASKS: &'static [u8] = &[];
+    /// Bytes per vector register and per vector frame slot.
+    const VECTOR_BYTES: u64;
 
-    /// `inst` as this backend's instruction.
-    fn general(inst: Gp<Selected>) -> Self::Inst<Selected>;
     /// All-ones in register `dst`, whatever it held.
     fn ones(dst: u8) -> EncodedInst;
+    /// The mask `Neg` xors and `Abs` ands: the sign bit, or all that is below
+    /// it.
+    fn sign_mask(b: &mut Builder<Self>, sign: Sign) -> Result<Value<Vector>, CompileError>;
     /// [`Inst::walk`] for an instruction only this tier has.
     fn walk_extra<To: Stage>(
         extra: &Self::Extra<Selected>,
@@ -416,6 +432,192 @@ pub(super) trait X86: IsaBackend + Sized {
     ) -> Self::Extra<To>;
     /// [`Inst::encode`] for an instruction only this tier has.
     fn encode_extra(extra: &Self::Extra<Bound<'_, Self>>) -> EncodedInst;
+    /// Whether the allocator may place `extra` again where a read needs it:
+    /// an idiom of this tier that has no effect and reads nothing.
+    fn rematerializable_extra(_extra: &Self::Extra<Selected>) -> bool {
+        false
+    }
+
+    /// [`IsaBackend::lane`].
+    fn lane(b: &mut Builder<Self>, op: LaneOp<Self>) -> Result<Self::Held, CompileError>;
+    /// [`IsaBackend::lane_name`].
+    fn lane_name(lane: Self::Held) -> ValueName;
+    /// [`IsaBackend::param_lane`].
+    fn param_lane(param: ValueName) -> Self::Held;
+    /// [`IsaBackend::store`].
+    fn store(b: &mut Builder<Self>, store: Store<Self>);
+    /// [`IsaBackend::branch`].
+    fn branch(b: &mut Builder<Self>, test: Test<Self>, edges: Edges);
+    /// [`IsaBackend::copy`] of a class neither the general nor the vector file
+    /// holds: a tier with no such file refuses it.
+    fn copy_other(_b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        unreachable!("this tier has no {:?} to copy", src.class)
+    }
+    /// [`IsaBackend::spill`] of such a class.
+    fn spill_other(_b: &mut Spiller<'_, Self>, src: ValueName, _slot: &FrameSlot) {
+        unreachable!("this tier has no {:?} to spill", src.class)
+    }
+    /// [`IsaBackend::reload`] of such a class.
+    fn reload_other(_b: &mut Spiller<'_, Self>, class: ClassId, _slot: &FrameSlot) -> ValueName {
+        unreachable!("this tier has no {class:?} to reload")
+    }
+}
+
+/// Every x86 tier is a backend: the rules are the architecture's, and the
+/// tier supplies the hooks.
+impl<B: X86> IsaBackend for B {
+    type Inst<S: Stage> = Op<S, B>;
+    type Constant = u32;
+    type Anchors = ();
+    type Lane = B::Held;
+
+    // SysV has no callee-saved vector registers and the collapse ABI passes
+    // no vector, so every vector register is the allocator's.
+    const FILE: RegisterFile = RegisterFile::new(
+        Members {
+            vector: B::VECTORS,
+            general: GENERAL,
+            opmask: B::OPMASKS,
+            flags: &[0],
+        },
+        EntryRegisters {
+            ctx: gpr::RDI,
+            out: gpr::RSI,
+            pitch: gpr::RDX,
+        },
+        B::VECTOR_BYTES,
+    );
+    const POOL_REACH: u64 = i32::MAX as u64 / 4;
+
+    fn lane(b: &mut Builder<Self>, op: LaneOp<Self>) -> Result<B::Held, CompileError> {
+        B::lane(b, op)
+    }
+
+    fn lane_name(lane: B::Held) -> ValueName {
+        B::lane_name(lane)
+    }
+
+    fn param_lane(param: ValueName) -> B::Held {
+        B::param_lane(param)
+    }
+
+    /// `mov p, [ctx + 8·slot]`.
+    fn context(
+        b: &mut Builder<Self>,
+        ctx: Value<Pointer>,
+        slot: u64,
+    ) -> Result<Value<Pointer>, CompileError> {
+        let disp = displacement(slot, PTR_BYTES as u64)?;
+        Ok(define(b, |dst| Gp::MovLoad {
+            dst,
+            src: Mem { base: ctx, disp },
+        }))
+    }
+
+    fn store(b: &mut Builder<Self>, store: Store<Self>) {
+        B::store(b, store);
+    }
+
+    fn branch(b: &mut Builder<Self>, test: Test<Self>, edges: Edges) {
+        B::branch(b, test, edges);
+    }
+
+    /// `jmp` to `to`, or nothing when `to` is the next block.
+    fn jump(b: &mut Builder<Self>, to: Target, next: Label) {
+        b.push(Op::General(if to.label == next {
+            Gp::Fallthrough { to }
+        } else {
+            Gp::Jmp { to }
+        }));
+    }
+
+    /// `sub rsp, frame`: the function's entry.
+    fn enter(b: &mut Builder<Self>) {
+        let flags = b.def();
+        b.push(Op::General(Gp::Enter {
+            size: FrameSize,
+            flags,
+        }));
+    }
+
+    /// `add rsp, frame; vzeroupper; ret`: the function's one exit.
+    fn ret(b: &mut Builder<Self>) {
+        let flags = b.def();
+        b.push(Op::General(Gp::Ret {
+            size: FrameSize,
+            flags,
+        }));
+    }
+
+    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        match src.class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::Mov {
+                    dst,
+                    src: src.typed(),
+                })
+            }),
+            ClassId::Pointer | ClassId::Integer => copy_general(b, src),
+            ClassId::Opmask | ClassId::Flags => B::copy_other(b, src),
+        }
+    }
+
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
+        match src.class {
+            ClassId::Vector => b.push(Op::Vector(Inst::SpillVector {
+                src: src.typed(),
+                slot: slot.name(),
+            })),
+            ClassId::Pointer | ClassId::Integer => spill_general(b, src, slot),
+            ClassId::Opmask | ClassId::Flags => B::spill_other(b, src, slot),
+        }
+    }
+
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
+        match class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::ReloadVector {
+                    dst,
+                    slot: slot.name(),
+                })
+            }),
+            ClassId::Pointer | ClassId::Integer => reload_general(b, class, slot),
+            ClassId::Opmask | ClassId::Flags => B::reload_other(b, class, slot),
+        }
+    }
+
+    fn rematerializable(inst: &Op<Selected, B>) -> bool {
+        match inst {
+            Op::Vector(Inst::LoadConst { .. } | Inst::Zero { .. } | Inst::Ones { .. }) => true,
+            Op::Vector(Inst::Extra(extra)) => B::rematerializable_extra(extra),
+            _ => false,
+        }
+    }
+
+    fn reads_pool<S: Stage>(inst: &Op<S, B>) -> bool {
+        matches!(inst, Op::Vector(Inst::LoadConst { .. }))
+    }
+
+    fn walk<T: Stage>(inst: &Op<Selected, B>, f: &mut impl Rebind<T>) -> Op<T, B> {
+        inst.walk(f)
+    }
+
+    fn encode(inst: &Op<Bound<'_, B>, B>, out: &mut Encoding<'_>) {
+        inst.assemble(out);
+    }
+
+    fn constant_bytes(constant: u32) -> Vec<u8> {
+        constant.to_le_bytes().to_vec()
+    }
+}
+
+/// The sign bit and its complement: the constants `Neg` xors and `Abs` ands.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum Sign {
+    /// `0x8000_0000`
+    Negate,
+    /// `0x7FFF_FFFF`
+    Magnitude,
 }
 
 /// Define a value of class `C` with `make`, which builds the
@@ -426,41 +628,30 @@ pub(super) fn define<B: X86, C: Class>(
 ) -> Value<C> {
     let dst = b.def();
     let value = dst.value();
-    b.push(B::general(make(dst)));
+    b.push(Op::General(make(dst)));
     value
 }
 
-/// `mov p, [ctx + 8·slot]`.
-pub(super) fn context<B: X86>(
-    b: &mut Builder<B>,
-    ctx: Value<Pointer>,
-    slot: u64,
-) -> Result<Value<Pointer>, CompileError> {
-    let disp = displacement(slot, PTR_BYTES as u64)?;
-    Ok(define(b, |dst| Gp::MovLoad {
-        dst,
-        src: Mem { base: ctx, disp },
-    }))
-}
-
-/// `out + 4·(row·pitch + col)`: where the lattice's store writes, from the
-/// two indices as integers.
+/// `out + 4·(row·pitch + col)`: where the lattice's store writes. Each index
+/// is lane 0 of its binder, truncated.
 pub(super) fn element_address<B: X86>(
     b: &mut Builder<B>,
     out: Value<Pointer>,
     pitch: Value<Integer>,
-    (row, col): (Value<Integer>, Value<Integer>),
+    (row, col): (Value<Vector>, Value<Vector>),
 ) -> Value<Pointer> {
+    let row = emit(b, |dst| Inst::Cvtt { dst, src: row });
+    let col = emit(b, |dst| Inst::Cvtt { dst, src: col });
     let (scaled, flags) = (b.tie(row), b.def());
     let row_pitch = scaled.write();
-    b.push(B::general(Gp::Imul {
+    b.push(Op::General(Gp::Imul {
         dst: scaled,
         src: pitch,
         flags,
     }));
     let (summed, flags) = (b.tie(row_pitch), b.def());
     let index = summed.write();
-    b.push(B::general(Gp::Add {
+    b.push(Op::General(Gp::Add {
         dst: summed,
         src: col,
         flags,
@@ -472,6 +663,196 @@ pub(super) fn element_address<B: X86>(
     })
 }
 
+// =============================================================================
+// Selection: the vector rules both tiers share
+// =============================================================================
+
+/// Define a value of class `C` with `make`, which builds the vector
+/// instruction that writes it.
+pub(super) fn emit<B: X86, C: Class>(
+    b: &mut Builder<B>,
+    make: impl FnOnce(Def<C>) -> Inst<Selected, B>,
+) -> Value<C> {
+    let dst = b.def();
+    let value = dst.value();
+    b.push(Op::Vector(make(dst)));
+    value
+}
+
+/// `value` splatted: the zero and all-ones idioms, else one pool entry.
+pub(super) fn constant<B: X86>(
+    b: &mut Builder<B>,
+    value: f32,
+) -> Result<Value<Vector>, CompileError> {
+    Ok(match value.to_bits() {
+        0 => emit(b, |dst| Inst::Zero { dst }),
+        u32::MAX => emit(b, |dst| Inst::Ones { dst }),
+        bits => {
+            let at = b.constant(bits)?.label;
+            emit(b, |dst| Inst::LoadConst { dst, at })
+        }
+    })
+}
+
+/// The bytes in `packed`'s low lanes, widened to dwords and converted: the
+/// iota.
+pub(super) fn iota<B: X86>(b: &mut Builder<B>, packed: Value<Vector>) -> Value<Vector> {
+    let widened = emit(b, |dst| Inst::Unary {
+        op: Lanewise::WidenBytes,
+        dst,
+        src: packed,
+    });
+    emit(b, |dst| Inst::Unary {
+        op: Lanewise::FromInt,
+        dst,
+        src: widened,
+    })
+}
+
+/// The one instruction a unary op is.
+pub(super) fn unary<B: X86>(
+    b: &mut Builder<B>,
+    op: OpKind,
+    src: Value<Vector>,
+) -> Result<Value<Vector>, CompileError> {
+    let lanewise = match op {
+        OpKind::Neg => return signed(b, Sign::Negate, src),
+        OpKind::Abs => return signed(b, Sign::Magnitude, src),
+        OpKind::Floor => return Ok(round(b, Rounding::Floor, src)),
+        OpKind::Ceil => return Ok(round(b, Rounding::Ceil, src)),
+        OpKind::Round => return Ok(round(b, Rounding::Nearest, src)),
+        OpKind::Sqrt => Lanewise::Sqrt,
+        OpKind::Rsqrt => Lanewise::Rsqrt,
+        OpKind::Recip => Lanewise::Recip,
+        // Int/float domain crossings, exactly the hardware's cvttps2dq /
+        // cvtdq2ps — the primitives exp/log lower to.
+        OpKind::TruncToInt => Lanewise::ToInt,
+        OpKind::IntToFloat => Lanewise::FromInt,
+        _ => unimplemented_op("x86", op),
+    };
+    Ok(emit(b, |dst| Inst::Unary {
+        op: lanewise,
+        dst,
+        src,
+    }))
+}
+
+fn round<B: X86>(b: &mut Builder<B>, mode: Rounding, src: Value<Vector>) -> Value<Vector> {
+    emit(b, |dst| Inst::Round { mode, dst, src })
+}
+
+/// `Neg` and `Abs`: xor or and the sign bit, which is a constant to hold in a
+/// register first.
+fn signed<B: X86>(
+    b: &mut Builder<B>,
+    sign: Sign,
+    src: Value<Vector>,
+) -> Result<Value<Vector>, CompileError> {
+    let mask = B::sign_mask(b, sign)?;
+    let op = match sign {
+        Sign::Negate => Alu::Xor,
+        Sign::Magnitude => Alu::And,
+    };
+    Ok(emit(b, |dst| Inst::Alu {
+        op,
+        dst,
+        a: src,
+        b: mask,
+    }))
+}
+
+impl Pred {
+    /// The `vcmpps` predicate of a comparison op.
+    pub(super) fn of(op: OpKind) -> Option<Self> {
+        Some(match op {
+            OpKind::Eq => Pred::Eq,
+            OpKind::Ne => Pred::Ne,
+            OpKind::Lt => Pred::Lt,
+            OpKind::Le => Pred::Le,
+            OpKind::Gt => Pred::Nle,
+            OpKind::Ge => Pred::Ge,
+            _ => return None,
+        })
+    }
+}
+
+/// The vector ALU instruction of a non-comparison binary op.
+pub(super) fn arithmetic<B: X86>(
+    b: &mut Builder<B>,
+    op: OpKind,
+    (a, c): (Value<Vector>, Value<Vector>),
+) -> Value<Vector> {
+    let op = match op {
+        OpKind::Add => Alu::Add,
+        OpKind::Sub => Alu::Sub,
+        OpKind::Mul => Alu::Mul,
+        OpKind::Div => Alu::Div,
+        OpKind::Min => Alu::Min,
+        OpKind::Max => Alu::Max,
+        OpKind::BitAnd => Alu::And,
+        OpKind::BitOr => Alu::Or,
+        // Integer add on lane bit patterns (exp/log exponent arithmetic).
+        OpKind::IAdd => Alu::IAdd,
+        _ => unimplemented_op("x86", op),
+    };
+    emit(b, |dst| Inst::Alu { op, dst, a, b: c })
+}
+
+/// `a·b + c`, one rounding: `c` is the accumulator the result overwrites.
+pub(super) fn mul_add<B: X86>(
+    b: &mut Builder<B>,
+    (x, y): (Value<Vector>, Value<Vector>),
+    addend: Value<Vector>,
+) -> Value<Vector> {
+    let acc = b.tie(addend);
+    let result = acc.write();
+    b.push(Op::Vector(Inst::Fma231 { acc, a: x, b: y }));
+    result
+}
+
+/// `src` shifted by an immediate.
+pub(super) fn shift<B: X86>(
+    b: &mut Builder<B>,
+    op: OpKind,
+    src: Value<Vector>,
+    amount: u8,
+) -> Value<Vector> {
+    let direction = match op {
+        OpKind::Shl => Direction::Left,
+        OpKind::Shr => Direction::Right,
+        _ => unimplemented_op("x86", op),
+    };
+    emit(b, |dst| Inst::Shift {
+        direction,
+        dst,
+        src,
+        amount,
+    })
+}
+
+/// `vbroadcastss dst, [block + 4·element]`.
+pub(super) fn uniform<B: X86>(
+    b: &mut Builder<B>,
+    base: Value<Pointer>,
+    element: u64,
+) -> Result<Value<Vector>, CompileError> {
+    let disp = displacement(element, F32_BYTES)?;
+    Ok(emit(b, |dst| Inst::Broadcast {
+        dst,
+        src: Mem { base, disp },
+    }))
+}
+
+/// One element, the same in every lane: the index is lane 0, truncated.
+pub(super) fn broadcast<B: X86>(
+    b: &mut Builder<B>,
+    base: Value<Pointer>,
+    index: Value<Vector>,
+) -> Value<Vector> {
+    let index = emit(b, |dst| Inst::Cvtt { dst, src: index });
+    emit(b, |dst| Inst::BroadcastIndexed { dst, base, index })
+}
+
 /// End the block: `jcc` to `edges.taken` when `flags` meet `cond`, else fall
 /// through to `edges.next`.
 pub(super) fn branch<B: X86>(b: &mut Builder<B>, cond: Cond, flags: Value<Flags>, edges: Edges) {
@@ -479,7 +860,7 @@ pub(super) fn branch<B: X86>(b: &mut Builder<B>, cond: Cond, flags: Value<Flags>
         label: edges.next,
         args: Vec::new(),
     };
-    b.push(B::general(Gp::Jcc {
+    b.push(Op::General(Gp::Jcc {
         cond,
         flags,
         taken: edges.taken,
@@ -487,44 +868,17 @@ pub(super) fn branch<B: X86>(b: &mut Builder<B>, cond: Cond, flags: Value<Flags>
     }));
 }
 
-/// End the block: go to `to`. A `Fallthrough` when `to` is `next`.
-pub(super) fn jump<B: X86>(b: &mut Builder<B>, to: Target, next: Label) {
-    b.push(B::general(if to.label == next {
-        Gp::Fallthrough { to }
-    } else {
-        Gp::Jmp { to }
-    }));
-}
-
-/// `sub rsp, frame`: the function's entry.
-pub(super) fn enter<B: X86>(b: &mut Builder<B>) {
-    let flags = b.def();
-    b.push(B::general(Gp::Enter {
-        size: FrameSize,
-        flags,
-    }));
-}
-
-/// `add rsp, frame; vzeroupper; ret`: the function's one exit.
-pub(super) fn ret<B: X86>(b: &mut Builder<B>) {
-    let flags = b.def();
-    b.push(B::general(Gp::Ret {
-        size: FrameSize,
-        flags,
-    }));
-}
-
 /// `mov` of an address or an integer between general registers.
 pub(super) fn copy_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName) -> ValueName {
     match src.class {
         ClassId::Pointer => b.define::<Pointer>(|dst| {
-            B::general(Gp::Mov {
+            Op::General(Gp::Mov {
                 dst,
                 src: src.typed(),
             })
         }),
         ClassId::Integer => b.define::<Integer>(|dst| {
-            B::general(Gp::MovInt {
+            Op::General(Gp::MovInt {
                 dst,
                 src: src.typed(),
             })
@@ -536,7 +890,7 @@ pub(super) fn copy_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName) -> Va
 /// `mov [rsp + slot], src` of an address or an integer.
 pub(super) fn spill_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName, slot: &FrameSlot) {
     let slot = slot.name();
-    b.push(B::general(match src.class {
+    b.push(Op::General(match src.class {
         ClassId::Pointer => Gp::SpillPtr {
             src: src.typed(),
             slot,
@@ -557,8 +911,8 @@ pub(super) fn reload_general<B: X86>(
 ) -> ValueName {
     let slot = slot.name();
     match class {
-        ClassId::Pointer => b.define::<Pointer>(|dst| B::general(Gp::ReloadPtr { dst, slot })),
-        ClassId::Integer => b.define::<Integer>(|dst| B::general(Gp::ReloadInt { dst, slot })),
+        ClassId::Pointer => b.define::<Pointer>(|dst| Op::General(Gp::ReloadPtr { dst, slot })),
+        ClassId::Integer => b.define::<Integer>(|dst| Op::General(Gp::ReloadInt { dst, slot })),
         class => unreachable!("{class:?} is not held in a general register"),
     }
 }
