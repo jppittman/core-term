@@ -123,7 +123,7 @@ speaking its API.
 | `question` | the decision, answered once per unit |
 | `fine`, `violations` | the outcomes, each name with its meaning; at least one of each. `unsure` is every rule's own |
 | `guidance` | optional, for the explainer: what a finding should say |
-| `context` | `"module_root"`: each call also sees the outline of the reviewed file's module root — the contract an implementation file is judged against |
+| `context` | `"module_root"`: each call also sees the outline of the reviewed file's module root — the contract an implementation file is judged against; `"module_intent"`: that, plus the nearest `intent.md` up the tree within the crate — what the module says of itself |
 | `paths`, `exclude` | optional globs over paths relative to where the review runs (`pixelflow-*/**`, `**/tests/**`); no `paths` means every file |
 | `skills` | optional skill names to put ahead of the question |
 

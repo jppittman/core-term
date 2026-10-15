@@ -35,7 +35,9 @@ the last is a value of a closed schema or a failure, never prose to parse.
 `Reviewers`, `Finding`, `Report`, `Diagnosis`, `Root`, `Diagnoses`. The
 stage files are `pub(super)`; `Source` is `pub(crate)`. `plan::module_root`
 is the context the rule field `module_root` names: the outline of the nearest
-`mod.rs`, `lib.rs`, `main.rs`, or the 2018-layout `<dir>.rs` beside the directory.
+`mod.rs`, `lib.rs`, `main.rs`, or the 2018-layout `<dir>.rs` beside the directory;
+`plan::module_intent` is what `module_intent` adds, the nearest `intent.md`
+up the tree within the crate.
 
 ## Enforced by
 - `desloppify/tests/review.rs`, through the production API with a scripted
@@ -48,10 +50,9 @@ is the context the rule field `module_root` names: the outline of the nearest
   enum. Rules `mod-rs-is-a-contract`, `interface-lives-in-mod-rs` apply here.
 
 ## Behind
-- 2026-10-15: no `module_intent` context. `Surroundings` is `None` and
-  `ModuleRoot` only, so module-shape rules are judged against the root's
-  outline, not against what the module says of itself. Proposed, not built:
-  intent-lives-with-the-module §4.1 adds it beside `module_root` in `plan.rs`.
+- `module_intent` finds the nearest `intent.md` by walking up to the first
+  `Cargo.toml`; a file outside any crate walks to the filesystem root. No
+  rule has asked for an intent above the crate, so nothing pins the stop.
 - Nothing in CI runs desloppify over the tree; only its own tests run.
 
 ## Decided in

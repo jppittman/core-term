@@ -46,11 +46,10 @@ its own `intent.md`. The CLI is `src/main.rs` (`Args`): paths to review;
   the import and `fs` lines under Never; `grep` does today.
 
 ## Behind
-- 2026-10-15: no `module_intent` context. A rule's `"context"` is `module_root`
-  only (two rules use it); none is shown the nearest `intent.md` (plan §4.1).
 - `skills/pixelflow-architecture` (46 lines) and `skills/style-guide` (44)
-  are hand-kept distillations of CLAUDE.md (584) and STYLE.md (277), not
-  links; only `skills/ontology` is a symlink (plan §5, not done).
+  are hand-kept distillations of CLAUDE.md (584) and STYLE.md (277), kept
+  so by choice: the whole of either in every rule prompt would cost more
+  than it buys (plan §5, as amended). Only `skills/ontology` is a symlink.
 - Nothing in CI runs desloppify over the tree; only its own tests run. The
   intent check, `scripts/check-intent.sh`, is called by no workflow yet (§4.2).
 

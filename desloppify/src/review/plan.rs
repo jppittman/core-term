@@ -64,13 +64,18 @@ pub(super) fn plan(rules: &[Rule], files: &[PathBuf]) -> Result<Vec<Call>> {
             }
             let root = match context {
                 Surroundings::None => None,
-                Surroundings::ModuleRoot => module_root(path)?,
+                Surroundings::ModuleRoot | Surroundings::ModuleIntent => module_root(path)?,
+            };
+            let intent = match context {
+                Surroundings::ModuleIntent => module_intent(path)?,
+                Surroundings::None | Surroundings::ModuleRoot => None,
             };
             calls.extend(snippets.into_iter().map(|snippet| Call {
                 rules: indexes.clone(),
                 path: path.clone(),
                 snippet,
                 root: root.clone(),
+                intent: intent.clone(),
             }));
         }
     }
@@ -79,8 +84,37 @@ pub(super) fn plan(rules: &[Rule], files: &[PathBuf]) -> Result<Vec<Call>> {
         path: krate,
         snippet: under_headers(files),
         root: None,
+        intent: None,
     }));
     Ok(calls)
+}
+
+/// The nearest `intent.md` from `path`'s directory up to its crate root (the
+/// first directory holding a `Cargo.toml`), numbered as a snippet is. A
+/// module without one, or a file outside any crate, gets none.
+fn module_intent(path: &Path) -> Result<Option<Source>> {
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        let intent = d.join("intent.md");
+        if intent.is_file() {
+            let text = std::fs::read_to_string(&intent)
+                .with_context(|| format!("reading {}", intent.display()))?;
+            let numbered = text
+                .lines()
+                .enumerate()
+                .map(|(i, line)| format!("{:>5} | {line}\n", i + 1))
+                .collect();
+            return Ok(Some(Source {
+                path: intent,
+                text: numbered,
+            }));
+        }
+        if d.join("Cargo.toml").is_file() {
+            return Ok(None);
+        }
+        dir = d.parent();
+    }
+    Ok(None)
 }
 
 /// The outline of the root file of the module `path` belongs to, unless

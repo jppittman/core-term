@@ -91,9 +91,10 @@ than carried. The role personas (`algebraist`, `language-mechanic`,
 
 Two hooks, both small:
 
-1. **desloppify reads the intent.** A rule's `"context"` gains
+1. **desloppify reads the intent** (built). A rule's `"context"` takes
    `"module_intent"`: each call also sees the nearest `intent.md` up the
-   reviewed file's directory tree (`review/plan.rs`, beside `module_root`).
+   reviewed file's directory tree within its crate (`review/plan.rs`, beside
+   `module_root`), under the same "for context only" framing.
    The module-shape rules (`mod-rs-is-a-contract`,
    `interface-lives-in-mod-rs`, `behavior-through-the-trait`,
    `registers-come-from-the-allocator`, `phases-in-order`) take it, so a
@@ -109,9 +110,13 @@ Two hooks, both small:
 CLAUDE.md's "Critical Constraints" keep the workspace-wide rules (terminal
 logic, SIMD, the control plane, denote before you build, floating point) and
 point at the module intent for the module-specific ones. The desloppify
-skills `pixelflow-architecture` and `style-guide`, copies of CLAUDE.md and
-STYLE.md, become symlinks as `ontology` already is. The ontology's **Lives**
-entries point at the module's intent beside the plan that decided it.
+skills `pixelflow-architecture` and `style-guide` stay as the distillations
+they are (46 and 44 lines against CLAUDE.md's 584 and STYLE.md's 277): a
+rule prompt that carried the whole of either would pay for text the rule
+never asks about, which is the opposite of what a skill is for. `ontology`
+is a symlink because the rules want the entries themselves. The ontology's
+**Lives** entries point at the module's intent beside the plan that decided
+it.
 
 ## 6. Order
 

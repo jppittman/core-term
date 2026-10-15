@@ -31,7 +31,8 @@
 //! - `paths` and `exclude` are globs over paths relative to where the review
 //!   runs (`pixelflow-*/**`, `**/tests/**`); no `paths` reads every file.
 //! - `"context": "module_root"` also shows each call the outline of the
-//!   reviewed file's module root.
+//!   reviewed file's module root; `"module_intent"` adds the nearest
+//!   `intent.md` up the tree, the module's own statement of what it owns.
 //!
 //! Everything is checked when the rule loads, not halfway through a review.
 //!
@@ -199,4 +200,9 @@ pub(crate) enum Surroundings {
     /// to (its `mod.rs`, `lib.rs` or `main.rs`): the contract an
     /// implementation file is judged against.
     ModuleRoot,
+    /// [`ModuleRoot`](Self::ModuleRoot) plus the module's own `intent.md`,
+    /// the nearest one up the directory tree within the crate: what the
+    /// module says it owns, never does and is behind on
+    /// (`docs/process/2026-10-15-intent-lives-with-the-module.md` §4).
+    ModuleIntent,
 }
