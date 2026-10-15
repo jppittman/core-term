@@ -13,8 +13,8 @@
 //! The oracle is Rust's own `f32 ==` and `!=`, which share no code with the
 //! emitter. Both operands arrive as gathers over buffers, so every lane's
 //! pair is a runtime value the emitter cannot fold away, and the lattice is
-//! wider than a batch with a remainder, so a lane-varying mask goes through
-//! the compiled code's mixed-lane path as well as any uniform one.
+//! wider than a batch with a remainder, so the masks vary by lane within a
+//! batch as well as from one batch to the next.
 //!
 //! Every case runs twice: straight from the arena to the emitter, and through
 //! the optimizing entry (`jit_cache::compile`), which the e-graph reaches

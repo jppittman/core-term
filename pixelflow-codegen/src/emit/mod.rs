@@ -549,10 +549,10 @@ struct Constant {
 ///   or leave a loop.
 ///
 /// **Dominance is relaxed in one way, and only one.**
-/// - A value an `If` arm defines is read by that `If`'s blend.
-/// - On the path where a uniform mask skipped the arm, the blend still runs,
-///   and reads a register nothing wrote there. It takes every lane from the
-///   arm that ran, so that register is never observed.
+/// - A value an `If` arm defines is read by that `If`'s select.
+/// - On the path where the arm's guard skipped it (no lane selects the arm),
+///   the select still runs, and reads a register nothing wrote there. It takes
+///   every lane from the arm that ran, so that register is never observed.
 /// - So a definition dominates every read that *observes* it, not every
 ///   syntactic read.
 /// - Interval liveness never carries the value above its definition, and join
@@ -667,7 +667,8 @@ enum LaneOp<B: IsaBackend> {
     Compare(CompareOp, B::Lane, B::Lane),
     /// `a·b + c`: one rounding, every target.
     MulAdd(B::Lane, B::Lane, B::Lane),
-    /// The `If`'s lane-varying path.
+    /// The `If`'s select: the mask picks each lane from the two arms, after
+    /// both arms' guards have run.
     Blend {
         cond: B::Lane,
         if_true: B::Lane,
@@ -1561,8 +1562,8 @@ mod tests {
         use super::*;
 
         /// `(X > 0) ? B³ : 3B` over a shared `B = X·Y`: each arm owns work of
-        /// its own and the shared `B` belongs to neither, so both arms earn a
-        /// block.
+        /// its own and the shared `B` belongs to neither, so both arms own work
+        /// and each is a block.
         fn guarded_if(a: &mut ExprArena) -> ExprId {
             let x = a.push_var(0);
             let y = a.push_var(1);
@@ -1622,19 +1623,17 @@ mod tests {
         }
 
         /// An `If` whose true arm contains an `If`, with entries belonging
-        /// to the root sitting inside both arms — so NEITHER level is
-        /// guardable as scheduled, and both become guardable once the layout
-        /// gathers each arm into one run.
+        /// to the root sitting inside both arms. Each level's arm owns the
+        /// values only it reads, so each is a block of its own, and the root's
+        /// entries belong to the region around both.
         ///
-        /// Nesting is the case that can go wrong quietly: an inner `If`'s
-        /// arms lie inside an outer arm, so partitioning the outside moves the
-        /// inside with it. If that broke an inner guard the kernel would still
-        /// be correct and merely slower, which no value test would catch —
-        /// hence the assertion on the analysis as well as on the arithmetic.
+        /// Nesting is the case that can go wrong: an inner `If`'s arms lie
+        /// inside an outer arm, so a batch that skips the outer arm must skip
+        /// them too. The lane-by-lane values below are what would show it.
         ///
         /// The two "intruders" are read by the root, so they are shared with
-        /// the world outside the arms and can never be skipped; they are what
-        /// makes the arms non-contiguous to begin with.
+        /// the world outside the arms and can never be skipped; they split the
+        /// arms in schedule order.
         fn nested_guarded_ifs(a: &mut ExprArena) -> (ExprId, ExprId, ExprId) {
             let x = a.push_var(0);
             let y = a.push_var(1);
@@ -1733,10 +1732,10 @@ mod tests {
         }
 
         /// The laid-out kernel's answer, against the same expression
-        /// evaluated in scalar `f32` with no guards: uniform masks (which take
-        /// the branches) and mixed lanes (which fall through to the blend),
-        /// exactly equal — every operation here is exact at these points, so
-        /// there is no tolerance to hide a wrong branch in.
+        /// evaluated in scalar `f32` with no guards: uniform masks (one arm
+        /// skipped) and mixed lanes (both arms run, then the select), exactly
+        /// equal — every operation here is exact at these points, so there is
+        /// no tolerance to hide a wrong branch in.
         #[test]
         fn a_nested_guarded_if_agrees_lane_for_lane() {
             let mut a = ExprArena::new();
@@ -1755,10 +1754,10 @@ mod tests {
             }
 
             // Mixed lanes: the batch straddles `x = 0`, so the outer mask
-            // varies by lane, its guard cannot fire and the blend has to
-            // produce every lane. `y` is the row, so the inner mask is
-            // uniform over a batch and takes its branch — both paths, in one
-            // call.
+            // varies by lane and both of its arms run before the select
+            // produces every lane. `y` is the row, so the inner mask is
+            // uniform over a batch and skips one of its arms — both kinds of
+            // batch, in one call.
             let batch = compile(&a, root, batch()).expect("nested guarded If compile");
             let x0 = -(lanes() as f32) / 2.0;
             for y in [4.0f32, -4.0] {
@@ -1773,9 +1772,8 @@ mod tests {
             }
         }
 
-        /// Uniform masks take the all-true and all-false branches; a mixed
-        /// mask falls through to the blend. All three must agree with the
-        /// arithmetic.
+        /// A uniform mask skips one arm; a mixed mask runs both before the
+        /// select. All three must agree with the arithmetic.
         #[test]
         fn a_guarded_if_takes_every_branch() {
             let mut a = ExprArena::new();
@@ -1803,7 +1801,7 @@ mod tests {
         /// Eviction goes by distance, so the victim is whatever is read
         /// farthest out. The mask is read only at the `If`, and the [`filler`]
         /// between fills the pool — so the mask is the likeliest to go. The
-        /// values are right on both mask paths.
+        /// values are right on every kind of batch.
         #[test]
         fn a_guarded_if_survives_a_spilled_mask() {
             let mut a = ExprArena::new();
@@ -2234,9 +2232,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Forward-mode dual (jet) lowering — validated against analytic derivatives.
-    // Uses hardware sqrtps/divps (no polynomial approximations), so tolerances
-    // are tight.
+    // Transcendental lowering, checked against `f32` on the host's tier.
     /// Transcendental lowering: sin/cos/tan JIT through the shared driver with
     /// no backend ever emitting a transcendental (they expand to arithmetic in
     /// `lowering`). Validated against `f32` on whichever tier this host
@@ -2279,8 +2275,8 @@ mod tests {
         }
 
         /// atan/atan2/asin/acos lower to arithmetic + If (atan2 is the core;
-        /// the others derive from it). Value path only — atan2 uses If, which
-        /// the jet path can't differentiate. Validated vs `f32`.
+        /// the others derive from it). Value path only: atan2 uses If, and this
+        /// test checks values, not derivatives. Validated vs `f32`.
         #[test]
         fn inverse_trig_match_scalar() {
             // The atan polynomial is minimax: 8.7e-5 across the interval.
@@ -2428,8 +2424,7 @@ mod tests {
         }
 
         /// `x + u₀ + 2·u₁`, compiled once and run under two blocks: the
-        /// values come from the block at the call, and the uniform-only
-        /// product was hoisted.
+        /// values come from the block at the call, not from the compile.
         #[test]
         fn a_block_is_read_at_the_call_not_at_compile() {
             let mut a = ExprArena::new();
@@ -2482,15 +2477,12 @@ mod tests {
             }
         }
 
-        /// `select(u > 0, p(t[u]), 0) + (u + 1) + x`, `p` a polynomial long
-        /// enough to be worth a branch: an `If` over per-call values, so the
-        /// body computes it and clusters its arms, and `u + 1` — read by the
-        /// root, not the `If` — is what makes the true arm non-contiguous
-        /// until it does. The arm reads the table through its `Context`
-        /// pointer, which only the arm's broadcast reads. A pointer operand is
-        /// a read to the guard analysis, so clustering keeps that pointer
-        /// ahead of the broadcast rather than sinking it past the `If` as a
-        /// stranger.
+        /// `select(u > 0, p(t[u]), 0) + (u + 1) + x`, `p` a polynomial, so the
+        /// true arm owns real work: an `If` over per-call values. `u + 1` is
+        /// read by the root, not the `If`, so it is shared with the world
+        /// outside the arm. The arm reads the table through its `Context`
+        /// pointer, which only the arm's broadcast reads, so the pointer is
+        /// defined inside the arm and read there alone.
         #[test]
         fn a_per_call_if_reads_its_table_through_a_defined_pointer() {
             use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
@@ -2564,7 +2556,7 @@ mod tests {
         /// second uniform's load, outside it. An arm that owned the base
         /// would skip it on a batch with no true lane, and the second
         /// uniform's load would read a register nothing wrote. So the base
-        /// belongs to the scope, the arm keeps its branch, and the kernel is
+        /// belongs to the scope, the arm keeps its guard, and the kernel is
         /// right on a batch of all-true, all-false and mixed lanes.
         #[test]
         fn a_block_pointer_read_inside_an_arm_and_outside_it_is_the_scopes() {

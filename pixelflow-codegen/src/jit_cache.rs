@@ -25,7 +25,7 @@
 //!
 //! ## The link step
 //!
-//! A kernel that reads bound memory or a uniform names it by *identity*, and
+//! A kernel that reads a buffer or a uniform names it by *identity*, and
 //! identities are minted per instance — so keyed by identity, two
 //! compositions of the same shape would never share code. They share it
 //! instead by **dense slot**: the same canonical traversal that produces the

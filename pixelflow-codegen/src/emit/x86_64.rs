@@ -45,8 +45,8 @@ pub(super) mod gpr {
     pub(in crate::emit) const RSP: u8 = 4;
     /// 2nd integer argument: the output plane.
     pub(in crate::emit) const RSI: u8 = 6;
-    /// 1st integer argument: the context pointer — the array of bound buffer
-    /// bases, then the uniform and origin blocks. Read-only for the whole
+    /// 1st integer argument: the context pointer — the array of buffer base
+    /// pointers, then the uniform and origin blocks. Read-only for the whole
     /// kernel.
     pub(in crate::emit) const RDI: u8 = 7;
 }

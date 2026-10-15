@@ -2,12 +2,12 @@
 //!
 //! These lower (`expand_transcendentals`) to the integer-domain primitives
 //! TruncToInt/IntToFloat/IAdd/Shl/Shr — ops a backend can silently lack while
-//! every other test stays green, because `Field`'s combinator tier computes
-//! its own log2/exp via native intrinsics and never consults the JIT. That is
-//! exactly how Avx512Backend shipped refusing `ShiftImm`: `test_log2` passed
-//! (combinator tier), the full workspace passed under `+avx512f`, and a
-//! `Kernel::log2` still failed to compile. The completeness sweep catches the
-//! emission gap; this catches the semantics — the bytes must also be right.
+//! every other test stays green. That is how Avx512Backend once shipped
+//! refusing `ShiftImm`: `test_log2` passed on the retired combinator tier,
+//! which computed its own log2/exp and never reached the JIT, the full
+//! workspace passed under `+avx512f`, and a `Kernel::log2` still failed to
+//! compile. The completeness sweep catches the emission gap; this catches the
+//! semantics — the bytes must also be right.
 
 use pixelflow_codegen::jit_cache;
 use pixelflow_ir::Kernel;
@@ -207,9 +207,9 @@ fn round_agrees_between_tiers_away_from_ties() {
     let jit = jit_cache::compile(&rounded, pixelflow_ir::LatticeShape::POINT)
         .expect("round compiles")
         .kernel;
-    // Non-ties only. At a tie the three tiers disagree by design (x86
-    // nearest-even, aarch64 FRINTA ties-away, combinator `(x+0.5).floor()`), so
-    // there is no answer to assert — see `tie_result_is_platform_specific`.
+    // Non-ties only. At a tie the two targets disagree by design (x86
+    // nearest-even, aarch64 FRINTA ties-away), so there is no answer to
+    // assert — see `tie_result_is_platform_specific`.
     assert!(OpKind::Round.fold_is_platform_specific(&[2.5]));
     for x in [2.4f32, 2.6, -2.4, -2.6, 0.2, 7.0, -7.0] {
         let got = eval_point(&jit, x, 0.0);

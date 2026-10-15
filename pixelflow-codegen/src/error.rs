@@ -15,7 +15,7 @@ use core::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileError {
     /// [`pixelflow_ir::passes::legalize`] refused to lower part of the
-    /// expression — e.g. differentiating a bound-memory read, or a construct
+    /// expression — e.g. differentiating a read of a table, or a construct
     /// with no derivative rule. The message names which; it is legalize's own
     /// message, carried here rather than restated, since this crate does not
     /// own that pass and a copy would drift from it.
