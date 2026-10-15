@@ -31,6 +31,12 @@ The entries are in one file per part. Read the part a term belongs to, not
 the whole ontology; a term's homonyms may live in another part, so check the
 index for the word first.
 
+The *meaning* of each object (what it is as a mathematical object, and the
+laws it obeys) is written once, in `docs/DENOTATION.md`. An entry here says
+what the code treats the term as and where the code is behind the meaning;
+the denotation is the thing it is behind. When an entry and the denotation
+disagree, the denotation wins and the entry is stale.
+
 ## Index
 
 ### Terms about the other terms — [meta.md](meta.md)

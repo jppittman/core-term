@@ -200,6 +200,10 @@ Agent context files for domain-specific knowledge live in `.claude/agents/`.
 
 ## Core Concepts
 
+What every object below *means*, with its laws and the list of what is not a
+concept, is one page: `docs/DENOTATION.md`. This section is the working summary;
+the denotation wins where they differ.
+
 ### The Manifold Abstraction
 
 Three objects and one verb:
