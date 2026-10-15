@@ -173,6 +173,10 @@ struct Life {
     /// Whether its definition can be placed again, known before the scan: such
     /// a value is never stored, so it needs no slot.
     recompute: Recompute,
+    /// The general registers lent to nothing right after its definition, by
+    /// number: the allocator's record of that point, which a store placed
+    /// there behind the scan ([`Scan::store_at_definition`]) draws on.
+    free_general: u64,
 }
 
 /// Whether a value's definition can be placed again, and what that reads.
@@ -238,6 +242,7 @@ impl Liveness {
                 carried_until: None,
                 remat: None,
                 recompute: Recompute::No,
+                free_general: 0,
             })
             .collect();
 
@@ -558,7 +563,9 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
             0,
         ];
         let plan = plan_carries(&live, &reads, budget);
-        let Liveness { lives, loops, .. } = live;
+        let Liveness {
+            mut lives, loops, ..
+        } = live;
 
         let leases = Leases::new(pool);
         let mut free: [Vec<Lent<B>>; 4] = [
@@ -589,8 +596,10 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
         // The ABI registers are stored, if they ever are, right after the entry
         // block's first instruction, which makes the frame.
         let mut defined: Vec<Option<(usize, usize)>> = alloc::vec![None; lives.len()];
+        let free_general = general_mask(&free[FileId::General as usize]);
         for value in entry {
             defined[value.id as usize] = Some((0, 0));
+            lives[value.id as usize].free_general = free_general;
         }
 
         let mut labels = function.labels;
@@ -607,7 +616,6 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
             .enumerate()
             .map(|(i, l)| (l.head, i))
             .collect();
-        let entry_numbers = B::FILE.entry();
         let mut scan = Scan {
             frame: &mut *frame,
             reads,
@@ -621,12 +629,10 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
             edges: BTreeMap::new(),
             free,
             held,
-            used_general: [entry_numbers.ctx, entry_numbers.out, entry_numbers.pitch]
-                .into_iter()
-                .fold(0, |used, number| used | 1 << number),
             pinned: Vec::new(),
             next: function.classes.len() as u64,
             defined,
+            free_general_at_entry: alloc::vec![0; function.blocks.len()],
             insts: Vec::new(),
             records: Vec::new(),
             late: BTreeMap::new(),
@@ -762,6 +768,13 @@ type Residents = Vec<(u64, (FileId, u8))>;
 /// are few, so a search of them is short, and nothing is allocated per value.
 struct Held<'m, B: IsaBackend>(Vec<(u64, Lent<'m, B>)>);
 
+/// The registers of `leases`, by number, as a mask.
+fn general_mask<B: IsaBackend>(leases: &[Lent<'_, B>]) -> u64 {
+    leases
+        .iter()
+        .fold(0, |mask, lent| mask | 1 << lent.number())
+}
+
 impl<'m, B: IsaBackend> Held<'m, B> {
     fn at(&self, id: u64) -> Result<usize, usize> {
         self.0.binary_search_by_key(&id, |&(held, _)| held)
@@ -836,11 +849,6 @@ struct Scan<'f, 'm, B: IsaBackend> {
     free: [Vec<Lent<'m, B>>; 4],
     /// The values in a register, by id.
     held: Held<'m, B>,
-    /// The general registers some value has held so far, by number. A register
-    /// outside it has held nothing at any point behind the scan. Every general
-    /// lease that leaves `free` or goes back into a register passes
-    /// [`Self::note_general`], which is what makes that true.
-    used_general: u64,
     /// The values the instruction being placed reads or defines: the ones
     /// eviction leaves alone.
     pinned: Vec<u64>,
@@ -848,6 +856,9 @@ struct Scan<'f, 'm, B: IsaBackend> {
     next: u64,
     /// Where each value is defined: a block, and an index into its records.
     defined: Vec<Option<(usize, usize)>>,
+    /// By block, the general registers lent to nothing when the scan arrived:
+    /// the record a store placed at the block's entry draws on.
+    free_general_at_entry: Vec<u64>,
     /// Every instruction the scan has been given or has inserted, in the order
     /// it met them; a record names one by its index.
     insts: Vec<B::Inst<Selected>>,
@@ -1023,6 +1034,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     /// everything else in its slot, which `flush` makes true.
     fn head(&mut self, label: Label) -> Result<(), CompileError> {
         self.arrive(label);
+        self.free_general_at_entry[self.block] = general_mask(&self.free[FileId::General as usize]);
         let Some(&l) = self.loop_at.get(&label) else {
             return Ok(());
         };
@@ -1167,7 +1179,6 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
                 .position(|lent| lent.file() == file && lent.number() == number);
             let at = at.unwrap_or_else(|| panic!("value {id} is in a register no lease has"));
             let lent = leases.swap_remove(at);
-            self.note_general(&lent);
             self.held.insert(id, lent);
         }
         for lent in leases {
@@ -1222,14 +1233,6 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         match once && !self.live_after(arg.id) {
             true => Ok(self.held.remove(arg.id).expect("an argument is held")),
             false => self.copy_of(arg),
-        }
-    }
-
-    /// `lent` is, or is about to be, a value's register: record it in
-    /// [`Self::used_general`] if it is a general one.
-    fn note_general(&mut self, lent: &Lent<'m, B>) {
-        if lent.file() == FileId::General {
-            self.used_general |= 1 << lent.number();
         }
     }
 
@@ -1463,10 +1466,11 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         let number = self.held.number(value);
         let mut address = None;
         for pushed in self.spill_of(name, slot) {
-            // The point the store follows is behind the scan: it may name the
-            // register `value` is in, and the address of a slot too deep for
-            // the store to encode, which goes in a general register that no
-            // value has held up to now, so it was free there too.
+            // The point the store follows is behind the scan, where no lease
+            // can be taken: it may name the register `value` has been in since
+            // its definition, and the address of a slot too deep for the store
+            // to encode, which goes in a general register the allocator's
+            // record of that point says was lent to nothing.
             let regs = self.numbers.len();
             for operand in &pushed.operands {
                 self.numbers.push(match operand {
@@ -1475,7 +1479,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
                         assert_eq!(pointer.class, ClassId::Pointer, "{pointer:?} is not a slot's address");
                         match address {
                             Some(number) => number,
-                            None => *address.insert(self.unused_general()?),
+                            None => *address.insert(self.general_free_at(value, at)?),
                         }
                     }
                     Operand::Reg { value: read, .. } => panic!(
@@ -1494,19 +1498,26 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         Ok(())
     }
 
-    /// A general register no value has held so far.
+    /// A general register lent to nothing at `at`, where `value`'s store goes,
+    /// from the allocator's record of that point ([`Life::free_general`],
+    /// [`Self::free_general_at_entry`]): the lowest-numbered, as
+    /// [`Self::acquire`] would choose now.
     ///
     /// # Errors
-    /// [`CompileError::BudgetExceeded`] when every general register has held
-    /// one.
-    fn unused_general(&self) -> Result<u8, CompileError> {
+    /// [`CompileError::BudgetExceeded`] when every general register was lent
+    /// there.
+    fn general_free_at(&self, value: u64, at: StorePoint) -> Result<u8, CompileError> {
+        let free = match at {
+            StorePoint::After(..) => self.lives[value as usize].free_general,
+            StorePoint::Entry(block) => self.free_general_at_entry[block],
+        };
         B::FILE
             .members(FileId::General)
             .iter()
             .copied()
-            .find(|&number| self.used_general & 1 << number == 0)
+            .find(|&number| free & 1 << number != 0)
             .ok_or(CompileError::BudgetExceeded(
-                "a vector slot past the reach of one store, in a function that uses every general register",
+                "a vector slot past the reach of one store, defined where every general register was lent",
             ))
     }
 
@@ -1564,7 +1575,6 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             .map(|(i, _)| i)
             .expect("eviction frees a register or panics");
         let lent = bank.swap_remove(lowest);
-        self.note_general(&lent);
         Ok(lent)
     }
 
@@ -1701,12 +1711,14 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         }
         if origin == Origin::Selected {
             let at = (self.block, self.records[self.block].len());
+            let free_general = general_mask(&self.free[FileId::General as usize]);
             for operand in operands {
                 let Operand::Reg { value, access } = operand else {
                     continue;
                 };
                 if !access.reads() {
                     self.defined[value.id as usize] = Some(at);
+                    self.lives[value.id as usize].free_general = free_general;
                 }
             }
         }
