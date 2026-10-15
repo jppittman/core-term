@@ -379,7 +379,8 @@ Part 5).
 
 ## Part 5 — The completeness check (landed, verified)
 
-`pixelflow-ir/src/backend/emit/coverage.rs` (test-only, `#[cfg(test)]`) is
+`pixelflow-ir/src/backend/emit/coverage.rs` (test-only, `#[cfg(test)]`; deleted,
+the `UnaryOp`/`BinaryOp`/`CompareOp`/`ShiftOp` enums of `program/mod.rs` replace it) is
 the single enumeration that did not exist before: `REQUIRED_UNARY_OPS`
 (10 ops), `REQUIRED_BINARY_OPS` (15), `REQUIRED_SHIFT_OPS` (2), and
 `REQUIRED_TERNARY_OPS` (`MulAdd`, `Select`, documented but hand-checked
@@ -443,7 +444,7 @@ added — see the commit history on this branch for the exact run.
 
 **Landed this session:**
 - This design doc.
-- `coverage.rs` — the required-op enumeration, the completeness contract.
+- `coverage.rs` (deleted) — the required-op enumeration, the completeness contract.
 - `backend_op_coverage` test module (`mod.rs`) — sweeps `X86Backend` always,
   `Aarch64Backend`/`Avx512Backend` when the build actually compiles them.
 - `X86BinaryInsn` selection/encoding split (`x86_64.rs`) — pilot of the

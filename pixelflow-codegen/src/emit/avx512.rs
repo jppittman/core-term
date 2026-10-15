@@ -34,8 +34,8 @@ use super::{
     Stage, Store, Test, Value, ValueName, Vector, slot_disp,
 };
 use crate::error::CompileError;
+use crate::program::BinaryOp;
 use crate::program::IfArm;
-use pixelflow_ir::OpKind;
 
 /// `vpternlogd`'s truth table for `A ? B : C` per bit, with `A` the
 /// destination (the mask), `B` the first source and `C` the second.
@@ -149,10 +149,10 @@ pub(super) enum KOp {
 
 impl KOp {
     /// The mask-register form of a bitwise op, when it has one.
-    fn of(op: OpKind) -> Option<Self> {
+    fn of(op: BinaryOp) -> Option<Self> {
         match op {
-            OpKind::BitAnd => Some(Self::And),
-            OpKind::BitOr => Some(Self::Or),
+            BinaryOp::BitAnd => Some(Self::And),
+            BinaryOp::BitOr => Some(Self::Or),
             _ => None,
         }
     }
@@ -443,14 +443,16 @@ impl X86 for Avx512 {
                 })),
                 _ => {
                     let (a, c) = (a.vector(b), c.vector(b));
-                    match Pred::of(op) {
-                        Some(pred) => Lane::Opmask(emit(b, |dst| {
-                            Inst::Extra(Extra::CmpK { pred, dst, a, b: c })
-                        })),
-                        None => Lane::Vector(x86_64::arithmetic(b, op, (a, c))),
-                    }
+                    Lane::Vector(x86_64::arithmetic(b, op, (a, c)))
                 }
             },
+            LaneOp::Compare(op, a, c) => {
+                let (a, c) = (a.vector(b), c.vector(b));
+                let pred = op.into();
+                Lane::Opmask(emit(b, |dst| {
+                    Inst::Extra(Extra::CmpK { pred, dst, a, b: c })
+                }))
+            }
             LaneOp::MulAdd(x, y, addend) => {
                 let (x, y, addend) = (x.vector(b), y.vector(b), addend.vector(b));
                 Lane::Vector(x86_64::mul_add(b, (x, y), addend))

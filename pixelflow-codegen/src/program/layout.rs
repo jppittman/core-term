@@ -91,9 +91,8 @@ impl Flow {
 mod tests {
     use super::*;
     use crate::program::ownership::{FoldReads, Positions, reads};
-    use crate::program::{IfArm, ScheduledOp, ValueId};
+    use crate::program::{BinaryOp, IfArm, ScheduledOp, UnaryOp, ValueId};
     use pixelflow_ir::fold::Binder;
-    use pixelflow_ir::kind::OpKind;
     use pixelflow_ir::variance::Variance;
 
     /// The positions of the defs under `items`, nested arms included, in the
@@ -156,16 +155,11 @@ mod tests {
     fn if_of(value: u64, mask: u64, if_true: u64, if_false: u64) -> Def {
         def(
             value,
-            ScheduledOp::Ternary(
-                OpKind::If,
-                ValueId(mask),
-                ValueId(if_true),
-                ValueId(if_false),
-            ),
+            ScheduledOp::If(ValueId(mask), ValueId(if_true), ValueId(if_false)),
         )
     }
 
-    fn unary(value: u64, op: OpKind, of: u64) -> Def {
+    fn unary(value: u64, op: UnaryOp, of: u64) -> Def {
         def(value, ScheduledOp::Unary(op, ValueId(of)))
     }
 
@@ -221,7 +215,7 @@ mod tests {
         // Immediately before each `If`: the run of what its true arm owns, then
         // of what its false arm owns.
         for (at, def) in schedule.iter().enumerate() {
-            if !matches!(def.op, ScheduledOp::Ternary(OpKind::If, ..)) {
+            if !matches!(def.op, ScheduledOp::If(..)) {
                 continue;
             }
             let arms: Vec<Vec<usize>> = own
@@ -253,7 +247,7 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            unary(2, OpKind::Rsqrt, 1),
+            unary(2, UnaryOp::Rsqrt, 1),
             if_of(3, 0, 2, 0),
         ];
         let (flow, values) = laid_out(&schedule);
@@ -271,11 +265,14 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            unary(2, OpKind::Sqrt, 1),  // the arm's, first value
-            unary(3, OpKind::Neg, 0),   // a stranger: nothing in the arm reads it
-            unary(4, OpKind::Rsqrt, 2), // the arm's, second value
+            unary(2, UnaryOp::Sqrt, 1),  // the arm's, first value
+            unary(3, UnaryOp::Neg, 0),   // a stranger: nothing in the arm reads it
+            unary(4, UnaryOp::Rsqrt, 2), // the arm's, second value
             if_of(5, 0, 4, 0),
-            def(6, ScheduledOp::Binary(OpKind::Add, ValueId(5), ValueId(3))),
+            def(
+                6,
+                ScheduledOp::Binary(BinaryOp::Add, ValueId(5), ValueId(3))
+            ),
         ];
         let (_, values) = laid_out(&schedule);
         assert_eq!(values, [0, 3, 1, 2, 4, 5, 6]);
@@ -287,10 +284,10 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            unary(2, OpKind::Rsqrt, 1),
-            unary(3, OpKind::Rsqrt, 0),
-            unary(4, OpKind::Sqrt, 2),
-            unary(5, OpKind::Sqrt, 3),
+            unary(2, UnaryOp::Rsqrt, 1),
+            unary(3, UnaryOp::Rsqrt, 0),
+            unary(4, UnaryOp::Sqrt, 2),
+            unary(5, UnaryOp::Sqrt, 3),
             if_of(6, 0, 4, 5),
         ];
         let (flow, values) = laid_out(&schedule);
@@ -305,11 +302,11 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            unary(2, OpKind::Rsqrt, 1),
-            unary(3, OpKind::Rsqrt, 0),
-            unary(4, OpKind::Sqrt, 2),
+            unary(2, UnaryOp::Rsqrt, 1),
+            unary(3, UnaryOp::Rsqrt, 0),
+            unary(4, UnaryOp::Sqrt, 2),
             if_of(5, 0, 4, 3),
-            unary(6, OpKind::Recip, 1),
+            unary(6, UnaryOp::Recip, 1),
             if_of(7, 0, 5, 6),
         ];
         let (flow, values) = laid_out(&schedule);
@@ -347,11 +344,17 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            unary(2, OpKind::Sqrt, 1), // the arm's
-            unary(3, OpKind::Neg, 0),  // shared: the arm reads it below
-            def(4, ScheduledOp::Binary(OpKind::Add, ValueId(2), ValueId(3))),
-            unary(5, OpKind::Rsqrt, 4), // the arm's root
-            def(6, ScheduledOp::Binary(OpKind::Add, ValueId(3), ValueId(0))),
+            unary(2, UnaryOp::Sqrt, 1), // the arm's
+            unary(3, UnaryOp::Neg, 0),  // shared: the arm reads it below
+            def(
+                4,
+                ScheduledOp::Binary(BinaryOp::Add, ValueId(2), ValueId(3))
+            ),
+            unary(5, UnaryOp::Rsqrt, 4), // the arm's root
+            def(
+                6,
+                ScheduledOp::Binary(BinaryOp::Add, ValueId(3), ValueId(0))
+            ),
             if_of(7, 0, 5, 6),
         ];
         let (_, values) = laid_out(&schedule);
@@ -384,15 +387,14 @@ mod tests {
             let value = schedule.len() as u64;
             let earlier = |rng: &mut Lcg| rng.below(value as usize) as u64;
             let op = match rng.below(10) {
-                0..=2 => ScheduledOp::Unary(OpKind::Rsqrt, ValueId(earlier(&mut rng))),
-                3..=4 => ScheduledOp::Unary(OpKind::Neg, ValueId(earlier(&mut rng))),
+                0..=2 => ScheduledOp::Unary(UnaryOp::Rsqrt, ValueId(earlier(&mut rng))),
+                3..=4 => ScheduledOp::Unary(UnaryOp::Neg, ValueId(earlier(&mut rng))),
                 5..=6 => ScheduledOp::Binary(
-                    OpKind::Add,
+                    BinaryOp::Add,
                     ValueId(earlier(&mut rng)),
                     ValueId(earlier(&mut rng)),
                 ),
-                _ => ScheduledOp::Ternary(
-                    OpKind::If,
+                _ => ScheduledOp::If(
                     ValueId(earlier(&mut rng)),
                     ValueId(earlier(&mut rng)),
                     ValueId(earlier(&mut rng)),
@@ -445,11 +447,17 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             def(1, reduce()),
-            unary(2, OpKind::Rsqrt, 1),
-            def(3, ScheduledOp::Binary(OpKind::Mul, ValueId(1), ValueId(2))),
+            unary(2, UnaryOp::Rsqrt, 1),
+            def(
+                3,
+                ScheduledOp::Binary(BinaryOp::Mul, ValueId(1), ValueId(2))
+            ),
             if_of(4, 0, 3, 0),
             def(5, reduce()),
-            def(6, ScheduledOp::Binary(OpKind::Add, ValueId(4), ValueId(5))),
+            def(
+                6,
+                ScheduledOp::Binary(BinaryOp::Add, ValueId(4), ValueId(5))
+            ),
         ];
         // The sibling's body names `W`'s id, which an enclosing scope computed.
         let folds = FoldReads::from([(ValueId(5), alloc::vec![ValueId(1)])]);
@@ -471,12 +479,21 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            unary(2, OpKind::Rsqrt, 1),
-            def(3, ScheduledOp::Binary(OpKind::Add, ValueId(1), ValueId(1))),
+            unary(2, UnaryOp::Rsqrt, 1),
+            def(
+                3,
+                ScheduledOp::Binary(BinaryOp::Add, ValueId(1), ValueId(1))
+            ),
             def(4, reduce()),
-            def(5, ScheduledOp::Binary(OpKind::Mul, ValueId(2), ValueId(4))),
+            def(
+                5,
+                ScheduledOp::Binary(BinaryOp::Mul, ValueId(2), ValueId(4))
+            ),
             if_of(6, 0, 5, 0),
-            def(7, ScheduledOp::Binary(OpKind::Add, ValueId(6), ValueId(1))),
+            def(
+                7,
+                ScheduledOp::Binary(BinaryOp::Add, ValueId(6), ValueId(1))
+            ),
         ];
         let folds = FoldReads::from([(ValueId(4), alloc::vec![ValueId(3)])]);
         let (_, values) = laid_out_with(&schedule, &folds);
@@ -491,12 +508,18 @@ mod tests {
         let schedule = alloc::vec![
             var(0, 0),
             var(1, 1),
-            unary(2, OpKind::Rsqrt, 1),
-            def(3, ScheduledOp::Binary(OpKind::Add, ValueId(1), ValueId(1))),
+            unary(2, UnaryOp::Rsqrt, 1),
+            def(
+                3,
+                ScheduledOp::Binary(BinaryOp::Add, ValueId(1), ValueId(1))
+            ),
             def(4, ScheduledOp::Context(0)),
             def(5, ScheduledOp::Broadcast(ValueId(2), ValueId(4))),
             if_of(6, 0, 5, 0),
-            def(7, ScheduledOp::Binary(OpKind::Add, ValueId(6), ValueId(3))),
+            def(
+                7,
+                ScheduledOp::Binary(BinaryOp::Add, ValueId(6), ValueId(3))
+            ),
         ];
         let (_, values) = laid_out(&schedule);
         assert!(at(&values, 4) < at(&values, 5), "{values:?}");
@@ -509,7 +532,7 @@ mod tests {
     fn a_read_of_a_value_the_schedule_never_defines_is_ignored() {
         let schedule = alloc::vec![
             var(0, 0),
-            unary(1, OpKind::Rsqrt, 3), // ValueId(3) has no Def
+            unary(1, UnaryOp::Rsqrt, 3), // ValueId(3) has no Def
             if_of(4, 0, 0, 1),
         ];
         let (flow, _) = laid_out(&schedule);

@@ -52,15 +52,19 @@ pub(crate) enum ScheduledOp {
     /// Constant value
     Const(f32),
     /// Unary op with input value
-    Unary(OpKind, ValueId),
+    Unary(UnaryOp, ValueId),
     /// Binary op with input values
-    Binary(OpKind, ValueId, ValueId),
-    /// Ternary op with input values
-    Ternary(OpKind, ValueId, ValueId, ValueId),
-    /// Bit-shift by a compile-time immediate: `op` is `Shl` or `Shr`, the value
-    /// is `ValueId`, and the shift count is folded out of the `Const` RHS by
-    /// `lower::arena_to_schedule` (so it never becomes a scheduled value / register).
-    ShiftImm(OpKind, ValueId, u8),
+    Binary(BinaryOp, ValueId, ValueId),
+    /// A comparison: a mask, not a number.
+    Compare(CompareOp, ValueId, ValueId),
+    /// `a·b + c`, one rounding.
+    MulAdd(ValueId, ValueId, ValueId),
+    /// `if mask then a else b`, the two arms second and third.
+    If(ValueId, ValueId, ValueId),
+    /// Bit-shift by a compile-time immediate: the value is `ValueId`, and the
+    /// shift count is folded out of the `Const` RHS by `lower::arena_to_schedule`
+    /// (so it never becomes a scheduled value / register).
+    ShiftImm(ShiftOp, ValueId, u8),
     /// Bound-memory gather: read the buffer whose base is the second operand
     /// at the lane index computed by the first. Lowered from
     /// `RawGather(Buffer(slot), index)`; the `Buffer` leaf *is* the base — a
@@ -129,6 +133,61 @@ pub(crate) enum ScheduledOp {
     /// loop for the [`Scope::Fold`] this def opens. It is never an operand of
     /// the scope this def sits in.
     Reduce(Fold, ValueId),
+}
+
+/// The ops a backend selects, as types: [`ScheduledOp`] carries these and not
+/// an [`OpKind`], so a backend's `match` over one is exhaustive and the
+/// compiler is what says a target owes an encoding. `legalize` leaves only
+/// ops that have a place here, and `lower::arena_to_schedule` is the one
+/// conversion; an op with none is a bypassed pipeline.
+pub(crate) trait Legal: Sized {
+    /// The legal op `kind` is, if it is one.
+    fn of(kind: OpKind) -> Option<Self>;
+}
+
+macro_rules! legal_ops {
+    ($($(#[$meta:meta])* $name:ident { $($op:ident),+ $(,)? })+) => {$(
+        $(#[$meta])*
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        pub(crate) enum $name { $($op),+ }
+
+        impl Legal for $name {
+            fn of(kind: OpKind) -> Option<Self> {
+                match kind {
+                    $(OpKind::$op => Some(Self::$op),)+
+                    _ => None,
+                }
+            }
+        }
+    )+};
+}
+
+legal_ops! {
+    /// One operand in, one lane out.
+    UnaryOp { Neg, Abs, Sqrt, Rsqrt, Recip, Floor, Ceil, Round, TruncToInt, IntToFloat }
+    /// Two lanes in, a number or a bit pattern out (`IAdd`, `BitAnd` and
+    /// `BitOr` act on the bits).
+    BinaryOp { Add, Sub, Mul, Div, Min, Max, IAdd, BitAnd, BitOr }
+    /// Two lanes in, a mask out.
+    CompareOp { Lt, Le, Gt, Ge, Eq, Ne }
+    /// A lane shifted by an immediate.
+    ShiftOp { Shl, Shr }
+}
+
+/// The legal op `op` is. `passes::legalize` leaves only these, so none is a
+/// bad kernel: it is a bypassed pipeline, and nothing a caller could act on.
+pub(crate) fn legal<T: Legal>(op: OpKind) -> T {
+    T::of(op).unwrap_or_else(|| not_legal(op))
+}
+
+#[cold]
+#[inline(never)]
+fn not_legal(op: OpKind) -> ! {
+    panic!(
+        "{op:?} is not a backend-legal op -- `passes::legalize` \
+         leaves only backend-legal ops, so the pipeline was bypassed, not the kernel \
+         refused"
+    )
 }
 
 /// Which scope of a loop nest: the body the call runs once, or one of the
@@ -327,8 +386,8 @@ pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use
         | ScheduledOp::Gather(a, _)
         | ScheduledOp::Broadcast(a, _) => (Some(*a), None, None),
         ScheduledOp::Write { value, .. } => (Some(*value), None, None),
-        ScheduledOp::Binary(_, a, b) => (Some(*a), Some(*b), None),
-        ScheduledOp::Ternary(_, a, b, c) => (Some(*a), Some(*b), Some(*c)),
+        ScheduledOp::Binary(_, a, b) | ScheduledOp::Compare(_, a, b) => (Some(*a), Some(*b), None),
+        ScheduledOp::MulAdd(a, b, c) | ScheduledOp::If(a, b, c) => (Some(*a), Some(*b), Some(*c)),
     };
     [a, b, c].into_iter().flatten()
 }
