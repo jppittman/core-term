@@ -1,5 +1,5 @@
 //! Deterministic, learning-free ordering diversity for the R2G trajectory
-//! mint (`docs/plans/2026-09-01-guide-return-to-go.md` §2: "without variation
+//! mint (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §2: "without variation
 //! in return across trajectories of the same expression there is no credit
 //! signal"). [`UniformRandomGuide`] is the one new [`SaturationGuide`] this
 //! module adds; it exists so a caller minting several independent orderings
@@ -91,7 +91,7 @@ pub fn uniform_unit_score(seed: u64, c: &CandidateSummary) -> f32 {
 /// `GuidedSaturation`'s checkpoint-resume semantics — see module doc).
 ///
 /// This is the diversity half of the R2G trajectory mint's "ordering
-/// diversity is the dataset" design (`docs/plans/2026-09-01-guide-return-to-go.md`
+/// diversity is the dataset" design (`docs/archive/plans/2026-09-01-guide-return-to-go.md`
 /// §2): without SOME arms whose ordering has nothing to do with rule
 /// identity or the trained linear Guide, every trajectory of a given
 /// expression samples nearby points in the SAME ordering family and the

@@ -67,7 +67,7 @@ struct Args {
 
 /// One benchmark mode's measurement, with the dispersion and scaling metadata
 /// the audit found being thrown away (M5) or unrecorded (H5/M1), plus the
-/// [`CostLabel`] (docs/plans/2026-08-17-cost-model-domain.md, J3) minted from
+/// [`CostLabel`] (docs/archive/plans/2026-08-17-cost-model-domain.md, J3) minted from
 /// it: `value_ns` and `position` are the drift-corrected, order-tagged label
 /// a training consumer should use, computed once here rather than re-derived
 /// (and potentially re-ordered) downstream.

@@ -55,5 +55,5 @@ crate is where the application's effects run.
   move to `Host`.
 
 ## Decided in
-`docs/designs/actor-scheduler-backpressure.md` (Accepted);
-`docs/designs/actor-scheduler-mealy-transducer.md` (Draft).
+`docs/archive/designs/actor-scheduler-backpressure.md` (Accepted);
+`docs/runtime/actor-scheduler-mealy-transducer.md` (Draft).

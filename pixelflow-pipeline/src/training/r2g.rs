@@ -1,5 +1,5 @@
 //! Return-to-go record schema and label arithmetic for the Guide's new
-//! training target (`docs/plans/2026-09-01-guide-return-to-go.md`).
+//! training target (`docs/archive/plans/2026-09-01-guide-return-to-go.md`).
 //!
 //! # Scope of this module, and what it does not build
 //!
@@ -552,7 +552,7 @@ mod tests {
 // ============================================================================
 
 /// Which deterministic ordering rule drives one trajectory
-/// (`docs/plans/2026-09-01-guide-return-to-go.md` §2's diversity table:
+/// (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §2's diversity table:
 /// unguided / per-rule / a frozen linear checkpoint / a fixed pseudo-random
 /// preference / a rank-mix of a base policy with random noise).
 ///
@@ -585,7 +585,7 @@ pub enum OrderingPolicy {
     /// A rank-mix of a base policy's score with a uniform-random term:
     /// `score = (1 − eps)·rank_norm(base_score) + eps·uniform(seed)`,
     /// `eps = numerator/denominator`, matching
-    /// `docs/plans/2026-09-01-guide-return-to-go.md` §2's `RankMixGuide`
+    /// `docs/archive/plans/2026-09-01-guide-return-to-go.md` §2's `RankMixGuide`
     /// row (mixing on ranks, not raw logits, so `eps` means the same thing
     /// regardless of the base policy's score scale). `guide` names the base
     /// being perturbed — expected to be a non-`Random`, non-`EpsilonMix`
@@ -623,7 +623,7 @@ impl OrderingPolicy {
 }
 
 /// The extended budget ladder for the round-3 "measure spread where the
-/// budget binds" task (`docs/plans/2026-09-01-guide-return-to-go.md` §2b):
+/// budget binds" task (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §2b):
 /// the two originally-registered tiers (B=100/200, unchanged — still what
 /// `train_guide_r2g` reads via [`TrajectoryRow::app_actual_b100`] etc.) plus
 /// four higher tiers reaching into the regime where production's classical
@@ -947,7 +947,7 @@ mod minter_tests {
 
 /// The return-to-go head's checkpoint — same weight layout
 /// `pixelflow_search::nnue::guide::linear::LinearWeights` deploys, plus
-/// mint-style provenance (`docs/plans/2026-09-01-guide-return-to-go.md`
+/// mint-style provenance (`docs/archive/plans/2026-09-01-guide-return-to-go.md`
 /// §3.3): which objective/target/tier trained it, which ordering policies
 /// contributed TRAIN records, and a content hash of each split's source
 /// file (see [`LoadedSplit::source_fnv64`]'s doc for why that stands in for
@@ -961,7 +961,7 @@ mod minter_tests {
 pub struct R2gCheckpoint {
     pub schema_identity: String,
     /// Fixed: the label *family* this checkpoint was trained against
-    /// (`docs/plans/2026-09-01-guide-return-to-go.md`), mirroring
+    /// (`docs/archive/plans/2026-09-01-guide-return-to-go.md`), mirroring
     /// `train_guide`'s `label_source` field. Distinct from `regression_target`
     /// (which of the two return-to-go columns, centered or raw) and from
     /// `objective` (which loss trained it) — three separate questions this
@@ -1029,7 +1029,7 @@ impl crate::schema::SchemaIdentity for R2gCheckpoint {
     const MAGIC: &'static str = "PXGR";
     const SCHEMA: &'static str = "\
         label_family: fixed \"return-to-go\" — the label family this checkpoint was trained \
-        against (docs/plans/2026-09-01-guide-return-to-go.md); \
+        against (docs/archive/plans/2026-09-01-guide-return-to-go.md); \
         regression_target: \"centered\" (expression-centered log-regret, §3.2 primary) or \
         \"raw\" (uncentered, §3.4 ablation) — which return-to-go column trained this \
         checkpoint; \

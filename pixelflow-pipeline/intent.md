@@ -54,6 +54,6 @@ Every `src/bin/*.rs` has a `[[bin]]`; all but `collapse_cost` and
   printed number is checked to be a ratio against a baseline.
 
 ## Decided in
-`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`,
-`docs/plans/2026-09-07-benchmark-correction.md`, `docs/plans/2026-08-17-cost-model-domain.md`,
-`docs/plans/2026-09-01-schedule-cost-model-denotation.md`, `docs/results/2026-08-05-bench-harness-integrity-audit.md`.
+`docs/process/2026-10-13-tests-check-the-as-if-contract.md`,
+`docs/compiler/2026-09-07-benchmark-correction.md`, `docs/archive/plans/2026-08-17-cost-model-domain.md`,
+`docs/compiler/2026-09-01-schedule-cost-model-denotation.md`, `docs/results/2026-08-05-bench-harness-integrity-audit.md`.

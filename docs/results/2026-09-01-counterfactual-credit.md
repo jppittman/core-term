@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L045.** The leave-one-out deltas are tree-cost differences (pre-#1192) on a generated corpus. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L045.** The leave-one-out deltas are tree-cost differences (pre-#1192) on a generated corpus. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Counterfactual credit: hindsight bounds vs measured leave-one-out Δ
 

@@ -22,12 +22,12 @@
 //! accumulator feature vector, a backbone + value MLP, its checkpoint format
 //! — tied the static table on schedule-free kernels (workshop paper on branch
 //! `claude/workshop-writeup`, PR #1072, closed without merging — not in this
-//! tree; see docs/plans/2026-09-01-schedule-cost-model-denotation.md) and its
+//! tree; see docs/compiler/2026-09-01-schedule-cost-model-denotation.md) and its
 //! shape was deleted on 2026-09-01; history is in VCS. What this module keeps
 //! is the denotation a future residual reranker needs — the op vocabulary,
 //! the edge stream, and
 //! per-node variance classification
-//! (docs/plans/2026-09-01-schedule-cost-model-denotation.md).
+//! (docs/compiler/2026-09-01-schedule-cost-model-denotation.md).
 
 extern crate alloc;
 
@@ -798,7 +798,7 @@ impl CostDag for ArenaCostDag<'_> {
 // MLP — was deleted after it tied the static table on schedule-free kernels
 // (workshop paper on branch `claude/workshop-writeup`, PR #1072, closed
 // without merging — not in this tree; see
-// docs/plans/2026-09-01-schedule-cost-model-denotation.md). An earlier pass
+// docs/compiler/2026-09-01-schedule-cost-model-denotation.md). An earlier pass
 // on this branch also restored the 4K per-level-sectioned edge accumulator that used to
 // feed it (flat + depth-encoded, × parent/child, plus this variance
 // histogram) under the name `LevelSectionedEdges`. Per JP's 2026-09-01
@@ -807,12 +807,12 @@ impl CostDag for ArenaCostDag<'_> {
 // fractions bolted onto a bag-of-edges sum), so restoring it was restoring
 // the deleted SHAPE under a new name. It has been removed again; a
 // genuinely level-indexed accumulator is specified for the future in
-// docs/plans/2026-09-01-schedule-cost-model-denotation.md and is not built
+// docs/compiler/2026-09-01-schedule-cost-model-denotation.md and is not built
 // here. What survives is the denotation underneath it: per-node variance
 // classification, kept as the free function below plus
 // [`crate::egraph::extract::Extraction::chosen_variance`], which classifies
 // the materialised (chosen) DAG rather than re-deriving variance from the
-// e-graph (P1(c) of docs/plans/2026-08-17-cost-model-domain.md).
+// e-graph (P1(c) of docs/archive/plans/2026-08-17-cost-model-domain.md).
 
 /// Classify every node of `arena` into const / frame-uniform / scanline-
 /// uniform / pixel-varying, and return the fraction in each bucket. Shared

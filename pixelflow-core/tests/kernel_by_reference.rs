@@ -1,12 +1,12 @@
 //! A kernel composed *by reference* renders what the spliced composition
 //! renders — tabulations and all.
 //!
-//! L2 of docs/plans/2026-09-09-composition-is-linking.md. `Kernel::by_ref`
+//! L2 of docs/language/2026-09-09-composition-is-linking.md. `Kernel::by_ref`
 //! replaces a whole arena with one `Ref` leaf naming it in the
 //! `KernelStore`. The compile reads the link tables off the kernel with every
 //! body put back (`passes::expand_refs`), and the optimizer treats each name
 //! as a unit — its body optimized by itself and linked in after extraction
-//! (docs/plans/2026-09-25-the-language-is-kernel.md §4, O1). The property
+//! (docs/language/2026-09-25-the-language-is-kernel.md §4, O1). The property
 //! that has to hold for either to be usable is that a consumer cannot tell
 //! the difference — same pixels, from the same composition surface, with no
 //! caller gathering anything by hand.

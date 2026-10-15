@@ -6,7 +6,7 @@
 //!
 //! `#![allow(dead_code)]`: see the same note in `accumulator.rs` — every
 //! method here is exercised only by this module's characterization tests
-//! until Phase 3 (docs/plans/2026-07-07-guided-saturation-redesign.md) trains
+//! until Phase 3 (docs/compiler/2026-07-07-guided-saturation-redesign.md) trains
 //! it and a real caller reaches through [`super::Guide`].
 #![allow(dead_code)]
 
@@ -61,7 +61,7 @@ pub(crate) const CANDIDATE_INPUT_DIM: usize = K + CANDIDATE_SCALAR_COUNT;
 /// # Why the tower reads all four rather than just the budget
 ///
 /// The registered comparison
-/// (`docs/plans/2026-09-02-bilinear-guide-registration.md` §4) licenses
+/// (`docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §4) licenses
 /// *exactly one* difference between the additive and bilinear arms: the
 /// functional form. A tower that saw only `budget_fraction` would differ from
 /// the additive model in the feature set as well, and a loss could then be
@@ -123,7 +123,7 @@ pub(crate) fn candidate_input(
 /// The rule encoder's 4-way concatenation
 /// `[z_LHS | z_RHS | z_LHS − z_RHS | z_LHS ⊙ z_RHS]`: what the rule MATCHES,
 /// what it PRODUCES, what CHANGED, what is SHARED
-/// (`docs/plans/2026-09-02-bilinear-guide-registration.md` §4).
+/// (`docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §4).
 #[must_use]
 pub(crate) fn rule_concat(
     z_lhs: &[f32; EMBED_DIM],
@@ -163,7 +163,7 @@ pub(crate) const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
 /// These weights are untrained noise until Phase 3 gives them a training
 /// loop. The trunk used to be shared with the extraction head's expression
 /// tower; that head's shape is gone (deleted 2026-09-01; its denotation is
-/// kept, see docs/plans/2026-09-01-schedule-cost-model-denotation.md), so
+/// kept, see docs/compiler/2026-09-01-schedule-cost-model-denotation.md), so
 /// the trunk is this head's own. The only thing still shared across the
 /// crate is [`crate::nnue::factored::OpEmbeddings`], which a
 /// [`GraphAccumulator`] is built with before it reaches this struct.

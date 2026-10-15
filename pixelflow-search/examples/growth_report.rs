@@ -1,5 +1,5 @@
 //! Per-rule growth distribution over real kernels — the measurement
-//! `docs/plans/2026-08-31-guide-design-revision.md` §4.1 calls for before
+//! `docs/archive/plans/2026-08-31-guide-design-revision.md` §4.1 calls for before
 //! anyone gates a rewrite on "will this grow the graph and give me
 //! nothing": how many e-nodes does each rule actually add, per application,
 //! under full production saturation?

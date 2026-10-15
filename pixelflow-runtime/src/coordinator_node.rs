@@ -1,7 +1,7 @@
 //! The render coordinator's own green node: a second [`Node`](actor_scheduler::mealy::Node) on
 //! the vsync green-host thread.
 //!
-//! Step 5c of `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §8: [`RenderCoordinator`]
+//! Step 5c of `docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §8: [`RenderCoordinator`]
 //! (`render_coordinator.rs`) leaves `EngineCore` and runs here as a `Transducer`
 //! ([`CoordinatorCore`]) with its own `Wiring` ([`CoordinatorWiring`]) sending directly to the
 //! renderer, the driver, and vsync's telemetry lane. Render completions arrive straight from

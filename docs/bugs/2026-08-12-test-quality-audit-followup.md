@@ -11,12 +11,12 @@ took that target directly rather than diffing since the last commit — the
 branch was already even with `main` at `e2c0c5f`, so there was no new
 delta to static-audit.
 
-## Static audit: STYLE.md compliance of the two target files' existing tests
+## Static audit: ../process/STYLE.md compliance of the two target files' existing tests
 
 Before adding coverage, read every existing test in
 `screen.rs`'s inline `mod tests` (35 tests) and the `selection_logic_tests`/
 `get_selected_text_tests` submodules of `core-term/src/term/tests.rs` (13
-tests) against STYLE.md's "Test Public API" rule and this series'
+tests) against ../process/STYLE.md's "Test Public API" rule and this series'
 established "reads as a complete sentence" naming convention.
 
 **Public-API compliance: no violations.** `screen.rs`'s own tests

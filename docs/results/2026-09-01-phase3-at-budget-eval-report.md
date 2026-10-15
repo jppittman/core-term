@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L035.** The "Guide saves 16%+" headline is a tree-cost number; read in DAG units it is a smaller DEV win and a loss on every structured family, and it was never taken on a shipped shader. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L035.** The "Guide saves 16%+" headline is a tree-cost number; read in DAG units it is a smaller DEV win and a loss on every structured family, and it was never taken on a shipped shader. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Phase 3 at-budget evaluation on DEV (ablation ladder against the registered claim)
 
@@ -11,7 +11,7 @@
 > tree total (#1117). Full statement:
 > [docs/results/2026-09-02-phase3-instrument-changes.md](2026-09-02-phase3-instrument-changes.md).
 
-**Date:** 2026-09-01 · **Registration:** `docs/plans/2026-09-01-phase3-registration.md` (unrevised) · **Authority:** `docs/plans/2026-08-31-guide-design-revision.md` §5
+**Date:** 2026-09-01 · **Registration:** `docs/archive/plans/2026-09-01-phase3-registration.md` (unrevised) · **Authority:** `docs/archive/plans/2026-08-31-guide-design-revision.md` §5
 
 Per-expression rows: `docs/results/2026-09-01-phase3-at-budget-eval.jsonl` (394 expressions: blitz 30, classical 334, rapid 30). Skipped: none.
 

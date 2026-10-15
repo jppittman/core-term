@@ -54,6 +54,6 @@ the language ("No colour in the language").
   caller (D13 moves the grid up).
 
 ## Decided in
-`docs/plans/2026-09-06-kernel-with-a-lattice.md` (S2, S3b, S4a),
-`docs/plans/2026-09-25-the-language-is-kernel.md` (D13, D16),
-`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
+`docs/archive/plans/2026-09-06-kernel-with-a-lattice.md` (S2, S3b, S4a),
+`docs/language/2026-09-25-the-language-is-kernel.md` (D13, D16),
+`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.

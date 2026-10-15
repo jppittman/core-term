@@ -9,7 +9,7 @@
   the lattice. It is part of the program, not an argument." JP: "the lattice
   is part of the schedule." Its rows, batches and lanes are the schedule's
   traversal, not folds the kernel is wrapped in: each backend owns them
-  (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §3).
+  (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §3).
 - **Is not:**
   - A coordinate frame. JP, 2026-09-06: "forced all of the translation to be
     contramaps plus uniforms". With an origin, `index ∘ collapse = f ∘
@@ -270,7 +270,7 @@
 
 - **Is:** nothing in the language. A mask's implied rectangle existed to feed a
   domain split, which emits a second program. `If` has one shape, guards and
-  one select (`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §1), so the
+  one select (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §1), so the
   split is deleted.
 - **Lives:** nothing. The range analysis (D1) was deleted with the split;
   the split was never built (D2) and is not to be built.

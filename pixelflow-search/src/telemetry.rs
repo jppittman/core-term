@@ -89,7 +89,7 @@ pub struct SaturationInvocation<'a> {
     /// `Provenance::union_count()` (the journal) as an independent
     /// cross-check; that made the always-on `saturation-telemetry` feature
     /// transitively require the journal, which
-    /// docs/plans/2026-09-01-production-budget-determinism.md rules out —
+    /// docs/archive/plans/2026-09-01-production-budget-determinism.md rules out —
     /// `pixelflow-compiler` and `core-term` must be able to enable
     /// `saturation-telemetry` without pulling `provenance-journal` in.
     pub union_count: usize,
@@ -150,7 +150,7 @@ pub fn record(inv: SaturationInvocation<'_>) {
 /// always correct — but it is an optimization that silently did not happen,
 /// and under units it can happen per unit: one glyph holding a construct the
 /// graph does not model is linked unoptimized while the rest of the font
-/// optimizes (docs/plans/2026-09-25-the-language-is-kernel.md §4, O1). So it
+/// optimizes (docs/language/2026-09-25-the-language-is-kernel.md §4, O1). So it
 /// is a record, not a silence. Its shape differs from [`record`]'s — it has
 /// no budget, no stop and no extraction — and the `declined` field is what
 /// tells the two apart.

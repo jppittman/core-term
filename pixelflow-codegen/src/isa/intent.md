@@ -48,12 +48,12 @@ in `lib.rs`, and `detect().name()` in `pixelflow-pipeline` and `pixelflow-runtim
 ## Behind
 - `emit::compile_native` calls `detect()` itself: the tier is an ambient read
   where DENOTATION §8 has it an argument of `P`. `EmitCtx { isa }` is
-  one-pipeline C1 (`Proposed`, `docs/plans/2026-09-24-one-pipeline.md`).
+  one-pipeline C1 (`Proposed`, `docs/language/2026-09-24-one-pipeline.md`).
 - `xtask/src/main.rs` (`ISA_LEVELS`) keeps its own copy of the tier-to-feature
   table, since `xtask` does not depend on `pixelflow-codegen`.
 - The CI job is still named "ISA matrix (SSE2/AVX2/AVX-512)" for branch
   protection though SSE2 is gone (BACKLOG C7, still open).
 
 ## Decided in
-`docs/plans/2026-09-22-the-isa-is-decided-at-startup.md` (JP, 2026-09-22),
+`docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md` (JP, 2026-09-22),
 `docs/DENOTATION.md` §8 and §10, `docs/BACKLOG.md` C7.

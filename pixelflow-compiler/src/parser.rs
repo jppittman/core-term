@@ -97,7 +97,7 @@
 //! or a `fn`: a parameter, a `let` or an index of that name is refused. `X`
 //! and `Y` appear only in an entry; a helper takes its coordinates as
 //! arguments
-//! (docs/plans/2026-09-25-the-language-is-kernel.md §1.2). A fold
+//! (docs/language/2026-09-25-the-language-is-kernel.md §1.2). A fold
 //! (plan §1.5) denotes ⊕ of its body over `i ∈ [a, b)`, and its monoid's
 //! identity when the range is empty; the syntax never unrolls it.
 //!

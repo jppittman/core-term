@@ -11,7 +11,7 @@
 //! and by which extraction stage, the witness was let go.
 //!
 //! Denotation (written first, not revised after the run):
-//! `docs/plans/2026-09-08-extraction-witnesses.md`.
+//! `docs/archive/plans/2026-09-08-extraction-witnesses.md`.
 //! Results: `docs/results/2026-09-08-extraction-witnesses.{md,csv,json}`.
 
 use std::collections::{BTreeMap, HashMap};

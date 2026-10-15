@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L054.** The "what the class cap costs" figures (median 8.66%, p90 13.22%, max 15.07% vs a 4x-lifted reference) are tree-DP costs whose sign the chrome clock contradicted (12x more classes = +15% ns/px, L072); the stop-reason counts, the 8,446-application regime and the "more saturation extracts worse code" rows (L053, L055, L056) stand. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L054.** The "what the class cap costs" figures (median 8.66%, p90 13.22%, max 15.07% vs a 4x-lifted reference) are tree-DP costs whose sign the chrome clock contradicted (12x more classes = +15% ns/px, L072); the stop-reason counts, the 8,446-application regime and the "more saturation extracts worse code" rows (L053, L055, L056) stand. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Production saturation telemetry: does the budget bind on real kernels? (2026-09-01)
 
@@ -268,7 +268,7 @@ of 20,000 applications, far beyond anything the Guide registration's budgets nam
 193 rows, production's own `apps` (rule applications actually fired before its stop, whatever
 the reason) has median **8,446**, p90 **22,050**, max **40,606**. Neither of these is directly
 comparable to the Guide registration's synthetic budgets (`origin/claude/phase3-guide`,
-`docs/plans/2026-09-01-phase3-registration.md`: at **B=100 applications the median synthetic
+`docs/archive/plans/2026-09-01-phase3-registration.md`: at **B=100 applications the median synthetic
 classical expression is 48.5% worse than its own 4B state**) — that corpus is not real core-term
 kernels, and the ~85× gap between B=100 and production's median 8,446 applications is itself a
 finding: real kernels are far larger, in applications terms, than the synthetic corpus the

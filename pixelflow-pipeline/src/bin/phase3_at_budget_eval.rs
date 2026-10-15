@@ -1,7 +1,7 @@
 //! The at-budget evaluation of the Phase 3 registered claim, on DEV.
 //!
-//! Implements `docs/plans/2026-08-31-guide-design-revision.md` §5 against the
-//! committed registration `docs/plans/2026-09-01-phase3-registration.md`
+//! Implements `docs/archive/plans/2026-08-31-guide-design-revision.md` §5 against the
+//! committed registration `docs/archive/plans/2026-09-01-phase3-registration.md`
 //! (nothing in that document is revised here). Every arm of the ablation
 //! ladder goes through the ONE anytime-curve definition
 //! ([`pixelflow_search::egraph::anytime`]); the arms differ only in how the
@@ -51,7 +51,7 @@
 //!
 //! Reads `corpus_dev.bin` by default, or a `--corpus` file of DEV-only
 //! out-of-distribution families (round 1b:
-//! `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md`,
+//! `docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md`,
 //! `corpus_dev_ood.bin`, one family selected with `--name-prefix`). Whatever
 //! is loaded is fence-checked against `corpus_train.bin` (a structural
 //! collision with TRAIN is a hard error); `corpus_final.bin` is never opened
@@ -115,7 +115,7 @@ use pixelflow_search::nnue::guide::{CandidateSummary, SaturationGuide};
 struct Args {
     /// Directory holding `corpus_dev.bin` (default corpus) and
     /// `corpus_train.bin` (fence source — read whenever any corpus is
-    /// loaded, per docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §3).
+    /// loaded, per docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §3).
     #[arg(long, default_value = "pixelflow-pipeline/data")]
     corpus_dir: String,
 
@@ -134,7 +134,7 @@ struct Args {
     name_prefix: String,
 
     /// Emit the registered op-composition stratum
-    /// (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §2)
+    /// (docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §2)
     /// per expression in the JSONL rows, and per-stratum summary tables
     /// (population counts over the full classical corpus, plus per-stratum
     /// D_A statistics for whatever classical rows this run evaluated).
@@ -148,7 +148,7 @@ struct Args {
     )]
     checkpoint: String,
 
-    /// `train_guide_r2g` checkpoint (`docs/plans/2026-09-01-guide-return-to-go.md`
+    /// `train_guide_r2g` checkpoint (`docs/archive/plans/2026-09-01-guide-return-to-go.md`
     /// §3.3). When set, the claim arm is [`LinearReturnGuide`] loaded from
     /// this path and `--checkpoint` is not opened. The arm keeps the `linear`
     /// key in every row and aggregate (schema stability for `read_rows` /
@@ -175,7 +175,7 @@ struct Args {
     /// unbounded. Applied to BOTH the selection and the aggregation, so a
     /// run and a `--aggregate-only` re-read of its rows report the same
     /// population. Round 3's registered training regime
-    /// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3) is node band
+    /// (docs/archive/plans/2026-09-01-guide-return-to-go.md §2b.3) is node band
     /// 101-1000: `--min-expr-nodes 101 --max-expr-nodes 1000`.
     #[arg(long, default_value_t = 0)]
     min_expr_nodes: usize,
@@ -232,7 +232,7 @@ struct Args {
 }
 
 // ---------------------------------------------------------------------------
-// Registered constants (docs/plans/2026-09-01-phase3-registration.md §4–§6).
+// Registered constants (docs/archive/plans/2026-09-01-phase3-registration.md §4–§6).
 // Not adjustable after the fact; restated here so the report is self-checking.
 // ---------------------------------------------------------------------------
 
@@ -292,7 +292,7 @@ fn config_fingerprint(args: &Args, guided_grid: &[usize], dev_corpus: &Path) -> 
 }
 
 // ---------------------------------------------------------------------------
-// Round-1b registered constants (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md
+// Round-1b registered constants (docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md
 // §1). `D_A(S, B) = m_A^S(B) - m_A^DEV(B)`; `m_A^DEV(B)` below is quoted
 // verbatim from Round 1's own DEV-overall classical result (PR #1084,
 // `2026-09-01-phase3-at-budget-eval.json`, `tiers[].arms[].ratio_vs_unguided_at_b.median`)
@@ -348,7 +348,7 @@ const TRIG_RULE_IDX: [usize; 11] = [20, 30, 31, 32, 33, 34, 36, 37, 38, 39, 40];
 /// the same rules. A same-length reorder of `all_rules()` would repoint
 /// every index silently and there is nothing else in the run that would
 /// notice — which is exactly the failure
-/// docs/plans/2026-09-02-phase3-forward-port.md §2.2 is about.
+/// docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2 is about.
 const TRIG_RULE_LABELS: [&str; 11] = [
     "doubling",
     "odd-negation(Sin)",
@@ -722,7 +722,7 @@ struct AtBudgetDiag {
     #[serde(default)]
     /// Per-rule firings, keyed by CANONICAL RULE LABEL — never by a
     /// position in `all_rules()`, which a same-length reorder repoints
-    /// silently (docs/plans/2026-09-02-phase3-forward-port.md §2.2). `None`
+    /// silently (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2). `None`
     /// on a row written before this key existed, which every consumer here
     /// refuses loudly rather than reading as "no firings".
     by_rule: Option<BTreeMap<String, RuleFiring>>,
@@ -2313,7 +2313,7 @@ fn write_markdown(report: &Report, path: &Path, jsonl: &str) {
     md.push_str(
         "# Phase 3 at-budget evaluation on DEV (ablation ladder against the registered claim)\n\n",
     );
-    md.push_str("**Date:** 2026-09-01 · **Registration:** `docs/plans/2026-09-01-phase3-registration.md` (unrevised) · **Authority:** `docs/plans/2026-08-31-guide-design-revision.md` §5\n\n");
+    md.push_str("**Date:** 2026-09-01 · **Registration:** `docs/archive/plans/2026-09-01-phase3-registration.md` (unrevised) · **Authority:** `docs/archive/plans/2026-08-31-guide-design-revision.md` §5\n\n");
     md.push_str(&format!(
         "Per-expression rows: `{jsonl}` ({} expressions: {}). Skipped: {}.\n\n",
         report.n_rows,

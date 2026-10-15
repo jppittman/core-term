@@ -54,6 +54,6 @@ optimizer)`. Behind them: `parser.rs` (tokens to `ast.rs`),
   value rides `Param(u8)`, at most 256, against the 64-bit control plane (A5, D2).
 
 ## Decided in
-`docs/plans/2026-09-08-macro-tier-is-arena-native.md`,
-`docs/plans/2026-09-25-the-language-is-kernel.md` (§1.1–§1.5, §1.8, D2, D14),
-`docs/plans/2026-09-24-one-pipeline.md` (§1.2, M1–M3), `docs/DENOTATION.md` §2, §8.
+`docs/archive/plans/2026-09-08-macro-tier-is-arena-native.md`,
+`docs/language/2026-09-25-the-language-is-kernel.md` (§1.1–§1.5, §1.8, D2, D14),
+`docs/language/2026-09-24-one-pipeline.md` (§1.2, M1–M3), `docs/DENOTATION.md` §2, §8.

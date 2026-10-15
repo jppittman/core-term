@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Join two `phase3_at_budget_eval` runs per set into the four-arm R2G ladder.
 
-docs/plans/2026-09-01-guide-return-to-go.md §7: arms `unguided`, `control`
+docs/archive/plans/2026-09-01-guide-return-to-go.md §7: arms `unguided`, `control`
 (PerRuleRateGuide), `linear` (frozen Round-1 strict-bit LinearCandidateGuide)
 and `r2g` (LinearReturnGuide). The harness evaluates one claim arm per run
 (its `linear` slot; `context.claim_guide` says which Guide ran), so the

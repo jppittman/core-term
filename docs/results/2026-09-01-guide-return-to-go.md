@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L045.** The Claim B delta is a tree-cost difference on a generated corpus; the negative result ("the target was not the bottleneck") is not re-taken. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L045.** The Claim B delta is a tree-cost difference on a generated corpus; the negative result ("the target was not the bottleneck") is not re-taken. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Guide return-to-go (linear first): the learned credit is not real — R2G ties the strict bit on every set and tier, and its advantage has zero rank correlation with the leave-one-out counterfactual (2026-09-01)
 
@@ -11,8 +11,8 @@
 > tree total (#1117). Full statement:
 > [docs/results/2026-09-02-phase3-instrument-changes.md](2026-09-02-phase3-instrument-changes.md).
 
-**Registration:** `docs/plans/2026-09-01-guide-return-to-go.md` (§7 unrevised; §7.1 appended there against its gates).
-**Authority (unchanged):** `docs/plans/2026-09-01-phase3-registration.md` (Round 1), `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` (Round 1b).
+**Registration:** `docs/archive/plans/2026-09-01-guide-return-to-go.md` (§7 unrevised; §7.1 appended there against its gates).
+**Authority (unchanged):** `docs/archive/plans/2026-09-01-phase3-registration.md` (Round 1), `docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` (Round 1b).
 **Branch:** `claude/phase3-r2g` on top of `claude/phase3-domain-shift` (PR #1091). Companion files: `2026-09-01-guide-return-to-go.{json,csv}` (the four-arm ladder, per set × tier × arm), `2026-09-01-counterfactual-credit.{md,json,jsonl}` (the credit table, per sampled application), `2026-09-01-train-guide-r2g-report.{md,json}` + `-ablation-{raw,b200,rank}.json` (training), `2026-09-01-skew-test-linear-return-guide.json`, `2026-09-01-r2g-ladder-{strict,r2g}-{dev,sh,bezier}.{jsonl,json,-report.md}` (the two harness halves), `2026-09-01-r2g-dataset.{md,json}` (the mint), `journal.jsonl` (six harness records + one summary record).
 
 Reproduce (every number is deterministic under `CostModel::latency_prior()`; no wall-clock enters any metric):
@@ -20,7 +20,7 @@ Reproduce (every number is deterministic under `CostModel::latency_prior()`; no 
 cargo build --release -p pixelflow-pipeline --features training
 T=./target/release/train_guide_r2g; D=pixelflow-pipeline/data; R=docs/results
 $T --train $D/r2g_train.jsonl --dev $D/r2g_dev.jsonl --lr 0.0001 --grad-clip 1 --target centered --label-b 100 --loss mse \
-   --out-checkpoint $D/guide_checkpoint_r2g_v1.json --report-json $R/2026-09-01-train-guide-r2g-report.json --report-md $R/2026-09-01-train-guide-r2g-report.md
+   --out-checkpoint $D/guide_checkpoint_r2g_v1.json --report-json $R/2026-09-01-train-guide-r2g-report.json --report-md $2026-09-01-train-guide-r2g-report.md
 ./target/release/skew_test_linear_guide --model return --dev $D/r2g_dev.jsonl --checkpoint $D/guide_checkpoint_r2g_v1.json --n 5000 --report-json $R/2026-09-01-skew-test-linear-return-guide.json
 ./target/release/counterfactual_credit --r2g-checkpoint $D/guide_checkpoint_r2g_v1.json --strict-checkpoint $D/guide_checkpoint_strict_v1.json --train-guide-report $R/2026-09-01-train-guide-report.json
 B=./target/release/phase3_at_budget_eval   # strict-bit half: default --checkpoint; R2G half: --r2g-checkpoint $D/guide_checkpoint_r2g_v1.json

@@ -6,7 +6,7 @@
 //! `pixelflow-core` on 2026-08-02 (it was not IR and not codegen — it lived
 //! beside `Field`, which it backed). It backed a per-batch "combinator"
 //! evaluation tier that the JIT superseded; both the tier and the abstraction
-//! are gone (docs/plans/2026-09-06-kernel-with-a-lattice.md). `Field` now
+//! are gone (docs/archive/plans/2026-09-06-kernel-with-a-lattice.md). `Field` now
 //! reaches its two remaining constructors as inherent methods on
 //! `pixelflow-core`'s own `pub(crate)` lane types, with no trait at all.
 
@@ -68,7 +68,7 @@ pub use store::KernelStore;
 /// What holds it back is representation coupling, not lifecycle — its
 /// mutating methods take `&mut self` but are already pure at every call
 /// site, so `Builder` would serve them. See
-/// `docs/plans/2026-09-09-exprarena-on-dag.md` for the actual blockers and
+/// `docs/archive/plans/2026-09-09-exprarena-on-dag.md` for the actual blockers and
 /// the staging around them.
 ///
 /// A *new* graph should reach for this rather than hand-roll another `Vec`

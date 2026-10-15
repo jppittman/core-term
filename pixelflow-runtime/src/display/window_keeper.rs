@@ -2,7 +2,7 @@
 //!
 //! The buffer is **pulled, not pushed**: this type allocates it, keeps it at rest, lends it out
 //! on request, and takes it back after presentation. See §8 of
-//! `docs/designs/pixelflow-runtime-engine-mesh-migration.md` for why that direction rather than
+//! `docs/runtime/pixelflow-runtime-engine-mesh-migration.md` for why that direction rather than
 //! the reverse — briefly, the OS decides the size, and the intended zero-copy endgame has the
 //! renderer writing into memory only the driver can obtain.
 //!

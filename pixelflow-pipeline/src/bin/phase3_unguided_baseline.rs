@@ -1,8 +1,8 @@
 //! Unguided anytime baseline curves for the Phase 3 pre-registration.
 //!
 //! Produces the UNGUIDED side of the pre-registered Phase 3 experiment
-//! (docs/plans/2026-08-31-guide-design-revision.md §5, registration in
-//! docs/plans/2026-09-01-phase3-registration.md) — the curves the budget
+//! (docs/archive/plans/2026-08-31-guide-design-revision.md §5, registration in
+//! docs/archive/plans/2026-09-01-phase3-registration.md) — the curves the budget
 //! tier(s) B and the improvement threshold Y are fixed FROM, before any
 //! Guide training exists. Nothing here scores, trains, or loads a Guide.
 //!

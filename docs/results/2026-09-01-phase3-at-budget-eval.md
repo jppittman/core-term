@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L035.** The registered claim is judged here in tree cost (pre-#1192) at a budget production never runs in; the DAG reading is a smaller DEV win and a loss on every structured family. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L035.** The registered claim is judged here in tree cost (pre-#1192) at a budget production never runs in; the DAG reading is a smaller DEV win and a loss on every structured family. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Phase 3 at-budget evaluation on DEV: the registered claim holds, and per-rule base rates carry most of it (2026-09-01)
 
@@ -43,8 +43,8 @@ Every step is seeded and deterministic, so a clean checkout reproduces the same 
 refuses to resume into rows written under a different guided grid, checkpoint, control
 report, or sampling configuration.
 
-This is the §5 experiment of `docs/plans/2026-08-31-guide-design-revision.md`, run against the
-committed registration `docs/plans/2026-09-01-phase3-registration.md` (nothing in it was revised;
+This is the §5 experiment of `docs/archive/plans/2026-08-31-guide-design-revision.md`, run against the
+committed registration `docs/archive/plans/2026-09-01-phase3-registration.md` (nothing in it was revised;
 a results section is appended to it per its own rule). **DEV only** — the tier every selection
 decision is allowed to touch; `corpus_final.bin` was not opened. Every number below is a
 deterministic `CostModel::latency_prior()` extraction cost or a count; no wall-clock appears in

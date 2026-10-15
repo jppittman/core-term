@@ -776,7 +776,7 @@ mod tests {
 
     /// Pins the packed program's size, in the spirit of
     /// `reads_of_one_buffer_share_a_slot_but_not_nodes`. Before `ExprArena`
-    /// hash-consed (Stage C of docs/plans/2026-09-09-exprarena-on-dag.md)
+    /// hash-consed (Stage C of docs/archive/plans/2026-09-09-exprarena-on-dag.md)
     /// this was 667 = 4 x 157 (each `or` re-splices a whole channel
     /// fragment, and node sharing across the four re-splices was the
     /// e-graph's call, not this arena's) + 4 x 9 (each channel's pack

@@ -14,7 +14,7 @@
 //! else.
 //!
 //! That is exactly the precondition of law **L4** in
-//! `docs/plans/2026-09-02-optimizer-api.md`: every rule preserves denotation
+//! `docs/archive/plans/2026-09-02-optimizer-api.md`: every rule preserves denotation
 //! (L1), saturation only ever adds equalities (L2), so any policy that orders
 //! or truncates leaves the graph holding a *subset* of the equalities an
 //! exhaustive run would hold — never a different one — and extraction picks a
@@ -33,7 +33,7 @@
 //! 2. Builds each match's [`CandidateKey`] and skips any key already seen in
 //!    an EARLIER round of this same episode, without ever handing it to the
 //!    Guide — the "dedup before scoring" step
-//!    `docs/plans/2026-08-31-guide-design-revision.md` §2.2 measured as the
+//!    `docs/archive/plans/2026-08-31-guide-design-revision.md` §2.2 measured as the
 //!    dominant per-round cost (90.4% of raw matches are an idempotent
 //!    re-fire of an already-installed rewrite, from rules like
 //!    `commutative`/`associative` that carry no "already applied" check).

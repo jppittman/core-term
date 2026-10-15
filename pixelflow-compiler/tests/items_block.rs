@@ -1,5 +1,5 @@
 //! The items form of `kernel!`: a block of `const`s, helpers and entries
-//! (docs/plans/2026-09-25-the-language-is-kernel.md §1.2, Phase B1).
+//! (docs/language/2026-09-25-the-language-is-kernel.md §1.2, Phase B1).
 //!
 //! What a body *means* is pinned against rustc in `rustc_is_the_oracle.rs`.
 //! This file pins the block's shape: several entries sharing a helper, a

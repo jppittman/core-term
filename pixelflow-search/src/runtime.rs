@@ -17,7 +17,7 @@
 //!
 //! `pixelflow-ir` itself must stay free of a `pixelflow-search` dependency
 //! (the suckless constraint from
-//! docs/plans/2026-07-20-kernel-unification.md), so this cannot live inside
+//! docs/language/2026-07-20-kernel-unification.md), so this cannot live inside
 //! `jit_cache`. Callers that want optimized runtime kernels — today,
 //! `pixelflow-core`'s `Lattice::bake` — call this function before handing the
 //! arena to `jit_cache`.
@@ -29,7 +29,7 @@
 //! reads it as an opaque leaf, and linked back in after extraction. That is
 //! how a program too big for one e-graph — a font, about 160k classes
 //! inserted before any rule fires, over [`HARD_MINTED_LIMIT`] — is optimized
-//! a glyph at a time (docs/plans/2026-09-25-the-language-is-kernel.md §1.8,
+//! a glyph at a time (docs/language/2026-09-25-the-language-is-kernel.md §1.8,
 //! §4 O1).
 //!
 //! [`HARD_MINTED_LIMIT`]: crate::egraph::HARD_MINTED_LIMIT
@@ -89,7 +89,7 @@
 //! the result does not depend on how many there are: each unit's output is a
 //! function of its structure, the optimizer's fingerprint and the shape (the
 //! cache already relies on that, and the budget counts applications, never
-//! time — docs/plans/2026-09-01-production-budget-determinism.md), results
+//! time — docs/archive/plans/2026-09-01-production-budget-determinism.md), results
 //! land by index, and the link walks in the term's own order.
 //!
 //! # Saturation telemetry
@@ -159,7 +159,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// whether the surviving extraction keeps the fold or the extractor's DP
 /// unrolled it is a cost/tie-break question for extraction, not something
 /// this function decides (stage 2c,
-/// docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md).
+/// docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md).
 ///
 /// `Uniform` leaves are representable like `Buffer`: opaque to every rule,
 /// hash-consed by identity, redeclared by extraction. Nothing folds one.
@@ -2833,7 +2833,7 @@ pub(crate) mod production_telemetry {
 /// [`Optimizer::mask`](crate::egraph::Optimizer::mask)) are all
 /// `Option`s that [`Optimizer::production`](crate::egraph::Optimizer::production)
 /// leaves `None`, so adding one may not move a single production byte. L4
-/// (`docs/plans/2026-09-02-optimizer-api.md`) says a lever cannot change
+/// (`docs/archive/plans/2026-09-02-optimizer-api.md`) says a lever cannot change
 /// *meaning*; this says the stronger thing a port needs — that it did not
 /// change the *term*, either.
 ///

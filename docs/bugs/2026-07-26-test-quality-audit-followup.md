@@ -25,7 +25,7 @@ only re-scanned trig.rs + compare.rs).
 `actor-scheduler/src/kubelet.rs` (item 2, `ManagedPod`/`poll_interval`
 private-field tests) is now moot: the module was removed entirely in a
 refactor to a Mealy-transducer actor model
-(`docs/designs/actor-scheduler-mealy-transducer.md`).
+(`docs/runtime/actor-scheduler-mealy-transducer.md`).
 
 ## Fixed this pass (branch `claude/nifty-maxwell-sa39pa`)
 
@@ -75,7 +75,7 @@ refactor to a Mealy-transducer actor model
    without explicit permission — not something to do unreviewed). Did trim
    the surrounding comment block, which was ~10 lines of rambling,
    self-doubting "For now, let's assume..." narration about a since-resolved
-   design question — a direct violation of docs/STYLE.md's own rules against
+   design question — a direct violation of docs/process/STYLE.md's own rules against
    historical/uncertain commentary.
 
 All changed/added tests verified passing (`cargo test -p core-term --lib`:

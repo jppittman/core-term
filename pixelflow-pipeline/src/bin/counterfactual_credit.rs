@@ -1,7 +1,7 @@
 //! Counterfactual replay: does removing one application actually help or
 //! hurt the extraction at budget B, and do the hand-drawn hindsight bounds
 //! (loose / tight / strict / strict-by-output-class) agree with that ground
-//! truth? (docs/plans/2026-09-01-guide-return-to-go.md §4, the validation
+//! truth? (docs/archive/plans/2026-09-01-guide-return-to-go.md §4, the validation
 //! half of the R2G redirect — this binary does not touch §1-§3's training
 //! target or model; it only scores the bounds against a measured
 //! counterfactual.)
@@ -148,7 +148,7 @@ struct Args {
 
     /// Lower bound (inclusive) on an expression's arena node count; `0` =
     /// unbounded. Round 3's registered regime
-    /// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3) is the band
+    /// (docs/archive/plans/2026-09-01-guide-return-to-go.md §2b.3) is the band
     /// 101-1000 where guided orderings measurably disagree — the credit
     /// question is only meaningful where the orderings differ at all.
     #[arg(long, default_value_t = 0)]

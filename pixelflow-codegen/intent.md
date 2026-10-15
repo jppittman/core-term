@@ -53,6 +53,6 @@ crate that names a lane or a width.
 - `ScheduledOp::Context(u16)`: a 16-bit control-plane index, no profiler cited.
 
 ## Decided in
-`docs/DENOTATION.md` §7, §10; `docs/plans/2026-10-15-kernels-evaluate-kernels.md`
-§3; `docs/plans/2026-10-15-a-schedule-is-a-factorization.md`;
-`docs/plans/2026-09-22-the-isa-is-decided-at-startup.md`.
+`docs/DENOTATION.md` §7, §10; `docs/language/2026-10-15-kernels-evaluate-kernels.md`
+§3; `docs/codegen/2026-10-15-a-schedule-is-a-factorization.md`;
+`docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md`.

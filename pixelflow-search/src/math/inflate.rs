@@ -1,5 +1,5 @@
 //! Rule-set inflation for the Phase 3 Round 2 rule-scaling harness
-//! (`docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2, §8).
+//! (`docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2, §8).
 //!
 //! **Harness-only.** Nothing here is referenced by [`super::all_rules`], and
 //! nothing here changes production behavior: `all_rules()` still returns
@@ -51,7 +51,7 @@ impl std::fmt::Display for InflationMode {
 }
 
 /// Sweep order for an inflated rule set (Round 2 v2,
-/// `docs/plans/2026-09-01-phase3-round2-registration-v2.md`).
+/// `docs/archive/plans/2026-09-01-phase3-round2-registration-v2.md`).
 ///
 /// `Append` is Round 2 v1's order: the 62-rule production prefix in
 /// `all_rules()` order, inflation appended at indices ≥ 62. It is kept only
@@ -71,7 +71,7 @@ pub enum RuleOrder {
     Append,
     /// v2 default: base + inflation shuffled together by this seed.
     Interleave(u64),
-    /// v3 (`docs/plans/2026-09-01-phase3-round2-registration-v3.md` §6b):
+    /// v3 (`docs/archive/plans/2026-09-01-phase3-round2-registration-v3.md` §6b):
     /// the base-62 rules, reordered to the exact relative order they occupy
     /// inside `Interleave(seed)` of the `total`-rule inflated set — i.e. the
     /// subsequence of the interleaved vector restricted to base indices.
@@ -97,7 +97,7 @@ pub enum RuleOrder {
     Shuffled(u64),
     /// v3: a fixed, hand-derived heuristic reorder of the base-62 — the
     /// harness-selectable form of the production quick-win candidate named in
-    /// `docs/plans/2026-09-01-phase3-round2-registration-v2.md`'s §6
+    /// `docs/archive/plans/2026-09-01-phase3-round2-registration-v2.md`'s §6
     /// orchestrator finding.
     ///
     /// The order itself is **not defined here.** v3's §6b finding was
@@ -110,7 +110,7 @@ pub enum RuleOrder {
 }
 
 /// The fixed seed Round 2 v2 registers as its default interleave order
-/// (`docs/plans/2026-09-01-phase3-round2-registration-v2.md`). Encodes this
+/// (`docs/archive/plans/2026-09-01-phase3-round2-registration-v2.md`). Encodes this
 /// registration's date; chosen for a stable, greppable default, not for any
 /// statistical property beyond "one fixed seed, stated and reused everywhere
 /// v2's default order is used."
@@ -139,7 +139,7 @@ impl std::fmt::Display for RuleOrder {
 /// `"base"` alone ignores order entirely: always the unshuffled production
 /// 62. Three more `"base:"`-prefixed forms (v3) select a *reordered* base-62,
 /// still `|R| = 62`, for the order-effect-in-isolation and confound-control
-/// measurements (`docs/plans/2026-09-01-phase3-round2-registration-v3.md` §6b):
+/// measurements (`docs/archive/plans/2026-09-01-phase3-round2-registration-v3.md` §6b):
 /// - `"base:matched:<seed>:<total>"` → `RuleOrder::OrderMatchedBase(seed, total)`
 ///   — the base rules in the relative order they occupy inside
 ///   `Interleave(seed)` of the `total`-rule inflated set; the reference each
@@ -231,7 +231,7 @@ fn parse_base_order(s: &str) -> Option<RuleOrder> {
 impl RuleSetSpec {
     /// Parse `"base"` | `"dup:<count>[:<order>]"` | `"comp:<count>[:<order>]"`.
     /// `<count>` is the TOTAL `|R|`, matching every column in
-    /// `docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §3's grid.
+    /// `docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §3's grid.
     /// `<order>` is `"append"` (v1 reproduction) or `"interleave:<seed>"`;
     /// omitted, it defaults to `Interleave(DEFAULT_INTERLEAVE_SEED)`.
     pub fn parse(s: &str) -> Result<Self, RuleSetSpecError> {
@@ -302,7 +302,7 @@ pub fn rule_set_fingerprint(rules: &[Box<dyn Rewrite>]) -> RuleSetFingerprint {
     // configuration* (FNV over `RuleId`s, i.e. over `rule_label` including
     // each rule's specialization) and is what a checkpoint or a cache is
     // keyed on. This one names a *Round 2 arm*: it is quoted verbatim in
-    // docs/plans/2026-09-01-phase3-round2-registration-v2.md §2's grid table
+    // docs/archive/plans/2026-09-01-phase3-round2-registration-v2.md §2's grid table
     // and pinned by `v2_grid_fingerprints_are_pinned` below, so it is a
     // frozen registered constant and must keep hashing exactly what it
     // hashed when those numbers were registered. Two digests over two
@@ -424,7 +424,7 @@ fn apply_order(rules: &mut [Box<dyn Rewrite>], order: RuleOrder) {
 /// (`DUPLICATE_GRID`/`COMPOSITION_GRID`), so this never has to pick a mode.
 /// Pinned by `order_matched_base_is_the_interleaved_subsequence` below.
 ///
-/// This is the reference `docs/plans/2026-09-01-phase3-round2-registration-v3.md`
+/// This is the reference `docs/archive/plans/2026-09-01-phase3-round2-registration-v3.md`
 /// §6b's H1 measures each inflated point against: `ΔU(p) = U(p) −
 /// U(OrderMatchedBase(seed, |p|))`, holding sweep order fixed so the
 /// remaining difference is attributable to `|R|` alone.
@@ -1040,7 +1040,7 @@ mod tests {
 
     /// The full v2 grid's fingerprints, pinned — both orders, every
     /// realized `|R|` point of modes (i)/(ii). These are the exact values in
-    /// `docs/plans/2026-09-01-phase3-round2-registration-v2.md` §2; a change
+    /// `docs/archive/plans/2026-09-01-phase3-round2-registration-v2.md` §2; a change
     /// here (a rule added/removed/reordered upstream, a shuffle change) must
     /// change this test AND that table together, never silently drift apart.
     /// `_app` reproduces v1's committed fingerprints exactly (the append

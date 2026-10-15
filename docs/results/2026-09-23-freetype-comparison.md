@@ -168,7 +168,7 @@ What moves it, in order of size:
 1. **The hierarchy.** A pixel row crosses a handful of `8`'s 34 pieces.
    Boxes nested around subsets of pieces, each a `select` the compiler
    lowers as a jump, make the work per batch logarithmic in the piece count
-   rather than linear: `docs/plans/2026-09-23-a-glyph-is-a-formula.md`.
+   rather than linear: `docs/archive/plans/2026-09-23-a-glyph-is-a-formula.md`.
 2. **The ownership rule above**, so a box select can own the loops inside it.
    Small, and it is what a text run needs to stop paying for every glyph at
    every pixel.

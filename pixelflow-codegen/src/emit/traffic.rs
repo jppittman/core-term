@@ -2,7 +2,7 @@
 //!
 //! Three allocator policies have now been built and rejected on a static
 //! quantity — memory operations, code bytes — that turned out not to predict
-//! wall clock (`docs/plans/2026-09-01-register-allocation-escape-hatches.md`,
+//! wall clock (`docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md`,
 //! the 2026-09-04 blocks). Fitting a cost model to time needs the static
 //! features and the time side by side, per kernel, per allocation, per tier,
 //! and this is the static half: the counts the driver produces on its way to

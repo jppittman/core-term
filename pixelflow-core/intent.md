@@ -65,7 +65,7 @@ language op goes in `pixelflow-ir`, not here.
   (kernels-evaluate-kernels §3, BACKLOG H6).
 
 ## Decided in
-`docs/DENOTATION.md` §5, §6, §11; `docs/plans/2026-09-06-kernel-with-a-lattice.md`,
-`docs/plans/2026-09-06-lattice-is-the-index.md`,
-`docs/plans/2026-09-16-collapse-is-a-fold.md`,
-`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
+`docs/DENOTATION.md` §5, §6, §11; `docs/archive/plans/2026-09-06-kernel-with-a-lattice.md`,
+`docs/archive/plans/2026-09-06-lattice-is-the-index.md`,
+`docs/archive/plans/2026-09-16-collapse-is-a-fold.md`,
+`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.

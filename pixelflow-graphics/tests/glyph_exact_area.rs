@@ -8,7 +8,7 @@
 //! path a frame draws from today, [`GlyphAtlas`] tiles baked at texel
 //! centres, and the one it will draw from, each glyph drawn by its piece
 //! count's program over its block ([`FontPrograms`],
-//! docs/plans/2026-09-25-the-language-is-kernel.md C1). Every check of a
+//! docs/language/2026-09-25-the-language-is-kernel.md C1). Every check of a
 //! renderer below runs on both. The units test
 //! ([`a_program_of_glyph_units_draws_each_glyph`]) checks neither: it pins
 //! the optimizer's units through a program of glyphs that is not a font.
@@ -34,7 +34,7 @@
 //!
 //! Coverage is the area of the pixel under ink, each piece's term written
 //! in closed form (`fonts/loop_blinn.rs`,
-//! docs/plans/2026-09-23-a-glyph-is-a-formula.md). Measured 2026-09-23 on
+//! docs/archive/plans/2026-09-23-a-glyph-is-a-formula.md). Measured 2026-09-23 on
 //! the AVX-512 and AVX2 tiers, which agree to every printed digit, when the
 //! e-graph derived that form from the integral the glyph was written as;
 //! unchanged to every printed digit, on both tiers, since the closed form is
@@ -642,7 +642,7 @@ fn assert_between_the_snaps_every_texel_is_its_area(renderer: Renderer) {
 
 /// `glyphs` under a balanced tree of `if id < k`, `first` being the id of
 /// `glyphs[0]`: a program of units to pin units by (§4 O1 of
-/// docs/plans/2026-09-25-the-language-is-kernel.md). The font itself is
+/// docs/language/2026-09-25-the-language-is-kernel.md). The font itself is
 /// not one: it is one program per piece count ([`FontPrograms`]).
 fn id_tree(id: &Kernel, glyphs: &[Kernel], first: usize) -> Kernel {
     if glyphs.len() == 1 {
@@ -658,7 +658,7 @@ fn id_tree(id: &Kernel, glyphs: &[Kernel], first: usize) -> Kernel {
 /// **A program of glyph units draws each of its glyphs.** Four glyphs under
 /// an `if id < k` tree, compiled once as one program, each glyph a *unit*
 /// (`Kernel::by_ref`) — saturated and extracted by itself, linked into the
-/// tree after extraction (docs/plans/2026-09-25-the-language-is-kernel.md
+/// tree after extraction (docs/language/2026-09-25-the-language-is-kernel.md
 /// §4, O1) — and again with the glyphs inlined, so one saturation sees them
 /// all.
 ///

@@ -9,7 +9,7 @@ unmerged pass (PR #1054); `mod.rs` (5,632 lines), `regalloc.rs`,
 unmerged PR #1154) and `executable.rs` remain untouched and are carried
 forward below.
 
-## STYLE.md compliance: test naming
+## ../process/STYLE.md compliance: test naming
 
 Both files' runtime test modules (`tests::runtime`, JIT-and-execute style)
 had non-compliant names — none read as a complete "it should ..." sentence,

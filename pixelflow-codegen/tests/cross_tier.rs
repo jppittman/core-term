@@ -1,5 +1,5 @@
 //! AVX2 and AVX-512 agree on one kernel, within tolerance, at well-conditioned
-//! points (`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`, "The
+//! points (`docs/process/2026-10-13-tests-check-the-as-if-contract.md`, "The
 //! suite this points at": *across tiers*).
 //!
 //! The tier is decided once per process from CPUID, with `PIXELFLOW_ISA` only

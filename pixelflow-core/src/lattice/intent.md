@@ -53,6 +53,6 @@
   it leaves core (the-language-is-kernel D13).
 
 ## Decided in
-`docs/DENOTATION.md` §5, §6, §11; `docs/plans/2026-09-06-lattice-is-the-index.md`,
+`docs/DENOTATION.md` §5, §6, §11; `docs/archive/plans/2026-09-06-lattice-is-the-index.md`,
 `2026-09-06-kernel-with-a-lattice.md`, `2026-09-16-collapse-is-a-fold.md`,
 `2026-10-15-kernels-evaluate-kernels.md` §2, `2026-09-25-the-language-is-kernel.md`.

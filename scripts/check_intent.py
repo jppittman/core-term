@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Every module directory carries an intent.md, and every intent.md is well formed.
 
-docs/plans/2026-10-15-intent-lives-with-the-module.md §4 asked for this check:
+docs/process/2026-10-15-intent-lives-with-the-module.md §4 asked for this check:
 a module's intent lives beside its `mod.rs` (or beside `Cargo.toml` for a
 crate), under six fixed headings, and names only files the tree has. Presence
 and shape are checked here; what the lines *claim* is review's business

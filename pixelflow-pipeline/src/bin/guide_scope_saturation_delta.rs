@@ -6,9 +6,9 @@
 //! The extraction-head program (Phase 2) refuted NNUE incrementality for
 //! *extraction* candidates: sibling candidates at one e-class differ by a
 //! median 44.9% of their edge multiset
-//! (`docs/plans/2026-08-17-egraph-vsa-nnue-research-notes.md`), so an
+//! (`docs/archive/plans/2026-08-17-egraph-vsa-nnue-research-notes.md`), so an
 //! incremental accumulator over extraction candidates buys ~2x, not the
-//! chess-engine ~98% (`docs/plans/2026-08-17-cost-model-domain.md`, A6).
+//! chess-engine ~98% (`docs/archive/plans/2026-08-17-cost-model-domain.md`, A6).
 //!
 //! The Guide (Phase 3) evaluates a *different* object: not sibling
 //! extraction candidates, but the e-graph state as rewrite rules fire during

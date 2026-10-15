@@ -60,7 +60,7 @@ impl Monoid {
     /// Sequencing, the **unit monoid**: combine is "then", identity is
     /// nothing. The algebra a lattice's folds are over — rows, batches and
     /// lanes wrapped around a [`Write`](crate::arena::ExprNode::Write)
-    /// (docs/plans/2026-09-16-collapse-is-a-fold.md §2.4). A fold over it
+    /// (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.4). A fold over it
     /// goes through the fold machinery unchanged; what its combine emits is
     /// no bytes, and the accumulator it would seed with
     /// [`identity`](Self::identity) is one nothing ever reads.
@@ -296,7 +296,7 @@ pub struct Fold {
     /// width nothing depended on, made into a cap on how many terms a
     /// reduction may have — and then because an unrolled fold could not
     /// afford more copies of its body. A surviving `Reduce` is a loop now
-    /// (docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md), so a trip
+    /// (docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md), so a trip
     /// count costs a counter, and the control plane is 64-bit: an extent
     /// describing a program is not narrowed without a measurement asking.
     lo: u32,
@@ -331,7 +331,7 @@ impl Fold {
     ///
     /// The ends stay `u32`, the width [`Fold::range`] speaks: the lane
     /// is the narrower of the two, and widening the ends (A5 of
-    /// docs/plans/2026-09-25-the-language-is-kernel.md) would not lift it.
+    /// docs/language/2026-09-25-the-language-is-kernel.md) would not lift it.
     pub const EXACT_BOUND: u32 = 1 << f32::MANTISSA_DIGITS;
 
     /// Whether `range` is a domain a fold may range over: forwards, and
@@ -360,7 +360,7 @@ impl Fold {
     /// The fold of `monoid` over `range`, binding `binder`, visiting every
     /// `stride`-th index from `range.start` — the strip-mining `pack` uses to
     /// carve a lattice's column fold into a lane-width main fold and a
-    /// narrower remainder (docs/plans/2026-09-16-collapse-is-a-fold.md §2.3).
+    /// narrower remainder (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.3).
     ///
     /// # Panics
     ///
@@ -409,7 +409,7 @@ impl Fold {
     /// instruction has to be *some* opcode, and this is the one narrow door
     /// for the one consumer past the e-graph that needs it (see
     /// `pixelflow-codegen`'s selection (`emit/select.rs`), and
-    /// docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md's "2a″" for why
+    /// docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md's "2a″" for why
     /// the combine could not live in the arena instead).
     #[must_use]
     pub fn combine_op(self) -> OpKind {

@@ -12,7 +12,7 @@
 //! before timing either. S4a deleted that lane and S4b-2 the tier it belonged
 //! to, so there is one lane and this is the whole-frame measurement of it; the
 //! cross-tier comparisons are in the plan's landing blocks
-//! (`docs/plans/2026-09-06-kernel-with-a-lattice.md`).
+//! (`docs/archive/plans/2026-09-06-kernel-with-a-lattice.md`).
 
 use std::time::Instant;
 

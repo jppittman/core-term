@@ -82,7 +82,7 @@ fn dump_production_glyph_arenas() {
             //
             // `legalize` now always wraps the kernel in the lattice's own
             // row/column/lane folds around one `Write` — the collapse ABI's
-            // shape (docs/plans/2026-09-16-collapse-is-a-fold.md) — at
+            // shape (docs/archive/plans/2026-09-16-collapse-is-a-fold.md) — at
             // whatever shape production bakes this glyph at, `tile_px ×
             // tile_px`.
             let collapse = Collapse {

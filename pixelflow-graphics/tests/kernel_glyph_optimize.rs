@@ -127,7 +127,7 @@ const SQRT_PER_PIECE: usize = 4;
 ///   area.
 ///
 /// The trip count is the piece count rounded up to a bucket
-/// (`docs/plans/2026-09-09-glyph-as-a-fold-execution.md` §S3), so a `5`-gon
+/// (`docs/graphics/2026-09-09-glyph-as-a-fold-execution.md` §S3), so a `5`-gon
 /// and an `11`-gon run `8` and `16` rows — the padding rows are exact
 /// identities of the fold (their gate is
 /// `loop_blinn::tests::a_padding_row_is_an_exact_identity_of_the_fold`), and

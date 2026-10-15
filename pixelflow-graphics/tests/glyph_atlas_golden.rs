@@ -69,7 +69,7 @@
 //! `PIXELFLOW_ISA` override and say which tier the generating host ran.
 //!
 //! **Last regenerated** when coverage became the exact area under each
-//! texel (`fonts/loop_blinn.rs`, docs/plans/2026-09-23-a-glyph-is-a-formula.md),
+//! texel (`fonts/loop_blinn.rs`, docs/archive/plans/2026-09-23-a-glyph-is-a-formula.md),
 //! on an AVX-512 host: 2824 of 42768 texels moved, 2446 of them by more than
 //! one step, worst 102 steps; the atlas's ink fell 1.1% (2083.8 → 2059.8
 //! texels) and its saturated texels from 322 to 214 — the distance ramp

@@ -46,7 +46,7 @@
   `pipeline.rs` (`Legalize`, `Lower`); `program/{scopes,ownership,layout}.rs`
   (`Nest`, `Own`, `Layout`); `emit/select.rs`, `emit/regalloc/local.rs`,
   `emit/mod.rs` (`Select`, `Allocate`, `Assemble`);
-  docs/plans/2026-10-08-selection-is-a-phase.md §0.14.
+  docs/archive/plans/2026-10-08-selection-is-a-phase.md §0.14.
 
 ### Lowering
 
@@ -292,7 +292,7 @@
   as integers in GPRs, the pool anchor as a value, and callee-saved GPRs.
 - **Lives:** `ScheduledOp::Context(u16)` (`pixelflow-codegen/src/program/mod.rs`),
   `emit::Pointer`, the general file's `Members::general` (`emit/register_file.rs`);
-  `docs/plans/2026-09-22-a-pointer-is-a-value.md`.
+  `docs/archive/plans/2026-09-22-a-pointer-is-a-value.md`.
 
 ### Constant pool (constants in codegen)
 
@@ -342,7 +342,7 @@
   minted only by `Pool::mint` and `Leases::new`; `In`, `Out` and `InOut`, the
   borrows an instruction's operand fields hold; `RegisterFile`
   (`emit/register_file.rs`), each backend's `IsaBackend::FILE`. Escape hatches:
-  `docs/plans/2026-09-01-register-allocation-escape-hatches.md`.
+  `docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md`.
 
 ### Temp
 
@@ -487,11 +487,11 @@
   instructions. Nothing about a loop needs reserved registers. A fold inside
   a fold is a loop inside a loop. The lane fold is a loop executed by lanes,
   with no counter and no back edge.
-- **Lives:** decided in `docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md`
+- **Lives:** decided in `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md`
   (R1: "the accumulate is an ordinary `Binary` def … the allocator learns
   nothing about folds"); selected as blocks by `Selector::fold`
   (`pixelflow-codegen/src/emit/select.rs`, B3 of
-  `docs/plans/2026-10-08-selection-is-a-phase.md`), whose
+  `docs/archive/plans/2026-10-08-selection-is-a-phase.md`), whose
   `Loop::trips` is the body's runs per call. The verbs that once emitted it
   inline (`Reduce` arm, `Scratch::REDUCE_TEMPS`) were deleted with the legacy
   driver (D1).
@@ -509,7 +509,7 @@
   is nothing to search for."
 - **Lives:** `Block`, `Function` and `build::Builder`
   (`pixelflow-codegen/src/emit/{mod,build}.rs`), built by B1 of
-  `docs/plans/2026-10-08-selection-is-a-phase.md`.
+  `docs/archive/plans/2026-10-08-selection-is-a-phase.md`.
   `pixelflow-codegen/src/program/layout.rs`'s blocks have no label,
   parameters or terminating instruction; selection makes the `Block`s from
   them (D3).
@@ -541,7 +541,7 @@
   (`Function::labels`). Selection mints a block's label with the block, and
   the constant pool's with the pool. Nothing is derived from the id of what
   it names. History: R0 of
-  `docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md` made a label an
+  `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md` made a label an
   item and its reference an operand; "A label should be keyed by the node it
   names" in the same plan removed the site-to-label map by keying on the
   node — minting the label with the block removes it without the label
@@ -566,7 +566,7 @@
   after extraction; codegen's operand kinds still have no type for an
   immediate, and `shift_immediate` checks the `Const` at lowering.
 - **Lives:** `Operand`, `Access` and `operands` (`emit/mod.rs`), built by B1
-  of `docs/plans/2026-10-08-selection-is-a-phase.md`. The schedule still has the
+  of `docs/archive/plans/2026-10-08-selection-is-a-phase.md`. The schedule still has the
   split below: `program::operands()` yields only vector reads, and the base
   comes from a separate `pointer_operand()` (both in
   `pixelflow-codegen/src/program/mod.rs`); selection joins them
@@ -650,7 +650,7 @@
   imports nothing from the crate (`scripts/check_emit_boundary.py` rule A) and
   is handed the encoder as a closure, so it names no instruction type. It is
   called once, by the `Assemble` pass, on the program the allocator builds.
-  `docs/designs/assembler-as-functor.md`.
+  `docs/archive/designs/assembler-as-functor.md`.
 
 ### Emitter
 

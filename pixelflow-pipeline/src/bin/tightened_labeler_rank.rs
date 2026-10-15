@@ -1,4 +1,4 @@
-//! Tightened-labeler re-measurement for Phase 3 (`docs/plans/2026-08-31-guide-design-revision.md`
+//! Tightened-labeler re-measurement for Phase 3 (`docs/archive/plans/2026-08-31-guide-design-revision.md`
 //! §3, option 3, stage-2 prep).
 //!
 //! `guide_headroom` already measures two points on the over-approximation
@@ -71,7 +71,7 @@ use pixelflow_search::egraph::{
 use pixelflow_search::math::all_rules;
 
 /// The canonical label of `id` within `rules` — see
-/// docs/plans/2026-09-02-phase3-forward-port.md §2.2 for why every rule-keyed
+/// docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2 for why every rule-keyed
 /// table in this binary is keyed by [`RuleId`] and never by a position in
 /// `all_rules()`.
 fn label_of(rules: &RuleSet, id: RuleId) -> String {

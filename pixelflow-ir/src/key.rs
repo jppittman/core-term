@@ -13,7 +13,7 @@
 //! `pixelflow-codegen`'s `jit_cache` as the compile cache's key; it depends on
 //! nothing but [`ExprArena`], and a kernel's identity is not codegen's private
 //! business — a reference names a kernel by exactly this
-//! (docs/plans/2026-09-09-composition-is-linking.md §2), so it belongs at the
+//! (docs/language/2026-09-09-composition-is-linking.md §2), so it belongs at the
 //! bottom of the dependency graph where every crate can see it.
 //!
 //! The identity is the whole [`Canonical`], not its `key` field. The bytes
@@ -517,7 +517,7 @@ mod tests {
     /// Pins `canonical`'s bytes for a root that reaches an `Nary` node — the
     /// one shape whose encoding could drift when its children stop coming
     /// from a raw slab offset (Stage A,
-    /// docs/plans/2026-09-09-exprarena-on-dag.md) and its node stops naming
+    /// docs/archive/plans/2026-09-09-exprarena-on-dag.md) and its node stops naming
     /// one at all (Stage B). Written out in the walk's own order — post-order
     /// from the root, children first to last — so the arena's push order
     /// (`v0` first) is visibly *not* what the bytes follow: `v1` is the

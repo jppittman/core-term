@@ -11,7 +11,7 @@ pub trait Platform: Actor<DisplayData, DisplayControl, DisplayMgmt> + Send + 'st
 /// A generic wrapper that turns any `PlatformOps` implementation into a `Platform` Actor.
 ///
 /// This is the adapter half of the split described in
-/// `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5.1: [`PlatformOps`] decides and
+/// `docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §5.1: [`PlatformOps`] decides and
 /// returns, this type performs the one effect it cannot — the actual send to the engine. The
 /// engine handle lives here rather than inside the ops precisely so that the ops stay drivable
 /// without an engine.

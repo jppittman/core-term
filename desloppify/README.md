@@ -135,7 +135,7 @@ it judges nothing.
 
 ## Shipped rules
 
-Drawn from `CLAUDE.md`, `AGENTS.md`, `docs/STYLE.md`, `.claude/agents/` and
+Drawn from `CLAUDE.md`, `AGENTS.md`, `docs/process/STYLE.md`, `.claude/agents/` and
 `docs/plans/`. Only rules needing judgment are here: what a deterministic
 check can catch (`cfg` encapsulation, `let _ =` on `#[must_use]`,
 conventional commits) is already a CI job or a lint, and stays there.

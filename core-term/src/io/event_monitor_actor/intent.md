@@ -56,4 +56,4 @@ private modules with `pub(super)` actors.
   drops later writes without telling the app (2026-10-15; no plan).
 
 ## Decided in
-`docs/designs/pty-actor-troupe.md` (Done; Phase 3 not pursued).
+`docs/archive/designs/pty-actor-troupe.md` (Done; Phase 3 not pursued).

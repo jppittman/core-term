@@ -1,6 +1,6 @@
 //! Generated kernels against an f64 oracle, at the points where one can be asked.
 //!
-//! The contract (docs/plans/2026-10-13-tests-check-the-as-if-contract.md, item
+//! The contract (docs/process/2026-10-13-tests-check-the-as-if-contract.md, item
 //! 1): a compiled kernel's output equals its meaning, within a tolerance, where
 //! the meaning is well-conditioned; elsewhere only its range is promised. The
 //! hand-written tests state that for one op at a time. This states it for

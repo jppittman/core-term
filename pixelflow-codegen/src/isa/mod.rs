@@ -19,7 +19,7 @@
 //! about the process, and a compile cache keyed on shape assumes it does not
 //! change under it.
 //!
-//! See docs/plans/2026-09-22-the-isa-is-decided-at-startup.md.
+//! See docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md.
 
 use std::sync::OnceLock;
 
@@ -94,7 +94,7 @@ pub fn detect() -> Isa {
             panic!(
                 "this CPU lacks `{missing}`, and the JIT has no tier below AVX2+FMA on x86-64: \
                  pixelflow emits AVX2 or AVX-512 code on x86-64 and NEON on aarch64, and \
-                 nothing narrower (docs/plans/2026-09-22-the-isa-is-decided-at-startup.md)"
+                 nothing narrower (docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md)"
             )
         });
         match requested() {

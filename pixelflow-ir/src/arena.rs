@@ -5,7 +5,7 @@
 //! opaque `Id` at this file's boundary — `ExprId`'s numeric value tracks the
 //! DAG's own dense position, so the translation is free). This eliminates
 //! per-node Arc overhead and gives O(1) `len()` for node counting.
-//! docs/plans/2026-09-09-exprarena-on-dag.md is the staged migration that got
+//! docs/archive/plans/2026-09-09-exprarena-on-dag.md is the staged migration that got
 //! it here; [`crate::dag`]'s module doc has the design this file follows.
 //!
 //! Construction interns: `push_var`/`push_binary`/… structurally
@@ -14,7 +14,7 @@
 //! answer, not a cache: nothing downstream of an arena can observe *how many*
 //! times equal content was pushed, only what is reachable from a root. What a
 //! caller must not assume any more is that a `push_*` call returns a *fresh*
-//! id — see docs/plans/2026-09-09-exprarena-on-dag.md §5.2 for the callers
+//! id — see docs/archive/plans/2026-09-09-exprarena-on-dag.md §5.2 for the callers
 //! that assumption used to reach and how each was made safe under interning.
 //!
 //! The DAG's own storage is append-only and never deallocates before the
@@ -95,7 +95,7 @@ fn dag_children(n: Node<'_, NodeData>) -> impl Iterator<Item = ExprId> + '_ {
 /// There were four. Z and W had extent 1 in every production call — an axis
 /// that never varies is not an axis — so they left the language and the
 /// scalars they carried became [`UniformDecl`]s
-/// (docs/plans/2026-09-06-lattice-is-the-index.md).
+/// (docs/archive/plans/2026-09-06-lattice-is-the-index.md).
 pub const COORD_AXES: usize = 2;
 
 /// One of the [`COORD_AXES`]: the `Var` a kernel reads a coordinate
@@ -173,7 +173,7 @@ pub(crate) const REDUCE_BINDER_BASE: u8 = COORD_AXES as u8 + RETIRED_COORD_AXES.
 /// coordinates and the retired axes, and not a number chosen on its own:
 /// the control plane is 64-bit, so the bitset is a `u64` and the binders
 /// are what it has room for. It was four, sized to the deepest kernel then
-/// written; the lattice's own three folds (docs/plans/2026-09-16-collapse-is-a-fold.md
+/// written; the lattice's own three folds (docs/archive/plans/2026-09-16-collapse-is-a-fold.md
 /// §2.1) nest *outside* a kernel's, and would have left one for the kernel.
 pub(crate) const REDUCE_BINDERS: u8 = u64::BITS as u8 - REDUCE_BINDER_BASE;
 
@@ -201,7 +201,7 @@ pub struct BufferId(pub u16);
 /// every declaration that names that memory; nothing else can collide with it.
 ///
 /// Still 32 bits, unlike [`UniformIdentity`]: buffers are leaving the
-/// language (docs/plans/2026-09-25-the-language-is-kernel.md §1.6), so their
+/// language (docs/language/2026-09-25-the-language-is-kernel.md §1.6), so their
 /// widths are left where they are rather than widened on the way out.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct BufferIdentity(u32);
@@ -354,7 +354,7 @@ impl Ord for UniformDecl {
 /// [`ExprArena`]'s n-ary slab.
 ///
 /// Fields are private: this is storage, not expression semantics, and
-/// docs/plans/2026-09-09-exprarena-on-dag.md's Stage B gate is exactly that
+/// docs/archive/plans/2026-09-09-exprarena-on-dag.md's Stage B gate is exactly that
 /// nothing outside this file can name an offset. A value can still be held
 /// and passed around freely — it is `Copy` — but the only thing anything
 /// outside `arena.rs` can do with one is match it as an opaque token; the
@@ -390,7 +390,7 @@ pub enum ExprNode {
     Uniform(UniformId),
     /// A kernel named by content — *evaluate that kernel here*. The one node
     /// composition can hold instead of splicing a body in
-    /// (docs/plans/2026-09-09-composition-is-linking.md); the referent lives
+    /// (docs/language/2026-09-09-composition-is-linking.md); the referent lives
     /// in the [`KernelStore`](crate::store::KernelStore) and
     /// [`link`](crate::passes::link) is what puts it back — its body as
     /// written ([`expand_refs`](crate::passes::expand_refs)), or as the runtime
@@ -420,7 +420,7 @@ pub enum ExprNode {
         body: ExprId,
     },
     /// A store: the one effect in the language, and the body of the folds a
-    /// lattice is (docs/plans/2026-09-16-collapse-is-a-fold.md §2.4).
+    /// lattice is (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.4).
     ///
     /// `⟦Write { row, col, lane, value }⟧` stores `value`'s first `len(lane)`
     /// lanes at `out + 4·(row·pitch + col + lane)`, where `out` and `pitch`
@@ -1011,7 +1011,7 @@ impl ExprArena {
     /// relies on. A caller that wants a node's edges goes through
     /// [`ExprArena::children`] instead, never through the n-ary slab
     /// directly — that slab, and its offsets, are `arena.rs`'s own business
-    /// (docs/plans/2026-09-09-exprarena-on-dag.md, Stage B: nothing outside
+    /// (docs/archive/plans/2026-09-09-exprarena-on-dag.md, Stage B: nothing outside
     /// this file names an offset, which is why there is no `nodes_raw`/
     /// `nary_children_raw` pair here any more).
     #[inline]
@@ -1561,7 +1561,7 @@ impl ExprArena {
     /// The two are the one definition of building a fold where its body is
     /// written — `kernel!`'s lowering, at expansion, and an entry that takes
     /// a kernel-typed argument, which runs lowering's steps when it is called
-    /// (docs/plans/2026-09-25-the-language-is-kernel.md, Phase D-a) — so a
+    /// (docs/language/2026-09-25-the-language-is-kernel.md, Phase D-a) — so a
     /// fold built either way lays out its arena the same way. Every id bound
     /// before the fold opened means the same node in the copy, which is what
     /// lets the body read them; what the placeholder read, and what renaming

@@ -108,13 +108,13 @@ const INK_RATIO_TOLERANCE: f64 = 0.02;
 /// It was 4 — the `'8'` waist smear, a spurious half-covered blot outside the
 /// glyph, from counting a crossing that does not exist. Two things removed
 /// it independently, and both hold here. On `main`, deleting a *second
-/// optimizer* (docs/plans/2026-09-08-macro-tier-is-arena-native.md): the
+/// optimizer* (docs/archive/plans/2026-09-08-macro-tier-is-arena-native.md): the
 /// macro tier used to saturate the glyph's fragments before the runtime
 /// tier saw them, and the compounded fusion choices landed on the wrong side
 /// of the quadratic solver's `disc >= 0` knife edge at a tangency. On this
 /// branch, the knife edge itself is gone: a Loop–Blinn crossing is the sign
 /// of `u² − v`, never a root solve, so the defect is not expressible
-/// (docs/plans/2026-09-08-loop-blinn-glyph.md). What this assertion is for
+/// (docs/archive/plans/2026-09-08-loop-blinn-glyph.md). What this assertion is for
 /// now is any *new* route to ink where an independent rasterizer finds none.
 const KNOWN_ORPHAN_TEXELS: usize = 0;
 
@@ -184,7 +184,7 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
 
 /// The same check for the path a frame will draw from: each glyph drawn by
 /// its piece count's program over its block ([`FontPrograms`],
-/// docs/plans/2026-09-25-the-language-is-kernel.md C1), held to the same
+/// docs/language/2026-09-25-the-language-is-kernel.md C1), held to the same
 /// pins, since a glyph's program draws the builder's pixels to the closed
 /// form's bound (`fonts/loop_blinn/program/tests.rs`), far from any
 /// threshold this file counts at.

@@ -10,7 +10,7 @@
 //! and its shape was deleted on 2026-09-01; the static latency prior is the
 //! extraction policy, and the seam a future schedule-cost residual plugs into
 //! is `egraph::extract::Reranker`
-//! (docs/plans/2026-09-01-schedule-cost-model-denotation.md).
+//! (docs/compiler/2026-09-01-schedule-cost-model-denotation.md).
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]

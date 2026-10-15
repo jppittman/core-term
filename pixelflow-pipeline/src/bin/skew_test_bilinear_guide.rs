@@ -1,5 +1,5 @@
 //! Mandatory train/deploy skew test for the **bilinear** saturation Guide
-//! (`docs/plans/2026-09-02-bilinear-guide-registration.md` §9: "for >= 1000
+//! (`docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §9: "for >= 1000
 //! DEV records, the trainer's forward and the deployed impl's
 //! `score_candidates` agree to <= 1e-6", and "no guided evaluation run may be
 //! started before that test passes").

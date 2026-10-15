@@ -54,6 +54,6 @@ scheduler can interrupt. It moves bytes and a window size; what they mean is
   fixed"; `posix_spawn` fixed it.
 
 ## Decided in
-`docs/designs/pty-actor-troupe.md`, `docs/bugs/2026-07-15-pty-fork-malloc-deadlock.md`,
+`docs/archive/designs/pty-actor-troupe.md`, `docs/bugs/2026-07-15-pty-fork-malloc-deadlock.md`,
 `docs/bugs/2026-07-21-openpty-not-thread-safe.md`,
-`docs/plans/2026-10-15-intent-lives-with-the-module.md`.
+`docs/process/2026-10-15-intent-lives-with-the-module.md`.

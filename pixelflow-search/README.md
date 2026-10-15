@@ -21,13 +21,13 @@ schedule-cost residual.
 | Static latency-prior extraction | Implemented; compiler default |
 | DAG-aware extraction and arena reconstruction | Implemented |
 | Rule-application provenance and hindsight labels | Implemented |
-| Learned (NNUE) extraction cost model | Shape deleted 2026-09 (tied the table on schedule-free kernels); `Reranker` seam kept, denotation in `docs/plans/2026-09-01-schedule-cost-model-denotation.md` |
+| Learned (NNUE) extraction cost model | Shape deleted 2026-09 (tied the table on schedule-free kernels); `Reranker` seam kept, denotation in `docs/compiler/2026-09-01-schedule-cost-model-denotation.md` |
 | Trained provenance guide for choosing rewrites | Research plan; thesis experiment not yet completed |
 | Beam/lookahead search over rewrite applications | Conditional future work |
 
 The obsolete critic/REINFORCE dual-head architecture is retained in historical documents for
 rationale, but it is not the live training path. See
-[`guided-saturation-redesign.md`](../docs/plans/2026-07-07-guided-saturation-redesign.md).
+[`guided-saturation-redesign.md`](../docs/compiler/2026-07-07-guided-saturation-redesign.md).
 
 ## Deterministic optimization path
 
@@ -98,7 +98,7 @@ one seam, `egraph::env_extraction_policy()`, which returns the latency prior. A 
 extraction head sat behind that seam from 2026-07 to 2026-09 and was closed as an honest
 negative — the static table tied it and every lever made it worse (the workshop paper on
 branch `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree; see
-[`docs/plans/2026-09-01-schedule-cost-model-denotation.md`](../docs/plans/2026-09-01-schedule-cost-model-denotation.md)
+[`docs/compiler/2026-09-01-schedule-cost-model-denotation.md`](../docs/compiler/2026-09-01-schedule-cost-model-denotation.md)
 for the citations and numbers in-repo). It is deleted, not disabled.
 
 Extraction selects an expression from an already-built e-graph. It should not be confused
@@ -166,10 +166,10 @@ results and benchmark reports remain point-in-time evidence, not compatibility g
 
 ## Related documents
 
-- [`guided-saturation-redesign.md`](../docs/plans/2026-07-07-guided-saturation-redesign.md) —
+- [`guided-saturation-redesign.md`](../docs/compiler/2026-07-07-guided-saturation-redesign.md) —
   current research plan and decision gates
 - [`docs/results/`](../docs/results/) — rule and extraction experiment reports
-- [`EGRAPH_OPTIMIZATION_ARCHITECTURE.md`](../docs/EGRAPH_OPTIMIZATION_ARCHITECTURE.md) —
+- [`EGRAPH_OPTIMIZATION_ARCHITECTURE.md`](../docs/archive/notes/EGRAPH_OPTIMIZATION_ARCHITECTURE.md) —
   superseded critic/REINFORCE architecture, retained for history
 
 ## License

@@ -53,7 +53,7 @@ effective on the next wait, and `stop(self)`). Callers today:
 - The ontology has no entry for `Timer` (2026-10-15; no plan or BACKLOG item).
 
 ## Decided in
-`docs/designs/actor-scheduler-mealy-transducer.md` (Draft; §3.3, and its note
+`docs/runtime/actor-scheduler-mealy-transducer.md` (Draft; §3.3, and its note
 that the vsync clock's explicit `Tick` messages settle where ticks belong);
-`docs/designs/actor-scheduler-backpressure.md` (Accepted; the lanes a callback
+`docs/archive/designs/actor-scheduler-backpressure.md` (Accepted; the lanes a callback
 sends on).

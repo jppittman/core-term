@@ -34,7 +34,7 @@
 //!   promising" (`g(x)` is free to vary), but it applies that judgement
 //!   identically to every rule, so it can never say "the Pythagorean
 //!   identity is worth firing *here* and not *there*" —
-//!   `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §0's
+//!   `docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §0's
 //!   question — while leaving every other rule where it was.
 //! - **What it still permits.** Two candidates in one batch generally have
 //!   *different* contexts (different match sites), so the additive model can

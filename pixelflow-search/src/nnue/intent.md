@@ -53,7 +53,7 @@ law 5, §11). `guide/` carries its own `intent.md`.
   the quarantine gate went (CLAUDE.md).
 
 ## Decided in
-`docs/plans/2026-09-01-schedule-cost-model-denotation.md` (table plus residual
-stands; premise retracted), `docs/plans/2026-09-01-dead-code-with-ideas.md`,
-`docs/plans/2026-08-17-cost-model-domain.md`, `docs/DENOTATION.md` §8 and §11,
-`docs/plans/2026-10-15-kernels-evaluate-kernels.md` §3.
+`docs/compiler/2026-09-01-schedule-cost-model-denotation.md` (table plus residual
+stands; premise retracted), `docs/archive/plans/2026-09-01-dead-code-with-ideas.md`,
+`docs/archive/plans/2026-08-17-cost-model-domain.md`, `docs/DENOTATION.md` §8 and §11,
+`docs/language/2026-10-15-kernels-evaluate-kernels.md` §3.

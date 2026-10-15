@@ -4,7 +4,7 @@
 //! conversions (`EGraph::add_arena` and `runtime::arena_to_egraph`) that
 //! existed for the *same* IR and disagreed about panicking, about which ops
 //! were representable, and about whether unreachable nodes were inserted —
-//! see docs/plans/2026-09-04-ir-as-a-trait.md §2.
+//! see docs/archive/plans/2026-09-04-ir-as-a-trait.md §2.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -61,14 +61,14 @@ pub enum Declined {
     /// The runtime tier holds a reference as an opaque leaf when its unit
     /// walk has admitted it (`EGraph::admit_unit`): the unit is optimized by
     /// itself and linked after extraction
-    /// (docs/plans/2026-09-25-the-language-is-kernel.md §4, O1). Anything
+    /// (docs/language/2026-09-25-the-language-is-kernel.md §4, O1). Anything
     /// else — the macro tier, a research tool, a reference no walk admitted —
     /// meets a name with no structure to rewrite and no variance to read,
     /// and declines it: inlining inside saturation is a rule that does not
-    /// exist (docs/plans/2026-09-09-composition-is-linking.md §3).
+    /// exist (docs/language/2026-09-09-composition-is-linking.md §3).
     Ref(pixelflow_ir::KernelKey),
     /// A `Write` — the store the lattice's folds wrap a kernel in
-    /// (docs/plans/2026-09-16-collapse-is-a-fold.md §2.4). Declined for a
+    /// (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.4). Declined for a
     /// standing reason: an effect is not a value, so no rule may rewrite
     /// it, and it is built by the legalize passes *after* extraction, so a
     /// term carrying one into saturation skipped the pipeline.

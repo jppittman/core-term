@@ -1,6 +1,6 @@
 //! **The font's programs draw the builder's glyphs.**
 //!
-//! Phase D of docs/plans/2026-09-25-the-language-is-kernel.md deletes the
+//! Phase D of docs/language/2026-09-25-the-language-is-kernel.md deletes the
 //! builder ([`crate::fonts::loop_blinn::glyph`]); until then there are two
 //! definitions of a glyph, the builder's and the `kernel!` block the font's
 //! programs are written in, and a copy is a future divergence. So the two

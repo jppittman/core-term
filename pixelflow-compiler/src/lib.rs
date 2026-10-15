@@ -27,7 +27,7 @@
 //! lowering: its argument exists only when its host function is called, so
 //! lowering's steps are emitted as the statements that take them, and run
 //! then (`emit::Staged`, Phase D-a of
-//! docs/plans/2026-09-25-the-language-is-kernel.md).
+//! docs/language/2026-09-25-the-language-is-kernel.md).
 //!
 //! Two representations, the surface AST and the IR. It used to be five: the
 //! optimizer ran
@@ -39,7 +39,7 @@
 //! stages can disagree about what the language is, and three such
 //! disagreements were found in one week — every one of them a stage accepting
 //! what a later stage refused. See
-//! docs/plans/2026-09-08-macro-tier-is-arena-native.md.
+//! docs/archive/plans/2026-09-08-macro-tier-is-arena-native.md.
 //!
 //! There is **one backend**, and it produces a [`Kernel`] — an arena fragment,
 //! the language's own value. Nothing is compiled at macro-expansion time and
@@ -70,7 +70,7 @@ use proc_macro::TokenStream;
 
 /// The plan that owns the constructs the front end refuses by phase: a
 /// refusal of one names the phase that brings it.
-pub(crate) const PLAN: &str = "docs/plans/2026-09-25-the-language-is-kernel.md";
+pub(crate) const PLAN: &str = "docs/language/2026-09-25-the-language-is-kernel.md";
 
 /// The `kernel!` macro: the language, as a block of items or as a closure,
 /// optimized by the e-graph at macro-expansion time.
@@ -78,7 +78,7 @@ pub(crate) const PLAN: &str = "docs/plans/2026-09-25-the-language-is-kernel.md";
 /// # The items form
 ///
 /// A block of records, `const` items and `fn` items
-/// (docs/plans/2026-09-25-the-language-is-kernel.md §1.2):
+/// (docs/language/2026-09-25-the-language-is-kernel.md §1.2):
 ///
 /// - A `pub fn name(params) -> f32 { body }` is an **entry**: the macro
 ///   emits a host `pub fn name(params) -> Kernel`, taking its parameters by

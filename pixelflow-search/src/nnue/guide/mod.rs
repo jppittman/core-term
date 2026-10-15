@@ -2,7 +2,7 @@
 //!
 //! Given a set of candidate rewrite-rule applications, produce per-candidate
 //! move-ordering scores to guide equality saturation. That sentence is the
-//! entire contract; see `docs/plans/2026-07-07-guided-saturation-redesign.md`
+//! entire contract; see `docs/compiler/2026-07-07-guided-saturation-redesign.md`
 //! for the design this module exists to satisfy once training lands, purely
 //! supervised on hindsight rule-provenance labels from `crate::egraph::labeler`
 //! — no REINFORCE, no self-play.
@@ -12,7 +12,7 @@
 //! **Loud note, per that task's explicit instruction: this trait's shape
 //! changed.** The original contract scored a candidate against a *whole-graph*
 //! summary (`GraphSummary`, wrapping `GraphAccumulator`) plus a bare rule
-//! embedding (`RuleCandidate`). `docs/plans/2026-08-31-guide-design-revision.md`
+//! embedding (`RuleCandidate`). `docs/archive/plans/2026-08-31-guide-design-revision.md`
 //! §4 argues from measurement, not taste, that this is the wrong granularity:
 //! the dominant per-round cost is candidate-level deduplication (90.4% of
 //! scored candidates commit no change — §2.2), which is a property of *one
@@ -25,7 +25,7 @@
 //! rather than `GraphSummary`/`RuleCandidate`.
 //!
 //! `GraphAccumulator` itself is **not deleted** (segregation rule,
-//! `docs/plans/2026-08-31-guide-design-revision.md` §4 last paragraph: "the
+//! `docs/archive/plans/2026-08-31-guide-design-revision.md` §4 last paragraph: "the
 //! accumulator's whole-graph summary remains the right shape for the
 //! *extraction-cost* Judge, a genuinely different question from 'should this
 //! match fire now'"). It stays exactly where it was (`accumulator.rs`), still
@@ -53,10 +53,10 @@
 //!
 //! Kept, not deleted: the 2026-08-17 disposition inventory confirmed zero
 //! non-test callers for this whole surface but a live roadmap role
-//! (ROADMAP-ADMITTED, `docs/plans/2026-08-17-cost-model-domain.md` §0 row J10).
+//! (ROADMAP-ADMITTED, `docs/archive/plans/2026-08-17-cost-model-domain.md` §0 row J10).
 //! The extraction head this module used to share a backbone with is gone
 //! (its shape was deleted 2026-09-01; the denotation is kept, see
-//! docs/plans/2026-09-01-schedule-cost-model-denotation.md); what it shares now is only
+//! docs/compiler/2026-09-01-schedule-cost-model-denotation.md); what it shares now is only
 //! [`OpEmbeddings`], and the trunk that used to be "shared" is this head's
 //! own (`scoring.rs`).
 

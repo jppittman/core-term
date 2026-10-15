@@ -1,5 +1,5 @@
 //! Proves the target engine-mesh topology from
-//! `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §3 — built from the *same* five
+//! `docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §3 — built from the *same* five
 //! actor names and *same* edge classifications that document commits to, so a change to either
 //! the plan or this test without the other is a diff someone has to notice and reconcile, not a
 //! silent drift.

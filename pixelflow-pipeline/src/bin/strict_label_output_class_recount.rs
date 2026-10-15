@@ -205,7 +205,7 @@ fn chosen_path(out: &AnytimeCurveOutput) -> HashMap<EClassId, ENodeId> {
 ///
 /// Keyed by [`RuleId`], never by a position in `all_rules()`: a same-length
 /// reorder repoints every positional key silently
-/// (docs/plans/2026-09-02-phase3-forward-port.md §2.2).
+/// (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2).
 fn rule_name(rules: &RuleSet, id: RuleId) -> String {
     rules
         .index_of(id)

@@ -55,5 +55,5 @@ meaning, and a non-additive cost enters only as a `Reranker`.
   compiles unoptimized, unreported (`jit_cache` takes the raw arena; M12).
 
 ## Decided in
-`docs/DENOTATION.md` §8, `docs/plans/2026-09-02-optimizer-api.md`,
-`docs/plans/2026-09-01-production-budget-determinism.md`, `docs/plans/2026-09-24-one-pipeline.md`.
+`docs/DENOTATION.md` §8, `docs/archive/plans/2026-09-02-optimizer-api.md`,
+`docs/archive/plans/2026-09-01-production-budget-determinism.md`, `docs/language/2026-09-24-one-pipeline.md`.

@@ -25,7 +25,7 @@ use crate::shift::ShiftCount;
 /// of testing for it.
 ///
 /// The designs this replaced, and what each got wrong, are in
-/// `docs/designs/opkind-numbering-is-private.md` §4.
+/// `docs/archive/designs/opkind-numbering-is-private.md` §4.
 macro_rules! op_table {
     ($( $(#[$attr:meta])* $name:ident = $code:literal, )+) => {
         /// Unified enumeration of all IR operations.
@@ -142,7 +142,7 @@ op_table! {
     /// batch whose mask is uniform takes one arm, and that is a jump; only
     /// a mask that varies by lane blends, and the bitwise blend is the
     /// fallback for that one case, not the definition. It was named
-    /// `Select` until docs/plans/2026-09-25-the-language-is-kernel.md D18:
+    /// `Select` until docs/language/2026-09-25-the-language-is-kernel.md D18:
     /// that name hid the `if`, and the emitter built on the misreading —
     /// blend by default, a branch bought per node in `emit/guards.rs` —
     /// cost 73% of a glyph bake (docs/BACKLOG.md, X1).
@@ -182,7 +182,7 @@ op_table! {
     // --- Bound memory (lattices) ---
     /// Buffer leaf: a slot referencing a `BufferDecl` in the arena's buffer
     /// table. The declared extents are static IR; the contents are bound at
-    /// JIT-compile time. See `docs/designs/KERNELS_AND_LATTICES.md`.
+    /// JIT-compile time. See `docs/archive/designs/KERNELS_AND_LATTICES.md`.
     Buffer = 46,
     /// Read a bound buffer: `Gather(buffer, x, y)` where `buffer` is a
     /// `Buffer` leaf. Semantics match `DiscreteManifold::eval`: floor the
@@ -229,7 +229,7 @@ op_table! {
     /// Sequencing: evaluate the left, then the right. Unit-typed — it has
     /// no value, and nothing may read one — so it is a monoid whose identity
     /// is nothing: [`Monoid::SEQ`](crate::fold::Monoid::SEQ), the algebra
-    /// of the folds a lattice is (docs/plans/2026-09-16-collapse-is-a-fold.md
+    /// of the folds a lattice is (docs/archive/plans/2026-09-16-collapse-is-a-fold.md
     /// §2.4). Constructible only by those legalize passes: `kernel!` cannot
     /// name it and the e-graph's vocabularies decline it, as they do a
     /// `Write`. A backend that meets one as an instruction emits no bytes.
@@ -496,7 +496,7 @@ impl OpKind {
             Self::Eq => "eq",
             Self::Ne => "ne",
             // Spelled as the `kernel!` method that lowers to it, which keeps its
-            // name until Phase B of docs/plans/2026-09-25-the-language-is-kernel.md
+            // name until Phase B of docs/language/2026-09-25-the-language-is-kernel.md
             // renames it `if`. This string is also what the training corpus
             // fingerprint, the arena's `Display` and `cost_by_name` carry, so
             // renaming the variant does not reach it. (`variant_name`, which
@@ -648,7 +648,7 @@ impl OpKind {
     ///
     /// `.select(a, b)` resolves to [`OpKind::If`], the node `if m { a } else
     /// { b }` lowers to. `if` is the spelling; the method keeps working
-    /// until Phase B of docs/plans/2026-09-25-the-language-is-kernel.md
+    /// until Phase B of docs/language/2026-09-25-the-language-is-kernel.md
     /// removes it (D15).
     #[must_use]
     pub fn from_method_call(name: &str, arg_count: usize) -> Option<Self> {
@@ -1013,7 +1013,7 @@ const _: () = {
 /// Handing out the table subscript instead would leak: a consumer that writes
 /// `index()` into its own format has made this crate's private numbering part
 /// of that format, and owes it a version bump for a change it cannot see.
-/// See `docs/designs/opkind-numbering-is-private.md`.
+/// See `docs/archive/designs/opkind-numbering-is-private.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OpCode(u8);
 

@@ -1,6 +1,6 @@
 //! `PIXELFLOW_SATURATION_CEILING_MS` — the diagnostic override on
 //! `Optimizer::production()`'s wall-clock safety ceiling
-//! (`docs/plans/2026-09-01-production-budget-determinism.md`).
+//! (`docs/archive/plans/2026-09-01-production-budget-determinism.md`).
 //!
 //! The env var is process-global, so every test here holds [`ENV_LOCK`] for
 //! its whole body — the default parallel test runner would otherwise let

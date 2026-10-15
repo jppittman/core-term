@@ -56,4 +56,4 @@ uploaded whole by `XPutImage`, and the server's events as `DisplayEvent`s. It is
   `events` and `window` are `pub mod` with no user outside the directory.
 
 ## Decided in
-`docs/plans/2026-09-03-wayland-driver.md`; CLAUDE.md "Platform Notes".
+`docs/runtime/2026-09-03-wayland-driver.md`; CLAUDE.md "Platform Notes".

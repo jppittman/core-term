@@ -1,5 +1,5 @@
 //! Round-3 "measure spread where the budget binds" analysis
-//! (`docs/plans/2026-09-01-guide-return-to-go.md` §2b).
+//! (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §2b).
 //!
 //! Reads the `r2g_trajectories_{tier}.jsonl` files `gen_r2g_trajectories`
 //! mints (consuming its round-3 `TrajectoryRow::checkpoints` field — every

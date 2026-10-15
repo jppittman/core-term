@@ -54,5 +54,5 @@ returns the setup handle; `RendererSetupHandle::register` returns the handle.
   schedule is the CPU backend's (kernels-evaluate-kernels §3).
 
 ## Decided in
-`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5 step 3,
-`docs/designs/actor-scheduler-mealy-transducer.md`, `docs/plans/2026-10-15-kernels-evaluate-kernels.md` §3.
+`docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §5 step 3,
+`docs/runtime/actor-scheduler-mealy-transducer.md`, `docs/language/2026-10-15-kernels-evaluate-kernels.md` §3.

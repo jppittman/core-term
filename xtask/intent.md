@@ -53,7 +53,7 @@ builds and lints once, then runs each tier; off x86-64 it prints a note, exits 0
   `scripts/cfg_encapsulation_baseline.txt`; the matrix belongs in its own file.
 
 ## Decided in
-`docs/plans/2026-09-22-the-isa-is-decided-at-startup.md` (xtask lost
+`docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md` (xtask lost
 `run_with_rustflags`, `host_triple` and the per-level target directory),
-`docs/plans/2026-10-08-selection-is-a-phase.md` (legacy-leg suites left xtask),
-`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`, CLAUDE.md "CI is the gate".
+`docs/archive/plans/2026-10-08-selection-is-a-phase.md` (legacy-leg suites left xtask),
+`docs/process/2026-10-13-tests-check-the-as-if-contract.md`, CLAUDE.md "CI is the gate".

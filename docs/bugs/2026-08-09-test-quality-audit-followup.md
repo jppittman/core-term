@@ -7,7 +7,7 @@ been mutation-tested under its new crate location" since the `pixelflow-ir` →
 `pixelflow-core` move on 2026-08-02.
 
 No new commits landed on this branch's base since the last audit (`58885c5`),
-so there was no fresh delta to static-audit against STYLE.md's "Test Public
+so there was no fresh delta to static-audit against ../process/STYLE.md's "Test Public
 API" rule or the "it should ..." naming convention; this pass is scoped
 entirely to the mutation-testing backlog item instead.
 

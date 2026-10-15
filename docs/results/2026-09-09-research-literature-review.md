@@ -24,7 +24,7 @@ numbers, and does not restate its verdicts except where the arc needs them.
 
 **Read depth, stated because a review that pretends to uniform coverage is the failure mode this
 repository catalogues.** Read in full: the claims ledger and its CSV, the three 2026-09-08 sweep
-documents, `2026-09-07-egraph-off-vs-on-real-shaders.md`, `2026-09-07-benchmark-correction.md`,
+documents, `2026-09-07-egraph-off-vs-on-real-shaders.md`, `../compiler/2026-09-07-benchmark-correction.md`,
 `2026-09-07-corpus-structural-gaps.md`, all 8 open issues, and the bodies of 5 of 11 open PRs. Read as
 headers and metadata (title, status, date, supersession, first section): all 59 plans and designs. Read
 as title and classification only: the remaining ~60 results artifacts and the 23-document test-quality
@@ -44,13 +44,13 @@ audit series. §8 marks the depth per row.
 | `docs/bugs/` | 26 | 26 | 23 of them one scheduled test-quality audit series |
 | `docs/archive/` | 2 | 2 | GNN vision, NNUE curriculum |
 | `docs/superpowers/` | 5 | 5 | April 2026 four-team pipeline rewrite |
-| `docs/templates/` | 1 | 1 | `DESIGN_DOC.md` |
+| `docs/templates/` | 1 | 1 | `../process/DESIGN_DOC.md` |
 | **total** | **304** | **179** | |
 
 Two structural facts about the corpus, both grep-detectable and therefore (per CLAUDE.md's own rule)
 checks somebody could write rather than caveats somebody keeps attaching:
 
-- **The `DESIGN_DOC.md` status vocabulary is followed by 3 of 59 plans and designs.** `docs/README.md`
+- **The `../process/DESIGN_DOC.md` status vocabulary is followed by 3 of 59 plans and designs.** `docs/README.md`
   states: "Every future plan and design must use exactly one of `Draft`, `Review`, `Approved`, or
   `Implemented` in its metadata." 31 of 59 carried a `**Status:**` line at all; 3 of those use a
   sanctioned word. The rest have invented ~20 status words in the field — `Plan of record`,
@@ -84,26 +84,26 @@ documents named.
 
 The oldest and healthiest thread, and the only one whose documents mostly still describe the code.
 
-`2026-07-24-totality-and-the-cost-model.md` is the axiom layer: the kernel language is total, and the
-cost model exists because totality forbids the alternative. `designs/KERNELS_AND_LATTICES.md` and
-`designs/LATTICE_EVAL.md` establish the representable-functor framing — `index(collapse(f)) = f` — that
+`../language/2026-07-24-totality-and-the-cost-model.md` is the axiom layer: the kernel language is total, and the
+cost model exists because totality forbids the alternative. `../archive/designs/KERNELS_AND_LATTICES.md` and
+`../archive/designs/LATTICE_EVAL.md` establish the representable-functor framing — `index(collapse(f)) = f` — that
 lets a buffer *be* a manifold rather than back one.
 
 The last two months are that framing being taken seriously enough to hurt:
 
-- `2026-07-20-kernel-unification.md` (plan of record) — retire the type-level combinator emitter for
+- `../language/2026-07-20-kernel-unification.md` (plan of record) — retire the type-level combinator emitter for
   arena-backed `Kernel` values.
-- `2026-09-06-kernel-with-a-lattice.md` — three objects, one verb. Records its own course correction:
+- `../archive/plans/2026-09-06-kernel-with-a-lattice.md` — three objects, one verb. Records its own course correction:
   the first draft kept a per-batch `Manifold::eval` trait as "the semantics", which is exactly what
   forces a Rust loop around the JIT. `collapse` was the right verb aimed at the wrong type.
-- `2026-09-06-lattice-is-the-index.md` (**Landed**, U0/L1–L4 merged) — a lattice is an extent, full
+- `../archive/plans/2026-09-06-lattice-is-the-index.md` (**Landed**, U0/L1–L4 merged) — a lattice is an extent, full
   stop. The origin is deleted; a coordinate frame is a contramap. This is the strongest instance of
   the repo's "subtract before you add" rule: the law held only with a side condition, so the field
   causing the side condition was removed.
-- `2026-09-08-one-conditional-three-lowerings.md` (Draft, nothing built) — `Union` is a missing
+- `../codegen/2026-09-08-one-conditional-three-lowerings.md` (Draft, nothing built) — `Union` is a missing
   compiler capability that leaked into the public API. A rectangle is two selects. Supersedes
-  `2026-09-07-demand-is-a-dag-property.md` on framing while keeping its analysis.
-- `2026-09-09-exprarena-on-dag.md` (Proposed) — the newest document in the tree. Notable for what it
+  `../compiler/2026-09-07-demand-is-a-dag-property.md` on framing while keeping its analysis.
+- `../archive/plans/2026-09-09-exprarena-on-dag.md` (Proposed) — the newest document in the tree. Notable for what it
   does to its predecessor: `dag.rs` shipped with a written reason for not porting `ExprArena`, and this
   doc's §2 is titled "The lifecycle objection was wrong" — the reason described the *signatures* while
   the *usage* was already pure.
@@ -114,8 +114,8 @@ holds.
 
 ### II. Codegen — the assembler, the schedule, the ISA
 
-`designs/assembler-as-functor.md` and `2026-07-25-two-level-ir-and-backend-completeness.md` frame
-lowering as a functor and audit where the loop binder belongs. `2026-09-01-loop-aware-codegen.md`
+`../archive/designs/assembler-as-functor.md` and `../archive/designs/2026-07-25-two-level-ir-and-backend-completeness.md` frame
+lowering as a functor and audit where the loop binder belongs. `../archive/plans/2026-09-01-loop-aware-codegen.md`
 (stage 0 landed, #1092) gives the register allocator the lattice.
 
 The thread's importance is disproportionate to its document count, because **it is where the measured
@@ -131,7 +131,7 @@ exactly this, and closed.
 
 ### III. The e-graph — engine and objective
 
-`EGRAPH_OPTIMIZATION_ARCHITECTURE.md` and `SEARCH_PIPELINE_DESIGN.md` are the historical layer (MCTS,
+`../archive/notes/EGRAPH_OPTIMIZATION_ARCHITECTURE.md` and `../archive/notes/SEARCH_PIPELINE_DESIGN.md` are the historical layer (MCTS,
 REINFORCE, a transformer critic), both explicitly superseded. What replaced them is engineering, and
 2026-09 is when it started producing real answers:
 
@@ -139,7 +139,7 @@ REINFORCE, a transformer critic), both explicitly superseded. What replaced them
   *DAG* cost — ~95% of the measured extraction gap. Fixed by #1192 (sharing-aware extraction): 55 of
   206 real kernels improved, 0 worsened, chrome's schedule 401 → 385. This is one of exactly **two**
   optimizer improvements in the whole program that the ledger certifies as helping a shipped shader.
-- **Budgets are deterministic by construction.** `2026-09-01-production-budget-determinism.md`:
+- **Budgets are deterministic by construction.** `../archive/plans/2026-09-01-production-budget-determinism.md`:
   saturation budgets denominated in rule applications, with wall clock demoted to a fail-loud ceiling
   that panics the build rather than silently truncating. A kernel cannot differ between two machines.
 - **More budget makes extraction worse.** `2026-09-08-class-cap-sweep.md`: raising the class cap
@@ -172,12 +172,12 @@ The longest arc and, read end to end, the program's central cautionary tale.
 
 1. **Self-play / RL** (Jan–Jul 2026; `plans/archive/2026-02-25-unified-training-*.md`, issues
    #330–#342). Removed July 2026 after a four-agent audit found it methodologically unsound.
-   `2026-07-07-guided-saturation-redesign.md` is the post-mortem and the pivot to supervised.
-2. **The NNUE extraction head** (Jul–Sep 2026; `2026-08-05-egraph-nnue-research-workflow.md`,
-   `NNUE_INTEGRATION_STATUS.md`). Ran to completion and **tied** the static table on schedule-free
+   `../compiler/2026-07-07-guided-saturation-redesign.md` is the post-mortem and the pivot to supervised.
+2. **The NNUE extraction head** (Jul–Sep 2026; `../archive/plans/2026-08-05-egraph-nnue-research-workflow.md`,
+   `../archive/notes/NNUE_INTEGRATION_STATUS.md`). Ran to completion and **tied** the static table on schedule-free
    kernels. Shape deleted; denotation kept behind the `Reranker` seam
-   (`2026-09-01-schedule-cost-model-denotation.md`). The workshop paper (PR #1072) closed unmerged.
-3. **The saturation Guide** (Aug–Sep 2026): `2026-08-31-guide-design-revision.md`, then a dense
+   (`../compiler/2026-09-01-schedule-cost-model-denotation.md`). The workshop paper (PR #1072) closed unmerged.
+3. **The saturation Guide** (Aug–Sep 2026): `../archive/plans/2026-08-31-guide-design-revision.md`, then a dense
    pre-registration series — `phase3-registration`, `round1b-domain-shift`, `round2-registration`
    v1/v2/v3, `round2-rule-scaling`, `guide-return-to-go`, `bilinear-guide-registration`. Nine
    registration documents, roughly 20 result artifacts.
@@ -228,21 +228,21 @@ Four documents, three of them unmerged:
   the rewrite rules add ≈−4% beyond that and on the scenes *raise* bytes slightly while `dag_cost`
   falls. Without the e-graph the chrome scene does not compile at all — a 335,411-node tree whose
   un-saturated schedule overflows the aarch64 branch range.
-- **`2026-09-07-benchmark-correction.md`** (PR #1215) — the corrected corpus, the family-aware DEV /
+- **`../compiler/2026-09-07-benchmark-correction.md`** (PR #1215) — the corrected corpus, the family-aware DEV /
   HELD-OUT split, per-family metrics, and 28 retraction banners. Blocked on #1207 landing first.
 
 **State:** the correction is written and largely unmerged. §7 covers the dependency.
 
 ### VI. Runtime, actors, platform
 
-`designs/pty-actor-troupe.md` (implemented), `actor-scheduler-mealy-transducer.md` (the design of
-record), `actor-scheduler-backpressure.md`, `actor-scheduler-supervisor-migration.md` (superseded),
-`pixelflow-runtime-engine-mesh-migration.md` (not landed). Two 2026-08-31 preemption designs — KVM
+`../archive/designs/pty-actor-troupe.md` (implemented), `docs/runtime/actor-scheduler-mealy-transducer.md` (the design of
+record), `docs/archive/designs/actor-scheduler-backpressure.md`, `docs/archive/designs/actor-scheduler-supervisor-migration.md` (superseded),
+`docs/runtime/pixelflow-runtime-engine-mesh-migration.md` (not landed). Two 2026-08-31 preemption designs — KVM
 sandboxing and transaction-abort — are recorded reasoning that the Mealy design's §5 rules out;
 **neither is adopted and both are gated on a step actually being observed to overrun.** That is good
 practice worth naming: a design written, costed, and explicitly parked on a trigger.
 
-Live work: `2026-09-03-wayland-driver.md` (a second Linux driver, spending some of `PlatformOps`'
+Live work: `../runtime/2026-09-03-wayland-driver.md` (a second Linux driver, spending some of `PlatformOps`'
 purity deliberately), issue #1204 (migrate two hand-written `*Out`/`*Wiring` pairs to the `ports!`
 macro — the macro has tests but no production caller), PR #994 (macOS signed/notarized DMG, parked on
 five Apple credentials that do not exist as repo secrets).
@@ -258,7 +258,7 @@ engineering. `2026-09-07-csi-audit.md` is the exemplar: a requested audit with n
 three real defects, the largest being that a malformed CSI sequence wrote garbage to the screen rather
 than a log line. Fixed and pinned (#1216).
 
-`docs/POSTSUBMIT.md` documents a genuinely strong pipeline: 5× flake detection per (OS, suite), ISA
+`docs/process/POSTSUBMIT.md` documents a genuinely strong pipeline: 5× flake detection per (OS, suite), ISA
 matrix, benchmark regression against a `gh-pages` baseline, and **automatic revert** on consistent
 failure. The `docs/bugs/` directory is 23 documents of one scheduled test-quality audit series running
 from 2026-07-20 to 2026-09-07.
@@ -373,7 +373,7 @@ because one missing `[[bin]]` entry turned `main` red, and the response was a ch
 Two holes are documented and open:
 
 - **Issue #1193 — no presubmit compiles a production scene or a glyph warm.**
-  `2026-09-06-egraph-at-production-scale.md` §5.3 states the compile budget (a scene under ~250 ms; a
+  `../archive/plans/2026-09-06-egraph-at-production-scale.md` §5.3 states the compile budget (a scene under ~250 ms; a
   glyph warm is 95 kernels per font size, so +5 ms each is +0.5 s of startup) and **nothing measures
   either**. A change that pushes chrome past its budget, or adds 5 ms to every glyph, merges green.
   This is the single most load-bearing missing check in the tree: it is the gate that would have caught
@@ -472,7 +472,7 @@ carries a "Production quick-win" at B=100, `2026-09-02-missing-congruence.md` st
    one-conditional-three-lowerings thesis. **Highest-value technical work in flight.**
 3. **#1236 / #1238 (extraction witnesses, the Extractor seam)** — both say "not this" with
    measurements, and both are unblocked. #1236 is the more consequential: it kills the reranker-over-
-   swaps seam that `2026-09-01-schedule-cost-model-denotation.md` names as the successor program.
+   swaps seam that `../compiler/2026-09-01-schedule-cost-model-denotation.md` names as the successor program.
    **That plan needs an amendment.**
 4. **#1193** — the compile-budget gate. Write it before the next cap or extraction change, or the next
    one lands the same way this one did: measured by hand, on one host, at unknown load.
@@ -502,91 +502,91 @@ Legend for read depth: **F** = read in full for this review · **H** = header, s
 
 | document | status as written | depth | one line |
 |---|---|:-:|---|
-| `2025-02-21-kernel-jit-feature-parity-design.md` | Approved | H | `kernel_jit!` parity; param-baking scope done, dual-backend framing superseded |
-| `2025-02-21-kernel-jit-feature-parity.md` | — | T | implementation plan for the above |
-| `2026-07-07-guided-saturation-redesign.md` | Plan | H | the RL post-mortem and the pivot to supervised guidance; still carries a retracted ρ ≈ 0.35 |
-| `2026-07-20-kernel-unification.md` | Plan of record | H | retire the combinator emitter for arena-backed `Kernel` values |
-| `2026-07-28-jit-performance-parity.md` | Scoping | T | pre-implementation scoping; "Surface" lane superseded by kernel-with-a-lattice |
-| `2026-08-02-ir-layering.md` | Proposed | H | subtract then decide; complements kernel-unification P6/P7+ |
-| `2026-08-05-egraph-nnue-research-workflow.md` | **Closed 2026-09-01** | H | the extraction-head workflow; ran to completion and found a tie |
-| `2026-08-08-egraph-constant-domain-spike.md` | Reconnaissance only | T | `ENode` constant representation for the dyadic-exact fold |
-| `2026-08-17-cost-model-domain.md` | — | T | cost-model domain model and reorganization |
-| `2026-08-17-egraph-vsa-nnue-research-notes.md` | Research notes | T | external literature survey; carries the archived GNN vision's offline-teacher framing |
-| `2026-08-31-guide-design-revision.md` | Design revision | H | measured economics + the pre-registered Phase 3 experiment; the Guide's design of record |
-| `2026-09-01-dead-code-with-ideas.md` | — | H | KEEP / REUSE-R2 / SEGREGATE / DELETE audit with `file:line` evidence per row |
-| `2026-09-01-guide-candidate-context.md` | DESIGN (approved) | T | context cells, coverage table, rule-conditioned generation |
+| `../archive/plans/2025-02-21-kernel-jit-feature-parity-design.md` | Approved | H | `kernel_jit!` parity; param-baking scope done, dual-backend framing superseded |
+| `../archive/plans/2025-02-21-kernel-jit-feature-parity.md` | — | T | implementation plan for the above |
+| `../compiler/2026-07-07-guided-saturation-redesign.md` | Plan | H | the RL post-mortem and the pivot to supervised guidance; still carries a retracted ρ ≈ 0.35 |
+| `../language/2026-07-20-kernel-unification.md` | Plan of record | H | retire the combinator emitter for arena-backed `Kernel` values |
+| `../archive/plans/2026-07-28-jit-performance-parity.md` | Scoping | T | pre-implementation scoping; "Surface" lane superseded by kernel-with-a-lattice |
+| `../archive/plans/2026-08-02-ir-layering.md` | Proposed | H | subtract then decide; complements kernel-unification P6/P7+ |
+| `../archive/plans/2026-08-05-egraph-nnue-research-workflow.md` | **Closed 2026-09-01** | H | the extraction-head workflow; ran to completion and found a tie |
+| `../archive/plans/2026-08-08-egraph-constant-domain-spike.md` | Reconnaissance only | T | `ENode` constant representation for the dyadic-exact fold |
+| `../archive/plans/2026-08-17-cost-model-domain.md` | — | T | cost-model domain model and reorganization |
+| `../archive/plans/2026-08-17-egraph-vsa-nnue-research-notes.md` | Research notes | T | external literature survey; carries the archived GNN vision's offline-teacher framing |
+| `../archive/plans/2026-08-31-guide-design-revision.md` | Design revision | H | measured economics + the pre-registered Phase 3 experiment; the Guide's design of record |
+| `../archive/plans/2026-09-01-dead-code-with-ideas.md` | — | H | KEEP / REUSE-R2 / SEGREGATE / DELETE audit with `file:line` evidence per row |
+| `../compiler/2026-09-01-guide-candidate-context.md` | DESIGN (approved) | T | context cells, coverage table, rule-conditioned generation |
 | `2026-09-01-guide-return-to-go.md` | DESIGN + PRE-REGISTRATION | T | hindsight return as training target; counterfactual replay as credit validation |
-| `2026-09-01-loop-aware-codegen.md` | design; stage 0 landed | H | give the register allocator the lattice (#1092) |
-| `2026-09-01-phase3-registration.md` | REGISTERED | H | budget tiers, improvement threshold, gates — the parent registration; **#1104 against it** |
-| `2026-09-01-phase3-round1b-domain-shift-registration.md` | REGISTERED | T | does the Guide's advantage survive shift toward trig-dominant kernels |
-| `2026-09-01-phase3-round2-registration.md` | REGISTERED | T | regret at budget vs rule count (v1) |
-| `2026-09-01-phase3-round2-registration-v2.md` | REGISTERED | T | supersedes v1 — inflated rules |
-| `2026-09-01-phase3-round2-registration-v3.md` | REGISTERED | T | supersedes v2's H1 reading; `\|R\|` effect and order effect separated. **Carries a retracted B=100 quick-win** |
-| `2026-09-01-phase3-round2-rule-scaling.md` | DESIGN | T | does the Guide's advantage grow with rule count |
-| `2026-09-01-production-budget-determinism.md` | — | H | budgets in rule applications; wall clock demoted to a fail-loud ceiling. Carries the class-cap block |
-| `2026-09-01-register-allocation-escape-hatches.md` | — | T | register allocation outside the register allocator |
-| `2026-09-01-schedule-cost-model-denotation.md` | denotation | H | the successor cost model: analytic table + learned residual. **§ premise refuted by #1236** |
-| `2026-09-02-bilinear-guide-registration.md` | REGISTERED | T | does a rule-by-context interaction buy a domain-conditional advantage |
-| `2026-09-02-optimizer-api.md` | design | H | `Optimizer`/`RuleSet`/`Budget` + the five denotational laws; source of **#1106** and **#1112** |
-| `2026-09-02-phase3-forward-port.md` | Ported | T | inventory and map of the Phase 3 forward-port |
-| `2026-09-03-wayland-driver.md` | — | H | a second Linux driver; spends some of `PlatformOps`' purity deliberately and says the price |
-| `2026-09-04-ir-as-a-trait.md` | — | T | naming the term language the e-graph speaks |
-| `2026-09-06-egraph-at-production-scale.md` | measured facts, not a plan | H | the chrome scene as the case to optimize around; §5.3 is the compile budget **#1193** guards |
-| `2026-09-06-kernel-with-a-lattice.md` | plan of record | H | three objects, one verb; records its own course correction on `collapse` |
-| `2026-09-06-lattice-is-the-index.md` | **Landed** (U0, L1–L4) | H | a lattice is an extent; the origin is deleted, a frame is a contramap |
-| `2026-09-06-uniform-slot-identity.md` | — | T | a scalar parameter that is invariant without being known |
-| `2026-09-07-demand-is-a-dag-property.md` | **Superseded** | H | analysis survives; framing replaced by one-conditional-three-lowerings |
-| `2026-09-08-egraph-cpu-memory-profile.md` | measured facts | H | where the engine's cycles and bytes go — the engineering half's sequel to production-scale |
-| `2026-09-08-macro-tier-is-arena-native.md` | — | T | the macro tier optimizes on the arena, not the AST |
-| `2026-09-08-one-conditional-three-lowerings.md` | **Draft, nothing built** | H | `Union` is a missing compiler capability that leaked into the public API |
-| `2026-09-09-exprarena-on-dag.md` | Proposed | H | staging the port; §2 records that the predecessor's stated blocker was wrong |
-| `archive/2026-02-25-unified-training-design.md` | — | T | temporal credit assignment via sequence transformer (deleted path) |
-| `archive/2026-02-25-unified-training-plan.md` | — | T | implementation plan for the above |
+| `../archive/plans/2026-09-01-loop-aware-codegen.md` | design; stage 0 landed | H | give the register allocator the lattice (#1092) |
+| `../archive/plans/2026-09-01-phase3-registration.md` | REGISTERED | H | budget tiers, improvement threshold, gates — the parent registration; **#1104 against it** |
+| `../archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` | REGISTERED | T | does the Guide's advantage survive shift toward trig-dominant kernels |
+| `../archive/plans/2026-09-01-phase3-round2-registration.md` | REGISTERED | T | regret at budget vs rule count (v1) |
+| `../archive/plans/2026-09-01-phase3-round2-registration-v2.md` | REGISTERED | T | supersedes v1 — inflated rules |
+| `../archive/plans/2026-09-01-phase3-round2-registration-v3.md` | REGISTERED | T | supersedes v2's H1 reading; `\|R\|` effect and order effect separated. **Carries a retracted B=100 quick-win** |
+| `../archive/plans/2026-09-01-phase3-round2-rule-scaling.md` | DESIGN | T | does the Guide's advantage grow with rule count |
+| `../archive/plans/2026-09-01-production-budget-determinism.md` | — | H | budgets in rule applications; wall clock demoted to a fail-loud ceiling. Carries the class-cap block |
+| `../archive/plans/2026-09-01-register-allocation-escape-hatches.md` | — | T | register allocation outside the register allocator |
+| `../compiler/2026-09-01-schedule-cost-model-denotation.md` | denotation | H | the successor cost model: analytic table + learned residual. **§ premise refuted by #1236** |
+| `../archive/plans/2026-09-02-bilinear-guide-registration.md` | REGISTERED | T | does a rule-by-context interaction buy a domain-conditional advantage |
+| `../archive/plans/2026-09-02-optimizer-api.md` | design | H | `Optimizer`/`RuleSet`/`Budget` + the five denotational laws; source of **#1106** and **#1112** |
+| `../archive/plans/2026-09-02-phase3-forward-port.md` | Ported | T | inventory and map of the Phase 3 forward-port |
+| `../runtime/2026-09-03-wayland-driver.md` | — | H | a second Linux driver; spends some of `PlatformOps`' purity deliberately and says the price |
+| `../archive/plans/2026-09-04-ir-as-a-trait.md` | — | T | naming the term language the e-graph speaks |
+| `../archive/plans/2026-09-06-egraph-at-production-scale.md` | measured facts, not a plan | H | the chrome scene as the case to optimize around; §5.3 is the compile budget **#1193** guards |
+| `../archive/plans/2026-09-06-kernel-with-a-lattice.md` | plan of record | H | three objects, one verb; records its own course correction on `collapse` |
+| `../archive/plans/2026-09-06-lattice-is-the-index.md` | **Landed** (U0, L1–L4) | H | a lattice is an extent; the origin is deleted, a frame is a contramap |
+| `../archive/plans/2026-09-06-uniform-slot-identity.md` | — | T | a scalar parameter that is invariant without being known |
+| `../compiler/2026-09-07-demand-is-a-dag-property.md` | **Superseded** | H | analysis survives; framing replaced by one-conditional-three-lowerings |
+| `../archive/plans/2026-09-08-egraph-cpu-memory-profile.md` | measured facts | H | where the engine's cycles and bytes go — the engineering half's sequel to production-scale |
+| `../archive/plans/2026-09-08-macro-tier-is-arena-native.md` | — | T | the macro tier optimizes on the arena, not the AST |
+| `../codegen/2026-09-08-one-conditional-three-lowerings.md` | **Draft, nothing built** | H | `Union` is a missing compiler capability that leaked into the public API |
+| `../archive/plans/2026-09-09-exprarena-on-dag.md` | Proposed | H | staging the port; §2 records that the predecessor's stated blocker was wrong |
+| `../archive/plans/2026-02-25-unified-training-design.md` | — | T | temporal credit assignment via sequence transformer (deleted path) |
+| `../archive/plans/2026-02-25-unified-training-plan.md` | — | T | implementation plan for the above |
 
 ### Designs (21)
 
 | document | depth | one line |
 |---|:-:|---|
-| `2026-07-23-jit-orthodoxy-survey.md` | T | is the PixelFlow JIT orthodox? against V8, LuaJIT, HotSpot, Halide-class |
-| `2026-07-23-lower-realize-boundary.md` | H | superseded by the JIT-first `Kernel` course correction |
-| `2026-07-24-totality-and-the-cost-model.md` | H | **design of record, axiom layer** — totality is the root axiom |
-| `2026-07-25-two-level-ir-and-backend-completeness.md` | H | lowering/backend boundary audit + the first Instruction/assembler split |
-| `2026-08-31-hardware-sandboxed-kernel-preemption.md` | T | KVM sandboxing — recorded reasoning, **not adopted**, gated on an observed overrun |
-| `2026-08-31-preemption-as-transaction-abort.md` | T | the alternative — same status |
-| `BRAINSTORM_VARIANCE_EGRAPH.md` | T | variance analysis via saturation — exploratory |
-| `KERNELS_AND_LATTICES.md` | H | **current architecture** — the implemented kernel/lattice substrate |
-| `LATTICE_EVAL.md` | T | lattice as representable functor; unified scheduling |
-| `ML_AND_LINEAR_ALGEBRA.md` | T | functional ML and linear algebra — directional |
-| `ML_AUTODIFF_PIPELINE.md` | T | denotational ML and symbolic autodiff — directional |
-| `REDUCTIONS_AND_FOLDS.md` | T | reductions, folds, dimension collapse — directional |
-| `actor-scheduler-backpressure.md` | T | backpressure is a protocol, not a politeness |
-| `actor-scheduler-mealy-transducer.md` | T | **the actor design of record**; its §5 rules out mid-step preemption |
-| `actor-scheduler-supervisor-migration.md` | T | explicitly superseded by the Mealy design |
-| `assembler-as-functor.md` | T | formalizing the codegen pipeline |
-| `compiler-architecture-2026.md` | T | point-in-time IR unification proposal; verify before use |
-| `lattice-scheduling-types.md` | T | extraction as factoring |
-| `opkind-numbering-is-private.md` | T | the op numbering is private; `marshal` is how you get bytes |
-| `pixelflow-runtime-engine-mesh-migration.md` | T | mediator → mesh; **not landed** |
-| `pty-actor-troupe.md` | T | **implemented** PTY actor wiring |
+| `../archive/designs/2026-07-23-jit-orthodoxy-survey.md` | T | is the PixelFlow JIT orthodox? against V8, LuaJIT, HotSpot, Halide-class |
+| `../archive/designs/2026-07-23-lower-realize-boundary.md` | H | superseded by the JIT-first `Kernel` course correction |
+| `../language/2026-07-24-totality-and-the-cost-model.md` | H | **design of record, axiom layer** — totality is the root axiom |
+| `../archive/designs/2026-07-25-two-level-ir-and-backend-completeness.md` | H | lowering/backend boundary audit + the first Instruction/assembler split |
+| `../archive/designs/2026-08-31-hardware-sandboxed-kernel-preemption.md` | T | KVM sandboxing — recorded reasoning, **not adopted**, gated on an observed overrun |
+| `../archive/designs/2026-08-31-preemption-as-transaction-abort.md` | T | the alternative — same status |
+| `../archive/designs/BRAINSTORM_VARIANCE_EGRAPH.md` | T | variance analysis via saturation — exploratory |
+| `../archive/designs/KERNELS_AND_LATTICES.md` | H | **current architecture** — the implemented kernel/lattice substrate |
+| `../archive/designs/LATTICE_EVAL.md` | T | lattice as representable functor; unified scheduling |
+| `../archive/designs/ML_AND_LINEAR_ALGEBRA.md` | T | functional ML and linear algebra — directional |
+| `../archive/designs/ML_AUTODIFF_PIPELINE.md` | T | denotational ML and symbolic autodiff — directional |
+| `../archive/designs/REDUCTIONS_AND_FOLDS.md` | T | reductions, folds, dimension collapse — directional |
+| `docs/archive/designs/actor-scheduler-backpressure.md` | T | backpressure is a protocol, not a politeness |
+| `docs/runtime/actor-scheduler-mealy-transducer.md` | T | **the actor design of record**; its §5 rules out mid-step preemption |
+| `docs/archive/designs/actor-scheduler-supervisor-migration.md` | T | explicitly superseded by the Mealy design |
+| `../archive/designs/assembler-as-functor.md` | T | formalizing the codegen pipeline |
+| `../archive/designs/compiler-architecture-2026.md` | T | point-in-time IR unification proposal; verify before use |
+| `../archive/designs/lattice-scheduling-types.md` | T | extraction as factoring |
+| `../archive/designs/opkind-numbering-is-private.md` | T | the op numbering is private; `marshal` is how you get bytes |
+| `docs/runtime/pixelflow-runtime-engine-mesh-migration.md` | T | mediator → mesh; **not landed** |
+| `../archive/designs/pty-actor-troupe.md` | T | **implemented** PTY actor wiring |
 
 ### Root documents (15)
 
-`README.md` (the index — see §1 on its coverage) · `STYLE.md` (current conventions) ·
-`POSTSUBMIT.md` (the three postsubmit workflows and the automatic-revert policy) ·
-`AUTODIFF_RENDERING.md` (the thesis: forward-mode AD for real-time CPU graphics is an unexplored gap;
+`README.md` (the index — see §1 on its coverage) · `../process/STYLE.md` (current conventions) ·
+`../process/POSTSUBMIT.md` (the three postsubmit workflows and the automatic-revert policy) ·
+`../archive/notes/AUTODIFF_RENDERING.md` (the thesis: forward-mode AD for real-time CPU graphics is an unexplored gap;
 positions the project against Elliott 2009 and IQ's finite-difference shader idiom) ·
-`COMPILER_ANALYSIS.md` (2026-01-30 pipeline analysis, 749 lines) ·
-`COMPILER_OPPORTUNITIES.md` (ranked compiler improvements) ·
-`KERNEL_PARAM_LIMIT_INVESTIGATION.md` (>3 params failed under the old trait-bound scheme; root cause
+`../archive/notes/COMPILER_ANALYSIS.md` (2026-01-30 pipeline analysis, 749 lines) ·
+`../archive/notes/COMPILER_OPPORTUNITIES.md` (ranked compiler improvements) ·
+`../archive/notes/KERNEL_PARAM_LIMIT_INVESTIGATION.md` (>3 params failed under the old trait-bound scheme; root cause
 identified — obsoleted by the arena architecture) ·
-`FLAT_CONTEXT_TUPLE_PROTOTYPE.md` (nested-`Let` trait-bound explosion; same era) ·
-`MESSAGE_CUJ_COVERAGE.md` (actor message CUJ test strategy) ·
-`function-namespace-audit.md` (functions whose name prefix is really a namespace — the source of
+`../archive/notes/FLAT_CONTEXT_TUPLE_PROTOTYPE.md` (nested-`Let` trait-bound explosion; same era) ·
+`../archive/notes/MESSAGE_CUJ_COVERAGE.md` (actor message CUJ test strategy) ·
+`../archive/notes/function-namespace-audit.md` (functions whose name prefix is really a namespace — the source of
 CLAUDE.md's "name vs namespace" rule) ·
-`lample_charton_2019_symbolic_math.md` + `2425_deep_learning_for_symbolic_mat.pdf` (external paper
-notes) · `fop-conal.pdf`, `type-class-morphisms-long.pdf` (Elliott, the denotational-design lineage) ·
-**historical stubs:** `NNUE_INTEGRATION_STATUS.md`, `EGRAPH_SEARCH_INTEGRATION.md`,
-`SEARCH_PIPELINE_DESIGN.md`, `EGRAPH_OPTIMIZATION_ARCHITECTURE.md` — all four carry dated supersession
+`../archive/notes/lample_charton_2019_symbolic_math.md` + `../archive/papers/2425_deep_learning_for_symbolic_mat.pdf` (external paper
+notes) · `../archive/papers/fop-conal.pdf`, `../archive/papers/type-class-morphisms-long.pdf` (Elliott, the denotational-design lineage) ·
+**historical stubs:** `../archive/notes/NNUE_INTEGRATION_STATUS.md`, `../archive/notes/EGRAPH_SEARCH_INTEGRATION.md`,
+`../archive/notes/SEARCH_PIPELINE_DESIGN.md`, `../archive/notes/EGRAPH_OPTIMIZATION_ARCHITECTURE.md` — all four carry dated supersession
 banners and point forward correctly.
 
 ### Results (69 markdown + 112 row-data files), by campaign
@@ -618,7 +618,7 @@ banners and point forward correctly.
 ### Bugs (26)
 
 23 are one scheduled test-quality audit series (2026-07-20 → 2026-09-07), each pass taking named files
-and reporting STYLE.md naming compliance plus `cargo mutants` gaps. Two passes are unmerged or
+and reporting ../process/STYLE.md naming compliance plus `cargo mutants` gaps. Two passes are unmerged or
 retro-annotated (#1054 salvaged, #1154 repaired), and both carry dated supersession banners saying a
 full mutation re-run is still owed before "0 real gaps" is restated. The other three:
 `2026-07-15-pty-fork-malloc-deadlock` (**active** — diagnosed, not fixed),
@@ -626,10 +626,10 @@ full mutation re-run is still owed before "0 real gaps" is restated. The other t
 
 ### Archive, superpowers, templates (8)
 
-`archive/GNN_REWRITE_GUIDANCE_VISION.md` and `archive/nnue-training-pipeline.md` — the two pre-2026-07
+`../archive/notes/GNN_REWRITE_GUIDANCE_VISION.md` and `../archive/notes/nnue-training-pipeline.md` — the two pre-2026-07
 learned-guidance visions. `superpowers/` — the April 2026 four-team pipeline rewrite (lattice
 extensions, IR pullbacks, forward pass, backward training) plus its spec; completed or superseded.
-`templates/DESIGN_DOC.md` — the status vocabulary §1 finds is followed by 3 of 59 documents.
+`../process/DESIGN_DOC.md` — the status vocabulary §1 finds is followed by 3 of 59 documents.
 
 ---
 
@@ -644,18 +644,18 @@ Five, ordered by value per hour. None requires a measurement.
 2. **Add a `Verified against:` field to the design-doc template and grep for it.** Failure mode 5 costs
    more than any other unfixed one, it recurred four times in a single sweep, and the check is one
    script in the metadata jobs (which already run in ~6 s with no toolchain — `check-bin-declarations.sh`
-   is the precedent). *(Half done: the field is now required by `templates/DESIGN_DOC.md`, which also
+   is the precedent). *(Half done: the field is now required by `../process/DESIGN_DOC.md`, which also
    says to resolve the sha rather than name a ref — the mistake this document itself made. Nothing
    enforces it yet; that is the remaining half.)*
 3. ~~**Fix the status vocabulary rather than the 56 documents.**~~ **Done.**
-   `templates/DESIGN_DOC.md` now defines `Draft / Proposed / Registered / Plan of record / Landed /
+   `../process/DESIGN_DOC.md` now defines `Draft / Proposed / Registered / Plan of record / Landed /
    Closed / Superseded / Historical`, and `docs/README.md` states the same list and indexes all 59
    documents. `Registered` is the one worth naming: a pre-registration commits its constants before the
    data exists and is never revisable afterwards, which none of the old four words could express. Still
    unenforced by a job.
 4. **Write #1193.** It is the gate that makes the benchmark correction's §B.5 enforceable and the one
    that would have caught the class-cap warm regression without a human noticing.
-5. **Amend `2026-09-01-schedule-cost-model-denotation.md`.** Its successor program is a reranker over
+5. **Amend `../compiler/2026-09-01-schedule-cost-model-denotation.md`.** Its successor program is a reranker over
    swap refinement; #1236 measured that neighbourhood and found 7 of 56 objective witnesses one swap
    inside it and **none** reachable by any longer sequence. The seam can stay; the claim that it is the
    next thing to build should not, unretracted, be the most recent word on the subject.

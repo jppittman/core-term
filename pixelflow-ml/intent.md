@@ -49,11 +49,11 @@ without it the crate is empty. `src/graphics.rs` is all of it: `SH_NORM`,
 - `LinearAttention` has no `accumulate` or `query`; `RandomFourierFeature`
   does not implement `FeatureMap`.
 - Zero dependents; a workspace member only because D4 of
-  `docs/plans/2026-09-01-dead-code-with-ideas.md` is open (2026-09-01).
+  `docs/archive/plans/2026-09-01-dead-code-with-ideas.md` is open (2026-09-01).
 - `libm` and `criterion` are declared and unused; the `Cargo.toml`
   description still says "compiler optimization"; no `#![no_std]`.
 
 ## Decided in
-`docs/DENOTATION.md` §3, `docs/plans/2026-10-15-a-schedule-is-a-factorization.md`
-§3, `docs/plans/2026-09-06-kernel-with-a-lattice.md` (SH data moved here),
-`docs/plans/2026-09-01-dead-code-with-ideas.md` (D4, R4).
+`docs/DENOTATION.md` §3, `docs/codegen/2026-10-15-a-schedule-is-a-factorization.md`
+§3, `docs/archive/plans/2026-09-06-kernel-with-a-lattice.md` (SH data moved here),
+`docs/archive/plans/2026-09-01-dead-code-with-ideas.md` (D4, R4).

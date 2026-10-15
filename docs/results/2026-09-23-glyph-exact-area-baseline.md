@@ -9,7 +9,7 @@ glyph, at 7, 16 and 32 px (`GlyphAtlas` tiles of that many texels).
 
 The question: how far is today's glyph coverage from the area of each pixel
 the glyph actually covers? This is the number
-[a glyph is a formula](../plans/2026-09-23-a-glyph-is-a-formula.md) sets out
+[a glyph is a formula](../archive/plans/2026-09-23-a-glyph-is-a-formula.md) sets out
 to change, recorded before anything changes it.
 
 ## What is compared

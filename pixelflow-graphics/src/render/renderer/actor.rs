@@ -70,7 +70,7 @@ impl<P: Pixel, Meta> Default for RenderCoreOut<P, Meta> {
 /// Pure render decision core: pause/resume, thread-count, and the actual `Scene::render` call,
 /// with no channel or bootstrap-handshake machinery in it — a `step_*` call takes a message and
 /// returns what to emit, table-testable with no actor scheduler in the loop. Rollout step 3 of
-/// `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5, following the same
+/// `docs/runtime/pixelflow-runtime-engine-mesh-migration.md` §5, following the same
 /// core/adapter split step 2 established for `vsync_actor.rs`'s `VsyncCore`.
 pub(crate) struct RenderCore<P: Pixel, Meta = ()> {
     num_threads: usize,

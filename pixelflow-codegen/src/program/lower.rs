@@ -277,7 +277,7 @@ pub(crate) fn arena_to_schedule(
             // lowering pipeline. Refusing is not a limitation to lift — a
             // surviving reference is a *call*, and codegen emits one flat
             // function per kernel with no ABI for one
-            // (docs/plans/2026-09-09-composition-is-linking.md §5.2).
+            // (docs/language/2026-09-09-composition-is-linking.md §5.2).
             ExprNode::Ref(key) => panic!(
                 "arena_to_schedule: {key:?} names a kernel whose body is not in \
                  this arena. expand_refs runs first in every compile entry \
