@@ -1,13 +1,13 @@
-//! x86-64 leaf encoders: what the AVX2 and AVX-512 tiers share below the
-//! vector width.
+//! x86-64 leaf encoders: what the AVX2 and AVX-512 tiers share.
 //!
 //! What is here is the *architecture's*: [`Gp`], the general-register
 //! instructions the loop nest and the store's address arithmetic are made
 //! of (branches, the pointer class's loads and stores and the frame among
-//! them), the memory-operand tail (`Mem`, `Disp`) every vector encoder's
-//! ModRM/SIB is built from, and the vector operations both tiers name ([`Alu`]
-//! and its kin, whose bytes are each tier's). Nothing here names a vector
-//! width: the `ymm`/`zmm` encodings live in `avx2.rs` and `avx512.rs`.
+//! them), the memory-operand tail (`Mem`, `Disp`), and the vector encoder
+//! ([`Opcode`]) both tiers are written with: VEX and EVEX are two prefixes
+//! ([`Scheme`]) on one instruction set, so the instructions and their operand
+//! forms are named here once. The tiers choose a prefix and the instructions
+//! they select; the vector width is the prefix's, not this file's.
 
 use super::asm::Encoding;
 use super::build::{Builder, Def, Spiller};
@@ -290,22 +290,12 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
             Gp::Add { dst, src, .. } => {
                 inst.extend(&rr(0x01, dst.number(), src.number()));
             }
-            // `rbp`/`r13` have no `mod = 00` form as a SIB base (that
-            // encoding means "no base"), so those two take `mod = 01` with a
-            // zero `disp8`.
             Gp::Lea4 { dst, base, index } => {
                 let (dst, base, index) = (dst.number(), base.number(), index.number());
                 debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
-                let disp8_form = base & 7 == RM_RIP_AT_MOD0;
-                inst.push(
-                    0x48 | (((dst >> 3) & 1) << 2) | (((index >> 3) & 1) << 1) | ((base >> 3) & 1),
-                );
+                inst.push(0x48 | (bit(dst, 3) << 2) | (bit(index, 3) << 1) | bit(base, 3));
                 inst.push(0x8D);
-                inst.push(if disp8_form { 0x40 } else { 0x00 } | ((dst & 7) << 3) | RM_SIB);
-                inst.push((0b10 << 6) | ((index & 7) << 3) | (base & 7));
-                if disp8_form {
-                    inst.push(0);
-                }
+                scaled4_operand_into(&mut inst, dst, base, index);
             }
             Gp::MovLoad { dst, src } => {
                 let (dst, base) = (dst.number(), src.base.number());
@@ -357,8 +347,8 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
                 inst.extend(&frame_bytes(*size).to_le_bytes());
                 // `vzeroupper`: `VEX.128.0F.WIG 77`, zeroing bits 128 and up of
                 // vector registers 0–15, the sixteen a legacy-SSE instruction
-                // can name. The same three bytes on every tier.
-                inst.extend(&[0xC5, 0xF8, 0x77]);
+                // can name. VEX on every tier.
+                inst.extend(Vex::m0f(0x77).xmm().bare().as_bytes());
                 inst.push(0xC3);
             }
         }
@@ -659,8 +649,8 @@ pub(super) fn patch_rel32(code: &mut [u8], pos: usize, target: usize) {
 // The vector operations both tiers encode
 // =============================================================================
 
-// What an operation *is* is the architecture's; the bytes that say it are the
-// tier's, so `avx2.rs` and `avx512.rs` each give these a `vex()` or `evex()`.
+// What an operation *is* is the architecture's, and so is the opcode that says
+// it ([`Opcode::alu`], [`Opcode::lanewise`]); a tier only picks the prefix.
 
 /// A three-operand arithmetic or bitwise instruction: `op dst, a, b`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -720,6 +710,380 @@ pub(super) enum Rounding {
 pub(super) enum Direction {
     Left = 6,
     Right = 2,
+}
+
+// =============================================================================
+// The vector encoder: one instruction set, two prefixes
+// =============================================================================
+
+// VEX and EVEX are two prefixes on the same instructions. The opcode map, the
+// implied legacy prefix, `W`, the opcode byte and the ModRM/SIB tail are the
+// instruction's and are written once, by [`Opcode`]; what the prefix adds is
+// where the registers' high bits go, which is [`Scheme`]'s alone.
+
+/// The opcode map an instruction lives in: the field Intel calls `mmmmm` (VEX)
+/// or `mm` (EVEX), a map *selector*, nothing more.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Map {
+    /// `0F`
+    M0F = 1,
+    /// `0F38`
+    M0F38 = 2,
+    /// `0F3A`
+    M0F3A = 3,
+}
+
+/// The legacy prefix the instruction implies (`pp`).
+#[derive(Clone, Copy)]
+pub(super) enum Pp {
+    /// No implied prefix.
+    None = 0,
+    /// `66`
+    P66 = 1,
+    /// `F3`
+    F3 = 2,
+}
+
+/// The registers one instruction names, by hardware number and uninverted:
+/// what a [`Scheme`] folds into its prefix bits.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Ext {
+    /// ModRM.reg (or the `/digit`): `R`, and EVEX's `R'`.
+    reg: u8,
+    /// `X`: bit 3 of the SIB index, or, where `rm` is a register, bit 4 of it,
+    /// which only EVEX has the room to say.
+    x: u8,
+    /// `B`: bit 3 of ModRM.rm, or of the base.
+    b: u8,
+    /// `vvvv`: the second source, or `None` where the instruction has none and
+    /// the field must read `1111`.
+    vvvv: Option<u8>,
+    /// The register whose bit 4 is EVEX's `V'`: the `vvvv` source, or a VSIB
+    /// index.
+    v: u8,
+}
+
+/// A prefix encoding for the vector instructions: [`VexPrefix`] or
+/// [`EvexPrefix`].
+pub(super) trait Scheme: Copy {
+    /// The prefix at the tier's full vector width.
+    const FULL: Self;
+    /// `rsqrtps` and `rcpps` are VEX's, `vrsqrt14ps` and `vrcp14ps` EVEX's: EVEX
+    /// has no `0F 52`/`0F 53`, and ~2^-14 relative error matches `Recip`'s
+    /// "approximate reciprocal" contract on every other backend.
+    const RSQRT: Opcode<Self>;
+    const RECIP: Opcode<Self>;
+    /// The 128-bit form: for the few `xmm`-only instructions (`vmovq`,
+    /// `vextractps`, the `k` family), which `#UD` at the wider length.
+    fn xmm(self) -> Self;
+    /// Write the prefix and the opcode byte.
+    fn write(op: &Opcode<Self>, ext: Ext, inst: &mut EncodedInst);
+}
+
+/// One bit of a register number, as 0 or 1.
+const fn bit(register: u8, at: u8) -> u8 {
+    (register >> at) & 1
+}
+
+/// A prefix stores the register-extension bits inverted.
+const fn inverted(bit: u8) -> u8 {
+    bit ^ 1
+}
+
+/// VEX: sixteen registers, 128 or 256 bits wide.
+#[derive(Clone, Copy)]
+pub(super) struct VexPrefix {
+    /// `VEX.L`.
+    l256: bool,
+}
+
+impl Scheme for VexPrefix {
+    const FULL: Self = Self { l256: true };
+    const RSQRT: Opcode<Self> = Opcode::m0f(0x52);
+    const RECIP: Opcode<Self> = Opcode::m0f(0x53);
+
+    fn xmm(self) -> Self {
+        Self { l256: false }
+    }
+
+    /// The two-byte form where it can say everything (map `0F`, `W0`, no `X`
+    /// or `B`), else the three-byte one.
+    fn write(op: &Opcode<Self>, e: Ext, inst: &mut EncodedInst) {
+        let rest =
+            ((!e.vvvv.unwrap_or(0) & 0xF) << 3) | ((op.scheme.l256 as u8) << 2) | op.pp as u8;
+        let r = inverted(bit(e.reg, 3)) << 7;
+        if op.map == Map::M0F && !op.w && e.x | e.b == 0 {
+            inst.extend(&[0xC5, r | rest]);
+        } else {
+            inst.extend(&[
+                0xC4,
+                r | (inverted(e.x) << 6) | (inverted(e.b) << 5) | op.map as u8,
+                ((op.w as u8) << 7) | rest,
+            ]);
+        }
+        inst.push(op.byte);
+    }
+}
+
+/// EVEX: thirty-two registers, 128 to 512 bits wide, and a writemask.
+#[derive(Clone, Copy)]
+pub(super) struct EvexPrefix {
+    /// `EVEX.L'L`: `10` for the `zmm` form, `00` for `xmm`.
+    ll: u8,
+    /// `EVEX.aaa`: the writemask register, or 0 for none. Merge-masking
+    /// (`z = 0`), which for a store means the masked-off lanes are left in
+    /// memory untouched.
+    aaa: u8,
+}
+
+impl Scheme for EvexPrefix {
+    const FULL: Self = Self { ll: 0b10, aaa: 0 };
+    const RSQRT: Opcode<Self> = Opcode::m0f38_66(0x4E);
+    const RECIP: Opcode<Self> = Opcode::m0f38_66(0x4C);
+
+    fn xmm(self) -> Self {
+        Self { ll: 0, ..self }
+    }
+
+    fn write(op: &Opcode<Self>, e: Ext, inst: &mut EncodedInst) {
+        let vvvv = !e.vvvv.unwrap_or(0) & 0xF;
+        inst.extend(&[
+            0x62,
+            (inverted(bit(e.reg, 3)) << 7)
+                | (inverted(e.x) << 6)
+                | (inverted(e.b) << 5)
+                | (inverted(bit(e.reg, 4)) << 4)
+                | op.map as u8,
+            ((op.w as u8) << 7) | (vvvv << 3) | (1 << 2) | op.pp as u8,
+            // z = 0 (merge), L'L, b(roadcast) = 0, V', aaa.
+            (op.scheme.ll << 5) | (inverted(bit(e.v, 4)) << 3) | op.scheme.aaa,
+            op.byte,
+        ]);
+    }
+}
+
+/// A displacement the prefix scheme `S` reads as written. EVEX scales an
+/// 8-bit one by the operand size (`disp8*N`), so [`Imm8`] is not one of its
+/// displacements: it would encode a different address than it names.
+pub(super) trait DispIn<S>: Disp {}
+
+impl<S> DispIn<S> for NoDisp {}
+impl<S> DispIn<S> for Imm32 {}
+impl DispIn<VexPrefix> for Imm8 {}
+
+/// The identity of one vector instruction: opcode map, implied legacy prefix,
+/// `W` bit, opcode byte, and the vector length and (EVEX) writemask the prefix
+/// scheme carries. This is *which instruction* — constant per mnemonic, so each
+/// mnemonic states it once and the operand form (`rrr`, `rm`, ...) supplies the
+/// per-call registers.
+#[derive(Clone, Copy)]
+pub(super) struct Opcode<S> {
+    map: Map,
+    pp: Pp,
+    w: bool,
+    byte: u8,
+    /// The imm8 that follows the operands: a `vcmpps` predicate, a rounding
+    /// mode, a shift count, a lane index, a `vpternlogd` truth table.
+    imm: Option<u8>,
+    scheme: S,
+}
+
+/// A VEX-encoded instruction.
+pub(super) type Vex = Opcode<VexPrefix>;
+/// An EVEX-encoded instruction.
+pub(super) type Evex = Opcode<EvexPrefix>;
+
+impl<S: Scheme> Opcode<S> {
+    const fn new(map: Map, pp: Pp, byte: u8) -> Self {
+        Self {
+            map,
+            pp,
+            w: false,
+            byte,
+            imm: None,
+            scheme: S::FULL,
+        }
+    }
+    /// Map `0F`, no prefix — the packed-single family.
+    pub(super) const fn m0f(byte: u8) -> Self {
+        Self::new(Map::M0F, Pp::None, byte)
+    }
+    /// Map `0F`, `66` — the integer-domain family.
+    pub(super) const fn m0f_66(byte: u8) -> Self {
+        Self::new(Map::M0F, Pp::P66, byte)
+    }
+    /// Map `0F`, `F3`.
+    pub(super) const fn m0f_f3(byte: u8) -> Self {
+        Self::new(Map::M0F, Pp::F3, byte)
+    }
+    /// Map `0F38`, `66`.
+    pub(super) const fn m0f38_66(byte: u8) -> Self {
+        Self::new(Map::M0F38, Pp::P66, byte)
+    }
+    /// Map `0F38`, `F3` — the mask-to-vector widening family.
+    pub(super) const fn m0f38_f3(byte: u8) -> Self {
+        Self::new(Map::M0F38, Pp::F3, byte)
+    }
+    /// Map `0F3A`, `66` — the imm8 family (round, insert/extract, ternlog).
+    pub(super) const fn m0f3a_66(byte: u8) -> Self {
+        Self::new(Map::M0F3A, Pp::P66, byte)
+    }
+
+    /// The 64-bit-operand (`W = 1`) form of this instruction.
+    pub(super) const fn w1(self) -> Self {
+        Self { w: true, ..self }
+    }
+    /// The 128-bit form of this instruction.
+    pub(super) fn xmm(self) -> Self {
+        Self {
+            scheme: self.scheme.xmm(),
+            ..self
+        }
+    }
+    /// This instruction with its imm8, which every operand form emits last.
+    pub(super) const fn imm(self, imm: u8) -> Self {
+        Self {
+            imm: Some(imm),
+            ..self
+        }
+    }
+
+    /// The instruction a three-operand [`Alu`] op is.
+    pub(super) const fn alu(op: Alu) -> Self {
+        match op {
+            Alu::Add => Self::m0f(0x58),
+            Alu::Sub => Self::m0f(0x5C),
+            Alu::Mul => Self::m0f(0x59),
+            Alu::Div => Self::m0f(0x5E),
+            Alu::Min => Self::m0f(0x5D),
+            Alu::Max => Self::m0f(0x5F),
+            Alu::And => Self::m0f(0x54),
+            Alu::AndNot => Self::m0f(0x55),
+            Alu::Or => Self::m0f(0x56),
+            Alu::Xor => Self::m0f(0x57),
+            Alu::IAdd => Self::m0f_66(0xFE),
+        }
+    }
+
+    /// The instruction a one-source [`Lanewise`] op is.
+    pub(super) const fn lanewise(op: Lanewise) -> Self {
+        match op {
+            Lanewise::Sqrt => Self::m0f(0x51),
+            Lanewise::Rsqrt => S::RSQRT,
+            Lanewise::Recip => S::RECIP,
+            Lanewise::ToInt => Self::m0f_f3(0x5B),
+            Lanewise::FromInt => Self::m0f(0x5B),
+            Lanewise::WidenBytes => Self::m0f38_66(0x31),
+        }
+    }
+
+    /// The prefix and opcode, then `tail` (ModRM and what follows it), then the
+    /// imm8.
+    fn encode(self, ext: Ext, tail: impl FnOnce(&mut EncodedInst)) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        S::write(&self, ext, &mut inst);
+        tail(&mut inst);
+        if let Some(imm) = self.imm {
+            inst.push(imm);
+        }
+        inst
+    }
+
+    /// `op reg, vvvv, rm` with `rm` a register: the three-operand form.
+    pub(super) fn rrr(self, reg: u8, vvvv: u8, rm: u8) -> EncodedInst {
+        self.registers(reg, Some(vvvv), rm)
+    }
+
+    /// `op reg, rm` with no `vvvv` source.
+    pub(super) fn rr(self, reg: u8, rm: u8) -> EncodedInst {
+        self.registers(reg, None, rm)
+    }
+
+    fn registers(self, reg: u8, vvvv: Option<u8>, rm: u8) -> EncodedInst {
+        let ext = Ext {
+            reg,
+            x: bit(rm, 4),
+            b: bit(rm, 3),
+            vvvv,
+            v: vvvv.unwrap_or(0),
+        };
+        self.encode(ext, |inst| inst.push(modrm_rr(reg, rm)))
+    }
+
+    /// An instruction with no operands.
+    pub(super) fn bare(self) -> EncodedInst {
+        self.encode(Ext::default(), |_| {})
+    }
+
+    /// `op reg, [base + disp]`: the memory-operand form, for any base and any
+    /// displacement the scheme reads as written.
+    pub(super) fn rm<D: DispIn<S>>(self, reg: u8, base: u8, disp: D) -> EncodedInst {
+        let ext = Ext {
+            reg,
+            b: bit(base, 3),
+            ..Ext::default()
+        };
+        self.encode(ext, |inst| mem_operand_into(inst, reg, base, disp))
+    }
+
+    /// `op reg, [rip + disp32]`: the displacement is the last four bytes, a
+    /// label field.
+    pub(super) fn rip(self, reg: u8) -> EncodedInst {
+        let ext = Ext {
+            reg,
+            ..Ext::default()
+        };
+        debug_assert!(self.imm.is_none(), "an imm8 would follow the label field");
+        self.encode(ext, |inst| rip_operand_into(inst, reg))
+    }
+
+    /// `op reg, [base + index*4]` — the SIB form with a scaled index, which a
+    /// broadcast load reads one element of a plane through.
+    pub(super) fn rm_scaled4(self, reg: u8, base: u8, index: u8) -> EncodedInst {
+        debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
+        let ext = Ext {
+            reg,
+            x: bit(index, 3),
+            b: bit(base, 3),
+            ..Ext::default()
+        };
+        self.encode(ext, |inst| scaled4_operand_into(inst, reg, base, index))
+    }
+
+    /// `op reg, [base + vecINDEX*4], vvvv` — the VSIB form, whose index is a
+    /// *vector* register: one address per lane, scale 4, no displacement. The
+    /// SIB bytes are a GPR index's, but as a vector number `100` is
+    /// `ymm4`/`ymm12`, which a gather may perfectly well be indexed by. VEX's
+    /// `vvvv` is the gather's mask; EVEX has the mask in `aaa` and none here.
+    pub(super) fn vsib_scaled4(
+        self,
+        reg: u8,
+        vvvv: Option<u8>,
+        base: u8,
+        index: u8,
+    ) -> EncodedInst {
+        let ext = Ext {
+            reg,
+            x: bit(index, 3),
+            b: bit(base, 3),
+            vvvv,
+            v: index,
+        };
+        self.encode(ext, |inst| scaled4_operand_into(inst, reg, base, index))
+    }
+}
+
+impl Evex {
+    /// This instruction under the writemask register numbered `k`.
+    pub(super) const fn masked(self, k: u8) -> Self {
+        Self {
+            scheme: EvexPrefix {
+                aaa: k,
+                ..self.scheme
+            },
+            ..self
+        }
+    }
 }
 
 // =============================================================================
@@ -833,27 +1197,11 @@ const RM_RIP_AT_MOD0: u8 = 0b101;
 const SIB_BASE_ONLY: u8 = 0x24;
 
 /// Write the ModRM/SIB tail for `[base + index*4]` into an `EncodedInst`:
-/// `mod = 00`, a SIB with scale 4 and no displacement — the element of a
-/// plane of `f32`s, addressed in one instruction. The tail is the
-/// architecture's, not the prefix's, so the VEX and EVEX tiers share it the
-/// way they share [`mem_operand_into`]. Registers are hardware numbers.
-pub(super) fn scaled4_operand_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
-    debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
-    sib4_tail_into(inst, reg, base, index);
-}
-
-/// [`scaled4_operand_into`] with a *vector* index — the VSIB a gather
-/// addresses through, `[base + ymm*4]`. Same bytes; the one rule that does
-/// not carry over is the GPR one, because SIB index `100` means "no index"
-/// only when the index is a general register: as a vector number it is
-/// `ymm4`/`ymm12`, which a gather may perfectly well be indexed by. The
-/// prefix's X bit carries the index's high bit either way.
-pub(super) fn vsib4_operand_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
-    sib4_tail_into(inst, reg, base, index);
-}
-
-/// The ModRM/SIB bytes both scaled-index forms share.
-fn sib4_tail_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
+/// `mod = 00`, a SIB with scale 4 and no displacement — the element of a plane
+/// of `f32`s, addressed in one instruction, or a gather's VSIB. The tail is the
+/// architecture's, not the prefix's, so VEX and EVEX share it the way they
+/// share [`mem_operand_into`]. Registers are hardware numbers.
+fn scaled4_operand_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
     assert!(
         base & 7 != RM_RIP_AT_MOD0,
         "[r{base} + index*4] has no mod=00 form: rbp/r13 as a SIB base means no base"
@@ -863,7 +1211,7 @@ fn sib4_tail_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
 }
 
 /// Write the ModRM/SIB/disp tail of `[base + disp]` into an `EncodedInst`.
-pub(super) fn mem_operand_into<D: Disp>(inst: &mut EncodedInst, reg: u8, base: u8, disp: D) {
+fn mem_operand_into<D: Disp>(inst: &mut EncodedInst, reg: u8, base: u8, disp: D) {
     let rm = base & 7;
     debug_assert!(
         D::MOD != NoDisp::MOD || rm != RM_RIP_AT_MOD0,
@@ -878,7 +1226,7 @@ pub(super) fn mem_operand_into<D: Disp>(inst: &mut EncodedInst, reg: u8, base: u
 
 /// The ModRM and `disp32` of `[rip + label]`: the displacement is a label
 /// field, the last four bytes of the instruction.
-pub(super) fn rip_operand_into(inst: &mut EncodedInst, reg: u8) {
+fn rip_operand_into(inst: &mut EncodedInst, reg: u8) {
     inst.push(((reg & 7) << 3) | RM_RIP_AT_MOD0);
     inst.extend(&[0, 0, 0, 0]);
 }
@@ -891,23 +1239,23 @@ mod tests {
     /// An instruction's bytes, and the label field in them if it has one.
     type Word = (EncodedInst, Option<(usize, Label)>);
 
+    fn word(bytes: &[u8]) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        inst.extend(bytes);
+        inst
+    }
+
     /// `jmp rel32` with its label field, as the assembler is handed it.
     fn jmp(to: Label) -> Item<Word> {
-        Item::Inst((
-            EncodedInst::from_slice(&[0xE9, 0, 0, 0, 0]),
-            Some((JMP_DISP, to)),
-        ))
+        Item::Inst((word(&[0xE9, 0, 0, 0, 0]), Some((JMP_DISP, to))))
     }
 
     fn jb(to: Label) -> Item<Word> {
-        Item::Inst((
-            EncodedInst::from_slice(&[0x0F, 0x82, 0, 0, 0, 0]),
-            Some((JCC_DISP, to)),
-        ))
+        Item::Inst((word(&[0x0F, 0x82, 0, 0, 0, 0]), Some((JCC_DISP, to))))
     }
 
     fn plain(bytes: &[u8]) -> Item<Word> {
-        Item::Inst((EncodedInst::from_slice(bytes), None))
+        Item::Inst((word(bytes), None))
     }
 
     fn ret() -> Item<Word> {
