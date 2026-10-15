@@ -2028,10 +2028,11 @@ mod tests {
         }
     }
 
-    /// A `Dwrt` over an op with no derivative rule must surface as a compile
-    /// error (loud refusal), not a miscompile or a scheduler panic.
+    /// A `Dwrt` of a discrete kernel's read, at a coordinate the read's index
+    /// moves with, is refused by name: `legalize` lowers `Dwrt` before any
+    /// target code runs, so the refusal is the same on every tier. It must
+    /// never compile to a miscompile or reach the scheduler.
     #[test]
-    #[cfg(target_arch = "x86_64")]
     fn dwrt_of_gather_refuses_to_compile() {
         use pixelflow_ir::arena::BufferDecl;
         let mut a = ExprArena::new();
@@ -2046,7 +2047,14 @@ mod tests {
         let g = a.push_ternary(OpKind::Gather, bufleaf, x, y);
         let v0 = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, g, v0);
-        assert!(compile(&a, root, POINT).is_err());
+        match compile(&a, root, POINT) {
+            Ok(_) => panic!("a Dwrt of a discrete kernel's read compiled; it must be refused"),
+            Err(CompileError::Legalize(msg)) => assert!(
+                msg.contains("cannot differentiate a bound-memory read"),
+                "the refusal does not name the discrete read: {msg}"
+            ),
+            Err(other) => panic!("expected a Legalize refusal naming the read, got {other:?}"),
+        }
     }
 
     /// A deep spill frame must compile and produce correct results: a frame
