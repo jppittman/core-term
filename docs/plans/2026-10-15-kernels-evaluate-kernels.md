@@ -71,6 +71,36 @@ than back it. There is no write in the language: `collapse` yields a whole
 value, so no intermediate state is observable. Memoization (baking, the JIT
 cache, a glyph cache) is semantically invisible.
 
+### Writing is application
+
+JP, 2026-10-15:
+
+> The scheduler has the ability to turn kernel programs into blocks of
+> memory. And those blocks of memory, those lattices, are still kernels ...
+> materializing a kernel gives you a discrete manifold. It's closed in that
+> way. ... I want all blocks of memory to act as discrete manifolds or
+> kernels. ... the ability to write is kind of outside the language. It's in
+> the application, the unification of a program and the schedule is what
+> gives you the ability to write. And then after you've written, you get
+> something back that has the same interface as the program itself ...
+> something that can be sampled at discrete points.
+
+```
+apply : Program × Schedule → DiscreteManifold
+DiscreteManifold ⊂ Kernel            (sampled at lattice points)
+index(apply(f, s)) = f  on the lattice
+```
+
+Neither the language nor a backend has a write. Applying a program to a
+schedule produces a block of memory, and producing it *is* the write;
+`collapse` is that application. What comes back has the program's interface,
+so materialization is closed: a baked glyph, the cell table and the frame are
+the same kind of thing as the programs that made them. Every block of memory
+a kernel is handed is a discrete manifold; there is no untyped buffer, and the
+ABI's `out` pointer is the tabulation in progress. `Write`/`Seq` nodes are the
+CPU scheduler's mechanics for performing an application, inside its own
+chain: not a language effect, not a concept.
+
 Consequences:
 
 - **"Bound buffer", `BoundManifold`, `bind(&[(id, buf)])` are not concepts.**
