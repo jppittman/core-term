@@ -18,17 +18,15 @@ use crate::pass::Pass;
 /// Split a flat schedule into its nest, placing every value in the outermost
 /// scope that binds all the binders it depends on.
 ///
-/// Two steps, and the second is the placement. [`extract_folds`] carves each
-/// surviving `Reduce`'s closure out into a scope of its own, one level per
-/// fold; what that leaves in a fold's schedule is everything its body
-/// reaches whose variance names no binder deeper than the fold's own — which
-/// still includes values invariant *in* the fold, computed in it once per
-/// trip. [`place_roots`] then moves each of those up to the outermost scope
-/// binding its binders, where it is computed once, and takes it out of the
-/// fold's schedule, which holds only what the fold defines. That is loop-invariant code motion
-/// out of every fold at once — the lattice's rows and columns included, so
-/// a per-call value is computed per call and a per-row one per row
-/// (docs/plans/2026-09-16-collapse-is-a-fold.md §2.2) — asked as one
+/// [`extract_folds`] carves each surviving `Reduce`'s closure out into a scope
+/// of its own, one level per fold, and in the same walk sorts the closure in
+/// two: a value whose variance names no binder deeper than the fold's parent
+/// is invariant in the fold, so the parent computes it once and the fold
+/// *reads* it — the fold's `outer`, its free variables — while the fold's
+/// schedule holds only what the fold defines. That is loop-invariant code
+/// motion out of every fold at once — the lattice's rows and columns
+/// included, so a per-call value is computed per call and a per-row one per
+/// row (docs/plans/2026-09-16-collapse-is-a-fold.md §2.2) — asked as one
 /// question of the variance rather than as a tier per loop.
 pub(crate) struct Nest;
 
@@ -55,28 +53,26 @@ impl Pass for Nest {
             folds: Vec::new(),
         };
         attach_folds(&mut scoped, pending);
-        place_roots(&mut scoped);
         Ok(scoped)
     }
 }
 
 impl<A> ScopedSchedule<A> {
     /// The closure of one scope, which [`Own`](super::Own) asserts of each
-    /// scope before it reads off the scope's ownership. Ownership sees a
+    /// scope before it reads off the scope's ownership: every value a def of
+    /// the scope reads is a def of it or in its `outer`. Ownership sees a
     /// loop's reads at its `Reduce`, one level down
     /// ([`super::ownership::FoldReads`]), so a read it did not see would let an
-    /// arm own a value a loop outside the arm reads. Closure is asserted both
-    /// ways:
+    /// arm own a value a loop outside the arm reads.
     ///
-    /// - **Inward.** Every value a def of the scope reads is a def of it or in
-    ///   its `outer`.
-    /// - **Outward.** Every id in the `outer` of a fold the scope opens is
-    ///   defined ahead of the fold's `Reduce`, or is in the scope's own `outer`;
-    ///   and the fold's body root is a def of the fold or in its `outer`.
+    /// What carving makes true by construction (a fold's `outer` is the
+    /// hoisted boundary of its closure; its `Reduce` is a def of its parent) is
+    /// not asserted again. This is the part that rests on the variance
+    /// contract, a def's variance including its operands', which the carving
+    /// trusts to decide where an operand goes.
     ///
     /// Linear: this scope's defs and its `outer` are indexed densely by
-    /// `ValueId` once, and each fold it opens costs the size of its own `outer`
-    /// and schedule.
+    /// `ValueId` once.
     pub(super) fn assert_closed(&self, scope: Scope) {
         let (schedule, outer, _) = self.at(scope);
         let defined = Positions::of(schedule);
@@ -98,86 +94,6 @@ impl<A> ScopedSchedule<A> {
                 );
             }
         }
-        for fold in self.folds.iter().filter(|fold| fold.parent == scope) {
-            let (opens, body) = match defined.get(fold.reduce).map(|at| (at, &schedule[at].op)) {
-                Some((at, &ScheduledOp::Reduce(_, body))) => (at, body),
-                _ => panic!(
-                    "{:?} opens a fold but is not a Reduce def of {scope:?}",
-                    fold.reduce
-                ),
-            };
-            for read in &fold.outer {
-                let ahead = defined
-                    .get(*read)
-                    .map_or_else(|| read_from_outside(*read), |at| at < opens);
-                assert!(
-                    ahead,
-                    "{read:?}, read inside the fold opening at {:?}, is neither defined ahead of \
-                     it in {scope:?} nor read by {scope:?} from outside",
-                    fold.reduce
-                );
-            }
-            assert!(
-                fold.schedule.iter().any(|def| def.value == body) || fold.outer.contains(&body),
-                "{body:?}, the body of the fold opening at {:?}, is neither defined by it nor \
-                 read from outside",
-                fold.reduce
-            );
-        }
-    }
-}
-
-/// The second half of [`Nest`]: in every fold, each
-/// def whose variance does not name the fold's binder is computed by an
-/// enclosing scope — the outermost binding every binder it *does* name — and
-/// read here from there.
-///
-/// The value is already in that scope's schedule: a fold's closure was carved
-/// out of its parent's, and a value invariant in the fold has no bit deeper
-/// than the parent's, so the parent kept it — and took it out in turn if it
-/// does not bind it either. What changes is that the fold's own copy is
-/// removed and the fold records it as `outer`: a fold's schedule holds only
-/// what the fold defines. Two kinds of def stay whatever their variance: a
-/// binder's `Var`, and a `Reduce` that opens a fold here. Any other `Reduce`
-/// is a sibling fold's result, computed by the scope that opened that fold.
-fn place_roots(scoped: &mut ScopedSchedule<()>) {
-    use pixelflow_ir::variance::Variance;
-
-    // What each fold binds, read off before any def is edited: its own
-    // binder.
-    //
-    // Not the lane binder of a store the fold holds. The lane fold is inlined
-    // into the storing scope, so nothing *deeper* may compute a lane-varying
-    // value (`extract_folds_bound_by` keeps them out of the folds within) —
-    // but the lanes themselves are the same vector in every batch, so a value
-    // that varies by lane and by nothing else is invariant over the whole
-    // call and belongs to the body, like any other invariant.
-    let binds: Vec<Variance> = (0..scoped.folds.len())
-        .map(|j| Variance::from_var(binder_of_fold(scoped, j)))
-        .collect();
-    for (j, binder) in binds.into_iter().enumerate() {
-        // The `Reduce` defs in this fold's schedule at which a fold of its own
-        // opens.
-        let opened: Vec<ValueId> = scoped
-            .folds
-            .iter()
-            .filter(|fold| fold.parent == Scope::Fold(j))
-            .map(|fold| fold.reduce)
-            .collect();
-        let mut outer: Vec<ValueId> = Vec::new();
-        let mut kept: Vec<Def> = Vec::new();
-        for def in core::mem::take(&mut scoped.folds[j].schedule) {
-            let defined_here = def.variance.bits() & binder.bits() != 0
-                || matches!(def.op, ScheduledOp::Var(_))
-                || opened.contains(&def.value);
-            if defined_here {
-                kept.push(def);
-                continue;
-            }
-            outer.push(def.value);
-        }
-        scoped.folds[j].schedule = kept;
-        scoped.folds[j].outer = outer;
     }
 }
 
@@ -195,23 +111,6 @@ fn lane_binders(schedule: &[Def]) -> pixelflow_ir::variance::Variance {
         })
 }
 
-/// A fold's binder, read off the `Reduce` def it opens at in its parent.
-fn binder_of_fold(scoped: &ScopedSchedule<()>, j: usize) -> u8 {
-    let fold = &scoped.folds[j];
-    let schedule = match fold.parent {
-        Scope::Body => &scoped.body.schedule,
-        Scope::Fold(p) => &scoped.folds[p].schedule,
-    };
-    let Some(ScheduledOp::Reduce(meta, _)) = schedule
-        .iter()
-        .find(|def| def.value == fold.reduce)
-        .map(|def| &def.op)
-    else {
-        panic!("Fold({j}) opens at a def that is not a Reduce")
-    };
-    meta.binder().var()
-}
-
 /// A fold `extract_folds` carved out of a flat schedule, still looking for
 /// its position: everything the body's closure computed, in topological
 /// order, ending at the value the `Reduce` combines each iteration.
@@ -221,8 +120,11 @@ struct PendingFold {
     /// `attach_folds` searches the post-partition schedule for.
     reduce_vid: ValueId,
     /// The fold's own per-iteration computation, in topological order,
-    /// ending at the body's root.
+    /// ending at the body's root unless the root is read from `outer`.
     schedule: Vec<Def>,
+    /// What the body reads that its parent computes: the closure's hoisted
+    /// boundary, in schedule order.
+    outer: Vec<ValueId>,
     /// The folds whose `Reduce` def sits in `schedule`: a fold inside this
     /// one's body. The nest is a tree, and this is the recursion.
     children: Vec<PendingFold>,
@@ -259,21 +161,21 @@ fn extract_folds(
 /// fold nested deeper, and dropping it here is safe by construction. A value
 /// a fold's closure also reached but whose variance names no deeper binder
 /// (a shared invariant leaf, or one that varies only with an enclosing
-/// binder) is not dropped: it stays here too, and stays in the fold's own
-/// schedule as well — where [`place_roots`] takes it out, to be read from
-/// the enclosing scope. Getting this backwards — removing the
-/// whole closure — would orphan exactly that shared leaf's other consumer.
-/// The closure ends at such a value: what it is built from is the computing
-/// scope's business, not the fold's, and is not carried in behind it.
+/// binder) is not dropped: it stays here too, and the fold records it as
+/// `outer`, to be read from the enclosing scope. Getting this backwards —
+/// removing the whole closure — would orphan exactly that shared leaf's
+/// other consumer. The closure ends at such a value: what it is built from
+/// is the computing scope's business, not the fold's, and is not carried in
+/// behind it.
 ///
 /// The one thing that is *not* recomputed inside a fold is another fold
 /// that does not depend on its binder: a whole loop per iteration is the
 /// glyph's winding sum run once per piece of its distance fold, and once
 /// more at the top for the coverage that reads it. Such a `Reduce` stays
 /// the enclosing scope's fold, and the fold that reads its result keeps its
-/// def as a **placeholder** for now — in the schedule, so the closure walk
-/// resolves, but opening no scope here; [`place_roots`] takes it out, and the
-/// fold reads the result the enclosing scope's loop bound.
+/// def as a **placeholder** — in the schedule, so the closure walk
+/// resolves, but opening no scope here; it is one of the fold's `outer`, the
+/// result the enclosing scope's loop bound.
 /// `placeholder` is that verdict from the level above, by `ValueId`, so a
 /// level never mistakes one for a fold of its own.
 fn extract_folds_bound_by(
@@ -381,9 +283,14 @@ fn extract_folds_bound_by(
         let inside = bound.union(Variance::from_var(fold.binder().var()));
         let (fold_schedule, children) =
             extract_folds_bound_by(fold_schedule, variance, inside, &placeholder_here);
+        // What the parent computes is read, not recomputed: the closure's
+        // hoisted values leave the fold's schedule and become its `outer`.
+        let (outer, fold_schedule): (Vec<Def>, Vec<Def>) =
+            fold_schedule.into_iter().partition(|d| hoisted(d.value));
         pending.push(PendingFold {
             reduce_vid: def.value,
             schedule: fold_schedule,
+            outer: outer.into_iter().map(|d| d.value).collect(),
             children,
         });
     }
@@ -404,10 +311,9 @@ fn extract_folds_bound_by(
 /// Record each [`PendingFold`] of the body as a [`ScopeFold`], and its
 /// children inside it.
 ///
-/// A fold names the `Reduce` def it opens at by value, not by position:
-/// `place_roots`, which runs after this, edits the schedules, and it moves a
-/// `Def` without renaming the `ValueId` it defines. That the def is in the
-/// parent's schedule is asserted by [`ScopedSchedule::assert_closed`].
+/// A fold names the `Reduce` def it opens at by value, not by position: a
+/// schedule permutation moves a `Def` without renaming the `ValueId` it
+/// defines.
 fn attach_folds(scoped: &mut ScopedSchedule<()>, pending: Vec<PendingFold>) {
     for fold in pending {
         attach_fold(scoped, fold, Scope::Body);
@@ -422,13 +328,14 @@ fn attach_fold(scoped: &mut ScopedSchedule<()>, fold: PendingFold, parent: Scope
     let PendingFold {
         reduce_vid,
         schedule,
+        outer,
         children,
     } = fold;
     let index = scoped.folds.len();
     scoped.folds.push(ScopeFold {
         parent,
         reduce: reduce_vid,
-        outer: Vec::new(),
+        outer,
         schedule,
         analysis: (),
     });

@@ -256,9 +256,9 @@ pub(crate) struct ScopeFold<A> {
     pub(super) parent: Scope,
     /// The `Reduce` def of `parent` this is the body of.
     pub(super) reduce: ValueId,
-    /// Values an enclosing scope computes that this fold reads: what
-    /// `scopes::place_roots` took out of `schedule`, which holds only what
-    /// the fold defines.
+    /// The fold's free variables: the values an enclosing scope computes that
+    /// this fold reads, which `schedule` — only what the fold defines — does
+    /// not hold.
     pub(super) outer: Vec<ValueId>,
     /// The loop body, in topological order.
     pub(super) schedule: Vec<Def>,
