@@ -52,7 +52,7 @@
   2. The **saturation budget tier**: blitz, rapid or classical, by input
      size.
   3. The **corpus tier**: TRAIN, DEV, FINAL.
-  4. A variance level ("row-tier work"; mask_support's "symbolic tier").
+  4. A variance level ("row-tier work").
   5. Retired: the macro and runtime tiers, the combinator/"legacy" tier,
      the interpreter tier, and the frame/row/body hoist tiers.
 - **Is not:** one concept. Sense 5 is not a tier at all; it was a stage.
@@ -468,7 +468,8 @@
   bound." Three constants have had stated derivations that did not survive
   measurement: `EXTENT_SLOP`, `CLUSTER_ROUNDS_PER_SELECT` and
   `DISC_BAND_ULPS`.
-- **Lives:** `pixelflow-ir/src/mask_support.rs` (its contract section; the domain split it fed is retired, note §1);
+- **Lives:** nothing in code. The range analysis that stated this contract
+  was deleted with the domain split (kernels-evaluate-kernels §1);
   demand §1, §7; one-conditional §2, §3, §9.
 
 ### Compile cache key (canonical)

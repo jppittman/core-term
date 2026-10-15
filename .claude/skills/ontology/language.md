@@ -649,8 +649,8 @@
   `pixelflow-codegen/src/program/{ownership,layout}.rs`; CLAUDE.md
   "`If` guards its arms"; `2026-09-08-one-conditional-three-lowerings.md`
   §1, §9 (JP: "Select contains an if"); the-language-is-kernel §1.6.
-  Lowering 1's analysis exists (D1, `pixelflow-ir/src/mask_support.rs`); the
-  split and its tiers (D2–D5) are retired, and the per-arm guards of §1 are
+  Lowering 1's analysis (D1) was deleted with the split (kernels-evaluate-kernels
+  §1); the split and its tiers (D2–D5) are retired, and the per-arm guards of §1 are
   unbuilt. Decided (JP, 2026-10-11): there is no bound. Layout
   (`program/layout.rs`) makes a block of every arm that owns a value, and
   `emit/select.rs` selects every `If` as `LaneOp::Blend`, with no guards and
