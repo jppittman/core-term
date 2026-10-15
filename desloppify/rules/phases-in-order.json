@@ -11,6 +11,7 @@
     "**/tests.rs",
     "**/*_tests.rs"
   ],
+  "context": "module_intent",
   "question": "Does this file make an earlier stage of a pipeline predict what a later stage will need, or a later stage make a decision an earlier one owns?",
   "fine": {
     "in_order": "Each stage decides what it owns from what the stages before it produced, or the file is not part of a pipeline."

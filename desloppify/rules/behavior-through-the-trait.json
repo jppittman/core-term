@@ -11,10 +11,10 @@
     "**/tests.rs",
     "**/tests/**"
   ],
-  "context": "module_root",
   "skills": [
     "behavioral-contracts"
   ],
+  "context": "module_intent",
   "question": "Does this file give any public inherent method behavior that its module's contract — its traits, or the trait shape documented in the module root's docs — does not declare?",
   "fine": {
     "no_public_methods": "There are no public inherent methods beyond constructors (`new`, `with_*`, `from_*`, builders) and plain accessors of data types.",

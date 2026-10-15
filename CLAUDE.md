@@ -196,7 +196,10 @@ Cargo workspace with 13 member crates:
 | `core-term` | Terminal application: PTY management, ANSI processing, terminal emulator, key translation. |
 | `xtask` | Build tooling: macOS app bundling (`bundle-run`), codegen tasks. |
 
-Agent context files for domain-specific knowledge live in `.claude/agents/`.
+Each crate and each `mod.rs` directory carries an `intent.md`: what the module
+is, owns, never does, and is behind on (`docs/process/2026-10-15-intent-lives-with-the-module.md`).
+Read the module's before changing it. The role personas (algebraist, numerics,
+language mechanic, refactor, reviewer) live in `.claude/agents/`.
 
 ## Core Concepts
 

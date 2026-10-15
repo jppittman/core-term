@@ -16,10 +16,10 @@
     "**/tests.rs",
     "**/tests/**"
   ],
-  "context": "module_root",
   "skills": [
     "behavioral-contracts"
   ],
+  "context": "module_intent",
   "question": "This is an implementation file. Does it expose anything wider than `pub(super)` that its module root's contract does not declare?",
   "fine": {
     "private": "Everything is private or `pub(super)`, or the only wider items are `pub` types the module root re-exports with `pub use`, `pub` fields and methods of a `pub(super)` type, and `pub` methods the root's contract declares with the same signature."

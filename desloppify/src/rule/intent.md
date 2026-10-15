@@ -52,8 +52,9 @@ and `snippet/` read them.
 - `"context": "module_root"` with `"group": "crate"` loads, and the planner
   gives the crate call no root (`review/plan.rs`), so the context is dropped
   silently. No plan or BACKLOG item.
-- `Surroundings` is `None` or `ModuleRoot`; the nearest `intent.md` is not one
-  yet (`docs/process/2026-10-15-intent-lives-with-the-module.md` §4, §6).
+- `Surroundings::ModuleIntent` stops at the crate's `Cargo.toml`; a module
+  whose intent lives in a parent crate gets none, and nothing says which
+  crate a nested `Cargo.toml` makes the boundary.
 
 ## Decided in
 `desloppify/README.md` "Rules"; no plan decides the rule shape.
