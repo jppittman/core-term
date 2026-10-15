@@ -30,7 +30,7 @@ use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::x86_64;
 use super::x86_64::{
-    Alu, Direction, Disp, GENERAL, Imm8, Imm32, Lanewise, Mem, NoDisp, Pred, Rounding, X86,
+    Alu, Direction, GENERAL, Imm8, Imm32, Lanewise, Mem, NoDisp, Pred, Rounding, Vex, X86,
 };
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Integer, IsaBackend, Label, LaneOp, Pointer, Rebind,
@@ -43,238 +43,6 @@ use pixelflow_ir::OpKind;
 
 // The AVX2 tier requires FMA3, and `crate::isa` refuses a host without it; the
 // probe's doc says why.
-
-// =============================================================================
-// VEX.256 encoder
-// =============================================================================
-
-/// Which legacy-prefix byte the VEX prefix implies (the `pp` field).
-#[derive(Clone, Copy)]
-enum Pp {
-    /// No implied prefix.
-    None = 0,
-    /// `66`
-    P66 = 1,
-    /// `F3`
-    F3 = 2,
-}
-
-/// Which opcode map the instruction lives in (the field Intel calls
-/// `mmmmm` — a map *selector*, nothing more).
-#[derive(Clone, Copy)]
-enum Map {
-    /// `0F`
-    M0F = 1,
-    /// `0F38`
-    M0F38 = 2,
-    /// `0F3A`
-    M0F3A = 3,
-}
-
-/// The identity of one VEX instruction: opcode map, implied legacy prefix, W
-/// bit, opcode byte, and whether it is the 256-bit form. This is *which
-/// instruction* — it is constant per mnemonic, so each mnemonic below states
-/// it exactly once and the operand form (`rrr`/`imm`/`rm`) supplies the
-/// per-call parts.
-#[derive(Clone, Copy)]
-struct Vex {
-    map: Map,
-    pp: Pp,
-    w: bool,
-    /// `VEX.L`: set for the `ymm` form, clear for the few `xmm`-only
-    /// instructions this tier needs (`vmovq`, `vextractps`), which `#UD` at
-    /// `L = 1`.
-    l256: bool,
-    opcode: u8,
-}
-
-/// Sentinel for an unused VEX.vvvv source (2-operand forms): index 0 inverts
-/// to `1111`, the required "unused" encoding.
-const UNUSED_VVVV: u8 = 0;
-
-impl Vex {
-    const fn new(map: Map, pp: Pp, opcode: u8) -> Self {
-        Self {
-            map,
-            pp,
-            w: false,
-            l256: true,
-            opcode,
-        }
-    }
-    /// The 128-bit (`VEX.L = 0`) form of this instruction.
-    const fn xmm(self) -> Self {
-        Self {
-            l256: false,
-            ..self
-        }
-    }
-    /// The 64-bit-operand (`VEX.W = 1`) form of this instruction.
-    const fn w1(self) -> Self {
-        Self { w: true, ..self }
-    }
-    /// Map `0F`, no prefix — the packed-single arithmetic family.
-    const fn m0f(opcode: u8) -> Self {
-        Self::new(Map::M0F, Pp::None, opcode)
-    }
-    /// Map `0F`, `66` — the integer-domain family.
-    const fn m0f_66(opcode: u8) -> Self {
-        Self::new(Map::M0F, Pp::P66, opcode)
-    }
-    /// Map `0F`, `F3`.
-    const fn m0f_f3(opcode: u8) -> Self {
-        Self::new(Map::M0F, Pp::F3, opcode)
-    }
-    /// Map `0F38`, `66`.
-    const fn m0f38_66(opcode: u8) -> Self {
-        Self::new(Map::M0F38, Pp::P66, opcode)
-    }
-    /// Map `0F3A`, `66` — the imm8 family (round, insert/extract).
-    const fn m0f3a_66(opcode: u8) -> Self {
-        Self::new(Map::M0F3A, Pp::P66, opcode)
-    }
-
-    /// Attach an imm8 (`vcmpps` predicate, rounding mode, shift count, lane
-    /// index); the returned value emits it after the instruction.
-    const fn imm(self, imm: u8) -> VexImm {
-        VexImm { vex: self, imm }
-    }
-
-    /// Register-register-register form: `op dst, vvvv, rm`.
-    fn rrr(self, dst: u8, vvvv: u8, rm: u8) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        let rbit = if dst >= 8 { 0x00 } else { 0x80 };
-        let xbit = 0x40;
-        let bbit = if rm >= 8 { 0x00 } else { 0x20 };
-        inst.push(0xC4);
-        inst.push(rbit | xbit | bbit | self.map as u8);
-        inst.push(
-            ((self.w as u8) << 7) | ((!vvvv & 0xF) << 3) | ((self.l256 as u8) << 2) | self.pp as u8,
-        );
-        inst.push(self.opcode);
-        inst.push(0xC0 | ((dst & 7) << 3) | (rm & 7));
-        inst
-    }
-
-    /// `op reg, [base + disp]` — the memory-operand form, for any base and any
-    /// displacement mode. The prefix is VEX's; the ModRM/SIB/displacement tail
-    /// is the architecture's, so it comes from `x86_64::mem_operand_into`.
-    fn rm<D: Disp>(self, reg: u8, base: u8, disp: D) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        // R and B are stored inverted; X is unused (no index register).
-        let rbit = if reg >= 8 { 0x00 } else { 0x80 };
-        let bbit = if base >= 8 { 0x00 } else { 0x20 };
-        inst.push(0xC4);
-        inst.push(rbit | 0x40 | bbit | self.map as u8);
-        inst.push(((self.w as u8) << 7) | (0xF << 3) | ((self.l256 as u8) << 2) | self.pp as u8); // vvvv unused
-        inst.push(self.opcode);
-        x86_64::mem_operand_into(&mut inst, reg, base, disp);
-        inst
-    }
-
-    /// `op reg, [rip + disp32]`: the displacement is the last four bytes, a
-    /// label field.
-    fn rip(self, reg: u8) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        let rbit = if reg >= 8 { 0x00 } else { 0x80 };
-        inst.push(0xC4);
-        inst.push(rbit | 0x60 | self.map as u8);
-        inst.push(((self.w as u8) << 7) | (0xF << 3) | ((self.l256 as u8) << 2) | self.pp as u8); // vvvv unused
-        inst.push(self.opcode);
-        x86_64::rip_operand_into(&mut inst, reg);
-        inst
-    }
-
-    /// `op reg, [base + index*4]` — the SIB form with a scaled index, which
-    /// a broadcast load reads one element of a plane through. X carries the
-    /// index's high bit, inverted like R and B.
-    fn rm_scaled4(self, reg: u8, base: u8, index: u8) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        let rbit = if reg >= 8 { 0x00 } else { 0x80 };
-        let xbit = if index >= 8 { 0x00 } else { 0x40 };
-        let bbit = if base >= 8 { 0x00 } else { 0x20 };
-        inst.push(0xC4);
-        inst.push(rbit | xbit | bbit | self.map as u8);
-        inst.push(((self.w as u8) << 7) | (0xF << 3) | ((self.l256 as u8) << 2) | self.pp as u8); // vvvv unused
-        inst.push(self.opcode);
-        x86_64::scaled4_operand_into(&mut inst, reg, base, index);
-        inst
-    }
-
-    /// `op reg, [base + ymmINDEX*4], vvvv` — the VSIB form, whose index is
-    /// a *vector* register: one address per lane, scale 4, no displacement.
-    /// X carries the index's high bit exactly as it does for a GPR index;
-    /// the SIB tail is the same bytes with a vector number in the index
-    /// field (`x86_64::vsib4_operand_into`, which knows `ymm4`/`ymm12` are
-    /// not `rsp`/`r12`). `vvvv` is the gather's mask.
-    fn vsib_scaled4(self, reg: u8, vvvv: u8, base: u8, index: u8) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        let rbit = if reg >= 8 { 0x00 } else { 0x80 };
-        let xbit = if index >= 8 { 0x00 } else { 0x40 };
-        let bbit = if base >= 8 { 0x00 } else { 0x20 };
-        inst.push(0xC4);
-        inst.push(rbit | xbit | bbit | self.map as u8);
-        inst.push(
-            ((self.w as u8) << 7) | ((!vvvv & 0xF) << 3) | ((self.l256 as u8) << 2) | self.pp as u8,
-        );
-        inst.push(self.opcode);
-        x86_64::vsib4_operand_into(&mut inst, reg, base, index);
-        inst
-    }
-}
-
-/// A [`Vex`] instruction carrying its imm8.
-#[derive(Clone, Copy)]
-struct VexImm {
-    vex: Vex,
-    imm: u8,
-}
-
-impl VexImm {
-    /// Register form with the imm8 appended.
-    fn rrr(self, dst: u8, vvvv: u8, rm: u8) -> EncodedInst {
-        let mut inst = self.vex.rrr(dst, vvvv, rm);
-        inst.push(self.imm);
-        inst
-    }
-    /// Memory form with the imm8 appended.
-    fn rm<D: Disp>(self, reg: u8, base: u8, disp: D) -> EncodedInst {
-        let mut inst = self.vex.rm(reg, base, disp);
-        inst.push(self.imm);
-        inst
-    }
-}
-
-impl Alu {
-    const fn vex(self) -> Vex {
-        match self {
-            Alu::Add => Vex::m0f(0x58),
-            Alu::Sub => Vex::m0f(0x5C),
-            Alu::Mul => Vex::m0f(0x59),
-            Alu::Div => Vex::m0f(0x5E),
-            Alu::Min => Vex::m0f(0x5D),
-            Alu::Max => Vex::m0f(0x5F),
-            Alu::And => Vex::m0f(0x54),
-            Alu::AndNot => Vex::m0f(0x55),
-            Alu::Or => Vex::m0f(0x56),
-            Alu::Xor => Vex::m0f(0x57),
-            Alu::IAdd => Vex::m0f_66(0xFE),
-        }
-    }
-}
-
-impl Lanewise {
-    const fn vex(self) -> Vex {
-        match self {
-            Lanewise::Sqrt => Vex::m0f(0x51),
-            Lanewise::Rsqrt => Vex::m0f(0x52),
-            Lanewise::Recip => Vex::m0f(0x53),
-            Lanewise::ToInt => Vex::m0f_f3(0x5B),
-            Lanewise::FromInt => Vex::m0f(0x5B),
-            Lanewise::WidenBytes => Vex::m0f38_66(0x31),
-        }
-    }
-}
 
 /// An AVX2 (VEX.256) vector instruction.
 ///
@@ -514,18 +282,16 @@ impl Inst<Selected> {
 impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
     fn encode(&self) -> EncodedInst {
         match self {
-            Inst::Alu { op, dst, a, b } => op.vex().rrr(dst.number(), a.number(), b.number()),
+            Inst::Alu { op, dst, a, b } => Vex::alu(*op).rrr(dst.number(), a.number(), b.number()),
             Inst::Cmp { pred, dst, a, b } => {
                 Vex::m0f(0xC2)
                     .imm(*pred as u8)
                     .rrr(dst.number(), a.number(), b.number())
             }
-            Inst::Unary { op, dst, src } => op.vex().rrr(dst.number(), UNUSED_VVVV, src.number()),
-            Inst::Round { mode, dst, src } => {
-                Vex::m0f3a_66(0x08)
-                    .imm(*mode as u8)
-                    .rrr(dst.number(), UNUSED_VVVV, src.number())
-            }
+            Inst::Unary { op, dst, src } => Vex::lanewise(*op).rr(dst.number(), src.number()),
+            Inst::Round { mode, dst, src } => Vex::m0f3a_66(0x08)
+                .imm(*mode as u8)
+                .rr(dst.number(), src.number()),
             // The destination is `vvvv` and the `/digit` is `reg`.
             Inst::Shift {
                 direction,
@@ -544,9 +310,9 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
             }
             Inst::Zero { dst } => {
                 let dst = dst.number();
-                Alu::Xor.vex().rrr(dst, dst, dst)
+                Vex::alu(Alu::Xor).rrr(dst, dst, dst)
             }
-            Inst::Mov { dst, src } => Vex::m0f(0x28).rrr(dst.number(), UNUSED_VVVV, src.number()),
+            Inst::Mov { dst, src } => Vex::m0f(0x28).rr(dst.number(), src.number()),
             Inst::LoadConst { dst, .. } => Vex::m0f38_66(0x18).rip(dst.number()),
             Inst::SpillVector { src, slot } => {
                 Vex::m0f(0x11).rm(src.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
@@ -554,17 +320,8 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
             Inst::ReloadVector { dst, slot } => {
                 Vex::m0f(0x10).rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
             }
-            Inst::Cvtt { dst, src } => {
-                Vex::m0f_f3(0x2C)
-                    .w1()
-                    .rrr(dst.number(), UNUSED_VVVV, src.number())
-            }
-            Inst::Movq { dst, src } => {
-                Vex::m0f_66(0x6E)
-                    .w1()
-                    .xmm()
-                    .rrr(dst.number(), UNUSED_VVVV, src.number())
-            }
+            Inst::Cvtt { dst, src } => Vex::m0f_f3(0x2C).w1().rr(dst.number(), src.number()),
+            Inst::Movq { dst, src } => Vex::m0f_66(0x6E).w1().xmm().rr(dst.number(), src.number()),
             Inst::StoreBatch { dst, src } => {
                 Vex::m0f(0x11).rm(src.number(), dst.base.number(), dst.disp)
             }
@@ -587,17 +344,13 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                 );
                 // `base` is never `rbp`/`r13` (`GENERAL` excludes them), so
                 // the SIB's no-base encoding is unreachable.
-                Vex::m0f38_66(0x92).vsib_scaled4(dst, mask, base.number(), index)
+                Vex::m0f38_66(0x92).vsib_scaled4(dst, Some(mask), base.number(), index)
             }
-            Inst::MoveMask { dst, src } => {
-                Vex::m0f(0x50).rrr(dst.number(), UNUSED_VVVV, src.number())
-            }
+            Inst::MoveMask { dst, src } => Vex::m0f(0x50).rr(dst.number(), src.number()),
             // The destination is the `rm` operand here, the reverse of the
             // usual direction.
             Inst::ExtractHigh { dst, src } => {
-                Vex::m0f3a_66(0x19)
-                    .imm(1)
-                    .rrr(src.number(), UNUSED_VVVV, dst.number())
+                Vex::m0f3a_66(0x19).imm(1).rr(src.number(), dst.number())
             }
             Inst::ExtractLane { dst, src, lane } => {
                 debug_assert!(*lane < 4, "vextractps reads the low 128 bits");

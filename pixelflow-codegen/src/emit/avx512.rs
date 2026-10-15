@@ -27,7 +27,7 @@ use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::x86_64;
 use super::x86_64::{
-    Alu, Direction, Disp, GENERAL, Imm32, Lanewise, Mem, NoDisp, Pred, Rounding, X86,
+    Alu, Direction, Evex, GENERAL, Imm32, Lanewise, Mem, NoDisp, Pred, Rounding, Vex, X86,
 };
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Flags, Integer, IsaBackend, Label, LaneOp, Opmask,
@@ -38,281 +38,6 @@ use crate::error::CompileError;
 use crate::program::IfArm;
 use alloc::vec::Vec;
 use pixelflow_ir::OpKind;
-
-// =============================================================================
-// EVEX encoder
-// =============================================================================
-
-/// Opcode escape map (EVEX `mm`).
-#[derive(Clone, Copy)]
-enum Map {
-    /// `0F`
-    M0F = 1,
-    /// `0F38`
-    M0F38 = 2,
-    /// `0F3A`
-    M0F3A = 3,
-}
-
-/// Mandatory prefix (EVEX `pp`).
-#[derive(Clone, Copy)]
-enum Pp {
-    /// none — packed single
-    None = 0,
-    /// `66`
-    P66 = 1,
-    /// `F3`
-    F3 = 2,
-}
-
-/// The identity of one EVEX instruction: opcode map, mandatory prefix, W
-/// bit, opcode byte, vector length, and the writemask. This is *which
-/// instruction* — it is constant per mnemonic, so each mnemonic below states
-/// it exactly once and the operand form (`rrr`/`rm`) supplies the per-call
-/// parts.
-///
-/// The 256-bit twin is `avx2::Vex`.
-#[derive(Clone, Copy)]
-struct Evex {
-    map: Map,
-    pp: Pp,
-    w: bool,
-    /// `EVEX.L'L`: `10` for the `zmm` form, `00` for the few `xmm`-only
-    /// instructions this tier needs (`vmovq`, `vpinsrq`).
-    ll: u8,
-    /// `EVEX.aaa`: the writemask register, or 0 for none. Merge-masking
-    /// (`z = 0`), which for a store means the masked-off lanes are left in
-    /// memory untouched.
-    aaa: u8,
-    opcode: u8,
-}
-
-/// `EVEX.L'L` for a 512-bit operation.
-const LL_512: u8 = 0b10;
-
-impl Evex {
-    const fn new(map: Map, pp: Pp, opcode: u8) -> Self {
-        Self {
-            map,
-            pp,
-            w: false,
-            ll: LL_512,
-            aaa: 0,
-            opcode,
-        }
-    }
-    /// The 128-bit (`L'L = 00`) form of this instruction.
-    const fn xmm(self) -> Self {
-        Self { ll: 0, ..self }
-    }
-    /// The 64-bit-operand (`EVEX.W = 1`) form of this instruction.
-    const fn w1(self) -> Self {
-        Self { w: true, ..self }
-    }
-    /// This instruction under the writemask register numbered `k`.
-    const fn masked(self, k: u8) -> Self {
-        Self { aaa: k, ..self }
-    }
-    /// Map `0F`, no prefix — the packed-single family.
-    const fn m0f(opcode: u8) -> Self {
-        Self::new(Map::M0F, Pp::None, opcode)
-    }
-    /// Map `0F`, `66` — the integer-domain family.
-    const fn m0f_66(opcode: u8) -> Self {
-        Self::new(Map::M0F, Pp::P66, opcode)
-    }
-    /// Map `0F`, `F3`.
-    const fn m0f_f3(opcode: u8) -> Self {
-        Self::new(Map::M0F, Pp::F3, opcode)
-    }
-    /// Map `0F38`, `66`.
-    const fn m0f38_66(opcode: u8) -> Self {
-        Self::new(Map::M0F38, Pp::P66, opcode)
-    }
-    /// Map `0F38`, `F3` — the mask-to-vector widening family.
-    const fn m0f38_f3(opcode: u8) -> Self {
-        Self::new(Map::M0F38, Pp::F3, opcode)
-    }
-    /// Map `0F3A`, `66` — the imm8 family (round, ternlog).
-    const fn m0f3a_66(opcode: u8) -> Self {
-        Self::new(Map::M0F3A, Pp::P66, opcode)
-    }
-
-    /// Attach an imm8 (`vcmpps` predicate, rounding mode, shift count,
-    /// `vpternlogd` truth table); the returned value emits it after the
-    /// instruction.
-    const fn imm(self, imm: u8) -> EvexImm {
-        EvexImm { evex: self, imm }
-    }
-
-    /// 3-operand register form: `op zmmDST, zmmSRC1, zmmSRC2`, where SRC1 is
-    /// the non-destructive EVEX.vvvv source and SRC2 is the ModRM r/m. Any of
-    /// `zmm0..zmm31` is valid.
-    fn rrr(self, dst: u8, src1: u8, src2: u8) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        // EVEX stores the high register bits inverted.
-        let r = ((dst >> 3) & 1) ^ 1; // ModRM.reg bit3
-        let rp = ((dst >> 4) & 1) ^ 1; // ModRM.reg bit4 (R')
-        let b = ((src2 >> 3) & 1) ^ 1; // ModRM.r/m bit3
-        let x = ((src2 >> 4) & 1) ^ 1; // ModRM.r/m bit4 (EVEX.X extends r/m reg)
-        let vvvv = (!src1) & 0x0F;
-        let vp = ((src1 >> 4) & 1) ^ 1; // vvvv bit4 (V')
-
-        self.prefix_into(
-            &mut inst,
-            (r << 7) | (x << 6) | (b << 5) | (rp << 4),
-            vvvv,
-            vp,
-        );
-        inst.push(0xC0 | ((dst & 7) << 3) | (src2 & 7));
-        inst
-    }
-
-    /// `op zmmREG, [addr]` — the memory form used for spills, reloads,
-    /// constant broadcast and the output store.
-    ///
-    /// EVEX.R/B are stored INVERTED, and X likewise: there is no index
-    /// register in any of these forms, so X is always the encoded 1.
-    /// The ModRM/SIB/displacement tail is the architecture's, not EVEX's, so
-    /// it comes from `x86_64::mem_operand_into`.
-    fn rm<D: Disp>(self, reg: u8, base: u8, disp: D) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        let r = ((reg >> 3) & 1) ^ 1;
-        let rp = ((reg >> 4) & 1) ^ 1;
-        let b = ((base >> 3) & 1) ^ 1;
-        let x = 1u8; // no index -> encoded 1
-
-        self.prefix_into(
-            &mut inst,
-            (r << 7) | (x << 6) | (b << 5) | (rp << 4),
-            0x0F,
-            1,
-        );
-        x86_64::mem_operand_into(&mut inst, reg, base, disp);
-        inst
-    }
-
-    /// `op zmmREG, [rip + disp32]`: the displacement is the last four bytes, a
-    /// label field.
-    fn rip(self, reg: u8) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        let r = ((reg >> 3) & 1) ^ 1;
-        let rp = ((reg >> 4) & 1) ^ 1;
-        // No index and no base: X and B are the encoded 1.
-        self.prefix_into(
-            &mut inst,
-            (r << 7) | (1 << 6) | (1 << 5) | (rp << 4),
-            0x0F,
-            1,
-        );
-        x86_64::rip_operand_into(&mut inst, reg);
-        inst
-    }
-
-    /// `op zmmREG, [base + index*4]` — the SIB form with a scaled index,
-    /// which a broadcast load reads one element of a plane through. X is
-    /// the index's high bit here, inverted like R and B.
-    fn rm_scaled4(self, reg: u8, base: u8, index: u8) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        let r = ((reg >> 3) & 1) ^ 1;
-        let rp = ((reg >> 4) & 1) ^ 1;
-        let b = ((base >> 3) & 1) ^ 1;
-        let x = ((index >> 3) & 1) ^ 1;
-
-        self.prefix_into(
-            &mut inst,
-            (r << 7) | (x << 6) | (b << 5) | (rp << 4),
-            0x0F,
-            1,
-        );
-        x86_64::scaled4_operand_into(&mut inst, reg, base, index);
-        inst
-    }
-
-    /// `op zmmREG{k}, [base + zmm_index*4]` — the VSIB form a gather
-    /// addresses through. The index's high bits ride in X and V', inverted
-    /// like R and B, and `vvvv` is unused.
-    fn vsib_scaled4(self, reg: u8, base: u8, index: u8) -> EncodedInst {
-        let mut inst = EncodedInst::new();
-        let r = ((reg >> 3) & 1) ^ 1;
-        let rp = ((reg >> 4) & 1) ^ 1;
-        let b = ((base >> 3) & 1) ^ 1;
-        let x = ((index >> 3) & 1) ^ 1;
-        let vp = ((index >> 4) & 1) ^ 1;
-
-        self.prefix_into(
-            &mut inst,
-            (r << 7) | (x << 6) | (b << 5) | (rp << 4),
-            0x0F,
-            vp,
-        );
-        x86_64::vsib4_operand_into(&mut inst, reg, base, index);
-        inst
-    }
-
-    /// The 4-byte EVEX prefix plus the opcode byte, shared by every form.
-    /// `reg_ext` is the assembled `R X B R'` nibble of P0; `vvvv`/`vp` are the
-    /// extra-source fields. Every one of them is already inverted by the
-    /// caller, as the encoding requires.
-    fn prefix_into(self, inst: &mut EncodedInst, reg_ext: u8, vvvv: u8, vp: u8) {
-        inst.push(0x62);
-        inst.push(reg_ext | (self.map as u8));
-        inst.push(((self.w as u8) << 7) | (vvvv << 3) | (1 << 2) | (self.pp as u8));
-        // z=0 (merge), L'L, b(roadcast)=0, V', aaa.
-        inst.push((self.ll << 5) | (vp << 3) | self.aaa);
-        inst.push(self.opcode);
-    }
-}
-
-/// An [`Evex`] instruction carrying its imm8.
-#[derive(Clone, Copy)]
-struct EvexImm {
-    evex: Evex,
-    imm: u8,
-}
-
-impl EvexImm {
-    /// Register form with the imm8 appended.
-    fn rrr(self, dst: u8, src1: u8, src2: u8) -> EncodedInst {
-        let mut inst = self.evex.rrr(dst, src1, src2);
-        inst.push(self.imm);
-        inst
-    }
-}
-
-impl Alu {
-    const fn evex(self) -> Evex {
-        match self {
-            Alu::Add => Evex::m0f(0x58),
-            Alu::Sub => Evex::m0f(0x5C),
-            Alu::Mul => Evex::m0f(0x59),
-            Alu::Div => Evex::m0f(0x5E),
-            Alu::Min => Evex::m0f(0x5D),
-            Alu::Max => Evex::m0f(0x5F),
-            Alu::And => Evex::m0f(0x54),
-            Alu::AndNot => Evex::m0f(0x55),
-            Alu::Or => Evex::m0f(0x56),
-            Alu::Xor => Evex::m0f(0x57),
-            Alu::IAdd => Evex::m0f_66(0xFE),
-        }
-    }
-}
-
-impl Lanewise {
-    /// `rsqrt` and `recip` are AVX-512F's `vrsqrt14ps` and `vrcp14ps`: EVEX
-    /// has no `0F 52`/`0F 53`, and ~2^-14 relative error matches `Recip`'s
-    /// "approximate reciprocal" contract on every other backend.
-    const fn evex(self) -> Evex {
-        match self {
-            Lanewise::Sqrt => Evex::m0f(0x51),
-            Lanewise::Rsqrt => Evex::m0f38_66(0x4E),
-            Lanewise::Recip => Evex::m0f38_66(0x4C),
-            Lanewise::ToInt => Evex::m0f_f3(0x5B),
-            Lanewise::FromInt => Evex::m0f(0x5B),
-            Lanewise::WidenBytes => Evex::m0f38_66(0x31),
-        }
-    }
-}
 
 /// `vpternlogd`'s truth table for `A ? B : C` per bit, with `A` the
 /// destination (the mask), `B` the first source and `C` the second.
@@ -530,20 +255,6 @@ const K0: u8 = 0;
 /// `vpternlogd`'s truth table for all-ones.
 const TERNLOG_ONES: u8 = 0xFF;
 
-/// `kandw`-shaped: `VEX.L1.0F.W0 opcode /r`, `dst = a op b`.
-fn kop(opcode: u8, dst: u8, a: u8, b: u8) -> EncodedInst {
-    let vvvv = (!a & 0xF) << 3;
-    EncodedInst::from_slice(&[0xC5, 0x84 | vvvv, opcode, 0xC0 | (dst << 3) | b])
-}
-
-/// `kmovw` between a mask register and `[rsp + slot]`: `VEX.L0.0F.W0 opcode
-/// /r`, 91 stores and 90 loads.
-fn kmem(opcode: u8, k: u8, slot: Imm32) -> EncodedInst {
-    let mut inst = EncodedInst::from_slice(&[0xC5, 0xF8, opcode]);
-    x86_64::mem_operand_into(&mut inst, k, x86_64::gpr::RSP, slot);
-    inst
-}
-
 impl Inst<Selected> {
     /// Rebuild at stage `T`, visiting each operand once, in field order.
     fn walk<T: Stage>(&self, f: &mut impl Rebind<T>) -> Inst<T> {
@@ -708,13 +419,11 @@ impl Inst<Selected> {
 impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
     fn encode(&self) -> EncodedInst {
         match self {
-            Inst::Alu { op, dst, a, b } => op.evex().rrr(dst.number(), a.number(), b.number()),
-            Inst::Unary { op, dst, src } => op.evex().rrr(dst.number(), UNUSED_VVVV, src.number()),
-            Inst::Round { mode, dst, src } => {
-                Evex::m0f3a_66(0x08)
-                    .imm(*mode as u8)
-                    .rrr(dst.number(), UNUSED_VVVV, src.number())
-            }
+            Inst::Alu { op, dst, a, b } => Evex::alu(*op).rrr(dst.number(), a.number(), b.number()),
+            Inst::Unary { op, dst, src } => Evex::lanewise(*op).rr(dst.number(), src.number()),
+            Inst::Round { mode, dst, src } => Evex::m0f3a_66(0x08)
+                .imm(*mode as u8)
+                .rr(dst.number(), src.number()),
             // The destination is `vvvv` and the `/digit` is `reg`.
             Inst::Shift {
                 direction,
@@ -736,18 +445,9 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                 if_true.number(),
                 if_false.number(),
             ),
-            Inst::Mov { dst, src } => Evex::m0f(0x28).rrr(dst.number(), UNUSED_VVVV, src.number()),
-            Inst::Cvtt { dst, src } => {
-                Evex::m0f_f3(0x2C)
-                    .w1()
-                    .rrr(dst.number(), UNUSED_VVVV, src.number())
-            }
-            Inst::Movq { dst, src } => {
-                Evex::m0f_66(0x6E)
-                    .w1()
-                    .xmm()
-                    .rrr(dst.number(), UNUSED_VVVV, src.number())
-            }
+            Inst::Mov { dst, src } => Evex::m0f(0x28).rr(dst.number(), src.number()),
+            Inst::Cvtt { dst, src } => Evex::m0f_f3(0x2C).w1().rr(dst.number(), src.number()),
+            Inst::Movq { dst, src } => Evex::m0f_66(0x6E).w1().xmm().rr(dst.number(), src.number()),
             Inst::InsertHigh { dst, src } => {
                 let dst = dst.number();
                 Evex::m0f3a_66(0x22)
@@ -761,25 +461,13 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                     .imm(*pred as u8)
                     .rrr(dst.number(), a.number(), b.number())
             }
-            Inst::Movm2d { dst, k } => {
-                Evex::m0f38_f3(0x38).rrr(dst.number(), UNUSED_VVVV, k.number())
-            }
+            Inst::Movm2d { dst, k } => Evex::m0f38_f3(0x38).rr(dst.number(), k.number()),
             Inst::Ptestm { dst, a, b } => {
                 Evex::m0f38_66(0x27).rrr(dst.number(), a.number(), b.number())
             }
-            // `VEX.L0.0F.W0 98 /r`, both operands the one mask register.
-            Inst::KorTest { k, .. } => {
-                let k = k.number();
-                EncodedInst::from_slice(&[0xC5, 0xF8, 0x98, 0xC0 | (k << 3) | k])
-            }
-            // `VEX.L0.0F.W0 92 /r`, in the three-byte prefix.
-            Inst::KFromGpr { dst, src } => {
-                let src = src.number();
-                // B̄ is inverted: set when the source needs no extension bit.
-                let no_extension = if src < 8 { 0x20 } else { 0x00 };
-                let modrm = 0xC0 | ((dst.number() & 7) << 3) | (src & 7);
-                EncodedInst::from_slice(&[0xC4, 0xC1 | no_extension, 0x78, 0x92, modrm])
-            }
+            // Both operands the one mask register.
+            Inst::KorTest { k, .. } => Vex::m0f(0x98).xmm().rr(k.number(), k.number()),
+            Inst::KFromGpr { dst, src } => Vex::m0f(0x92).xmm().rr(dst.number(), src.number()),
             Inst::Gather {
                 dst,
                 base,
@@ -790,9 +478,12 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                 debug_assert!(dst != index, "vgatherdps: dst and index must differ");
                 // `base` is never `rbp`/`r13` (`GENERAL` excludes them), so
                 // the SIB's no-base encoding is unreachable.
-                Evex::m0f38_66(0x92)
-                    .masked(mask.number())
-                    .vsib_scaled4(dst, base.number(), index)
+                Evex::m0f38_66(0x92).masked(mask.number()).vsib_scaled4(
+                    dst,
+                    None,
+                    base.number(),
+                    index,
+                )
             }
             Inst::StoreMasked { dst, src, mask: k } => {
                 Evex::m0f(0x11)
@@ -810,7 +501,7 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
             }
             Inst::Zero { dst } => {
                 let dst = dst.number();
-                Alu::Xor.evex().rrr(dst, dst, dst)
+                Evex::alu(Alu::Xor).rrr(dst, dst, dst)
             }
             Inst::Ones { dst } => {
                 let dst = dst.number();
@@ -834,16 +525,21 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                 if_false.number(),
                 if_true.number(),
             ),
-            Inst::KLogic { op, dst, a, b } => kop(*op as u8, dst.number(), a.number(), b.number()),
-            Inst::KOnes { dst } => kop(KXNOR, dst.number(), K0, K0),
-            Inst::KMov { dst, src } => EncodedInst::from_slice(&[
-                0xC5,
-                0xF8,
-                0x90,
-                0xC0 | (dst.number() << 3) | src.number(),
-            ]),
-            Inst::SpillMask { src, slot: s } => kmem(0x91, src.number(), Imm32(slot_disp(s))),
-            Inst::ReloadMask { dst, slot: s } => kmem(0x90, dst.number(), Imm32(slot_disp(s))),
+            Inst::KLogic { op, dst, a, b } => {
+                Vex::m0f(*op as u8).rrr(dst.number(), a.number(), b.number())
+            }
+            Inst::KOnes { dst } => Vex::m0f(KXNOR).rrr(dst.number(), K0, K0),
+            Inst::KMov { dst, src } => Vex::m0f(0x90).xmm().rr(dst.number(), src.number()),
+            Inst::SpillMask { src, slot } => {
+                Vex::m0f(0x91)
+                    .xmm()
+                    .rm(src.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
+            }
+            Inst::ReloadMask { dst, slot } => {
+                Vex::m0f(0x90)
+                    .xmm()
+                    .rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
+            }
         }
     }
 
@@ -884,14 +580,6 @@ impl<'m> Op<Bound<'m, Avx512>> {
         }
     }
 }
-
-/// Sentinel for the EVEX `vvvv`/`V'` source field on instructions that have no
-/// second source (2-operand forms): the field must read as *unused*, which the
-/// hardware encodes as `vvvv = 1111` AND `V' = 1`. In [`Evex::rrr`] both are
-/// derived from the `src1` index by inversion, so the index that yields
-/// `vvvv=1111, V'=1` is **0** (not 0x1F — that has bit4 set, giving `V'=0` and a
-/// `#UD` / SIGILL).
-const UNUSED_VVVV: u8 = 0;
 
 // =============================================================================
 // The store, and the iota
