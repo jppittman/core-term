@@ -21,7 +21,8 @@ Values are names, registers are resources, `encode` makes no choice; a lane is
   `pub use crate::pipeline::compile`).
 - No register chosen outside `regalloc/`. An encoder names only the ABI's
   fixed registers (`gpr::RDI/RSI/RDX/RSP`, `abi::X0/X1/X2/SP/LR/XZR`) and the
-  ISA's `k0`; any other arrives as an `In`, `Out` or `InOut` borrow.
+  ISA's `k0`, each a `RegNo` constant; any other arrives as an `In`, `Out` or
+  `InOut` borrow.
 - `select.rs` names no register or opcode; `asm.rs` imports nothing from the crate.
 - No vector crosses the ABI, `fn(ctx, out, pitch)`; the lane count leaves only
   as the `u32` `native` hands the front. No `dyn`, no `Box`: `native` picks the

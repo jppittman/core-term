@@ -9,12 +9,12 @@
 
 use super::asm::Encoding;
 use super::build::{Builder, Def, Spiller};
-use super::regalloc::resource::FrameSlot;
+use super::regalloc::resource::{FrameSlot, RegNo};
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
-    Bound, Class, ClassId, Edges, FrameSize, IfArm, Integer, IsaBackend, Label, LaneOp, Patch,
-    Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName, Vector,
-    frame_bytes, slot_disp,
+    Bound, Class, ClassId, Edges, File, FrameSize, GeneralFile, IfArm, Integer, IsaBackend, Label,
+    LaneOp, Patch, Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value,
+    ValueName, Vector, frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
 use crate::program::{BinaryOp, CompareOp, ShiftOp, UnaryOp};
@@ -31,24 +31,25 @@ use table::*;
 /// them.
 const WORD_BYTES: usize = 4;
 
-/// `Rd`: the destination field, at bit 0.
-const fn rd(reg: u8) -> u32 {
-    reg as u32 & 0x1F
+/// `Rd`: the destination field, at bit 0. This and the three below are where
+/// a register number becomes bits: the only readers of one in this file.
+const fn rd<F: File>(reg: RegNo<F>) -> u32 {
+    reg.bits() as u32 & 0x1F
 }
 
 /// `Rn`: the first source or base field, at bit 5.
-const fn rn(reg: u8) -> u32 {
-    (reg as u32 & 0x1F) << 5
+const fn rn<F: File>(reg: RegNo<F>) -> u32 {
+    (reg.bits() as u32 & 0x1F) << 5
 }
 
 /// `Rm`: the second source field, at bit 16.
-const fn rm(reg: u8) -> u32 {
-    (reg as u32 & 0x1F) << 16
+const fn rm<F: File>(reg: RegNo<F>) -> u32 {
+    (reg.bits() as u32 & 0x1F) << 16
 }
 
 /// `Ra`: the addend field of a multiply-add, at bit 10.
-const fn ra(reg: u8) -> u32 {
-    (reg as u32 & 0x1F) << 10
+const fn ra<F: File>(reg: RegNo<F>) -> u32 {
+    (reg.bits() as u32 & 0x1F) << 10
 }
 
 /// The `imm5` of a 32-bit lane: the lane number above a `100` size marker.
@@ -536,25 +537,26 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
     /// encoding's limits, and a wrapped one would be some other instruction.
     #[must_use]
     fn encode(&self) -> u32 {
-        // `opcode | imm12 | Rn | Rt`: the scaled-immediate transfers.
-        let transfer = |opcode: u32, rt: u8, addr: &Mem<Bound<'m, B>>, access: u32| {
+        // `opcode | imm12 | Rn | Rt`: the scaled-immediate transfers, `rt`
+        // already placed in its field.
+        let transfer = |opcode: u32, rt: u32, addr: &Mem<Bound<'m, B>>, access: u32| {
             let imm12 = addr.scaled(access);
             assert!(
                 imm12 <= MAX_IMM12,
                 "offset {} exceeds the 12-bit scaled immediate",
                 addr.offset
             );
-            opcode | (imm12 << 10) | rn(addr.base.number()) | rd(rt)
+            opcode | (imm12 << 10) | rn(addr.base.number()) | rt
         };
         // The same, from the stack pointer, at the slot's offset.
-        let frame = |opcode: u32, rt: u8, slot: &FrameSlot, access: u32| {
+        let frame = |opcode: u32, rt: u32, slot: &FrameSlot, access: u32| {
             let offset = u32::try_from(slot_disp(slot)).expect("a slot is above the stack pointer");
             let imm12 = scaled(offset, access);
             assert!(
                 imm12 <= MAX_IMM12,
                 "slot {offset} exceeds the 12-bit scaled immediate"
             );
-            opcode | (imm12 << 10) | rn(abi::SP) | rd(rt)
+            opcode | (imm12 << 10) | rn(abi::SP) | rt
         };
         match self {
             Inst::Alu { op, dst, a, b } => {
@@ -652,17 +654,17 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                 0x9140_0000 | (imm.bits() << 10) | rn(abi::SP) | rd(dst.number())
             }
             Inst::LdrQ { dst, addr } | Inst::LoadConst { dst, addr } => {
-                transfer(0x3DC0_0000, dst.number(), addr, Q_BYTES)
+                transfer(0x3DC0_0000, rd(dst.number()), addr, Q_BYTES)
             }
-            Inst::StrQ { src, addr } => transfer(0x3D80_0000, src.number(), addr, Q_BYTES),
-            Inst::SpillQ { src, slot } => frame(0x3D80_0000, src.number(), slot, Q_BYTES),
-            Inst::ReloadQ { dst, slot } => frame(0x3DC0_0000, dst.number(), slot, Q_BYTES),
-            Inst::SpillPtr { src, slot } => frame(0xF900_0000, src.number(), slot, X_BYTES),
-            Inst::ReloadPtr { dst, slot } => frame(0xF940_0000, dst.number(), slot, X_BYTES),
-            Inst::SpillInt { src, slot } => frame(0xF900_0000, src.number(), slot, X_BYTES),
-            Inst::ReloadInt { dst, slot } => frame(0xF940_0000, dst.number(), slot, X_BYTES),
-            Inst::LdrX { dst, addr } => transfer(0xF940_0000, dst.number(), addr, X_BYTES),
-            Inst::LdrS { dst, addr } => transfer(0xBD40_0000, dst.number(), addr, S_BYTES),
+            Inst::StrQ { src, addr } => transfer(0x3D80_0000, rd(src.number()), addr, Q_BYTES),
+            Inst::SpillQ { src, slot } => frame(0x3D80_0000, rd(src.number()), slot, Q_BYTES),
+            Inst::ReloadQ { dst, slot } => frame(0x3DC0_0000, rd(dst.number()), slot, Q_BYTES),
+            Inst::SpillPtr { src, slot } => frame(0xF900_0000, rd(src.number()), slot, X_BYTES),
+            Inst::ReloadPtr { dst, slot } => frame(0xF940_0000, rd(dst.number()), slot, X_BYTES),
+            Inst::SpillInt { src, slot } => frame(0xF900_0000, rd(src.number()), slot, X_BYTES),
+            Inst::ReloadInt { dst, slot } => frame(0xF940_0000, rd(dst.number()), slot, X_BYTES),
+            Inst::LdrX { dst, addr } => transfer(0xF940_0000, rd(dst.number()), addr, X_BYTES),
+            Inst::LdrS { dst, addr } => transfer(0xBD40_0000, rd(dst.number()), addr, S_BYTES),
             Inst::LdrW { dst, addr } => {
                 0xB860_5800 | rm(addr.index.number()) | rn(addr.base.number()) | rd(dst.number())
             }
@@ -762,7 +764,7 @@ const ORR_X: u32 = 0xAA00_0000;
 const MVN_W: u32 = 0x2A20_0000;
 
 /// `mov dst, src` between 64-bit registers.
-const fn mov_x(dst: u8, src: u8) -> u32 {
+const fn mov_x(dst: RegNo<GeneralFile>, src: RegNo<GeneralFile>) -> u32 {
     ORR_X | rn(abi::XZR) | rm(src) | rd(dst)
 }
 
@@ -1468,21 +1470,24 @@ mod tests {
 /// zero register, by hardware number. Every other register is the allocator's
 /// choice.
 mod abi {
+    use crate::emit::GeneralFile;
+    use crate::emit::regalloc::resource::RegNo;
+
     /// 1st argument: context pointer — array of buffer base pointers, then
     /// the uniform and origin blocks.
-    pub(super) const X0: u8 = 0;
+    pub(super) const X0: RegNo<GeneralFile> = RegNo::architectural(0);
     /// 2nd argument: the output plane.
-    pub(super) const X1: u8 = 1;
+    pub(super) const X1: RegNo<GeneralFile> = RegNo::architectural(1);
     /// 3rd argument: the pitch.
-    pub(super) const X2: u8 = 2;
+    pub(super) const X2: RegNo<GeneralFile> = RegNo::architectural(2);
     /// The link register: `ret` returns through it.
-    pub(super) const LR: u8 = 30;
+    pub(super) const LR: RegNo<GeneralFile> = RegNo::architectural(30);
     /// The stack pointer — spill slots are addressed from it.
-    pub(super) const SP: u8 = 31;
+    pub(super) const SP: RegNo<GeneralFile> = RegNo::architectural(31);
     /// The zero register, `xzr` (`wzr` at 32 bits): reads as zero, discards
     /// writes. It shares number 31 with `sp`; which one a field means is the
     /// instruction's.
-    pub(super) const XZR: u8 = 31;
+    pub(super) const XZR: RegNo<GeneralFile> = RegNo::architectural(31);
 }
 
 // =============================================================================

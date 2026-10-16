@@ -24,14 +24,14 @@
 //! red zone).
 
 use super::build::{Builder, Spiller};
-use super::regalloc::resource::FrameSlot;
+use super::regalloc::resource::{FrameSlot, RegNo};
 use super::x86_64;
 use super::x86_64::{
     Direction, Evex, EvexPrefix, Lanewise, Mem, NoDisp, Pred, Sign, Vex, X86, emit,
 };
 use super::{
-    Bound, ClassId, Edges, EncodedInst, Flags, Integer, LaneOp, Opmask, Pointer, Rebind, Selected,
-    Stage, Store, Test, Value, ValueName, Vector,
+    Bound, ClassId, Edges, EncodedInst, Flags, Integer, LaneOp, Opmask, OpmaskFile, Pointer,
+    Rebind, Selected, Stage, Store, Test, Value, ValueName, Vector, VectorFile,
 };
 use crate::error::CompileError;
 use crate::program::BinaryOp;
@@ -163,7 +163,7 @@ const KXNOR: u8 = 0x46;
 
 /// `k0`, which nothing writes: `kxnorw dst, k0, k0` is all-ones however it was
 /// left.
-const K0: u8 = 0;
+const K0: RegNo<OpmaskFile> = RegNo::architectural(0);
 
 /// `vpternlogd`'s truth table for all-ones.
 const TERNLOG_ONES: u8 = 0xFF;
@@ -216,7 +216,7 @@ impl X86 for Avx512 {
     const VECTOR_BYTES: u64 = 64;
 
     /// `vpternlogd dst, dst, dst, 0xFF`
-    fn ones(dst: u8) -> EncodedInst {
+    fn ones(dst: RegNo<VectorFile>) -> EncodedInst {
         Evex::m0f3a_66(0x25).imm(TERNLOG_ONES).rrr(dst, dst, dst)
     }
 
