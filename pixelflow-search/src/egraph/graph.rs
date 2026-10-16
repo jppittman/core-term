@@ -2135,6 +2135,121 @@ mod tests {
         }
     }
 
+    /// A retired node that founded its class: the class keeps the members
+    /// after it, and its own id names a node that is no member of it (plan
+    /// §1: `node(c)` need not be a member of `c`). Class 4 is
+    /// `[Neg(b), 2, Var(7)]` with the fact 2; `union(a, b)` makes `Neg(b)`
+    /// congruent to `Neg(a)`, which is in class 0 with the fact 1. Item 4 is
+    /// refused that union and retires its first member.
+    #[test]
+    fn a_retired_founder_leaves_the_members_after_it() {
+        let mut eg = EGraph::new();
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let a = eg.add(ENode::Var(0)); // 1
+        let b = eg.add(ENode::Var(1)); // 2
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 3
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 4
+        let two = eg.add(ENode::constant(2.0)); // 5
+        let z = eg.add(ENode::Var(7)); // 6
+        assert_eq!(z.index(), 6, "the recipe assumes these ids");
+        eg.union(neg_a, one);
+        eg.union(neg_b, two);
+        eg.union(neg_b, z);
+        eg.union(a, b);
+        eg.rebuild();
+
+        assert_eq!(
+            eg.refused_const_unions(),
+            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..]
+        );
+        assert_eq!(eg.find(neg_b), neg_b, "class 4 survives its founder");
+        assert_eq!(
+            eg.tags(neg_b).collect::<Vec<_>>(),
+            [ENodeId(5), ENodeId(6)],
+            "the kept members follow in walk order"
+        );
+        assert_eq!(members(&eg, neg_b), [ENode::constant(2.0), ENode::Var(7)]);
+        assert!(eg.columns.is_retired(ENodeId(4)));
+        assert!(!eg.is_member(ENodeId(4)));
+        assert_eq!(eg.node_for_tag(neg_b, ENodeId(4)), None);
+        assert_eq!(
+            members(&eg, one),
+            [ENode::constant(1.0), ENode::apply(OpKind::Neg, &[a])]
+        );
+        assert_eq!(eg.node_count(), eg.num_classes() - 1);
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (one, ENode::constant(1.0)),
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (neg_a, ENode::apply(OpKind::Neg, &[a])),
+                (neg_b, ENode::apply(OpKind::Neg, &[b])),
+                (two, ENode::constant(2.0)),
+                (z, ENode::Var(7)),
+            ],
+        );
+    }
+
+    /// A retired member between two kept ones: the kept two are adjacent in
+    /// the class afterwards, the first still first. Class 3 is
+    /// `[Var(5), Neg(b), 2]` with the fact 2; item 3 keeps `Var(5)`, retires
+    /// `Neg(b)` (refused, as above) and keeps `2`.
+    #[test]
+    fn a_retired_middle_member_leaves_its_neighbours_adjacent() {
+        let mut eg = EGraph::new();
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let a = eg.add(ENode::Var(0)); // 1
+        let b = eg.add(ENode::Var(1)); // 2
+        let x = eg.add(ENode::Var(5)); // 3
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 4
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 5
+        let two = eg.add(ENode::constant(2.0)); // 6
+        assert_eq!(two.index(), 6, "the recipe assumes these ids");
+        eg.union(neg_a, one);
+        eg.union(x, neg_b);
+        eg.union(x, two);
+        eg.union(a, b);
+        eg.rebuild();
+
+        assert_eq!(
+            eg.refused_const_unions(),
+            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..]
+        );
+        assert_eq!(eg.tags(x).collect::<Vec<_>>(), [ENodeId(3), ENodeId(6)]);
+        assert_eq!(members(&eg, x), [ENode::Var(5), ENode::constant(2.0)]);
+        assert!(eg.columns.is_retired(ENodeId(5)));
+        assert_eq!(eg.node_count(), eg.num_classes() - 1);
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (one, ENode::constant(1.0)),
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (x, ENode::Var(5)),
+                (neg_a, ENode::apply(OpKind::Neg, &[a])),
+                (neg_b, ENode::apply(OpKind::Neg, &[b])),
+                (two, ENode::constant(2.0)),
+            ],
+        );
+    }
+
+    /// A clone owns its member lists: a union in the original after the clone
+    /// moves nothing in the copy (`EGraph: Clone` is derived; plan §8.4).
+    #[test]
+    fn a_clone_owns_its_member_lists() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let copy = eg.clone();
+        eg.union(x, y);
+        eg.rebuild();
+        assert_eq!(members(&eg, x), [ENode::Var(0), ENode::Var(1)]);
+        assert_eq!(members(&copy, x), [ENode::Var(0)]);
+        assert_eq!(members(&copy, y), [ENode::Var(1)]);
+        assert_ne!(copy.find(x), copy.find(y));
+    }
+
     /// `union` gives the surviving class's nodes, then the merged-away
     /// class's, whichever argument order the caller used.
     #[test]
