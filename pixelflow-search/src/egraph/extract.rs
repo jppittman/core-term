@@ -2109,8 +2109,12 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
 /// A union is taken from its largest child's set, which is already priced
 /// and already built: a candidate pays for the classes its other children
 /// add to that set, found by stamping — a per-class epoch mark says whether
-/// a class has been seen under this candidate — so the cost of a candidate
-/// is the size of its smaller children's sets, not the size of the graph.
+/// a class has been seen under this candidate. The walk covers the smaller
+/// children's sets, and the largest child's set as well when that one is
+/// sparse, because its members are stamped to be told apart; a dense largest
+/// set is tested by its bits and not walked. So a candidate costs the size
+/// of its smaller children's sets plus, for a sparse largest one, the size
+/// of that — never the size of the graph.
 /// Memory is the sum of the sets, each in the smaller of its two forms, and
 /// is held under `budget`: the first class whose set would carry the total
 /// past it ends the pass
@@ -2161,14 +2165,18 @@ struct ReachSets {
     /// The weighted own cost of each live class's chosen node: what a union
     /// pays when that class first enters it.
     own: LiveTable<usize>,
-    /// The settled cost of each live class: its own weighted cost plus
-    /// `own` summed over everything in its set, each member once. What a
-    /// candidate whose largest child is this class pays below itself for
-    /// everything in that class's set.
+    /// The settled cost of each live class: `own` summed over its set
+    /// (itself included), each member once. What a candidate whose largest
+    /// child is this class pays below itself for everything in that class's
+    /// set.
     total: LiveTable<usize>,
-    /// `stamp[i] == epoch` iff live class `i` has entered the union being
-    /// taken for the current candidate. One epoch per candidate; never
-    /// cleared, so a union costs its members and nothing else.
+    /// Within one `residue` walk, a class is in the union iff it is in the
+    /// largest child's bits (when that set is dense) or `stamp[i] == epoch`
+    /// (every other member, the largest child's included when it is
+    /// sparse). Each walk over two or more children takes a fresh epoch, so
+    /// a candidate takes two, one to price and one to settle; a row of one
+    /// child or none takes none. Never cleared, so a union costs its members
+    /// and nothing else.
     stamp: LiveTable<usize>,
     epoch: usize,
     /// The classes `residue` last collected, in the order they entered;
@@ -2188,10 +2196,12 @@ impl ReachSets {
     /// A leaf's row is empty, so it reaches nothing and pays nothing.
     ///
     /// The largest child's set is a part of the union already summed: its
-    /// `total` is `own` over that set, so only what the others add is
-    /// walked. A saturating sum of non-negative terms is `min(sum,
-    /// usize::MAX)` however the terms are grouped, so the two agree even
-    /// where a sentinel cost saturates.
+    /// `total` is `own` over that set, so no `own` of its members is read.
+    /// What is walked is the other children's sets, and the largest child's
+    /// own members as well when that set is sparse (`residue` stamps them);
+    /// only a dense one is skipped. A saturating sum of non-negative terms
+    /// is `min(sum, usize::MAX)` however the terms are grouped, so the two
+    /// agree even where a sentinel cost saturates.
     fn cost_below(&mut self, children: &[Child]) -> usize {
         let base = self.residue(children).map_or(0, |child| self.total[child]);
         self.scratch.iter().fold(base, |below, &member| {
@@ -2667,7 +2677,7 @@ mod tests {
         root: EClassId,
         costs: &C,
         shape: LatticeShape,
-    ) -> (Vec<Option<usize>>, usize) {
+    ) -> DenseReference {
         const BITS: usize = usize::BITS as usize;
         let num_classes = egraph.num_classes();
         let order = AndOrGraph::of(egraph, root).classes().to_vec();
@@ -2764,7 +2774,22 @@ mod tests {
             best_own[me] = min_own;
         }
         let root_cost = best_cost[egraph.find(root).index()].expect("the root is settled");
-        (best_node, root_cost)
+        DenseReference {
+            choices: best_node,
+            root_cost,
+            reach_sizes: reach
+                .chunks(words)
+                .map(|set| set.iter().map(|word| word.count_ones() as usize).sum())
+                .collect(),
+        }
+    }
+
+    /// What [`dense_reference_pass`] settled: the choice map, the root's
+    /// cost, and how many classes each live class's set holds.
+    struct DenseReference {
+        choices: Vec<Option<usize>>,
+        root_cost: usize,
+        reach_sizes: Vec<usize>,
     }
 
     /// An SDF-shaped arena with real sharing (the same op mix as
@@ -3120,8 +3145,7 @@ mod tests {
                  it has no opinion there and this comparison would be vacuous — see \
                  `the_fixpoint_prices_a_class_the_post_order_dp_left_at_the_sentinel`"
             );
-            let (reference_choices, reference_cost) =
-                dense_reference_pass(&egraph, root, &costs, shape);
+            let reference = dense_reference_pass(&egraph, root, &costs, shape);
             let pass = shared_dag_dp_pass(
                 Frozen::new(&egraph, root).problem(),
                 &mut Dp::production(&costs, shape),
@@ -3131,7 +3155,7 @@ mod tests {
             assert!(live > 100, "{nodes} nodes: only {live} live classes");
             let dp = pass.outcome.expect("unbounded");
             assert_eq!(
-                dp.choices, reference_choices,
+                dp.choices, reference.choices,
                 "{nodes} nodes at {shape:?}: the hybrid pass disagrees with the dense reference"
             );
             // #1229 pinned the choices; the claim beside them is the number
@@ -3139,15 +3163,29 @@ mod tests {
             // map while disagreeing on its price would be a mispricing this
             // test was blind to.
             assert_eq!(
-                dp.root_cost, reference_cost,
+                dp.root_cost, reference.root_cost,
                 "{nodes} nodes at {shape:?}: the hybrid pass and the dense reference price the \
                  same map differently"
             );
-            let dense_bytes = live * live.div_ceil(REACH_WORD_BITS) * 8;
+            let dense_set_bytes = live.div_ceil(REACH_WORD_BITS) * 8;
             assert!(
-                pass.stats.reach_bytes <= dense_bytes,
-                "{nodes} nodes: hybrid sets ({}) above the dense bound ({dense_bytes})",
-                pass.stats.reach_bytes
+                pass.stats.reach_bytes <= live * dense_set_bytes,
+                "{nodes} nodes: hybrid sets ({}) above the dense bound ({})",
+                pass.stats.reach_bytes,
+                live * dense_set_bytes
+            );
+            // The total is where an over-budget pass abandons, so it is
+            // pinned exactly: a set is four bytes a member until that costs
+            // more than the bitset, whichever sets it was grown from.
+            let reference_bytes: usize = reference
+                .reach_sizes
+                .iter()
+                .map(|&size| (size * 4).min(dense_set_bytes))
+                .sum();
+            assert_eq!(
+                pass.stats.reach_bytes, reference_bytes,
+                "{nodes} nodes at {shape:?}: the sets hold a different number of bytes than the \
+                 dense reference's sets in their smaller forms"
             );
         }
     }
@@ -4418,10 +4456,12 @@ mod tests {
         );
     }
 
-    /// A one-child chain whose terms overflow ends at `usize::MAX`, as the
-    /// walk's saturating sum does, and not at a wrapped total.
+    /// A chain whose terms overflow ends at `usize::MAX`, as the walk's
+    /// saturating sum does, and not at a wrapped total: through rows of one
+    /// child, and through a row of two whose largest child's stored total is
+    /// already saturated and whose residue adds more.
     #[test]
-    fn a_one_child_chain_saturates() {
+    fn a_prohibitive_chain_saturates() {
         struct Prohibitive;
         impl CostFunction for Prohibitive {
             fn node_cost(&self, _: &ENode, _: Option<OpKind>) -> usize {
@@ -4429,20 +4469,33 @@ mod tests {
             }
         }
 
+        let saturated_root_cost = |egraph: &EGraph, root| {
+            shared_dag_dp_pass(
+                Frozen::new(egraph, root).problem(),
+                &mut Dp::production(&Prohibitive, LatticeShape::POINT),
+                usize::MAX,
+            )
+            .outcome
+            .expect("unbounded")
+            .root_cost
+        };
+
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let s = egraph.add(ENode::apply(OpKind::Sin, &[x]));
         let q = egraph.add(ENode::apply(OpKind::Sqrt, &[s]));
         let root = egraph.add(ENode::apply(OpKind::Neg, &[q]));
         egraph.rebuild();
-        let dp = shared_dag_dp_pass(
-            Frozen::new(&egraph, root).problem(),
-            &mut Dp::production(&Prohibitive, LatticeShape::POINT),
-            usize::MAX,
-        )
-        .outcome
-        .expect("unbounded");
-        assert_eq!(dp.root_cost, usize::MAX);
+        assert_eq!(saturated_root_cost(&egraph, root), usize::MAX);
+
+        // A root over that chain and a second class: the chain's stored
+        // total is the ceiling already, and the one class its set lacks (`c`;
+        // `x` is shared) is added to it. One class, so that a wrapped sum is
+        // not topped back up to the ceiling by a second addend.
+        let c = egraph.add(ENode::apply(OpKind::Cos, &[x]));
+        let wide = egraph.add(ENode::apply(OpKind::Add, &[q, c]));
+        egraph.rebuild();
+        assert_eq!(saturated_root_cost(&egraph, wide), usize::MAX);
     }
 
     /// Over [`SHARED_DAG_PASS_BYTE_BUDGET`] the pass returns no map and the

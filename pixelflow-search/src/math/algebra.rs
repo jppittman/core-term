@@ -995,7 +995,8 @@ impl Rewrite for ConstantFold {
             } => {
                 buffer[0] = constant_of(egraph, *operand)?;
                 buffer[1] = count.literal();
-                (direction.op(), 2)
+                let op = direction.op();
+                (op, op.arity())
             }
             _ => return None,
         };
