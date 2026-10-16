@@ -1,14 +1,14 @@
 # The e-graph: what saturation is for when it never finishes
 
 **Status:** `Draft` — an open research problem, 2026-10-15. A statement of the problem, not a
-plan and not a solution; nothing in it is agreed. Companion engineering plan (representation and matching cost only):
-`docs/compiler/2026-10-15-the-egraph-is-an-arena.md`.
+plan and not a solution; nothing in it is agreed. Companion engineering plan (representation and matching cost only;
+landed in full, archived): `docs/archive/plans/2026-10-15-the-egraph-is-an-arena.md`.
 
 Citations are tree paths. Two sources are not tracked: the 2026-10-15 profile and telemetry of
 the 29 font programs, `/home/user/scratch/egraph/prof2/profile.md` (taken at 7cd96a32, an
 ancestor of this tree), and the arena plan's one-time probes,
-`/home/user/scratch/egraph/arena/gates/probe3b.txt`. Since the profile, groups A to D of the
-arena plan rewrote `graph.rs`, `graph/runner.rs`, `and_or.rs` and `extract.rs`'s storage and pricing, each
+`/home/user/scratch/egraph/arena/gates/probe3b.txt`. Since the profile, the arena plan's five groups
+rewrote `graph.rs`, `graph/runner.rs`, `and_or.rs` and `extract.rs`'s storage and pricing, and the shape cache's contents, each
 change byte-identical in the optimizer's output and in the saturation and extraction telemetry
 by that plan's gates. So the profile's counts (applications, unions, classes, matches) still
 hold, while its instruction and time figures predate those changes; the plan's ledger records
@@ -333,9 +333,9 @@ left in extraction (fold unrolled vs loop, BACKLOG E6) is open.
 Every rule scans every live class each sweep; 64% of saturation is finding matches, and
 malloc/free is 17-18% of all instructions. As profiled, the representation was the classic egg
 layout (per-class heap `Vec`s, a parallel `ENode` type, three conversions) beside an `ExprArena`
-that is already a hash-consed DAG; `docs/compiler/2026-10-15-the-egraph-is-an-arena.md`
-addresses the representation (its groups A to D, through the member lists, have landed), keeps
-scan and member order, and is byte-identical on the font programs.
+that is already a hash-consed DAG; `docs/archive/plans/2026-10-15-the-egraph-is-an-arena.md`
+addressed the representation (all five of its groups have landed, through the member lists and the frozen cache), kept
+scan and member order, and was byte-identical on the font programs.
 
 Under a truncating cap, **match order is part of the output**: a matcher that finds the same
 matches in a different order lands a different set before the cut and emits different

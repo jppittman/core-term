@@ -1,9 +1,13 @@
+> **Archived 2026-10-16 — status `Landed`.** The e-graph's store as an arena (node ids are tags, membership an intrusive list, per-id columns, a per-kind class index, a cache value with no `add`), byte-identical by gate: all 13 CLs landed in five PRs (#1416, #1418, #1420, #1422, #TBD-GROUP-E). §7 and `docs/research-problems/2026-10-15-the-egraph.md` hold what remains; §8's decisions are JP's. Kept for rationale; not authoritative about the tree.
+
 # The e-graph is an arena
 
-**Status:** `Plan of record` (JP, 2026-10-15: "write the arena plan. Execute it.").
-**Verified against:** `2a99d933` (written); CLs 0, 3a and 2 landed as `4af25113`; CLs 5a–d and 6 on `43019669`; CLs 1 and 3b on `98fb75a7`; CLs 3c and 4 on `4183ecf6`. Changes
-representation only: every CL below leaves `byte_probe` and the 29 font
-programs' extracted kernels byte-identical (§3.2, gates 1 and 1b) and is
+**Status:** `Landed` (JP, 2026-10-15: "write the arena plan. Execute it."). All 13 CLs of §6 are in, as five PRs:
+group A (CLs 0, 3a, 2) #1416, group B (CLs 5a–d, 6) #1418, group C (CLs 1, 3b) #1420, group D (CLs 3c, 4) #1422, and
+group E (CL 7) #TBD-GROUP-E (PR to come: the orchestrator replaces this marker with the number). What is left is §7, which is research, and §8, which is JP's.
+**Verified against:** `43f6923a` (CL 7 and its review fixes, the final source commit); written at `2a99d933`; CLs 0, 3a and 2 landed as `4af25113`; CLs 5a–d and 6 on `43019669`; CLs 1 and 3b on `98fb75a7`; CLs 3c and 4 on `4183ecf6`; CL 7 first on `ae195ab2`. Changes
+representation only: every CL below left `byte_probe` and the 29 font
+programs' extracted kernels byte-identical (§3.2, gates 1 and 1b) and was
 measured, not asserted. What would change the optimizer (congruence
 completeness, deduplication, match order, the budget) is out of scope and is
 stated as research in `docs/research-problems/2026-10-15-the-egraph.md`.
@@ -303,12 +307,23 @@ to at least 4 slots) × 134 k live classes ≈ 21 MB.
 | 3b | about −15 MB (node and tag vectors; a member-id vector remains); measured −10.5 MB |
 | 3c | up to +3.6 MB (`node_of_slot`); measured +3.9 MB |
 | 4 | about −5 MB (the member-id vector, ~40 B per live class); measured −6.7 MB |
-| 7 | the memo and saturation-only columns; the memo's entry count at freeze is measured first |
+| 7 | the memo and saturation-only columns; the memo's entry count at freeze is measured first; measured −34.0 MB (123,660 → 89,696 KiB, −27.5%) |
 
-The shape cache keeps every saturated graph for the process
-(`runtime.rs:576`, `725`), memo included (`graph.rs:42`), and nothing reads
-the memo after saturation: its readers are `add`, rebuild and
-`GrowthPredictor`, and `Frozen` lends no way to change the graph.
+The shape cache kept every saturated graph for the process, and nothing
+reads the memo after saturation: its readers are `add`, rebuild and
+`GrowthPredictor`. CL 7 measured first, as this
+row said it would. At the moment a graph entered the cache, the 29 programs'
+memos held 458,667 entries for 449,637 ids (one per `add` miss, and about 2%
+more from rebuild items that missed: law 2), 26.22 MB at capacity; the memo,
+the worklist, `queued`, `last_changed`, the kind mask and the per-kind
+bitsets together held 38.03 MB at capacity, and the worklist was empty at all
+29 freezes. A prototype that emptied them at that point measured −33.5 and
+−34.7 MB of peak RSS on two binaries; the CL measured −34.0 MB (the runs span
+88,476 to 90,024 KiB; its own earlier measurement was 89,396). The cache now
+holds a `FrozenGraph` (`runtime.rs:577`, from `EGraph::freeze` at `726`): the
+node arena, union-find, member lists, live set, facts and units, which is
+everything extraction reads. It has no method that takes `&mut self`, so
+nothing can add to a cached graph.
 
 ## 3. Byte identity
 
@@ -443,15 +458,21 @@ read of `classes` and `next_enode_id` outside `graph.rs` behind accessors
 | 3b | The node arena; tags are ids; rebuild over member ids; liveness in the store; four comment fixes (§2.1, 2.3, 2.4) | `graph.rs`, `graph/runner.rs`, `provenance.rs`, `growth.rs`, `candidate.rs`, `extract.rs`, `labeler.rs`, `runtime.rs` probes | −350 / +250 | gate 5 decides |
 | 3c | `node_of_slot`; `Pick` holds a node id; the membership check (§2.6) | `extract.rs`, `and_or.rs` | −40 / +80 | ~0 |
 | 4 | Membership is an intrusive list; union is a splice (§2.2) | `graph.rs` | −80 / +120 | gate 5 decides |
-| 7 | Freezing drops saturation-only state (memo, worklist, `queued`, `last_changed`, kind index); the frozen value has no `add` | `graph.rs`, `graph/runner.rs`, `and_or.rs` | −20 / +80 | memory (§2.8) |
+| 7 | Freezing drops saturation-only state (memo, worklist, `queued`, `last_changed`, kind index); the frozen value has no `add` | `graph.rs`, `graph/columns.rs`, `extract.rs`, `and_or.rs`, `candidate.rs`, `witness.rs`, `optimizer.rs`, `runtime.rs`, `egraph/mod.rs`; small edits in four more | −20 / +80 estimated, −251 / +463 over 14 files as committed (extraction's crate-private signatures follow the frozen type: `/home/user/scratch/egraph/arena/spec-E.md` 3.10) | memory (§2.8): −34.0 MB measured, Ir zero |
 
 Each CL is byte-identical by §3.2 and carries its ledger row; the
 expected-Ir column is the reviews' estimate
 (`/home/user/scratch/egraph/speed/review-*.md`) and decides nothing. CL 2's
 identity rests on two conditions stated in its description: the hoisted
 checks run only on a non-empty `live`, and production passes no deadline.
-CL 7's rests on nothing adding to a graph after `into_graph()`, which
-`Frozen` already prevents and its probe confirms on the 29 programs.
+CL 7's rested on nothing reading the dropped state after `into_graph()`, which
+now holds by type: the cached value is a `Frozen<FrozenGraph>`, which has
+neither those fields nor a method that reaches them, so it holds for every
+input and not only the 29 programs. Before the change a probe that emptied
+the memo, the worklist and the four columns at the freeze point left gates
+1b, 2 and 2x identical on the 29 programs. The one control-flow change is
+`extract_over`'s reranker branch, now an assertion: a reranker scores an
+`Extraction`, which lends an `&EGraph`, and the runtime tier sets none.
 
 **Landed.** On the cold compile of the 29 font programs, callgrind Ir, with
 gates 1, 1b, 2 and (from group B) 2x identical at every step:
@@ -459,9 +480,11 @@ gates 1, 1b, 2 and (from group B) 2x identical at every step:
 | group | CLs | Ir | saturate | extraction | cache-sim sum | RSS |
 |---|---|--:|--:|--:|--:|--:|
 | A (#1416) | 0, 3a, 2 | 7,520 M → 6,122 M (−18.6%) | 3,817 M → 2,432 M | ~1,648 M | 6,361 M → 4,672 M | 133.3 → 137.5 MB |
-| B | 5a–d, 6 | 6,096 M → 5,383 M (−11.7%) | 2,408 M → 2,261 M | 1,647 M → 1,074 M (−34.8%) | 4,646 M → 3,889 M | 137.7 → 137.6 MB |
-| C | 1, 3b | 5,383 M → 5,210 M (−3.2%) | 2,261 M → 2,093 M | 1,074 M → 1,082 M | 3,903 M → 3,727 M (−4.5%, one host: see below) | 137.6 → 126.7 MB |
-| D | 3c, 4 | 5,210 M → 5,103 M (−2.1%) | 2,093 M → 1,950 M | 1,082 M → 1,083 M | 3,727 M → 3,528 M (−5.4%) | 126.7 → 123.7 MB |
+| B (#1418) | 5a–d, 6 | 6,096 M → 5,383 M (−11.7%) | 2,408 M → 2,261 M | 1,647 M → 1,074 M (−34.8%) | 4,646 M → 3,889 M | 137.7 → 137.6 MB |
+| C (#1420) | 1, 3b | 5,383 M → 5,210 M (−3.2%) | 2,261 M → 2,093 M | 1,074 M → 1,082 M | 3,903 M → 3,727 M (−4.5%, one host: see below) | 137.6 → 126.7 MB |
+| D (#1422) | 3c, 4 | 5,210 M → 5,103 M (−2.1%) | 2,093 M → 1,950 M | 1,082 M → 1,083 M | 3,727 M → 3,528 M (−5.4%) | 126.7 → 123.7 MB |
+| E (#TBD-GROUP-E) | 7 | 5,103 M → 5,097 M (−0.1%, zero) | 1,950 M → 1,952 M | 1,083 M → 1,082 M | 3,528 M → 3,512 M (−0.4%) | 123.7 → 89.7 MB (−27.5%) |
+| **plan total** | all 13 | 7,520 M → 5,097 M (−32.2%) | 3,817 M → 1,952 M (−48.9%) | 1,650 M → 1,082 M (−34.4%, not like-for-like: see below) | 6,361 M → 3,889 M on one geometry (−38.9%), 3,903 M → 3,512 M on the other (−10.0%) | 133.3 → 89.7 MB (−32.7%) |
 
 Against the estimates: 5a alone took −470 M of extraction, more than the
 −0.3 to −0.5 G expected of 5a–c; 5b measured zero (one-child rows are 2.9%
@@ -525,7 +548,25 @@ an item that survives one union and then loses a later one, was pinned only by t
 shadow until CL 4's review added a test; a mutant of `absorb` that skips a
 child whose list was set mid-item fails it and passes the three tests before it.
 
-Next: group E (CL 7), its own PR.
+**Group E** (CL 7) is against final-D, the end of group D. Both ran on a machine that
+simulates the same cache (I1 and D1 32 KiB 8-way, LL 34 MiB 17-way, in each row's
+recorded geometry), so final-D's sum is comparable and nothing was re-taken. CL 7
+changes no instruction on the font path: Ir −5.9 M (zero, under the 10 M floor),
+saturate +1.6 M, extraction −1.5 M, the sum −15.7 M (−0.44%, L1 and LL misses
+unchanged to the digit between CL 7's own measurement and the final one), and peak
+RSS −34.0 MB, which is the figure of merit (§2.8). Against the plan's base row Ir is
+−32.2%, saturate −48.9% and peak RSS −32.7%. The extraction figures differ in scope:
+the base's is `extract_dag_over` inclusive, the last rows' `Optimizer::extract_over`
+inclusive (the caller: the same work plus its own frame), so only the total compares
+across the CL 3a boundary. The cache-sim sum has no single figure from the base to the
+end, because the machine changed once: the base geometry (D1 48 KiB 12-way, LL 264 MiB
+33-way) ran groups A and B and CL 1, where the sum fell 6,361 M → 3,889 M (final-B), and
+every later row ran on D1 32 KiB 8-way and LL 34 MiB 17-way, where group B's end
+re-measured at 3,903 M and group E ends at 3,512 M. Rows are comparable only within one
+geometry.
+
+Next: nothing in this plan; its CLs are done. §7 and the research problem
+(`docs/research-problems/2026-10-15-the-egraph.md`) hold what remains, and §8 is JP's.
 
 ## 7. What this does not address
 
@@ -568,3 +609,11 @@ none is a representation change. They are open problems in
 4. **`EGraph: Clone`** is derived and public (`graph.rs:38`). Only tests and
    an offline probe use it; dropping it removes a cost the arena would
    otherwise have to keep cheap.
+5. **The facts are saturation-only too.** `const_fact` and `var_fact` are read
+   only by `add` (the seed), `union` (the refusal and the merge) and
+   `variance()` (the fold rules' side conditions), so nothing reads them after
+   saturation, and the cached `FrozenGraph` still holds them. Moving both to
+   `SaturationColumns` is a two-field change and measured another −7.8 MB of
+   peak RSS (89,132 → 81,312 KiB on CL 7's prototype, gate 1b identical with
+   them emptied). The plan named the set as the memo, worklist, `queued`,
+   `last_changed` and the kind index, so CL 7 kept them.
