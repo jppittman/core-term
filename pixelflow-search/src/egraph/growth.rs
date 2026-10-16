@@ -36,19 +36,12 @@
 //!
 //! # Nodes added and classes added are the same number here
 //!
-//! [`EGraph::add`](super::graph::EGraph::add) mints exactly one new e-class
-//! (a singleton holding the one node just created) alongside exactly one new
-//! [`ENodeId`](super::provenance::ENodeId) on every memo miss, and
-//! [`EGraph::union`](super::graph::EGraph::union) never allocates a class
-//! slot — it only ever repoints a `parent` entry, merging two *existing*
-//! slots. So in this representation the e-graph's raw class-slot count and
-//! its raw e-node count grow in lockstep, always: a before/after delta
-//! recovers `nodes_added` and `classes_added` as the same number by
-//! construction, not by coincidence of this measurement. [`RuleGrowth`]
-//! therefore keeps one histogram and exposes it under both names; the
-//! recording site (the runner's `apply_measured`) pins the invariant with
-//! a `debug_assert_eq!`, so a representation change that broke it would fail
-//! loudly there before it silently mis-scored anything built on this module.
+//! [`EGraph::add`](super::graph::EGraph::add) pushes each new node at the end
+//! of the graph's node arena and returns that index as the new class, and
+//! [`EGraph::union`](super::graph::EGraph::union) mints nothing. So there is
+//! one counter, the arena's length, and a before/after delta of it is both
+//! `nodes_added` and `classes_added` by construction. [`RuleGrowth`] keeps one
+//! histogram and exposes it under both names.
 //!
 //! This is itself part of the answer to "how many e-nodes and e-classes did
 //! the application add": at the granularity this architecture actually

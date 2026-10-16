@@ -845,7 +845,7 @@ impl Saturation {
     /// scan queues an action, so one look at entry stands for every class.
     /// A graph with no live class has nothing to scan, so it completes.
     fn scan_entry_stop(&self, ceilings: &Ceilings) -> ScanStop {
-        if self.graph.live.iter().next().is_none() {
+        if self.graph.class_ids().next().is_none() {
             return ScanStop::Completed;
         }
         if self.graph.num_classes() > ceilings.minted {
@@ -914,13 +914,6 @@ impl Saturation {
         // never pays the dirtiness walk for a class holding no such node.
         let rule = self.rules.rule(rule_idx);
         let roots = rule.root_shapes();
-
-        // The scan only reads the graph (every write waits for the commit
-        // below), so nothing can add or merge a class under the iterator.
-        debug_assert!(
-            !self.graph.live_has_drifted(),
-            "the live-class set has drifted from the graph's canonical classes"
-        );
 
         // Only a class that has held a node in the rule's root shapes is
         // visited at all (`candidate_classes`). The id-budget and allowance
@@ -1164,7 +1157,7 @@ impl Saturation {
 
         #[cfg(feature = "provenance-journal")]
         {
-            let minted_from = self.graph.nodes_minted();
+            let minted_from = self.graph.num_classes() as u64;
             let opening = Opening {
                 rule: self.rules.id(rule_idx),
                 rule_idx,
@@ -1177,7 +1170,7 @@ impl Saturation {
                 .as_mut()
                 .map(|journal| journal.open_application(opening));
             let result = self.apply_measured(rule_idx, class_id, action);
-            let minted = minted_from..self.graph.nodes_minted();
+            let minted = minted_from..(self.graph.num_classes() as u64);
             if let (Some(open), Some(journal)) = (open, self.graph.journal.as_mut()) {
                 journal.close_application(open, minted, result);
             }
@@ -1217,19 +1210,11 @@ impl Saturation {
             let predicted = self
                 .graph
                 .predicted_growth(&action, &mut self.predictor_pending);
-            let nodes_before = self.graph.nodes_minted();
+            let classes_before = self.graph.num_classes();
             let unions = self.graph.apply_action(class_id, action);
-            let nodes_added = (self.graph.nodes_minted() - nodes_before) as usize;
-            // See `crate::egraph::growth`'s module doc: `add()` mints exactly
-            // one new class per new node, always, so this equality is an
-            // invariant of the representation, not an assumption of the
-            // measurement — pinned here rather than merely relied upon.
-            debug_assert_eq!(
-                self.graph.num_classes() as u64,
-                self.graph.nodes_minted(),
-                "EGraph::add's one-class-per-node invariant broke; growth's \
-                 nodes_added/classes_added equivalence depends on it"
-            );
+            // `add` pushes one node per memo miss and returns its index as
+            // the new class: nodes added and classes added are one count.
+            let nodes_added = self.graph.num_classes() - classes_before;
             let rule = self.rules.id(rule_idx);
             assert_eq!(
                 predicted,

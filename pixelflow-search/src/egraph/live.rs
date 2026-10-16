@@ -4,7 +4,8 @@
 //! of the union-find) and holds at least one node, the classes a rule scan
 //! visits. Deciding that from the graph costs a `find` per class ever minted,
 //! while the answer changes only where a class is minted, merged or drained,
-//! and a scan runs once per rule per sweep. So the graph restates liveness at
+//! and a scan runs once per rule per sweep. So the store's member writes
+//! (`Columns`' `push`, `absorb`, `detach`, `write_back`) restate liveness at
 //! each of those events and a scan reads the set.
 //!
 //! The second use is the per-kind index: for each [`OpKind`], the classes that

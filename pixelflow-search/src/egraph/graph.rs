@@ -2,7 +2,6 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
-use super::live::ClassSet;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::provenance::{ENodeId, Provenance};
@@ -19,16 +18,6 @@ pub use runner::{
     SaturationStats, SaturationStop,
 };
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct EClass {
-    pub(crate) nodes: Vec<ENode>,
-    /// Stable identity per node, parallel to `nodes`: `tags[i]` names
-    /// `nodes[i]`. Must be kept in lockstep with `nodes` through every
-    /// mutation (union's extend, rebuild's take/canonicalize/extend) — see
-    /// `provenance` module docs.
-    pub(crate) tags: Vec<ENodeId>,
-}
-
 /// The store: classes, the union-find over them, the memo that hash-conses
 /// their nodes, the per-class facts, and the graph's own mutation log.
 ///
@@ -39,23 +28,15 @@ pub(crate) struct EClass {
 /// kept, the journal that attributes its mutations.
 #[derive(Clone)]
 pub struct EGraph {
-    /// The per-id columns: every id's nodes, union-find parent, facts and
-    /// worklist flag, grown together by one `push`. See the `columns` module.
+    /// The per-id columns: the node arena, the union-find, the member lists
+    /// and the live set, the facts and the worklist flag. See the `columns`
+    /// module.
     columns: Columns,
+    /// Canonical node forms to the class each was in when computed (law 2).
+    /// Each key is a copy, not a node id: `rebuild` rewrites the arena's
+    /// stored operands in place, and a key keeps the form it was computed in.
     memo: HashMap<ENode, EClassId>,
-    /// The classes [`Self::class_ids`] yields, as a set: a rule scan reads it
-    /// instead of asking `find` of every class ever minted. Written only by
-    /// [`Self::track_liveness`], which restates [`Self::is_live`] for one
-    /// class and is called where a class is minted, merged or drained
-    /// ([`Self::add`], [`Self::union`], [`Self::rebuild_budgeted`]). Checked
-    /// against `class_ids` whenever a rebuild finishes, so a site that forgets
-    /// to call it fails loudly instead of dropping classes from every scan.
-    live: ClassSet,
     worklist: Vec<Slot>,
-    /// This graph's count of minted `ENodeId`s, from 0. Always equal to
-    /// `columns.len()`: both grow by one on each memo miss in `add` and
-    /// nowhere else.
-    next_enode_id: u64,
     /// The units this graph may hold as leaves, with the variance each
     /// carries — told to it by the runtime tier's unit walk
     /// ([`EGraph::admit_unit`]) before the term is inserted. A
@@ -147,9 +128,7 @@ impl EGraph {
         Self {
             columns: Columns::default(),
             memo: HashMap::default(),
-            live: ClassSet::default(),
             worklist: Vec::new(),
-            next_enode_id: 0,
             units: BTreeMap::new(),
             refused_const_unions: Vec::new(),
             mutation_counter: 0,
@@ -291,33 +270,20 @@ impl EGraph {
             |key| self.ref_variance(key),
             |child| self.columns.var_fact[self.columns.root(child)],
         );
-        let enode_id = ENodeId(self.next_enode_id);
-        self.next_enode_id += 1;
-        #[cfg(feature = "provenance-journal")]
-        if let Some(journal) = &mut self.journal {
-            journal.record_birth(enode_id);
-        }
         self.mutation_counter += 1;
         let id = self.columns.push(Birth {
-            class: EClass {
-                nodes: vec![node],
-                tags: vec![enode_id],
-            },
+            node,
             const_fact: node.as_f32().map(f32::to_bits),
             variance,
             shape: node.shape(),
             stamp: self.mutation_counter,
         });
-        self.track_liveness(id);
+        #[cfg(feature = "provenance-journal")]
+        if let Some(journal) = &mut self.journal {
+            journal.record_birth(columns::tag_of(id));
+        }
         self.memo.insert(node, id);
         id
-    }
-
-    /// How many nodes this graph has minted, retired ones included: the id
-    /// the next [`Self::add`] miss gives its node.
-    #[cfg(any(feature = "provenance-journal", feature = "saturation-telemetry"))]
-    fn nodes_minted(&self) -> u64 {
-        self.next_enode_id
     }
 
     /// Refused constant unions: `(bits, bits)` pairs the graph declined to
@@ -370,9 +336,9 @@ impl EGraph {
         // Min/Max over NaN. Bit equality additionally admits identical NaN
         // patterns, which `==` would wrongly reject: an all-ones comparison
         // mask reads as NaN and must be unionable with itself.
-        // Read the class-level fact, NOT the node vector: `rebuild` drains
-        // nodes with `mem::take` before performing congruence unions, so a
-        // node-scanning guard is blind exactly when congruence closure runs.
+        // Read the class-level fact, NOT the members: `rebuild` detaches a
+        // class's members before performing congruence unions, so a
+        // member-scanning guard is blind exactly when congruence closure runs.
         let (fa, fb) = (self.columns.const_fact[a], self.columns.const_fact[b]);
         if let (Some(ba), Some(bb)) = (fa, fb) {
             let (ca, cb) = (f32::from_bits(ba), f32::from_bits(bb));
@@ -404,10 +370,7 @@ impl EGraph {
         // Everything read at `child` happens before `link`, while it is still
         // a representative.
         self.columns.merge_kinds(child, parent);
-        let child_nodes = std::mem::take(&mut self.columns.classes[child].nodes);
-        let child_tags = std::mem::take(&mut self.columns.classes[child].tags);
-        self.columns.classes[parent].nodes.extend(child_nodes);
-        self.columns.classes[parent].tags.extend(child_tags);
+        self.columns.absorb(child, parent);
         // The guard above proved the two facts agree (or that at most one
         // exists), so `or` is a merge, not a choice.
         if self.columns.const_fact[parent].is_none() {
@@ -417,8 +380,6 @@ impl EGraph {
         self.columns.var_fact[parent] =
             self.columns.var_fact[parent].intersection(self.columns.var_fact[child]);
         self.columns.link(child, parent);
-        self.track_liveness(child.id());
-        self.track_liveness(parent.id());
         // `parent`'s own node list just changed (gained `child`'s nodes) —
         // see `class_is_dirty`/`DIRTY_TRACKING_MAX_DEPTH`.
         self.mutation_counter += 1;
@@ -473,38 +434,28 @@ impl EGraph {
             // memo takes it for the nodes the item keeps, `existing != id`
             // compares against it, and only the write-back asks again.
             let id = self.columns.root_of(slot);
-            let mut nodes = std::mem::take(&mut self.columns.classes[id].nodes);
-            // `tags` must stay zipped with `nodes` through this loop: both
-            // are compacted in place, a kept node moving from index `read` to
-            // `kept` together with its tag, in the order they were drained,
-            // so every tag stays pointed at the right node. Compacting in
-            // place spares two allocations and two frees per worklist item.
-            let mut tags = std::mem::take(&mut self.columns.classes[id].tags);
-            debug_assert_eq!(
-                nodes.len(),
-                tags.len(),
-                "EClass.nodes and EClass.tags must never desync"
-            );
+            let mut members = self.columns.detach(id);
             let mut kept = 0;
-            for read in 0..nodes.len() {
-                let node = self.canonical_node(nodes[read]);
-                let tag = tags[read];
+            for read in 0..members.len() {
+                let tag = members[read];
+                let node = self.canonical_node(*self.columns.node(tag));
+                // The stored names are state: the arena keeps the form
+                // canonicalized now, retired or kept.
+                self.columns.set_node(tag, node);
                 if let Some(&existing) = self.memo.get(&node) {
                     let existing = self.columns.root(existing);
                     if existing != id {
                         // `union` keeps `min(id, existing)`, so this call
                         // can go either way, and the write-back at the
                         // bottom of the loop has to survive both:
-                        //   - `id` survives: `union`'s extend() appends
-                        //     `existing`'s nodes (and tags) directly onto
-                        //     `columns.classes[id]`, which mem::take just
-                        //     emptied — so the write-back must EXTEND, not
+                        //   - `id` survives: `union` appends `existing`'s
+                        //     members to `id`'s list, which `detach` just
+                        //     emptied — so the write-back must extend, not
                         //     overwrite, or those are dropped.
                         //   - `existing` survives: `id` is merged away and
-                        //     `columns.classes[id]` stops being reachable
-                        //     through `find` — so the write-back must target
-                        //     `columns.root(id)`, or the kept nodes are
-                        //     orphaned.
+                        //     its list stops being reachable through `find`
+                        //     — so the write-back must target `root(id)`,
+                        //     which `write_back` resolves itself.
                         // This is a rebuild-time
                         // congruence-closure union, not a rule firing, so it
                         // carries no rule_idx in the provenance journal
@@ -519,50 +470,24 @@ impl EGraph {
                         // contradictory classes with only one of them
                         // reachable by lookup — later matching or extraction
                         // could then give the same expression different
-                        // values. Leave the node with the class memo already
-                        // names. `id` loses a node congruent to one it can no
-                        // longer be merged with, which is under-merging: it
-                        // costs CSE, not correctness.
+                        // values. Retire the node: it stays in the arena and
+                        // in no class (law 7). `id` loses a node congruent to
+                        // one it can no longer be merged with, which is
+                        // under-merging: it costs CSE, not correctness.
                         if self.find(id.id()) != self.find(existing.id()) {
+                            self.columns.retire(tag);
                             continue;
                         }
                     }
                 } else {
                     self.memo.insert(node, id.id());
                 }
-                nodes[kept] = node;
-                tags[kept] = tag;
+                members[kept] = tag;
                 kept += 1;
             }
-            nodes.truncate(kept);
-            tags.truncate(kept);
-            // Write back to the class `id` CANONICALIZES TO, not to `id`.
-            // A mid-loop union() above picks `min(id, existing)` as the
-            // surviving parent, so when `existing.0 < id.0` it is `id` that
-            // was merged away — and `columns.classes[id]` is then a slot
-            // `find` no longer routes to. Every node written there is
-            // orphaned: `nodes()`/`tags()` canonicalize first, so nothing
-            // can read them again. That is lost extraction alternatives
-            // (under-merging: sound, since the surviving class still holds
-            // only provably-equal terms) but lost *silently*, which this
-            // project forbids.
-            //
-            // And extend, never assign over a non-empty vector: in the mirror
-            // case, where `id` survives, union()'s extend() has already
-            // appended `existing`'s nodes and tags onto this very vector
-            // (which mem::take emptied above), and an assignment would
-            // clobber them. `root(id) == id` there, so one write-back handles
-            // both directions.
-            let dest = self.columns.root(id.id());
-            restore_after_rebuild(&mut self.columns.classes[dest].nodes, nodes);
-            restore_after_rebuild(&mut self.columns.classes[dest].tags, tags);
-            self.track_liveness(dest.id());
-        }
-        if self.worklist.is_empty() {
-            assert!(
-                !self.live_has_drifted(),
-                "the live-class set has drifted from the graph's canonical classes"
-            );
+            members.truncate(kept);
+            // To the class `id` is in now: see `Columns::write_back`.
+            self.columns.write_back(id, members);
         }
         self.worklist.len()
     }
@@ -596,15 +521,19 @@ impl EGraph {
     /// index, so a caller depends on the order and not on how the members
     /// are stored. A count is [`Self::member_count`].
     pub fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
-        let id = self.columns.root(id);
-        self.columns.classes[id].nodes.iter()
+        let class = self.columns.root(id);
+        self.columns
+            .members(class)
+            .iter()
+            .map(move |&tag| self.columns.node(tag))
     }
 
     /// The stable `ENodeId` tags of the class's nodes, yielded in step with
-    /// [`Self::nodes`]: the k-th tag names the k-th node.
+    /// [`Self::nodes`]: the k-th tag names the k-th node. A tag is the node's
+    /// id in this graph: the k-th tag is the id of the k-th node.
     pub fn tags(&self, id: EClassId) -> impl Iterator<Item = ENodeId> + Clone + '_ {
-        let id = self.columns.root(id);
-        self.columns.classes[id].tags.iter().copied()
+        let class = self.columns.root(id);
+        self.columns.members(class).iter().copied()
     }
 
     /// [`Self::nodes`] for a class that is already its own representative, as
@@ -616,14 +545,17 @@ impl EGraph {
             canonical,
             "nodes_of_canonical is for a representative"
         );
-        self.columns.classes[canonical].nodes.iter()
+        let class = self.columns.root(canonical);
+        self.columns
+            .members(class)
+            .iter()
+            .map(move |&tag| self.columns.node(tag))
     }
 
     /// How many nodes [`Self::nodes`] yields for `id`'s class, without
     /// walking them.
     pub(crate) fn member_count(&self, id: EClassId) -> usize {
-        let id = self.columns.root(id);
-        self.columns.classes[id].nodes.len()
+        self.columns.members(self.columns.root(id)).len()
     }
 
     /// The node at `position` in [`Self::nodes`]`(id)`'s order, or `None`
@@ -631,8 +563,10 @@ impl EGraph {
     /// extraction recorded and reads back once per candidate priced; a walk
     /// that is not on that path takes it from `nodes(id).nth(position)`.
     pub(crate) fn node_at(&self, id: EClassId, position: usize) -> Option<&ENode> {
-        let id = self.columns.root(id);
-        self.columns.classes[id].nodes.get(position)
+        self.columns
+            .members(self.columns.root(id))
+            .get(position)
+            .map(|&tag| self.columns.node(tag))
     }
 
     /// The mutation log (origins, application log, union journal), or `None`
@@ -654,17 +588,32 @@ impl EGraph {
         self.journal.as_ref().expect(NO_JOURNAL)
     }
 
-    /// Look up the `ENode` for a given stable tag within a class, if it's
-    /// still present there. `O(class size)` — classes are small in practice
-    /// (equality-saturated e-classes rarely exceed a few dozen nodes).
+    /// The node `tag` names, if it is a member of `id`'s class now: `None`
+    /// for a node another class holds, a retired node (law 7), or a tag past
+    /// this graph's end. O(1).
     pub fn node_for_tag(&self, id: EClassId, tag: ENodeId) -> Option<&ENode> {
-        let id = self.columns.root(id);
-        let class = &self.columns.classes[id];
-        class
-            .tags
-            .iter()
-            .position(|&t| t == tag)
-            .map(|i| &class.nodes[i])
+        let minted_as = self.columns.class_of(tag)?;
+        if self.columns.is_retired(tag) || self.find(minted_as) != self.find(id) {
+            return None;
+        }
+        Some(self.columns.node(tag))
+    }
+
+    /// Whether node `tag` is a member of a class now: false exactly for a
+    /// retired node (law 7) and for a tag past this graph's end.
+    pub fn is_member(&self, tag: ENodeId) -> bool {
+        self.columns.class_of(tag).is_some() && !self.columns.is_retired(tag)
+    }
+
+    /// The operand classes node `tag` names as stored, or none for a node that
+    /// is not a member (retired, or past the end): what the derivation walks
+    /// read. O(1), where the scan it replaces visited every class.
+    #[cfg(feature = "provenance-journal")]
+    fn children_of(&self, tag: ENodeId) -> Vec<EClassId> {
+        match self.is_member(tag) {
+            true => self.columns.node(tag).children(),
+            false => Vec::new(),
+        }
     }
 
     /// Compute the transitive rewrite-application ancestry of a set of
@@ -677,14 +626,7 @@ impl EGraph {
         chosen_nodes: &[(EClassId, ENodeId)],
     ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
         let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).collect() };
-        let children_of = |tag: ENodeId| -> Vec<EClassId> {
-            for class in self.columns.classes.iter() {
-                if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
-                    return class.nodes[idx].children();
-                }
-            }
-            Vec::new()
-        };
+        let children_of = |tag: ENodeId| -> Vec<EClassId> { self.children_of(tag) };
         super::provenance::derivation_ancestors(
             &tags_of,
             &children_of,
@@ -721,14 +663,7 @@ impl EGraph {
         chosen_nodes: &[(EClassId, ENodeId)],
     ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
         let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).collect() };
-        let children_of = |tag: ENodeId| -> Vec<EClassId> {
-            for class in self.columns.classes.iter() {
-                if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
-                    return class.nodes[idx].children();
-                }
-            }
-            Vec::new()
-        };
+        let children_of = |tag: ENodeId| -> Vec<EClassId> { self.children_of(tag) };
         let canonical_of = |class: EClassId| -> EClassId { self.find(class) };
         super::provenance::derivation_ancestors_tight(
             super::provenance::GraphView {
@@ -756,26 +691,10 @@ impl EGraph {
     /// Iterate over all canonical e-class IDs.
     ///
     /// Returns an iterator of all e-class IDs that are canonical (i.e., roots
-    /// of their union-find tree) and have at least one node.
+    /// of their union-find tree) and have at least one node. Read from the
+    /// live set the member store keeps.
     pub fn class_ids(&self) -> impl Iterator<Item = EClassId> + '_ {
-        (0..self.columns.len())
-            .map(EClassId::from_index)
-            .filter(|&id| self.is_live(id))
-    }
-
-    /// Whether `id` is canonical and holds at least one node: the definition
-    /// of a class [`Self::class_ids`] yields.
-    fn is_live(&self, id: EClassId) -> bool {
-        self.find(id) == id && !self.columns.classes[id].nodes.is_empty()
-    }
-
-    /// Restate [`Self::is_live`] for `id` in the [`ClassSet`] `live`. The one
-    /// writer of that set.
-    fn track_liveness(&mut self, id: EClassId) {
-        match self.is_live(id) {
-            true => self.live.insert(id),
-            false => self.live.remove(id),
-        }
+        self.columns.live().iter()
     }
 
     /// The live classes a rule rooted in `roots` can match at, in ascending
@@ -788,7 +707,7 @@ impl EGraph {
         &self,
         roots: RootShapes,
     ) -> impl Iterator<Item = EClassId> + '_ {
-        self.live.iter_within(move |word| match roots {
+        self.columns.live().iter_within(move |word| match roots {
             RootShapes::Any => u64::MAX,
             RootShapes::Kinds(kinds) => self.columns.by_kind.word_of_any(kinds, word),
         })
@@ -800,9 +719,7 @@ impl EGraph {
     fn kind_index_covers_members(&self) -> bool {
         self.class_ids().all(|id| {
             let root = self.columns.root(id);
-            self.columns.classes[root]
-                .nodes
-                .iter()
+            self.nodes_of_canonical(id)
                 .filter_map(ENode::shape)
                 .all(|kind| {
                     self.columns.kind_mask[root].contains(kind)
@@ -811,14 +728,10 @@ impl EGraph {
         })
     }
 
-    /// Whether the `live` set disagrees with [`Self::class_ids`].
-    fn live_has_drifted(&self) -> bool {
-        !self.live.iter().eq(self.class_ids())
-    }
-
-    /// Get the total number of nodes across all e-classes.
+    /// Nodes minted and not retired (law 7), duplicates counted: every member
+    /// of every live class.
     pub fn node_count(&self) -> usize {
-        self.columns.classes.iter().map(|c| c.nodes.len()).sum()
+        self.columns.len() - self.columns.retired_count()
     }
 
     pub fn contains_const(&self, id: EClassId, val: f32) -> bool {
@@ -843,7 +756,8 @@ impl EGraph {
         if self.columns.last_changed[canonical] > swept {
             return true;
         }
-        for node in &self.columns.classes[canonical].nodes {
+        for &tag in self.columns.members(canonical) {
+            let node = self.columns.node(tag);
             for &child in node.children_slice() {
                 let child = self.columns.root(child);
                 if self.columns.last_changed[child] > swept {
@@ -852,7 +766,8 @@ impl EGraph {
                 if DIRTY_TRACKING_MAX_DEPTH < 2 {
                     continue;
                 }
-                for gnode in &self.columns.classes[child].nodes {
+                for &gtag in self.columns.members(child) {
+                    let gnode = self.columns.node(gtag);
                     for &gchild in gnode.children_slice() {
                         if self.columns.last_changed[self.columns.root(gchild)] > swept {
                             return true;
@@ -892,10 +807,10 @@ impl EGraph {
     /// exactly as [`EGraph::add`] does on a hit, instead of inserting into
     /// it.
     ///
-    /// Because the e-graph's raw class-slot count and its raw e-node count
-    /// grow in lockstep (see the [`growth`](super::growth) module doc),
-    /// "e-classes added" and "e-nodes added" are the same number here, which
-    /// is why this returns one `usize` rather than a pair.
+    /// Because `add` pushes each new node at the arena's length and returns
+    /// that index as its class, "e-classes added" and "e-nodes added" are the
+    /// same number here, which is why this returns one `usize` rather than a
+    /// pair.
     ///
     /// **Only exact against the graph this is called on.** The runner sums
     /// the predictions of every action one scan finds, before any of them
@@ -1321,27 +1236,6 @@ impl NodeSink for GrowthPredictor<'_> {
 struct Distributive {
     outer: OpKind,
     inner: OpKind,
-}
-
-/// A rebuilt buffer is shrunk when its unused capacity exceeds `1 /
-/// REBUILT_SLACK_DIVISOR` of its length.
-const REBUILT_SLACK_DIVISOR: usize = 2;
-
-/// Put a rebuilt buffer back into a class slot. A slot that is still empty
-/// takes the buffer as is; one a mid-rebuild `union` already appended onto
-/// keeps those entries and gains the rebuilt ones after them.
-fn restore_after_rebuild<T: Copy>(slot: &mut Vec<T>, mut rebuilt: Vec<T>) {
-    if slot.is_empty() {
-        // The buffer was grown by pushes and keeps that slack; a class lives
-        // for the whole saturation, so slack is peak memory. Only a buffer
-        // with a large share unused is worth a realloc to give it back.
-        if rebuilt.capacity() - rebuilt.len() > rebuilt.len() / REBUILT_SLACK_DIVISOR {
-            rebuilt.shrink_to_fit();
-        }
-        *slot = rebuilt;
-        return;
-    }
-    slot.extend(rebuilt);
 }
 
 /// `Distribute`: `A * (B + C) -> A*B + A*C`, with `ops` = (outer `*`, inner
@@ -1977,20 +1871,14 @@ mod tests {
 
     /// What a rebuild owes a caller whatever the store's layout: every id
     /// `add` handed out is a member of `find(id)`'s class, still the node it
-    /// was born as (up to its operands' names), and no other class lists it;
-    /// and once the worklist is empty a second `rebuild` changes nothing.
-    /// `added` is every node the recipe added, with the id `add` returned. A
-    /// node leaves its class only when a rebuild-time union is refused, which
-    /// these recipes never cause (asserted), so here "a member or retired" is
-    /// "a member".
+    /// was born as (up to its operands' names), or retired, and no other class
+    /// lists it; and once the worklist is empty a second `rebuild` changes
+    /// nothing. `added` is every node the recipe added, with the id `add`
+    /// returned. Retired nodes are read from the store's retired bit.
     fn assert_every_id_is_a_member_and_rebuild_is_at_rest(
         eg: &mut EGraph,
         added: &[(EClassId, ENode)],
     ) {
-        assert!(
-            eg.refused_const_unions().is_empty(),
-            "the recipe refuses no union, so it retires no node"
-        );
         assert_eq!(
             added.len(),
             eg.num_classes(),
@@ -1998,25 +1886,29 @@ mod tests {
         );
         for &(id, node) in added {
             let tag = ENodeId(id.index() as u64);
-            let member = eg.node_for_tag(eg.find(id), tag).unwrap_or_else(|| {
-                panic!(
-                    "id {} is not a member of find({})'s class",
-                    id.index(),
+            match (
+                eg.node_for_tag(eg.find(id), tag),
+                eg.columns.is_retired(tag),
+            ) {
+                (Some(member), false) => assert_eq!(
+                    eg.canonical_node(*member),
+                    eg.canonical_node(node),
+                    "id {} holds the node it was born as",
                     id.index()
-                )
-            });
-            assert_eq!(
-                eg.canonical_node(*member),
-                eg.canonical_node(node),
-                "id {} holds the node it was born as",
-                id.index()
-            );
+                ),
+                (None, true) => {}
+                (member, retired) => panic!(
+                    "id {} must be a member of find(id) or retired, exactly one: \
+                     member {member:?}, retired {retired}",
+                    id.index()
+                ),
+            }
         }
         let listed: usize = eg.class_ids().map(|class| eg.tags(class).count()).sum();
         assert_eq!(
             listed,
-            eg.num_classes(),
-            "each id is listed by exactly one class"
+            eg.num_classes() - eg.columns.retired_count(),
+            "each id is listed by exactly one class, or retired"
         );
         assert_eq!(eg.pending_rebuilds(), 0, "the recipe ran the worklist dry");
         type Snapshot = (Vec<EClassId>, Vec<(EClassId, Vec<(ENodeId, ENode)>)>);
@@ -2236,6 +2128,29 @@ mod tests {
             None,
             "a tag past the graph names nothing"
         );
+        assert!(eg.columns.is_retired(retired));
+        assert!(!eg.is_member(retired));
+        assert!(
+            !eg.is_member(ENodeId(u64::MAX)),
+            "a tag past the graph is no member"
+        );
+        assert!(eg.is_member(ENodeId(4)));
+        assert_every_id_is_a_member_and_rebuild_is_at_rest(
+            &mut eg,
+            &[
+                (one, ENode::constant(1.0)),
+                (two, ENode::constant(2.0)),
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (neg_a, ENode::apply(OpKind::Neg, &[a])),
+                (neg_b, ENode::apply(OpKind::Neg, &[b])),
+            ],
+        );
+        #[cfg(feature = "provenance-journal")]
+        {
+            assert!(eg.children_of(retired).is_empty());
+            assert_eq!(eg.children_of(ENodeId(4)), vec![a]);
+        }
     }
 
     /// `union` gives the surviving class's nodes, then the merged-away
