@@ -97,8 +97,9 @@ pub const REGISTERED_PRIMARY_BUDGET_APPLICATIONS: usize = 100;
 /// are equal precisely when the two canonical node multisets are, and no
 /// collision can let the layout of a class's node vector (which
 /// `rebuild_budgeted` reorders) leak into the comparison. A multiset because
-/// between a `union` and its `rebuild` a class can hold two stored nodes
-/// whose canonical forms coincide, and the key keeps both. A `Ref` node is
+/// a class can hold two members whose canonical forms coincide, before a
+/// rebuild or after one (rebuild deduplicates nothing), and the key keeps
+/// both. A `Ref` node is
 /// only its key, so two classes holding the same unit compare equal; what the
 /// unit varies as is the graph's record of it (`admit_unit` admits one
 /// variance per referent), not part of the content.
@@ -108,8 +109,8 @@ pub struct ClassContentKey(Vec<ENode>);
 impl ClassContentKey {
     /// Number of nodes recorded in this class: exactly how many
     /// `egraph.nodes(class)` yields for the class this key was built from.
-    /// They are distinct nodes on a rebuilt graph; between a `union` and its
-    /// `rebuild` two stored nodes can canonicalize equal and both count.
+    /// Two of them can be equal, on a rebuilt graph too (rebuild
+    /// deduplicates nothing), and both count.
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.0.len()

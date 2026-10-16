@@ -265,7 +265,9 @@ pub struct SaturationStats {
 ///
 /// It bounds the graph *approximately*: a sweep predicts the ids each pending
 /// action will mint against the graph as it stands (`EGraph::predicted_growth`;
-/// exact for one action, an over-count for several that share nodes) and
+/// exact for one action, and for several neither an upper nor a lower bound:
+/// shared nodes over-count, and an earlier commit's union can turn a
+/// predicted hit into a miss) and
 /// then commits the batch it accepted, so the bound holds to the prediction's
 /// slack. That is precisely why the limit can live at the driver — it guards
 /// memory, not meaning, and a bounded overshoot of a 100 000-id ceiling costs
@@ -976,11 +978,11 @@ impl Saturation {
                     // owns the regression — decision JP, 2026-09-09; see
                     // docs/archive/plans/2026-08-31-guide-design-revision.md §4.2.
                     //
-                    // Sound as an upper bound on the whole scan's real
-                    // growth even though sibling actions found later in this
-                    // same scan (still uncommitted, so invisible to this
-                    // call) may end up sharing some of the same nodes: real
-                    // growth can only come in lower.
+                    // Exact for this action against the graph as it stands.
+                    // The running sum is not a bound on the scan's real
+                    // growth in either direction (see `predicted_growth`), so
+                    // the cap check below holds the batch to the prediction's
+                    // slack, which is what `HARD_MINTED_LIMIT` allows.
                     let action_cost = self
                         .graph
                         .predicted_growth(&action, &mut self.predictor_pending);

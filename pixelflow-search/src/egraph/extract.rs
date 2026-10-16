@@ -1752,11 +1752,13 @@ impl TieBreak for Insertion {
 /// the node *is* rather than by when it was inserted into its class.
 ///
 /// `ENode`'s own order over the node with its operands canonicalized: the
-/// variant, then its payload, then the canonical operand ids. Two distinct
-/// nodes in one class always differ somewhere in that order (a class holds no
-/// duplicates after `rebuild`), so it is total and the result does not
-/// depend on the order a class's nodes were inserted in. It is a stable
-/// order, not a content order: operand ids follow allocation order, and a
+/// variant, then its payload, then the canonical operand ids. It is total on
+/// canonical forms, but a class can hold two members with the same canonical
+/// form (rebuild deduplicates nothing), and the order cannot tell those
+/// apart: the incumbent keeps such a tie, so the first inserted of them is
+/// chosen. The chosen node therefore does not depend on insertion order, and
+/// its position in the class, which is what a choice records, can. It is a
+/// stable order, not a content order: operand ids follow allocation order, and a
 /// `Buffer` or `Uniform` is ordered by its minted identity, which follows
 /// mint order across the process.
 #[derive(Clone, Copy)]

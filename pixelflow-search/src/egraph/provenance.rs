@@ -9,7 +9,7 @@
 //! E-nodes have no stable identity of their own: they live at `(EClassId,
 //! node_idx)`, and `node_idx` shifts whenever `EGraph::union` extends a
 //! class's node vector or `EGraph::rebuild_budgeted` rewrites it in place.
-//! To track provenance we mint a process-wide stable [`ENodeId`] for every
+//! To track provenance we mint a per-graph stable [`ENodeId`] for every
 //! e-node the instant it is created in `EGraph::add` (the sole creation
 //! choke point), and thread a parallel `tags: Vec<ENodeId>` alongside every
 //! `EClass::nodes: Vec<ENode>` so the tag at index `i` always names the node
@@ -78,12 +78,17 @@ use super::node::EClassId;
 #[cfg(feature = "provenance-journal")]
 use super::rules::{RuleId, RuleIdx};
 
-/// Stable, process-wide identity for an e-node, independent of its current
-/// `(EClassId, node_idx)` position.
+/// Stable identity for an e-node within one graph, independent of the
+/// node's current position in its class.
 ///
-/// Minted once, in `EGraph::add`, for every node that isn't a memo hit.
-/// Never reused, never renumbered — this is the whole point: `(EClassId,
-/// node_idx)` shifts under union and rebuild, `ENodeId` never does.
+/// Minted in `EGraph::add`, for every node that is not a memo hit, from that
+/// graph's own count: a graph's first node is 0, and a node's tag equals the
+/// id of the class `add` founds with it. Never reused, never renumbered: a
+/// union moves a node to another class and a rebuild rewrites its stored
+/// operands, and neither changes its tag. Per graph, not process-wide: every
+/// graph mints 0 first, and a clone continues its original's count, so a tag
+/// names a node only in the graph that minted it (and in its clones, for the
+/// tags minted before the clone).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ENodeId(pub(crate) u64);
 

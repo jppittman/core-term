@@ -52,7 +52,7 @@ under a cost. `Optimizer::run` is its one entry; the five laws of §8 are its co
 - `Vocabulary` still admits `Gather` and `ENode::Buffer`; the language has no bound buffers
   (kernels-evaluate-kernels, 2026-10-15). `mod.rs` lists an `extraction` module that does not exist and
   says `all_rules` has 42 rules; `rule_order.rs` asserts 62.
-- The store is still a `Vec<EClass>` of per-class heap vectors: the arena plan's CLs 1, 3b, 3c, 4 and 7
+- The store is still a `Vec<EClass>` of per-class heap vectors: the arena plan's CLs 3b, 3c, 4 and 7
   (node ids as tags, membership as a list, freeze drops saturation state) are open.
 
 ## Decided in

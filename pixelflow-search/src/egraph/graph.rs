@@ -52,7 +52,9 @@ pub struct EGraph {
     /// to call it fails loudly instead of dropping classes from every scan.
     live: ClassSet,
     worklist: Vec<Slot>,
-    /// Global monotonic counter minting `ENodeId`s in `add()`.
+    /// This graph's count of minted `ENodeId`s, from 0. Always equal to
+    /// `columns.len()`: both grow by one on each memo miss in `add` and
+    /// nowhere else.
     next_enode_id: u64,
     /// The units this graph may hold as leaves, with the variance each
     /// carries — told to it by the runtime tier's unit walk
@@ -442,8 +444,12 @@ impl EGraph {
         );
     }
 
-    /// Process up to `budget` worklist items. Each item canonicalizes one
-    /// e-class's nodes and deduplicates via the memo table.
+    /// Process up to `budget` worklist items. Each item canonicalizes the
+    /// stored nodes of one class and probes the memo with each canonical
+    /// form: a miss records the form, and a hit in another class unions the
+    /// two, or, when that union is refused, takes the node out of the class.
+    /// Nothing is deduplicated: a node whose form another member already has
+    /// stays, so a class can hold equal members (see [`Self::nodes`]).
     ///
     /// The graph is consistent after each item — partially rebuilt is safe.
     /// Unprocessed classes may have stale canonical forms (rule matching
@@ -891,16 +897,17 @@ impl EGraph {
     /// "e-classes added" and "e-nodes added" are the same number here, which
     /// is why this returns one `usize` rather than a pair.
     ///
-    /// **Only exact against the graph this is called on.** If several
-    /// actions found in the same scan (before any of them commit) would
-    /// build overlapping nodes, each one's prediction is exact in isolation
-    /// but their sum over-counts the batch's real total — safely: the sum is
-    /// still an upper bound on real growth, never an under-count, so a
-    /// caller budgeting against it (the runner's `sweep_rule`) never
-    /// overshoots. Pinned exact per single application — the sense that
-    /// matters for a budget decided one application at a time — by the
-    /// `assert_eq!` in the runner's `apply_measured`, which calls this
-    /// immediately before executing the same action for real.
+    /// **Only exact against the graph this is called on.** The runner sums
+    /// the predictions of every action one scan finds, before any of them
+    /// commits, and that sum bounds the batch's real growth in neither
+    /// direction. Two actions that build the same node each count it, so the
+    /// sum can over-count. And an earlier commit's `union` changes what a
+    /// later action's nodes canonicalize to, while the memo keeps the names
+    /// its keys were computed in until a rebuild re-inserts them, so a node
+    /// predicted as a hit can miss and the sum can under-count. Pinned exact
+    /// per single application by the `assert_eq!` in the runner's
+    /// `apply_measured`, which calls this immediately before executing the
+    /// same action for real.
     ///
     /// `pending` is the caller's scratch table for the walk: emptied here
     /// before use, so what a previous prediction left in it is never read, and
@@ -1968,6 +1975,71 @@ mod tests {
         eg.nodes(class).copied().collect()
     }
 
+    /// What a rebuild owes a caller whatever the store's layout: every id
+    /// `add` handed out is a member of `find(id)`'s class, still the node it
+    /// was born as (up to its operands' names), and no other class lists it;
+    /// and once the worklist is empty a second `rebuild` changes nothing.
+    /// `added` is every node the recipe added, with the id `add` returned. A
+    /// node leaves its class only when a rebuild-time union is refused, which
+    /// these recipes never cause (asserted), so here "a member or retired" is
+    /// "a member".
+    fn assert_every_id_is_a_member_and_rebuild_is_at_rest(
+        eg: &mut EGraph,
+        added: &[(EClassId, ENode)],
+    ) {
+        assert!(
+            eg.refused_const_unions().is_empty(),
+            "the recipe refuses no union, so it retires no node"
+        );
+        assert_eq!(
+            added.len(),
+            eg.num_classes(),
+            "the recipe lists every id it minted"
+        );
+        for &(id, node) in added {
+            let tag = ENodeId(id.index() as u64);
+            let member = eg.node_for_tag(eg.find(id), tag).unwrap_or_else(|| {
+                panic!(
+                    "id {} is not a member of find({})'s class",
+                    id.index(),
+                    id.index()
+                )
+            });
+            assert_eq!(
+                eg.canonical_node(*member),
+                eg.canonical_node(node),
+                "id {} holds the node it was born as",
+                id.index()
+            );
+        }
+        let listed: usize = eg.class_ids().map(|class| eg.tags(class).count()).sum();
+        assert_eq!(
+            listed,
+            eg.num_classes(),
+            "each id is listed by exactly one class"
+        );
+        assert_eq!(eg.pending_rebuilds(), 0, "the recipe ran the worklist dry");
+        type Snapshot = (Vec<EClassId>, Vec<(EClassId, Vec<(ENodeId, ENode)>)>);
+        let snapshot = |eg: &EGraph| -> Snapshot {
+            let finds = (0..eg.num_classes())
+                .map(|i| eg.find(EClassId::from_index(i)))
+                .collect();
+            let classes = eg
+                .class_ids()
+                .map(|class| {
+                    (
+                        class,
+                        eg.tags(class).zip(eg.nodes(class).copied()).collect(),
+                    )
+                })
+                .collect();
+            (finds, classes)
+        };
+        let before = snapshot(&*eg);
+        eg.rebuild();
+        assert_eq!(snapshot(&*eg), before, "a second rebuild changes nothing");
+    }
+
     /// The canonical copy of a node names the surviving class of every operand
     /// the node has, whichever variant holds it: an operation's operands, a
     /// shift's operand and a fold's body. The graph is not rebuilt between
@@ -2010,164 +2082,81 @@ mod tests {
         }
     }
 
-    /// Regression test for a `rebuild_budgeted` bug: when canonicalizing the
-    /// worklist item `id`'s nodes triggers a union whose surviving parent is
-    /// `id` itself, `union()`'s `extend()` appends the merged-in class's
-    /// nodes directly onto `classes[id.index()].nodes` (which `rebuild_budgeted`
-    /// had just emptied via `mem::take`). The old code then did
-    /// `classes[id.index()].nodes = new_nodes`, an outright *assignment* that
-    /// clobbered whatever `union()` had just appended — silently dropping
-    /// nodes. The fix extends instead of assigning.
-    ///
-    /// Trigger recipe:
-    /// - class 3 (`nc = Neg(c)`, c = class 2) is the worklist item being
-    ///   rebuilt (`id = 3`).
-    /// - Before nc's rebuild, `union(b, c)` merges class 2 into class 1
-    ///   (1 < 2), so canonicalizing `Neg(c)` during nc's rebuild turns it
-    ///   into `Neg(b)`.
-    /// - `Neg(b)` is already memoized as class 4 (`nb = Neg(b)`, created
-    ///   after nc so it has a strictly higher id: 4 > 3).
-    /// - Because `id (3) < existing (4)`, `union(3, 4)` picks **3** as the
-    ///   surviving parent — reproducing the exact "current worklist item
-    ///   survives the merge" case that dropped nodes.
-    /// - Class 4 (`nb`) must still hold its node at the moment of that
-    ///   inner union, which it does (only class 3's `.nodes` was drained).
+    /// A rebuild item whose class survives the union its own node causes
+    /// loses nothing. The item is class 3 (`Neg(c)`); after `union(b, c)` its
+    /// node canonicalizes to `Neg(b)`, which the memo names class 4, and
+    /// 3 < 4, so the item absorbs class 4 after detaching its own members.
+    /// (The order that gives is pinned by
+    /// `a_rebuild_item_that_survives_gives_absorbed_then_kept`.) Stated as the
+    /// law rather than as which marker survived: every id is a member of
+    /// `find(id)`'s class, and a second rebuild changes nothing.
     #[test]
     fn rebuild_budgeted_does_not_drop_nodes_when_current_class_survives_union() {
         let mut eg = EGraph::new();
 
-        let _a = eg.add(ENode::Var(0)); // class 0 (unused, keeps ids spaced out)
+        let a = eg.add(ENode::Var(0)); // class 0
         let b = eg.add(ENode::Var(1)); // class 1
         let c = eg.add(ENode::Var(2)); // class 2
-        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 3: memo Neg([2]) -> 3
-        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 4: memo Neg([1]) -> 4
-        let d = eg.add(ENode::Var(3)); // class 5, dummy used only to enqueue `nc`
-        let marker = eg.add(ENode::Var(9)); // class 6: a node unique to nb's class
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 3
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 4
+        let d = eg.add(ENode::Var(3)); // class 5
+        let marker = eg.add(ENode::Var(9)); // class 6
 
         assert_eq!(nc.index(), 3, "test assumes nc is class 3");
         assert_eq!(nb.index(), 4, "test assumes nb is class 4");
 
-        // Enqueue class 3 (nc) on the worklist without disturbing its node
-        // list content: nc (3) < d (5), so nc survives as parent and simply
-        // gains an extra Var(3) node — it does not lose anything.
-        eg.union(nc, d);
+        eg.union(nc, d); // enqueues class 3
         assert_eq!(eg.pending_rebuilds(), 1);
-
-        // Give nb's class a node with no structural twin anywhere else
-        // (`Var(9)`), so its loss is directly observable. nb (4) < marker
-        // (6), so nb survives as parent and gains `Var(9)`.
-        eg.union(nb, marker);
-
-        // Now merge c into b. b (1) < c (2), so b survives; c's node list
-        // (just `Var(2)`) is merged in. This does NOT yet touch nc/nb.
-        eg.union(b, c);
-
-        // Rebuild exactly one worklist item. LIFO worklist: the most
-        // recently pushed parent (class 1, from union(b,c)) pops first.
-        // Process it, then process class 3 (nc) next so its rebuild is the
-        // one that triggers the id-survives-merge collision with nb (4).
-        //
-        // Drain the whole worklist via rebuild() (equivalent to
-        // rebuild_budgeted(usize::MAX)) so ordering doesn't need to be
-        // hand-tracked — the bug reproduces regardless of pop order, as
-        // long as nc's rebuild eventually runs after b/c are merged.
+        eg.union(nb, marker); // class 4 gains a node no other class has
+        eg.union(b, c); // `Neg(c)` now canonicalizes to `Neg(b)`
         eg.rebuild();
 
-        // The critical assertion: nb's class (now merged into nc's class,
-        // since nc=3 < nb=4 survives) must still contain BOTH nodes that
-        // were live before the merge: nc's own `Neg([canonical c])` and
-        // nb's `Neg([b])` (same canonical shape, but a distinct ENode
-        // instance in the vec before dedup would also be acceptable — the
-        // point is the vec must not have been clobbered to something
-        // that lost nb's contribution entirely).
-        let surviving = eg.find(nc);
         assert_eq!(
-            surviving,
+            eg.find(nc),
             eg.find(nb),
             "nc and nb should have been unioned via the canonicalization collision"
         );
-
-        let nodes = members(&eg, surviving);
-        assert!(
-            !nodes.is_empty(),
-            "rebuild_budgeted must not silently drop all nodes from the surviving class"
-        );
-
-        // The dummy Var(3) node pushed onto nc's class via `union(nc, d)`
-        // earlier must have survived.
-        assert!(
-            nodes.iter().any(|n| matches!(n, ENode::Var(3))),
-            "expected Var(3) (pushed before the id-survives merge) to still be present; \
-             rebuild_budgeted's overwrite bug would have dropped it"
-        );
-
-        // The critical, structurally-unique marker node from nb's class
-        // (`Var(9)`) must have survived being merged into nc's class via
-        // union()'s extend(). This is exactly the data the overwrite bug
-        // silently discarded: union() appended it to
-        // `classes[id.index()].nodes` mid-loop, and the old
-        // `self.classes[id.index()].nodes = new_nodes` assignment clobbered
-        // it because `new_nodes` was built from nc's pre-union node list,
-        // which never contained `Var(9)`.
-        assert!(
-            nodes.iter().any(|n| matches!(n, ENode::Var(9))),
-            "expected Var(9) (nb's unique marker, merged in via union()'s extend) \
-             to still be present; rebuild_budgeted's overwrite bug drops nodes appended \
-             by a mid-loop union() when the current worklist item survives as parent"
+        assert_eq!(eg.find(nb), nc, "the item survived");
+        assert_every_id_is_a_member_and_rebuild_is_at_rest(
+            &mut eg,
+            &[
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (c, ENode::Var(2)),
+                (nc, ENode::apply(OpKind::Neg, &[c])),
+                (nb, ENode::apply(OpKind::Neg, &[b])),
+                (d, ENode::Var(3)),
+                (marker, ENode::Var(9)),
+            ],
         );
     }
 
-    /// The mirror of the test above, and the case its fix left open: when
-    /// canonicalizing the worklist item `id`'s nodes triggers a union whose
-    /// surviving parent is the OTHER class, `id` itself becomes
-    /// non-canonical — and the write-back at the bottom of the loop targets
-    /// `classes[id.index()]`, a slot `find` no longer routes to. Every node
-    /// `id` still held is orphaned: `EGraph::nodes(id)` canonicalizes first,
-    /// so nothing can ever read them again.
-    ///
-    /// Lost e-nodes are lost extraction alternatives (under-merging, not
-    /// unsoundness — every remaining class still holds only provably-equal
-    /// terms), but they are lost *silently*, which this project forbids.
-    /// The fix writes back to `self.find(id)`, extending rather than
-    /// assigning because `union` may already have moved nodes there.
-    ///
-    /// Trigger recipe — the same shape as the test above with the two `Neg`
-    /// classes created in the opposite order, which is all it takes to flip
-    /// which side `union`'s `min(a, b)` keeps:
-    /// - `nb = Neg(b)` (class 3) is created BEFORE `nc = Neg(c)` (class 4),
-    ///   so `memo[Neg([1])] -> 3` and `3 < 4`.
-    /// - `union(nc, marker)` gives class 4 a structurally unique `Var(9)`
-    ///   and enqueues it for rebuild.
-    /// - `union(b, c)` merges class 2 into class 1, so canonicalizing
-    ///   `Neg([2])` during class 4's rebuild rewrites it to `Neg([1])`.
-    /// - `memo` maps `Neg([1])` to class 3, and `existing (3) < id (4)`, so
-    ///   `union(4, 3)` keeps **3** — `id` is merged away mid-loop.
-    /// - The write-back then appends `Var(9)` to class 4, which `find` now
-    ///   routes past. `nodes(find(nc))` never sees it again.
+    /// The mirror case: a rebuild item whose class loses the union its own
+    /// node causes. The item is class 4 (`Neg(c)`); after `union(b, c)` its
+    /// node canonicalizes to `Neg(b)`, which the memo names class 3, and
+    /// 3 < 4, so class 4 is merged away mid-item. Its kept members belong to
+    /// `find(4)`: written back to the item's own id they would sit where
+    /// `find` no longer leads. (The order is pinned by
+    /// `a_rebuild_item_that_loses_gives_prior_then_later_absorbed_then_kept`.)
+    /// Stated as the law: every id is a member of `find(id)`'s class, and a
+    /// second rebuild changes nothing.
     #[test]
     fn rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away() {
         let mut eg = EGraph::new();
 
-        let a = eg.add(ENode::Var(0)); // class 0 (keeps the ids spaced out)
+        let a = eg.add(ENode::Var(0)); // class 0
         let b = eg.add(ENode::Var(1)); // class 1
         let c = eg.add(ENode::Var(2)); // class 2
-        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3: memo Neg([1]) -> 3
-        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 4: memo Neg([2]) -> 4
-        let marker = eg.add(ENode::Var(9)); // class 5: a node unique to nc's class
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 4
+        let marker = eg.add(ENode::Var(9)); // class 5
 
         assert_eq!(nb.index(), 3, "test assumes nb is class 3");
         assert_eq!(nc.index(), 4, "test assumes nc is class 4");
 
-        // Give nc's class a node with no structural twin anywhere else
-        // (`Var(9)`), so its loss is directly observable, and enqueue nc for
-        // rebuild. nc (4) < marker (5), so nc survives as parent here.
-        eg.union(nc, marker);
+        eg.union(nc, marker); // enqueues class 4, which gains a node of its own
         assert_eq!(eg.pending_rebuilds(), 1);
-
-        // Merge c into b. b (1) < c (2), so b survives. This is what makes
-        // `Neg([2])` canonicalize to `Neg([1])` during nc's rebuild.
-        eg.union(b, c);
-
+        eg.union(b, c); // `Neg(c)` now canonicalizes to `Neg(b)`
         eg.rebuild();
 
         // nb (3) is the surviving parent: `union(4, 3)` keeps the lower id.
@@ -2183,68 +2172,69 @@ mod tests {
              i.e. the `existing.0 < id.0` branch"
         );
 
-        // The critical assertion: `Var(9)` lived in nc's class when nc was
-        // merged away mid-loop, so it must still be reachable through the
-        // surviving class. The orphaning bug writes it back to class 4,
-        // which `find` routes past — `nodes()` canonicalizes, so it is
-        // unreachable from every public entry point from then on.
-        let nodes = members(&eg, surviving);
-        assert!(
-            nodes.iter().any(|n| matches!(n, ENode::Var(9))),
-            "expected Var(9) (nc's unique marker) to still be reachable via \
-             nodes(find(nc)); the write-back targeted the merged-away slot \
-             classes[{}] instead of classes[{}]. Got: {nodes:?}",
-            nc.index(),
-            surviving.index()
+        assert_every_id_is_a_member_and_rebuild_is_at_rest(
+            &mut eg,
+            &[
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (c, ENode::Var(2)),
+                (nb, ENode::apply(OpKind::Neg, &[b])),
+                (nc, ENode::apply(OpKind::Neg, &[c])),
+                (marker, ENode::Var(9)),
+            ],
         );
+    }
 
-        // Tags must stay zipped with nodes through the redirected write-back.
-        assert_eq!(
-            eg.member_count(surviving),
-            eg.tags(surviving).count(),
-            "EClass.nodes and EClass.tags must never desync"
-        );
-
-        // Nothing else got orphaned on the way. Stated as the law the public
-        // API actually owes a caller — **every id `add` ever handed out still
-        // resolves to a class containing its node** — rather than by reading
-        // the merged-away slot directly: a shadow copy is unreachable by
-        // definition, so the only honest way to catch one is to check that
-        // everything reachable is still there.
-        let holds = |eg: &EGraph, id: EClassId, want: &ENode| -> bool {
-            eg.nodes(eg.find(id)).any(|n| n == want)
-        };
-        let neg_b = ENode::apply(OpKind::Neg, &[eg.find(b)]);
-        for (id, want) in [
-            (a, ENode::Var(0)),
-            (b, ENode::Var(1)),
-            (c, ENode::Var(2)),
-            (marker, ENode::Var(9)),
-            (nb, neg_b),
-            (nc, neg_b),
-        ] {
-            assert!(
-                holds(&eg, id, &want),
-                "id {} no longer resolves to a class holding {want:?}",
-                id.index()
-            );
-        }
-
-        // And the graph must be at rest: a second rebuild is a no-op. The
-        // orphaning bug leaves the worklist naming a class whose nodes went
-        // somewhere else, so "reachable" was not yet a fixpoint — a state
-        // that can look correct until something rebuilds again.
-        let before = members(&eg, surviving);
+    /// A node whose canonical form lands in a class it cannot merge with
+    /// leaves its class (law 7). Classes 0 and 1 hold the constants 1 and 2;
+    /// `Neg(a)` joins 0 and `Neg(b)` joins 1; `union(a, b)` makes the two
+    /// `Neg`s congruent. The worklist is a stack of 0, 1, 2: item 2 (the
+    /// variables) changes nothing, item 1 finds `Neg(b)` canonicalizes to
+    /// `Neg(a)`, which the memo names class 4, now in class 0, and the union
+    /// of 1 and 0 is refused (1 = 2). Node 5 is retired: no class lists it
+    /// and the node count leaves it out.
+    #[test]
+    fn a_node_whose_union_is_refused_leaves_its_class() {
+        let mut eg = EGraph::new();
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let two = eg.add(ENode::constant(2.0)); // 1
+        let a = eg.add(ENode::Var(0)); // 2
+        let b = eg.add(ENode::Var(1)); // 3
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 4
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 5
+        assert_eq!(neg_b.index(), 5, "the recipe assumes these ids");
+        eg.union(neg_a, one);
+        eg.union(neg_b, two);
+        eg.union(a, b);
         eg.rebuild();
+
         assert_eq!(
-            eg.find(nc),
-            surviving,
-            "a second rebuild must not move the surviving class"
+            eg.refused_const_unions(),
+            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..],
+            "item 1 asked to merge 2 into 1 and was refused"
+        );
+        assert_ne!(eg.find(one), eg.find(two));
+        let retired = ENodeId(5);
+        assert_eq!(eg.node_for_tag(eg.find(neg_b), retired), None);
+        assert_eq!(eg.node_for_tag(eg.find(neg_a), retired), None);
+        assert!(
+            eg.class_ids()
+                .all(|class| eg.tags(class).all(|t| t != retired))
+        );
+        assert_eq!(members(&eg, two), [ENode::constant(2.0)]);
+        assert_eq!(
+            members(&eg, one),
+            [ENode::constant(1.0), ENode::apply(OpKind::Neg, &[a])]
         );
         assert_eq!(
-            members(&eg, eg.find(nc)),
-            before,
-            "rebuild must be idempotent once the worklist is drained"
+            eg.node_count(),
+            eg.num_classes() - 1,
+            "the retired node is not counted"
+        );
+        assert_eq!(
+            eg.node_for_tag(one, ENodeId(1_000)),
+            None,
+            "a tag past the graph names nothing"
         );
     }
 
