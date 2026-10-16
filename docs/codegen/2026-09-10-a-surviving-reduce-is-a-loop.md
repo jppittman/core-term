@@ -708,6 +708,18 @@ choosing a policy, not building one. Note this is read off the code, not
 measured; the measurement to take right after 2c is whether a real glyph bake
 keeps its fold.
 
+**Measured 2026-10-16, on `f30ef3b5`.** It does. `arena_to_schedule` was made
+to print each compile's schedule and fold ranges while
+`glyph_area_edge_cases::font_glyphs_past_ascii_at_5_and_64_px` ran: every
+`Glyph::bake` keeps its glyph fold at its bucketed trip count (`0..32`,
+`0..64`, `0..512` for `⌨`) over a schedule of 206–314 defs, at 5 px and at
+64 px alike. The 27,029-def, 75 KiB-frame program the same test compiles for
+`⌨` is not an unrolled fold: it is `FontPrograms`'s program for 347 pieces
+(`fonts/loop_blinn/program.rs`, JP 2026-10-09: one program per piece count,
+every value a uniform), which has no table to fold over and is a sum of 347
+piece terms by construction. That program is what needs a vector slot past
+NEON's 64 KiB reach (#1414), and its size is its design, not this plan's.
+
 ### The shape 2b adds
 
 A parent pointer, not recursion. Storage stays flat — one `ScopeCode` per
