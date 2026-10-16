@@ -307,6 +307,7 @@ impl Optimized {
 
     /// [`Self::to_arena`] over a frozen graph: the runtime tier's cache, which
     /// holds a [`FrozenGraph`] and no `EGraph`.
+    #[must_use]
     pub(crate) fn to_arena_over(
         &self,
         egraph: &FrozenGraph,
@@ -947,6 +948,7 @@ impl Default for Optimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::extract::Extraction;
     use crate::nnue::guide::CandidateSummary;
 
     struct Flat;
@@ -1042,5 +1044,28 @@ mod tests {
             .observe(Some(Box::new(KeepJournal)))
             .no_ceiling();
         let _optimized = observed.run(&mut egraph, root);
+    }
+
+    /// A reranker scores an `Extraction`, which lends an `&EGraph`; a problem
+    /// read from a frozen graph has none to lend. The entry that takes one
+    /// refuses an optimizer holding a reranker, rather than extract without it
+    /// and report a term the reranker never saw.
+    #[test]
+    #[should_panic(expected = "Optimizer::extract_over: a reranker")]
+    fn extracting_over_a_frozen_graph_refuses_a_reranker() {
+        struct Zero;
+
+        impl Reranker for Zero {
+            fn score(&self, _extraction: &Extraction<'_>, _arena: &ExprArena) -> f64 {
+                0.0
+            }
+        }
+
+        let mut saturation = Optimizer::production().egraph();
+        let root = saturation.add(crate::egraph::ENode::Var(0));
+        let mut optimizer = Optimizer::production().rerank(Some(Box::new(Zero)));
+        let stats = optimizer.saturate_term(&mut saturation);
+        let _optimized =
+            optimizer.extract_over(Frozen::new(saturation.as_frozen(), root).problem(), stats);
     }
 }

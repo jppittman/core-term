@@ -246,12 +246,14 @@ impl EGraph {
     /// refusal record are dropped, and what extraction reads is moved, not
     /// copied. What a cache of saturated graphs keeps: a [`FrozenGraph`] has
     /// no `add`, so nothing can add to a graph whose memo is gone.
+    #[must_use]
     pub(crate) fn freeze(self) -> FrozenGraph {
         self.graph
     }
 
     /// What [`Self::freeze`] would keep, borrowed: for extraction over a graph
     /// that stays live.
+    #[must_use]
     pub(crate) fn as_frozen(&self) -> &FrozenGraph {
         &self.graph
     }
@@ -1944,6 +1946,7 @@ mod tests {
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Distributive, Identity,
         InverseAnnihilation, Involution, MulRecip,
     };
+    use pixelflow_ir::{Kernel, KernelStore};
 
     /// `class`'s members in order, to compare with a literal.
     fn members(eg: &EGraph, class: EClassId) -> Vec<ENode> {
@@ -3305,6 +3308,98 @@ mod tests {
             "the sum the first prediction minted is not the product's growth"
         );
     }
+
+    /// Freezing moves the arena rather than copying it: the cache's peak is the
+    /// graph's, not twice it.
+    #[test]
+    fn freezing_moves_the_arena() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let one = eg.add(ENode::constant(1.0));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, one]));
+        let tag = eg.tags(sum).next().expect("a class has a member");
+        let before: *const ENode = eg.as_frozen().node(tag);
+        let frozen = eg.freeze();
+        assert!(core::ptr::eq(frozen.node(tag), before));
+        assert_eq!(frozen.find(sum), sum);
+        assert_eq!(frozen.nodes(sum).count(), 1);
+    }
+
+    /// A frozen graph keeps what extraction reads, as literal facts about the
+    /// recipe of `a_node_whose_union_is_refused_leaves_its_class` (same ids):
+    /// each class's members and tags in order, the retired node answered by no
+    /// class, a live node answered in its own class only, the ids minted, and
+    /// the variance of a unit admitted before the freeze.
+    #[test]
+    fn a_frozen_graph_keeps_what_extraction_reads() {
+        let admitted = KernelStore::intern(&Kernel::x().add(&Kernel::constant(0.75)));
+        let never_admitted = KernelStore::intern(&Kernel::y().add(&Kernel::constant(0.75)));
+        let mut eg = EGraph::new();
+        eg.admit_unit(admitted, Variance::X);
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let two = eg.add(ENode::constant(2.0)); // 1
+        let a = eg.add(ENode::Var(0)); // 2
+        let b = eg.add(ENode::Var(1)); // 3
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 4
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 5
+        eg.union(neg_a, one);
+        eg.union(neg_b, two);
+        eg.union(a, b);
+        eg.rebuild();
+        let retired = ENodeId(5);
+        assert!(
+            !eg.is_member(retired),
+            "precondition: the recipe retires node 5"
+        );
+
+        let frozen = eg.freeze();
+
+        assert_eq!(frozen.num_classes(), 6, "six ids were minted");
+        assert_eq!(frozen.find(b), a, "the smaller id survives");
+        assert_eq!(frozen.find(neg_a), one);
+        assert_eq!(frozen.find(neg_b), two);
+        assert_eq!(
+            frozen.nodes(one).copied().collect::<Vec<_>>(),
+            [ENode::constant(1.0), ENode::apply(OpKind::Neg, &[a])]
+        );
+        assert_eq!(
+            frozen.tags(one).collect::<Vec<_>>(),
+            [ENodeId(0), ENodeId(4)]
+        );
+        assert_eq!(
+            frozen.nodes(two).copied().collect::<Vec<_>>(),
+            [ENode::constant(2.0)]
+        );
+        assert_eq!(frozen.tags(two).collect::<Vec<_>>(), [ENodeId(1)]);
+        assert_eq!(
+            frozen.nodes(b).copied().collect::<Vec<_>>(),
+            [ENode::Var(0), ENode::Var(1)],
+            "a union gives the survivor's members, then the absorbed ones"
+        );
+        assert_eq!(frozen.tags(a).collect::<Vec<_>>(), [ENodeId(2), ENodeId(3)]);
+
+        assert_eq!(frozen.node_for_tag(two, retired), None);
+        assert_eq!(frozen.node_for_tag(one, retired), None);
+        assert_eq!(
+            frozen.node_for_tag(one, ENodeId(0)),
+            Some(&ENode::constant(1.0)),
+            "a live node answers in its own class"
+        );
+        assert_eq!(
+            frozen.node_for_tag(two, ENodeId(0)),
+            None,
+            "a live node answers nothing in another class"
+        );
+        assert_eq!(
+            frozen.node_for_tag(one, ENodeId(1_000)),
+            None,
+            "a tag past the graph names nothing"
+        );
+
+        assert_eq!(frozen.unit_variance(admitted), Some(Variance::X));
+        assert_eq!(frozen.ref_variance(admitted), Variance::X);
+        assert_eq!(frozen.unit_variance(never_admitted), None);
+    }
 }
 
 #[cfg(test)]
@@ -3423,57 +3518,5 @@ mod variance_fact_tests {
         let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let copy = eg.clone();
         assert_eq!(copy.variance(sum), Variance::COORDS);
-    }
-
-    /// Freezing moves the arena rather than copying it: the cache's peak is the
-    /// graph's, not twice it.
-    #[test]
-    fn freezing_moves_the_arena() {
-        let mut eg = EGraph::new();
-        let x = eg.add(ENode::Var(0));
-        let one = eg.add(ENode::constant(1.0));
-        let sum = eg.add(ENode::apply(OpKind::Add, &[x, one]));
-        let tag = eg.tags(sum).next().expect("a class has a member");
-        let before: *const ENode = eg.as_frozen().node(tag);
-        let frozen = eg.freeze();
-        assert!(core::ptr::eq(frozen.node(tag), before));
-        assert_eq!(frozen.find(sum), sum);
-        assert_eq!(frozen.nodes(sum).count(), 1);
-    }
-
-    /// A frozen graph answers what its live graph answered, after unions and a
-    /// rebuild: membership, order and representatives.
-    #[test]
-    fn a_frozen_graph_answers_what_the_live_graph_did() {
-        let mut eg = EGraph::new();
-        let x = eg.add(ENode::Var(0));
-        let y = eg.add(ENode::Var(1));
-        let a = eg.add(ENode::apply(OpKind::Add, &[x, y]));
-        let b = eg.add(ENode::apply(OpKind::Add, &[y, x]));
-        eg.union(a, b);
-        eg.rebuild();
-        let ids: Vec<EClassId> = (0..eg.num_classes()).map(EClassId::from_index).collect();
-        let live: Vec<(EClassId, Vec<ENode>, Vec<ENodeId>)> = ids
-            .iter()
-            .map(|&c| {
-                (
-                    eg.find(c),
-                    eg.nodes(c).copied().collect(),
-                    eg.tags(c).collect(),
-                )
-            })
-            .collect();
-        let frozen = eg.freeze();
-        let after: Vec<(EClassId, Vec<ENode>, Vec<ENodeId>)> = ids
-            .iter()
-            .map(|&c| {
-                (
-                    frozen.find(c),
-                    frozen.nodes(c).copied().collect(),
-                    frozen.tags(c).collect(),
-                )
-            })
-            .collect();
-        assert_eq!(live, after);
     }
 }
