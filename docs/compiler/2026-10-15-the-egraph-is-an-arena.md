@@ -1,7 +1,7 @@
 # The e-graph is an arena
 
 **Status:** `Plan of record` (JP, 2026-10-15: "write the arena plan. Execute it.").
-**Verified against:** `2a99d933` (written); CLs 0, 3a and 2 landed as `4af25113`; CLs 5a–d and 6 on `43019669`. Changes
+**Verified against:** `2a99d933` (written); CLs 0, 3a and 2 landed as `4af25113`; CLs 5a–d and 6 on `43019669`; CLs 1 and 3b on `98fb75a7`. Changes
 representation only: every CL below leaves `byte_probe` and the 29 font
 programs' extracted kernels byte-identical (§3.2, gates 1 and 1b) and is
 measured, not asserted. What would change the optimizer (congruence
@@ -300,7 +300,7 @@ to at least 4 slots) × 134 k live classes ≈ 21 MB.
 | 0 (S1) | measured −0.3 MB |
 | 3a, 1, 5a-d, 6 | ~0 |
 | 2 | +9 to +10 MB while the graph is cached (8-byte mask, 53 bits per id, × 1.44) |
-| 3b | about −15 MB (node and tag vectors; a member-id vector remains) |
+| 3b | about −15 MB (node and tag vectors; a member-id vector remains); measured −10.5 MB |
 | 3c | up to +3.6 MB (`node_of_slot`) |
 | 4 | about −5 MB (the member-id vector, ~40 B per live class) |
 | 7 | the memo and saturation-only columns; the memo's entry count at freeze is measured first |
@@ -454,6 +454,7 @@ gates 1, 1b, 2 and (from group B) 2x identical at every step:
 |---|---|--:|--:|--:|--:|--:|
 | A (#1416) | 0, 3a, 2 | 7,520 M → 6,122 M (−18.6%) | 3,817 M → 2,432 M | ~1,648 M | 6,361 M → 4,672 M | 133.3 → 137.5 MB |
 | B | 5a–d, 6 | 6,096 M → 5,383 M (−11.7%) | 2,408 M → 2,261 M | 1,647 M → 1,074 M (−34.8%) | 4,646 M → 3,889 M | 137.7 → 137.6 MB |
+| C | 1, 3b | 5,383 M → 5,210 M (−3.2%) | 2,261 M → 2,093 M | 1,074 M → 1,082 M | 3,903 M → 3,727 M (−4.5%, one host: see below) | 137.6 → 126.7 MB |
 
 Against the estimates: 5a alone took −470 M of extraction, more than the
 −0.3 to −0.5 G expected of 5a–c; 5b measured zero (one-child rows are 2.9%
@@ -463,7 +464,27 @@ rows and a sparse one must still be stamped (60% of what pricing now walks;
 answering membership in a sparse set without stamping is a representation
 change, not in this plan). CL 6 took −142 M of the −0.2 G expected.
 
-Next: group C (CLs 1, 3b), then D (3c, 4), E (7), each its own PR.
+Group C's rows are against group B's end (`f30ef3b`, the final-B2 measurement),
+except the cache-sim sum. The machine that measured CL 3b simulates a different
+cache (D1 32 KiB 8-way and LL 34 MiB 17-way, where groups A and B and CL 1 ran
+on D1 48 KiB 12-way and LL 264 MiB 33-way), so `f30ef3b` was measured again on
+it: 5,383,588,991 Ir, which equals final-B2's within 1 M, and a cache-sim sum of
+3,902,980,082 where group B's end read 3,889 M on the other geometry. CL 1
+took −24 M Ir (−0.45%) where about zero was expected.
+
+**CL 3b's decision** (the cache-sim sum falls by at least 1%, or the previous
+layout stands): it passes on both readings. Against CL 1's row it is
+3,865,007,883 → 3,727,192,993, −3.57%. Against a base on the same geometry, the
+first half of 3b (`feb82335`, CL 1's production code) re-measured at
+3,880,467,773, it is −3.95%, with Ir −147.9 M (−2.76%), saturate −148.7 M
+(−6.64%), extraction +10.2 M (+0.95%: one more dependent load per member),
+L1 misses +1.3% and LL misses −13.4%. A counterfactual tree that deletes only
+the always-on drift check, which the member store makes unrepresentable (§2.4),
+measures −94.3 M (−2.43% of the base) by itself, so the arena and the member
+store are the other −58.9 M (−1.52%). Peak RSS fell 10.5 MB where §2.8
+estimated about 15 MB.
+
+Next: group D (CLs 3c, 4), then E (7), each its own PR.
 
 ## 7. What this does not address
 

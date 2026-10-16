@@ -72,6 +72,17 @@ section 6):
 - **The cut decides the output.** Because the run stops mid-sweep, which applications land
   is a function of rule order and live-class scan order. It is deterministic, but it is the
   result of a truncation, not of a closure.
+- **Equal members and retired nodes, after a full rebuild** (a one-time probe of the 29
+  programs at `feb82335`: each saturated graph cloned and rebuilt to an empty worklist, the
+  original left to extraction; the probe was not kept, its 29 lines are in
+  `/home/user/scratch/egraph/arena/gates/probe3b.txt`). 28 of 29 programs hold classes with
+  two or more members whose canonical forms (operands read through `find`) are equal: 5,243
+  such classes in all (at most 536 in one program, n=40) and 13,469 surplus members, counted
+  as members beyond one per distinct canonical form (at most 1,448, also n=40). The blank
+  program has none. Retired nodes, those taken out of their class for good when their
+  canonical form collided with a class they could not merge with: 0 in all 29, in the graph
+  as saturation left it and again after the rebuild. Worklist items pending when saturation
+  stopped: 0 in all 29.
 
 The old real corpus agrees in kind, under a different regime: 93% of 207 real kernels stopped
 on the cap, median 2 iterations, median 5,422 applications (L090, L091). Those 207 are the 190
