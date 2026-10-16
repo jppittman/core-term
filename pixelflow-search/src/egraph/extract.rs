@@ -2113,6 +2113,7 @@ pub(crate) fn shared_dag_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>
         sets: ReachSets {
             reach: graph.table_from_fn(|_| None),
             own: graph.table(0),
+            total: graph.table(0),
             stamp: graph.table(0),
             epoch: 0,
             scratch: Vec::new(),
@@ -2140,6 +2141,10 @@ struct ReachSets {
     /// The weighted own cost of each live class's chosen node: what a union
     /// pays when that class first enters it.
     own: LiveTable<usize>,
+    /// The settled cost of each live class: its own weighted cost plus
+    /// `own` summed over everything in its set, each member once. What a
+    /// candidate whose only child is this class pays below itself.
+    total: LiveTable<usize>,
     /// `stamp[i] == epoch` iff live class `i` has entered the union being
     /// taken for the current candidate. One epoch per candidate; never
     /// cleared, so a union costs its members and nothing else.
@@ -2159,7 +2164,21 @@ impl ReachSets {
     ///
     /// `children` is a candidate's row in the [`AndOrGraph`](super::and_or::AndOrGraph).
     /// A leaf's row is empty, so it reaches nothing without a case of its own.
+    ///
+    /// A row of one class (`Mul(a, a)` is one, used twice) unions a single
+    /// set, and a set is its class's own entry plus the sets below it: its
+    /// sum is that class's settled `total`, with nothing to walk or stamp. A
+    /// saturating sum of non-negative terms is `min(sum, usize::MAX)` however
+    /// the terms are grouped, so the two agree even where a sentinel cost
+    /// saturates.
     fn cost_below(&mut self, children: &[Child]) -> usize {
+        if let [only] = children {
+            debug_assert!(
+                self.reach[only.live].is_some(),
+                "a priced candidate's children are settled"
+            );
+            return self.total[only.live];
+        }
         self.epoch += 1;
         let epoch = self.epoch;
         // Disjoint fields: the sets are read while the stamps are written.
@@ -2241,7 +2260,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
             .prefer(self.problem.egraph(), class, incumbent, challenger)
     }
 
-    fn settle(&mut self, candidate: Candidate, node: &ENode, _cost: usize) -> bool {
+    fn settle(&mut self, candidate: Candidate, node: &ENode, cost: usize) -> bool {
         let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
         let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
         // Rebuild the winner's union rather than carrying one per class in
@@ -2261,6 +2280,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
         }
         self.sets.reach[me] = Some(set);
         self.sets.own[me] = own;
+        self.sets.total[me] = cost;
         self.var[candidate.class().index()] = node_var;
         self.dp.rec.settled(candidate.class(), candidate.idx());
         true
@@ -4140,6 +4160,82 @@ mod tests {
             &mut Dp::production(&costs, shape),
         );
         assert_eq!(tree.root_cost, own(root) + 2 * (own(s) + own(x)));
+    }
+
+    /// A candidate with one child reads that child's settled total instead of
+    /// walking its set, and the total is the walk's sum. Every class below is
+    /// priced once, by a one-child row — `Mul(n, n)` among them, which names
+    /// its child twice — except the leaf and the root, whose two classes
+    /// share `sin(X)` and must pay it once.
+    #[test]
+    fn a_one_child_row_costs_what_the_walk_over_its_childs_set_costs() {
+        #[derive(Default)]
+        struct Prices(Vec<(EClassId, usize, usize)>);
+        impl StageRecorder for Prices {
+            fn candidate(&mut self, class: EClassId, _idx: usize, cost: usize, own: usize) {
+                self.0.push((class, cost, own));
+            }
+            fn settled(&mut self, _: EClassId, _: usize) {}
+        }
+
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let s = egraph.add(ENode::apply(OpKind::Sin, &[x]));
+        let q = egraph.add(ENode::apply(OpKind::Sqrt, &[s]));
+        let n = egraph.add(ENode::apply(OpKind::Neg, &[q]));
+        let m = egraph.add(ENode::apply(OpKind::Mul, &[n, n]));
+        let root = egraph.add(ENode::apply(OpKind::Add, &[m, s]));
+        egraph.rebuild();
+        let costs = CostModel::latency_prior();
+        let mut dp = Dp::new(&costs, LatticeShape::POINT, Insertion, Prices::default());
+        shared_dag_dp_pass(Frozen::new(&egraph, root).problem(), &mut dp, usize::MAX)
+            .outcome
+            .expect("unbounded");
+        let priced = dp.into_recorder().0;
+
+        let row = |c: EClassId| {
+            let mut rows = priced.iter().filter(|&&(class, ..)| class == c);
+            let row = rows.next().expect("every class has a candidate");
+            assert!(rows.next().is_none(), "each class here has one candidate");
+            *row
+        };
+        let (cost, own) = (|c| row(c).1, |c| row(c).2);
+        assert_eq!(cost(x), own(x));
+        assert_eq!(cost(s), own(s) + own(x));
+        assert_eq!(cost(q), own(q) + own(s) + own(x));
+        assert_eq!(cost(n), own(n) + own(q) + own(s) + own(x));
+        assert_eq!(cost(m), own(m) + own(n) + own(q) + own(s) + own(x));
+        assert_eq!(
+            cost(root),
+            own(root) + own(m) + own(n) + own(q) + own(s) + own(x)
+        );
+    }
+
+    /// A one-child chain whose terms overflow ends at `usize::MAX`, as the
+    /// walk's saturating sum does, and not at a wrapped total.
+    #[test]
+    fn a_one_child_chain_saturates() {
+        struct Prohibitive;
+        impl CostFunction for Prohibitive {
+            fn node_cost(&self, _: &ENode, _: Option<OpKind>) -> usize {
+                usize::MAX / 2
+            }
+        }
+
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let s = egraph.add(ENode::apply(OpKind::Sin, &[x]));
+        let q = egraph.add(ENode::apply(OpKind::Sqrt, &[s]));
+        let root = egraph.add(ENode::apply(OpKind::Neg, &[q]));
+        egraph.rebuild();
+        let dp = shared_dag_dp_pass(
+            Frozen::new(&egraph, root).problem(),
+            &mut Dp::production(&Prohibitive, LatticeShape::POINT),
+            usize::MAX,
+        )
+        .outcome
+        .expect("unbounded");
+        assert_eq!(dp.root_cost, usize::MAX);
     }
 
     /// Over [`SHARED_DAG_PASS_BYTE_BUDGET`] the pass returns no map and the
