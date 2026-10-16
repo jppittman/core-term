@@ -20,10 +20,10 @@
 //! merged or a node added afterwards leaves it describing something else.
 //! [`Frozen`] is the one place the two are paired, so a [`Problem`] (what
 //! extraction takes) cannot name a graph and a problem that were not read
-//! from one another: the pair owns the e-graph it read, or borrows it for as
-//! long as the problem lives, and no code holds a way to change it.
+//! from one another: the pair owns the frozen graph it read, or borrows one
+//! for as long as the problem lives, and a frozen graph has no way to change it.
 
-use super::graph::EGraph;
+use super::graph::FrozenGraph;
 use super::node::EClassId;
 use super::provenance::ENodeId;
 use alloc::vec::Vec;
@@ -164,7 +164,7 @@ impl AndOrGraph {
     /// A bare graph carries no proof of which e-graph it was read from; what
     /// extraction takes is a [`Problem`], which only [`Frozen`] makes.
     #[must_use]
-    pub(crate) fn of(egraph: &EGraph, root: EClassId) -> Self {
+    pub(crate) fn of(egraph: &FrozenGraph, root: EClassId) -> Self {
         let root = egraph.find(root);
         let classes = reach_in_post_order(egraph, root);
         assert_eq!(
@@ -364,19 +364,20 @@ impl AndOrGraph {
     }
 }
 
-/// An e-graph and the [`AndOrGraph`] read from it, held together.
+/// A frozen e-graph and the [`AndOrGraph`] read from it, held together.
 ///
-/// `G` is the e-graph itself or a handle to one (`&EGraph`, `Arc<EGraph>`),
-/// and nothing here lends out a way to change it, so the graph stays the one
-/// the problem was read from for as long as this value lives. A borrowed
-/// graph cannot be merged into while its problem is alive; an owned one is
-/// not reachable for a merge at all.
+/// `G` is the graph itself or a borrow of one (`FrozenGraph`, `&FrozenGraph`).
+/// A [`FrozenGraph`] has no method that changes it, so the graph stays the one
+/// the problem was read from for as long as this value lives: an owned one,
+/// which is what the runtime tier's cache keeps, cannot be added to at all, and
+/// a borrowed one comes from an `EGraph` that cannot be merged into while the
+/// borrow lives.
 pub(crate) struct Frozen<G> {
     egraph: G,
     graph: AndOrGraph,
 }
 
-impl<G: Borrow<EGraph>> Frozen<G> {
+impl<G: Borrow<FrozenGraph>> Frozen<G> {
     /// Read the problem `egraph` poses for extraction from `root`.
     pub(crate) fn new(egraph: G, root: EClassId) -> Self {
         let graph = AndOrGraph::of(egraph.borrow(), root);
@@ -392,17 +393,17 @@ impl<G: Borrow<EGraph>> Frozen<G> {
     }
 }
 
-/// An extraction problem and the e-graph it is about: what every pass takes
-/// where it would take an `&EGraph` and an `&AndOrGraph`, which nothing
+/// An extraction problem and the frozen graph it is about: what every pass takes
+/// where it would take a `&FrozenGraph` and an `&AndOrGraph`, which nothing
 /// would have tied together. Only [`Frozen`] makes one.
 #[derive(Clone, Copy)]
 pub(crate) struct Problem<'a> {
-    egraph: &'a EGraph,
+    egraph: &'a FrozenGraph,
     graph: &'a AndOrGraph,
 }
 
 impl<'a> Problem<'a> {
-    pub(crate) fn egraph(self) -> &'a EGraph {
+    pub(crate) fn egraph(self) -> &'a FrozenGraph {
         self.egraph
     }
 
@@ -447,7 +448,7 @@ impl LiveIndex {
 /// cycle (commutativity alone closes them on a saturated graph) and is
 /// skipped, which is why a class can appear before a descendant that reaches
 /// it back.
-fn reach_in_post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
+fn reach_in_post_order(egraph: &FrozenGraph, root: EClassId) -> Vec<EClassId> {
     let num_classes = egraph.num_classes();
     let mut order: Vec<EClassId> = Vec::new();
     let mut done = alloc::vec![false; num_classes];

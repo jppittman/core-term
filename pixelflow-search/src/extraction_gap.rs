@@ -168,7 +168,8 @@ struct Instance {
 impl Instance {
     fn build(egraph: &EGraph, root: EClassId, model: &CostModel) -> Self {
         let n = egraph.num_classes();
-        let graph = AndOrGraph::of(egraph, root);
+        let frozen = egraph.as_frozen();
+        let graph = AndOrGraph::of(frozen, root);
         let root = graph.root();
         let mut reachable: Vec<EClassId> = graph.classes().to_vec();
         reachable.sort_unstable();
@@ -181,7 +182,7 @@ impl Instance {
         let mut folds = vec![false; graph.slot_count()];
         for live in graph.lives() {
             for at in graph.candidates(live) {
-                let node = egraph.node(graph.node_id(at));
+                let node = frozen.node(graph.node_id(at));
                 own[graph.slot(at)] = model.node_cost_of(node);
                 folds[graph.slot(at)] = matches!(node, ENode::Reduce { .. });
             }

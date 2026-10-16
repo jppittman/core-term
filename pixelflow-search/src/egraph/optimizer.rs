@@ -53,7 +53,9 @@ use super::cost::CostModel;
 use super::extract::{
     ChoiceCost, ExtractionReport, IncrementalExtractor, Pricing, Reranker, Selection,
 };
-use super::graph::{ApplicationMask, EGraph, Limits, Saturation, SaturationStats, SaturationStop};
+use super::graph::{
+    ApplicationMask, EGraph, FrozenGraph, Limits, Saturation, SaturationStats, SaturationStop,
+};
 use super::guided::GuidedEpisode;
 use super::node::EClassId;
 #[cfg(feature = "provenance-journal")]
@@ -300,6 +302,16 @@ impl Optimized {
     /// no longer holds the nodes it chose.
     #[must_use]
     pub fn to_arena(&self, egraph: &EGraph, root: EClassId) -> (ExprArena, ExprId) {
+        self.to_arena_over(egraph.as_frozen(), root)
+    }
+
+    /// [`Self::to_arena`] over a frozen graph: the runtime tier's cache, which
+    /// holds a [`FrozenGraph`] and no `EGraph`.
+    pub(crate) fn to_arena_over(
+        &self,
+        egraph: &FrozenGraph,
+        root: EClassId,
+    ) -> (ExprArena, ExprId) {
         assert_eq!(
             egraph.find(root),
             self.selection.root(),
@@ -743,19 +755,23 @@ impl Optimizer {
         // so none is built for it.
         match self.rerank.as_ref() {
             Some(reranker) => self.reranked(reranker.as_ref(), egraph, root, stats),
-            None => self.extract_over(Frozen::new(egraph, root).problem(), stats),
+            None => self.extract_over(Frozen::new(egraph.as_frozen(), root).problem(), stats),
         }
     }
 
     /// [`Self::extract`] over an extraction problem already read from its
-    /// e-graph: a cache that holds one saturated graph for many shapes holds
-    /// the problem beside it ([`Frozen`]), so each shape adds its weights and
-    /// its settlement and nothing else.
+    /// graph, for an optimizer with no reranker: a cache that holds one
+    /// saturated graph for many shapes holds the problem beside it
+    /// ([`Frozen`]), so each shape adds its weights and its settlement and
+    /// nothing else.
     #[must_use]
     pub(crate) fn extract_over(&self, problem: Problem<'_>, stats: OptimizerStats) -> Optimized {
-        if let Some(reranker) = self.rerank.as_ref() {
-            return self.reranked(reranker.as_ref(), problem.egraph(), problem.root(), stats);
-        }
+        assert!(
+            self.rerank.is_none(),
+            "Optimizer::extract_over: a reranker scores an `Extraction`, which lends an `&EGraph`, and a \
+             frozen graph is not one; rerank through `Optimizer::extract`. The runtime tier's optimizer \
+             sets no reranker (`runtime_optimizer`)."
+        );
         // Both the cost and the term are those of the settlement — the DP's
         // table is priced after settlement rather than read off the DP
         // (#1111) — and the term is well-founded by construction (settled in
@@ -792,14 +808,14 @@ impl Optimizer {
             IncrementalExtractor::new(reranker, RERANK_TOP_K).extract_choices_only(egraph, root);
         let selection = extraction.to_selection();
         let cost = selection.price(
-            egraph,
+            egraph.as_frozen(),
             &Pricing {
                 costs: &self.cost,
                 shape: self.shape,
             },
         );
         Optimized {
-            choices: selection.to_map(egraph),
+            choices: selection.to_map(egraph.as_frozen()),
             selection,
             cost,
             extraction: ExtractionReport::external(),

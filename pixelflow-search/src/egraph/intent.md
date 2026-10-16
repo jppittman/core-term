@@ -55,8 +55,8 @@ under a cost. `Optimizer::run` is its one entry; the five laws of §8 are its co
   (kernels-evaluate-kernels, 2026-10-15). `mod.rs` lists an `extraction` module that does not exist and
   says `all_rules` has 42 rules; `rule_order.rs` asserts 62.
 - The store is an arena (CL 3b), extraction names the node it picks by id (CL 3c), and membership is a list
-  through the arena (CL 4); what is left of the plan is CL 7, freezing drops the memo, worklist, `queued`,
-  `last_changed` and the kind index. Choice maps and `node_for_tag`'s `(class, tag)` pairs still carry
+  through the arena (CL 4), and freezing (CL 7) drops the memo, worklist, `queued`, `last_changed` and the
+  kind index: the shape cache holds a `FrozenGraph`, which has no `add`. Choice maps and `node_for_tag`'s `(class, tag)` pairs still carry
   positions and a redundant class (plan §8, JP's decisions), and a class's count or `k`th member is a walk
   (`nodes(c).count()`, `.nth(k)`), used by the reranker, research bins and assertions, never by a sweep.
 

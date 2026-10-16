@@ -191,10 +191,12 @@ pub fn trace<C: CostFunction>(
     shape: LatticeShape,
 ) -> StageTrace {
     let n = egraph.num_classes();
-    let frozen = Frozen::new(egraph, root);
+    let frozen = Frozen::new(egraph.as_frozen(), root);
 
     let pass_trace = |outcome: DpOutcome, table: CandidateTable| PassTrace {
-        cost: outcome.selection.price(egraph, &Pricing { costs, shape }),
+        cost: outcome
+            .selection
+            .price(egraph.as_frozen(), &Pricing { costs, shape }),
         choices: outcome.choices,
         table,
     };
@@ -269,17 +271,21 @@ fn run_arms<C: CostFunction, T: TieBreak + Copy>(
     shape: LatticeShape,
     ties: T,
 ) -> (Vec<Option<usize>>, ChoiceCost) {
-    let frozen = Frozen::new(egraph, root);
+    let frozen = Frozen::new(egraph.as_frozen(), root);
     let mut dp = Dp::new(costs, shape, ties, ());
     let tree = tree_dp_pass(frozen.problem(), &mut dp);
-    let tree_cost = tree.selection.price(egraph, &Pricing { costs, shape });
+    let tree_cost = tree
+        .selection
+        .price(egraph.as_frozen(), &Pricing { costs, shape });
 
     let mut dp = Dp::new(costs, shape, ties, ());
     let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
     let Some(shared) = pass.outcome else {
         return (tree.choices, tree_cost);
     };
-    let shared_cost = shared.selection.price(egraph, &Pricing { costs, shape });
+    let shared_cost = shared
+        .selection
+        .price(egraph.as_frozen(), &Pricing { costs, shape });
     if shared_cost.dag < tree_cost.dag {
         return (shared.choices, shared_cost);
     }
@@ -526,8 +532,8 @@ pub fn cost_if_well_founded<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> Option<ChoiceCost> {
-    let term = Selection::of_map(egraph, root, choices).ok()?;
-    Some(term.price(egraph, &Pricing { costs, shape }))
+    let term = Selection::of_map(egraph.as_frozen(), root, choices).ok()?;
+    Some(term.price(egraph.as_frozen(), &Pricing { costs, shape }))
 }
 
 /// The classes `choices` reaches from `root`, children before parents.
@@ -559,11 +565,11 @@ pub fn arena_of(
     root: EClassId,
     choices: &[Option<usize>],
 ) -> (pixelflow_ir::arena::ExprArena, pixelflow_ir::arena::ExprId) {
-    well_founded_term(egraph, root, choices).to_arena(egraph)
+    well_founded_term(egraph, root, choices).to_arena(egraph.as_frozen())
 }
 
 fn well_founded_term(egraph: &EGraph, root: EClassId, choices: &[Option<usize>]) -> Selection {
-    Selection::of_map(egraph, root, choices).unwrap_or_else(|refused| {
+    Selection::of_map(egraph.as_frozen(), root, choices).unwrap_or_else(|refused| {
         panic!(
             "witness: the choice map is not well-founded from root {}: {refused}",
             root.0

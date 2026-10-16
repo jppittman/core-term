@@ -58,7 +58,7 @@
 
 use pixelflow_ir::OpKind;
 
-use super::graph::EGraph;
+use super::graph::{EGraph, FrozenGraph};
 use super::node::{EClassId, ENode};
 use super::rules::RuleId;
 
@@ -122,7 +122,7 @@ impl ClassContentKey {
     /// the application it is about to skip — it must be THE key that
     /// application matched, read at that instant, not a caller's second
     /// computation against a different graph state.
-    pub(crate) fn of(egraph: &EGraph, canonical: EClassId) -> Self {
+    pub(crate) fn of(egraph: &FrozenGraph, canonical: EClassId) -> Self {
         let mut nodes: Vec<ENode> = egraph
             .nodes(canonical)
             .map(|&node| egraph.canonical_node(node))
@@ -212,7 +212,7 @@ impl CandidateFeatures {
     #[must_use]
     pub fn observe(egraph: &EGraph, firing: &Firing) -> Self {
         let canonical = egraph.find(firing.match_root);
-        let content = ClassContentKey::of(egraph, canonical);
+        let content = ClassContentKey::of(egraph.as_frozen(), canonical);
         let neighborhood_ops = neighborhood_ops(egraph, canonical);
         let key = CandidateKey {
             rule: firing.rule,
@@ -289,8 +289,8 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
-        let a = ClassContentKey::of(&eg, eg.find(sum));
-        let b = ClassContentKey::of(&eg, eg.find(sum));
+        let a = ClassContentKey::of(eg.as_frozen(), eg.find(sum));
+        let b = ClassContentKey::of(eg.as_frozen(), eg.find(sum));
         assert_eq!(
             a, b,
             "recomputing the key against an unchanged class must be stable"
@@ -310,14 +310,14 @@ mod tests {
         let with_y = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let with_z = eg.add(ENode::apply(OpKind::Add, &[x, z]));
         assert_ne!(
-            ClassContentKey::of(&eg, eg.find(with_y)),
-            ClassContentKey::of(&eg, eg.find(with_z)),
+            ClassContentKey::of(eg.as_frozen(), eg.find(with_y)),
+            ClassContentKey::of(eg.as_frozen(), eg.find(with_z)),
             "different operands are different content"
         );
         eg.union(y, z);
         assert_eq!(
-            ClassContentKey::of(&eg, eg.find(with_y)),
-            ClassContentKey::of(&eg, eg.find(with_z)),
+            ClassContentKey::of(eg.as_frozen(), eg.find(with_y)),
+            ClassContentKey::of(eg.as_frozen(), eg.find(with_z)),
         );
     }
 
@@ -327,7 +327,7 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
-        let before = ClassContentKey::of(&eg, eg.find(sum));
+        let before = ClassContentKey::of(eg.as_frozen(), eg.find(sum));
 
         let target = eg
             .find_rewrite_matches()
@@ -336,7 +336,7 @@ mod tests {
             .expect("commutative should match x + y");
         assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.tag));
 
-        let after = ClassContentKey::of(&eg, eg.find(sum));
+        let after = ClassContentKey::of(eg.as_frozen(), eg.find(sum));
         assert_ne!(
             before, after,
             "adding a node to the class must change its content key"

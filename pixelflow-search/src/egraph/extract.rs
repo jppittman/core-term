@@ -6,7 +6,7 @@
 
 use super::and_or::{Candidate, Child, Frozen, Live, LiveTable, Problem};
 use super::cost::CostFunction;
-use super::graph::EGraph;
+use super::graph::{EGraph, FrozenGraph};
 use super::node::{EClassId, ENode};
 use super::provenance::ENodeId;
 use alloc::collections::BinaryHeap;
@@ -99,7 +99,7 @@ impl<'g> Extraction<'g> {
     /// what was picked.
     #[must_use]
     pub fn chosen_variance(&self) -> [f32; crate::nnue::factored::SCALAR_FEATURE_COUNT] {
-        let (arena, _root) = self.to_selection().to_arena(self.egraph);
+        let (arena, _root) = self.to_selection().to_arena(self.egraph.as_frozen());
         crate::nnue::factored::variance_histogram(&arena)
     }
 
@@ -111,12 +111,14 @@ impl<'g> Extraction<'g> {
     /// reaching the panic is a bug in the constructor or the swap that made
     /// it, not a recoverable outcome.
     pub(crate) fn to_selection(&self) -> Selection {
-        Selection::of_map(self.egraph, self.root, &self.choices).unwrap_or_else(|refused| {
-            panic!(
-                "Extraction::to_selection: the map is not well-founded from root {}: {refused}",
-                self.root.0
-            )
-        })
+        Selection::of_map(self.egraph.as_frozen(), self.root, &self.choices).unwrap_or_else(
+            |refused| {
+                panic!(
+                    "Extraction::to_selection: the map is not well-founded from root {}: {refused}",
+                    self.root.0
+                )
+            },
+        )
     }
 
     /// Attempt to build a candidate extraction that swaps `class`'s choice
@@ -349,7 +351,9 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
 
     /// Materialise `extraction` and hand it to `self.reranker`.
     fn score(&self, extraction: &Extraction<'_>) -> f64 {
-        let (arena, _root) = extraction.to_selection().to_arena(extraction.egraph());
+        let (arena, _root) = extraction
+            .to_selection()
+            .to_arena(extraction.egraph().as_frozen());
         self.reranker.score(extraction, &arena)
     }
 
@@ -802,7 +806,7 @@ impl Selection {
     /// Entries for classes the root does not reach through the chosen nodes
     /// are ignored, so a backfilled or stale map is as good as an exact one.
     pub(crate) fn of_map(
-        egraph: &EGraph,
+        egraph: &FrozenGraph,
         root: EClassId,
         choices: &[Option<usize>],
     ) -> Result<Self, Refused> {
@@ -873,7 +877,7 @@ impl Selection {
     /// and its id finds to the pick's class, which is still canonical. Ids are
     /// per graph and every graph mints from 0, so another graph can pass that
     /// check; the arity check is a second, independent tell.
-    fn node<'g>(&self, egraph: &'g EGraph, position: usize) -> &'g ENode {
+    fn node<'g>(&self, egraph: &'g FrozenGraph, position: usize) -> &'g ENode {
         let Pick {
             class, node: tag, ..
         } = self.picks[position];
@@ -910,7 +914,7 @@ impl Selection {
     /// position in its class's members, `Some` for the classes it reaches.
     /// Walks each pick's class to find the position, for the callers that keep
     /// positions (the reranker's `Optimized::choices`).
-    pub(crate) fn to_map(&self, egraph: &EGraph) -> Vec<Option<usize>> {
+    pub(crate) fn to_map(&self, egraph: &FrozenGraph) -> Vec<Option<usize>> {
         let mut map = alloc::vec![None; egraph.num_classes()];
         for (class, node) in self.picks() {
             let idx = egraph
@@ -927,7 +931,7 @@ impl Selection {
     /// One node per class, in pick order, so a class reached twice is one
     /// `ExprId` used twice. A shift is written the way the arena spells it,
     /// its count as a `Const` second operand emitted just before it.
-    pub(crate) fn to_arena(&self, egraph: &EGraph) -> (ExprArena, ExprId) {
+    pub(crate) fn to_arena(&self, egraph: &FrozenGraph) -> (ExprArena, ExprId) {
         let mut arena = ExprArena::with_capacity(self.len());
         let mut ids: Vec<ExprId> = Vec::with_capacity(self.len());
         let mut operand_ids: Vec<ExprId> = Vec::new();
@@ -985,7 +989,7 @@ impl Selection {
     /// cost of the arena [`Self::to_arena`] builds from the same term.
     pub(crate) fn price<C: CostFunction>(
         &self,
-        egraph: &EGraph,
+        egraph: &FrozenGraph,
         pricing: &Pricing<'_, C>,
     ) -> ChoiceCost {
         let Pricing { costs, shape } = *pricing;
@@ -1234,7 +1238,7 @@ impl ExtractedDAG {
     /// Materialise the term as an arena, in `egraph`, the graph it was
     /// extracted from.
     pub(crate) fn to_arena(&self, egraph: &EGraph) -> (ExprArena, ExprId) {
-        self.selection.to_arena(egraph)
+        self.selection.to_arena(egraph.as_frozen())
     }
 
     /// The two reported costs as the pair they are.
@@ -1258,7 +1262,7 @@ impl ExtractedDAG {
 /// varying — the conservative direction, since it can only make a form look
 /// more expensive, never less.
 fn node_variance(
-    egraph: &EGraph,
+    egraph: &FrozenGraph,
     node: &ENode,
     best_var: &[Variance],
     canonical: EClassId,
@@ -1381,7 +1385,7 @@ pub fn extract_dag_scoped<C: CostFunction>(
     shape: LatticeShape,
 ) -> ExtractedDAG {
     extract_dag_over(
-        Frozen::new(egraph, root).problem(),
+        Frozen::new(egraph.as_frozen(), root).problem(),
         &Pricing { costs, shape },
     )
 }
@@ -1454,7 +1458,7 @@ pub(crate) struct Pricing<'a, C> {
 /// The class a term is extracted from, in the graph that holds it.
 #[derive(Clone, Copy)]
 pub(crate) struct Rooted<'a> {
-    pub(crate) egraph: &'a EGraph,
+    pub(crate) egraph: &'a FrozenGraph,
     pub(crate) root: EClassId,
 }
 
@@ -1494,9 +1498,12 @@ pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
-    let frozen = Frozen::new(egraph, root);
+    let frozen = Frozen::new(egraph.as_frozen(), root);
     let term = costed(
-        Rooted { egraph, root },
+        Rooted {
+            egraph: egraph.as_frozen(),
+            root,
+        },
         tree_dp_pass(frozen.problem(), &mut Dp::production(costs, shape)),
         CostScale::Tree,
         &Pricing { costs, shape },
@@ -1519,7 +1526,7 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
     shape: LatticeShape,
 ) -> ExtractedDAG {
     let pass = shared_dag_dp_pass(
-        Frozen::new(egraph, root).problem(),
+        Frozen::new(egraph.as_frozen(), root).problem(),
         &mut Dp::production(costs, shape),
         usize::MAX,
     );
@@ -1527,7 +1534,10 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
         .outcome
         .expect("an unbounded shared pass cannot run out of budget");
     let term = costed(
-        Rooted { egraph, root },
+        Rooted {
+            egraph: egraph.as_frozen(),
+            root,
+        },
         choices,
         CostScale::Dag,
         &Pricing { costs, shape },
@@ -1738,8 +1748,13 @@ impl<'a, C, T, R> Dp<'a, C, T, R> {
 pub(crate) trait TieBreak {
     /// At equal cost, does `challenger` displace the `incumbent` node index
     /// in `class`?
-    fn prefer(&self, egraph: &EGraph, class: EClassId, incumbent: usize, challenger: usize)
-    -> bool;
+    fn prefer(
+        &self,
+        egraph: &FrozenGraph,
+        class: EClassId,
+        incumbent: usize,
+        challenger: usize,
+    ) -> bool;
 }
 
 /// Production: never — the first admissible node stands, so the choice is
@@ -1749,7 +1764,7 @@ pub(crate) struct Insertion;
 
 impl TieBreak for Insertion {
     #[inline]
-    fn prefer(&self, _: &EGraph, _: EClassId, _: usize, _: usize) -> bool {
+    fn prefer(&self, _: &FrozenGraph, _: EClassId, _: usize, _: usize) -> bool {
         false
     }
 }
@@ -1775,7 +1790,7 @@ pub(crate) struct Canonical;
 impl TieBreak for Canonical {
     fn prefer(
         &self,
-        egraph: &EGraph,
+        egraph: &FrozenGraph,
         class: EClassId,
         incumbent: usize,
         challenger: usize,
@@ -2574,7 +2589,7 @@ mod tests {
         let costs = CostModel::latency_prior();
 
         let full = shared_dag_dp_pass(
-            Frozen::new(&egraph, root).problem(),
+            Frozen::new(egraph.as_frozen(), root).problem(),
             &mut Dp::production(&costs, LatticeShape::POINT),
             usize::MAX,
         );
@@ -2596,7 +2611,7 @@ mod tests {
 
         let budget = full.stats.reach_bytes / 2;
         let cut = shared_dag_dp_pass(
-            Frozen::new(&egraph, root).problem(),
+            Frozen::new(egraph.as_frozen(), root).problem(),
             &mut Dp::production(&costs, LatticeShape::POINT),
             budget,
         );
@@ -2704,7 +2719,7 @@ mod tests {
     ) -> DenseReference {
         const BITS: usize = usize::BITS as usize;
         let num_classes = egraph.num_classes();
-        let order = AndOrGraph::of(egraph, root).classes().to_vec();
+        let order = AndOrGraph::of(egraph.as_frozen(), root).classes().to_vec();
         let live = order.len();
         let words = live.div_ceil(BITS);
         let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
@@ -2725,7 +2740,7 @@ mod tests {
             let mut min_var = Variance::CONST;
             let mut min_own = 0usize;
             for (idx, node) in nodes.iter().enumerate() {
-                let node_var = node_variance(egraph, node, &best_var, canonical);
+                let node_var = node_variance(egraph.as_frozen(), node, &best_var, canonical);
                 let own = weighted_own(costs, node, shape.evals(node_var));
                 let this_node_cost = match node {
                     ENode::Var(_)
@@ -2870,7 +2885,7 @@ mod tests {
     /// class every one of whose candidates mentions itself or a class the
     /// single DFS post-order had not yet priced.
     fn sentinel_priced(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
-        let order = AndOrGraph::of(egraph, root).classes().to_vec();
+        let order = AndOrGraph::of(egraph.as_frozen(), root).classes().to_vec();
         let mut priced: Vec<bool> = alloc::vec![false; egraph.num_classes()];
         let mut sentinel = Vec::new();
         for &class in &order {
@@ -2914,7 +2929,8 @@ mod tests {
 
         let costs = CostModel::latency_prior();
         let mut dp = Dp::new(&costs, LatticeShape::POINT, Insertion, Prices::default());
-        let choices = tree_dp_pass(Frozen::new(&egraph, merged).problem(), &mut dp).choices;
+        let choices =
+            tree_dp_pass(Frozen::new(egraph.as_frozen(), merged).problem(), &mut dp).choices;
         let priced = dp.into_recorder().0;
 
         assert!(
@@ -2990,11 +3006,11 @@ mod tests {
         ] {
             let (egraph, root) = saturated_sdf_egraph(nodes);
             let tree = tree_dp_pass(
-                Frozen::new(&egraph, root).problem(),
+                Frozen::new(egraph.as_frozen(), root).problem(),
                 &mut Dp::production(&costs, shape),
             );
             let shared = shared_dag_dp_pass(
-                Frozen::new(&egraph, root).problem(),
+                Frozen::new(egraph.as_frozen(), root).problem(),
                 &mut Dp::production(&costs, shape),
                 usize::MAX,
             )
@@ -3003,7 +3019,7 @@ mod tests {
             for (arm, what) in [(tree, "tree arm"), (shared, "shared arm")] {
                 assert_every_pick_is_admitted(&egraph, &arm.choices, what);
                 assert_eq!(
-                    Selection::of_map(&egraph, root, &arm.choices),
+                    Selection::of_map(egraph.as_frozen(), root, &arm.choices),
                     Ok(arm.selection),
                     "{what}: the settled map names a different term than the settlement made"
                 );
@@ -3178,7 +3194,7 @@ mod tests {
             );
             let reference = dense_reference_pass(&egraph, root, &costs, shape);
             let pass = shared_dag_dp_pass(
-                Frozen::new(&egraph, root).problem(),
+                Frozen::new(egraph.as_frozen(), root).problem(),
                 &mut Dp::production(&costs, shape),
                 usize::MAX,
             );
@@ -3341,7 +3357,7 @@ mod tests {
         let reranker = TableReranker { costs: &costs };
         let extractor = IncrementalExtractor::new(&reranker, 8);
         let (search_cost, extraction) = extractor.extract_choices_only(&egraph, merged);
-        let (arena, root) = extraction.to_selection().to_arena(&egraph);
+        let (arena, root) = extraction.to_selection().to_arena(egraph.as_frozen());
 
         assert_eq!(
             search_cost, dag.total_cost as f64,
@@ -3371,7 +3387,7 @@ mod tests {
         let reranker = TableReranker { costs: &costs };
         let extractor = IncrementalExtractor::new(&reranker, 8);
         let (_cost, extraction) = extractor.extract_choices_only(&egraph, merged);
-        let (arena, root) = extraction.to_selection().to_arena(&egraph);
+        let (arena, root) = extraction.to_selection().to_arena(egraph.as_frozen());
         assert!(!arena.is_empty());
         assert!(root.0 < arena.len() as u32);
     }
@@ -3419,7 +3435,7 @@ mod tests {
     #[test]
     fn a_selection_is_refused_for_a_cyclic_choice_set() {
         let (egraph, merged, choices) = cyclic_choice_set();
-        let refused = Selection::of_map(&egraph, merged, &choices)
+        let refused = Selection::of_map(egraph.as_frozen(), merged, &choices)
             .expect_err("a cyclic choice set names no term");
         assert!(matches!(refused, Refused::Cyclic(_)), "{refused}");
     }
@@ -3442,13 +3458,13 @@ mod tests {
         let m = egraph.find(merged);
         choices[m.index()] = None;
         assert_eq!(
-            Selection::of_map(&egraph, merged, &choices),
+            Selection::of_map(egraph.as_frozen(), merged, &choices),
             Err(Refused::Missing(m))
         );
         let count = egraph.nodes(m).count();
         choices[m.index()] = Some(count);
         assert_eq!(
-            Selection::of_map(&egraph, merged, &choices),
+            Selection::of_map(egraph.as_frozen(), merged, &choices),
             Err(Refused::OutOfBounds {
                 class: m,
                 idx: count
@@ -3571,7 +3587,7 @@ mod tests {
         choices[egraph.find(x).index()] = Some(0);
 
         let extraction = Extraction::from_backfill(&egraph, product, choices);
-        let (term, term_root) = extraction.to_selection().to_arena(&egraph);
+        let (term, term_root) = extraction.to_selection().to_arena(egraph.as_frozen());
         let trace = EdgeTrace::from_arena_dag(&term, term_root);
 
         assert_eq!(trace.node_count(), 3, "3 unique nodes");
@@ -3638,7 +3654,7 @@ mod tests {
         let extraction = Extraction::from_backfill(&eg, eroot, choices);
 
         let from_arena = EdgeTrace::from_arena_dag(&arena, root);
-        let (term, term_root) = extraction.to_selection().to_arena(&eg);
+        let (term, term_root) = extraction.to_selection().to_arena(eg.as_frozen());
         let from_term = EdgeTrace::from_arena_dag(&term, term_root);
 
         assert_eq!(from_arena.node_count(), 11, "11 distinct nodes");
@@ -3668,7 +3684,7 @@ mod tests {
             shift_node,
             alloc::vec![None; shift_graph.num_classes()],
         );
-        let (term, term_root) = extraction.to_selection().to_arena(&shift_graph);
+        let (term, term_root) = extraction.to_selection().to_arena(shift_graph.as_frozen());
         assert_eq!(
             from_shifted,
             EdgeTrace::from_arena_dag(&term, term_root),
@@ -3756,7 +3772,7 @@ mod tests {
         choices[egraph.find(y).index()] = Some(0);
 
         let extraction = Extraction::from_backfill(&egraph, add, choices);
-        let (arena, root_id) = extraction.to_selection().to_arena(&egraph);
+        let (arena, root_id) = extraction.to_selection().to_arena(egraph.as_frozen());
 
         assert_eq!(arena.len(), 3, "X + Y should have exactly 3 arena nodes");
         // Root should be the last node (post-order: X, Y, Add)
@@ -3786,7 +3802,7 @@ mod tests {
         let root = eg.add(ENode::apply(OpKind::Add, &[shifted, product]));
 
         let extraction = Extraction::from_backfill(&eg, root, alloc::vec![None; eg.num_classes()]);
-        let (arena, arena_root) = extraction.to_selection().to_arena(&eg);
+        let (arena, arena_root) = extraction.to_selection().to_arena(eg.as_frozen());
 
         let mut expected = ExprArena::new();
         let ex = expected.push_var(0);
@@ -3829,7 +3845,7 @@ mod tests {
         let root = eg.add(ENode::apply(OpKind::Add, &[reduce, three]));
 
         let extraction = Extraction::from_backfill(&eg, root, alloc::vec![None; eg.num_classes()]);
-        let (arena, arena_root) = extraction.to_selection().to_arena(&eg);
+        let (arena, arena_root) = extraction.to_selection().to_arena(eg.as_frozen());
 
         let mut expected = ExprArena::new();
         let ex = expected.push_var(0);
@@ -3859,7 +3875,7 @@ mod tests {
         choices[egraph.find(x).index()] = Some(0);
 
         let extraction = Extraction::from_backfill(&egraph, mul, choices);
-        let (arena, root_id) = extraction.to_selection().to_arena(&egraph);
+        let (arena, root_id) = extraction.to_selection().to_arena(egraph.as_frozen());
 
         assert_eq!(
             arena.len(),
@@ -3886,7 +3902,7 @@ mod tests {
         choices[egraph.find(y).index()] = Some(0);
 
         let extraction = Extraction::from_backfill(&egraph, add, choices);
-        let (arena, root_id) = extraction.to_selection().to_arena(&egraph);
+        let (arena, root_id) = extraction.to_selection().to_arena(egraph.as_frozen());
         let dag = extract_dag(&egraph, add, &CostModel::default());
         let (extracted_arena, extracted_root) = dag.to_arena(&egraph);
         assert_eq!(arena.len(), extracted_arena.len());
@@ -4193,7 +4209,7 @@ mod tests {
         let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
         choices[merged.index()] = Some(neg_idx);
         assert_eq!(
-            Selection::of_map(&egraph, merged, &choices),
+            Selection::of_map(egraph.as_frozen(), merged, &choices),
             Err(Refused::Cyclic(merged))
         );
     }
@@ -4330,7 +4346,7 @@ mod tests {
         let costs = CostModel::latency_prior();
         let shape = LatticeShape::POINT;
         let dp = shared_dag_dp_pass(
-            Frozen::new(&egraph, root).problem(),
+            Frozen::new(egraph.as_frozen(), root).problem(),
             &mut Dp::production(&costs, shape),
             usize::MAX,
         )
@@ -4348,7 +4364,7 @@ mod tests {
         );
         // The tree objective is the same sum with `sin(X)` charged twice.
         let tree = tree_dp_pass(
-            Frozen::new(&egraph, root).problem(),
+            Frozen::new(egraph.as_frozen(), root).problem(),
             &mut Dp::production(&costs, shape),
         );
         assert_eq!(tree.root_cost, own(root) + 2 * (own(s) + own(x)));
@@ -4380,9 +4396,13 @@ mod tests {
         egraph.rebuild();
         let costs = CostModel::latency_prior();
         let mut dp = Dp::new(&costs, LatticeShape::POINT, Insertion, Prices::default());
-        shared_dag_dp_pass(Frozen::new(&egraph, root).problem(), &mut dp, usize::MAX)
-            .outcome
-            .expect("unbounded");
+        shared_dag_dp_pass(
+            Frozen::new(egraph.as_frozen(), root).problem(),
+            &mut dp,
+            usize::MAX,
+        )
+        .outcome
+        .expect("unbounded");
         let priced = dp.into_recorder().0;
 
         let row = |c: EClassId| {
@@ -4458,9 +4478,13 @@ mod tests {
 
         let costs = CostModel::latency_prior();
         let mut dp = Dp::new(&costs, LatticeShape::POINT, Insertion, Prices::default());
-        shared_dag_dp_pass(Frozen::new(&egraph, root).problem(), &mut dp, usize::MAX)
-            .outcome
-            .expect("unbounded");
+        shared_dag_dp_pass(
+            Frozen::new(egraph.as_frozen(), root).problem(),
+            &mut dp,
+            usize::MAX,
+        )
+        .outcome
+        .expect("unbounded");
         let priced = dp.into_recorder().0;
         let row = |c: EClassId| {
             let mut rows = priced.iter().filter(|&&(class, ..)| class == c);
@@ -4504,7 +4528,7 @@ mod tests {
 
         let saturated_root_cost = |egraph: &EGraph, root| {
             shared_dag_dp_pass(
-                Frozen::new(egraph, root).problem(),
+                Frozen::new(egraph.as_frozen(), root).problem(),
                 &mut Dp::production(&Prohibitive, LatticeShape::POINT),
                 usize::MAX,
             )
@@ -4541,14 +4565,14 @@ mod tests {
         let costs = CostModel::latency_prior();
         let shape = LatticeShape::POINT;
         let full = shared_dag_dp_pass(
-            Frozen::new(&egraph, root).problem(),
+            Frozen::new(egraph.as_frozen(), root).problem(),
             &mut Dp::production(&costs, shape),
             usize::MAX,
         );
         let budget = full.stats.reach_bytes / 2;
         assert!(
             shared_dag_dp_pass(
-                Frozen::new(&egraph, root).problem(),
+                Frozen::new(egraph.as_frozen(), root).problem(),
                 &mut Dp::production(&costs, shape),
                 budget
             )
@@ -4606,7 +4630,7 @@ mod tests {
         // DFS post-order settles before it.
         let mut settled = alloc::vec![false; egraph.num_classes()];
         let mut blind = 0usize;
-        for &class in AndOrGraph::of(&egraph, root).classes() {
+        for &class in AndOrGraph::of(egraph.as_frozen(), root).classes() {
             let has_form = egraph.nodes(class).any(|node| match node {
                 ENode::Op { children, .. } => {
                     children.iter().all(|&c| settled[egraph.find(c).index()])
@@ -4631,11 +4655,11 @@ mod tests {
                 dag.total_cost,
                 dag.dag_cost
             );
-            let term = Selection::of_map(&egraph, root, &dag.choices)
+            let term = Selection::of_map(egraph.as_frozen(), root, &dag.choices)
                 .expect("the settled map names the term");
             assert_eq!(
                 term.price(
-                    &egraph,
+                    egraph.as_frozen(),
                     &Pricing {
                         costs: &costs,
                         shape
