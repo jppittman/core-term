@@ -614,7 +614,7 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
             }
             Inst::MvnW { dst } => {
                 let dst = dst.number();
-                0x2A20_03E0 | rm(dst) | rd(dst)
+                MVN_W | rn(abi::XZR) | rm(dst) | rd(dst)
             }
             Inst::Zero { dst } => 0x4F00_0400 | rd(dst.number()),
             Inst::FmovImm { dst, imm8 } => {
@@ -643,8 +643,8 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
             }
             Inst::FcvtzsX { dst, src } => 0x9E38_0000 | rn(src.number()) | rd(dst.number()),
             Inst::FmovToGp { dst, src } => 0x1E26_0000 | rn(src.number()) | rd(dst.number()),
-            Inst::MovX { dst, src } => 0xAA00_03E0 | rm(src.number()) | rd(dst.number()),
-            Inst::MovInt { dst, src } => 0xAA00_03E0 | rm(src.number()) | rd(dst.number()),
+            Inst::MovX { dst, src } => mov_x(dst.number(), src.number()),
+            Inst::MovInt { dst, src } => mov_x(dst.number(), src.number()),
             Inst::AddImmHi { dst, src, imm } => {
                 0x9140_0000 | (imm.bits() << 10) | rn(src.number()) | rd(dst.number())
             }
@@ -713,7 +713,7 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
             }
             Inst::Ret { size } => {
                 step_sp(ADD_SP, frame_bytes(*size), put);
-                put(0xD65F_03C0);
+                put(RET | rn(abi::LR));
             }
             _ => put(self.encode()),
         }
@@ -750,9 +750,21 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
 /// `b`'s word with the displacement clear.
 const B_OPCODE: u32 = 0x1400_0000;
 /// `sub sp, sp, #bytes`'s word with the immediate clear.
-const SUB_SP: u32 = 0xD100_03FF;
+const SUB_SP: u32 = 0xD100_0000 | rn(abi::SP) | rd(abi::SP);
 /// `add sp, sp, #bytes`'s word with the immediate clear.
-const ADD_SP: u32 = 0x9100_03FF;
+const ADD_SP: u32 = 0x9100_0000 | rn(abi::SP) | rd(abi::SP);
+/// `ret`'s word with the register clear: it returns through the register in
+/// `Rn`, which the caller's link register is.
+const RET: u32 = 0xD65F_0000;
+/// `mov xd, xm`, which is `orr xd, xzr, xm`: the word with the registers clear.
+const ORR_X: u32 = 0xAA00_0000;
+/// `mvn wd, wm`, which is `orn wd, wzr, wm`: the word with the registers clear.
+const MVN_W: u32 = 0x2A20_0000;
+
+/// `mov dst, src` between 64-bit registers.
+const fn mov_x(dst: u8, src: u8) -> u32 {
+    ORR_X | rn(abi::XZR) | rm(src) | rd(dst)
+}
 
 /// The `sh` bit of `add`/`sub` (immediate): the immediate is shifted left 12.
 const SHIFT_12: u32 = 1 << 22;
@@ -1452,8 +1464,9 @@ mod tests {
 // The registers the ABI fixes
 // =============================================================================
 
-/// AAPCS64's argument registers and the stack pointer, by hardware number.
-/// Every other register is the allocator's choice.
+/// AAPCS64's argument registers, the stack pointer, the link register and the
+/// zero register, by hardware number. Every other register is the allocator's
+/// choice.
 mod abi {
     /// 1st argument: context pointer — array of buffer base pointers, then
     /// the uniform and origin blocks.
@@ -1462,8 +1475,14 @@ mod abi {
     pub(super) const X1: u8 = 1;
     /// 3rd argument: the pitch.
     pub(super) const X2: u8 = 2;
+    /// The link register: `ret` returns through it.
+    pub(super) const LR: u8 = 30;
     /// The stack pointer — spill slots are addressed from it.
     pub(super) const SP: u8 = 31;
+    /// The zero register, `xzr` (`wzr` at 32 bits): reads as zero, discards
+    /// writes. It shares number 31 with `sp`; which one a field means is the
+    /// instruction's.
+    pub(super) const XZR: u8 = 31;
 }
 
 // =============================================================================
@@ -1522,10 +1541,10 @@ impl DispField {
 
 /// `sub sp, sp, #1, lsl 12`: `SUB (immediate)` with `sh = 1` and `imm12 = 1`,
 /// 4096 bytes, `Rn = Rd = sp`.
-const SUB_SP_PAGE: u32 = 0xD140_07FF;
+const SUB_SP_PAGE: u32 = SUB_SP | SHIFT_12 | (1 << 10);
 
 /// `str xzr, [sp]`: `STR Xt, [Xn]` with `Rt = xzr` and `Rn = sp`.
-const STR_XZR_SP: u32 = 0xF900_03FF;
+const STR_XZR_SP: u32 = 0xF900_0000 | rn(abi::SP) | rd(abi::XZR);
 
 /// `CBZ Wt`'s opcode with the register and displacement fields clear:
 /// `sf = 0` (a W register) and `011010`, then `op` in bit 24.

@@ -309,16 +309,16 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
                 mem_operand_into(&mut inst, dst, base, src.disp);
             }
             Gp::SpillPtr { src, slot } => {
-                spill_into(&mut inst, src.number(), Imm32(slot_disp(slot)));
+                spill_into(&mut inst, src.number(), slot);
             }
             Gp::SpillInt { src, slot } => {
-                spill_into(&mut inst, src.number(), Imm32(slot_disp(slot)));
+                spill_into(&mut inst, src.number(), slot);
             }
             Gp::ReloadPtr { dst, slot } => {
-                reload_into(&mut inst, dst.number(), Imm32(slot_disp(slot)));
+                reload_into(&mut inst, dst.number(), slot);
             }
             Gp::ReloadInt { dst, slot } => {
-                reload_into(&mut inst, dst.number(), Imm32(slot_disp(slot)));
+                reload_into(&mut inst, dst.number(), slot);
             }
             Gp::Test { src, .. } => {
                 let src = src.number();
@@ -348,8 +348,7 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
             Gp::Fallthrough { .. } => {}
             Gp::Enter { size, .. } => inst = sub_rsp(frame_bytes(*size)),
             Gp::Ret { size, .. } => {
-                inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(0, gpr::RSP)]);
-                inst.extend(&frame_bytes(*size).to_le_bytes());
+                inst = add_rsp(frame_bytes(*size));
                 // `vzeroupper`: `VEX.128.0F.WIG 77`, zeroing bits 128 and up of
                 // vector registers 0–15, the sixteen a legacy-SSE instruction
                 // can name. VEX on every tier.
@@ -930,12 +929,22 @@ const fn rex_w(reg: u8, rm: u8) -> u8 {
     0x48 | (((reg >> 3) & 1) << 2) | ((rm >> 3) & 1)
 }
 
-/// `sub rsp, imm32`.
-fn sub_rsp(bytes: u32) -> EncodedInst {
+/// `rsp` moved by `bytes`: `81 /digit id`, whose `/digit` says add or sub.
+fn rsp_imm32(digit: u8, bytes: u32) -> EncodedInst {
     let mut inst = EncodedInst::new();
-    inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(5, gpr::RSP)]);
+    inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(digit, gpr::RSP)]);
     inst.extend(&bytes.to_le_bytes());
     inst
+}
+
+/// `add rsp, imm32`.
+fn add_rsp(bytes: u32) -> EncodedInst {
+    rsp_imm32(0, bytes)
+}
+
+/// `sub rsp, imm32`.
+fn sub_rsp(bytes: u32) -> EncodedInst {
+    rsp_imm32(5, bytes)
 }
 
 /// `mov dword [rsp], 0`: `C7 /0 id` at the SIB form `rsp` always takes.
@@ -970,18 +979,26 @@ const fn rr(opcode: u8, dst: u8, src: u8) -> [u8; 3] {
     [rex_w(src, dst), opcode, modrm_rr(src, dst)]
 }
 
+/// A frame slot as a memory operand: the base and displacement of `[rsp + slot]`.
+/// The one place the stack pointer addresses a slot.
+pub(super) fn frame(slot: &FrameSlot) -> (u8, Imm32) {
+    (gpr::RSP, Imm32(slot_disp(slot)))
+}
+
 /// `mov [rsp + slot], src`.
-fn spill_into(inst: &mut EncodedInst, src: u8, slot: Imm32) {
-    inst.push(rex_w(src, gpr::RSP));
+fn spill_into(inst: &mut EncodedInst, src: u8, slot: &FrameSlot) {
+    let (base, disp) = frame(slot);
+    inst.push(rex_w(src, base));
     inst.push(0x89);
-    mem_operand_into(inst, src, gpr::RSP, slot);
+    mem_operand_into(inst, src, base, disp);
 }
 
 /// `mov dst, [rsp + slot]`.
-fn reload_into(inst: &mut EncodedInst, dst: u8, slot: Imm32) {
-    inst.push(rex_w(dst, gpr::RSP));
+fn reload_into(inst: &mut EncodedInst, dst: u8, slot: &FrameSlot) {
+    let (base, disp) = frame(slot);
+    inst.push(rex_w(dst, base));
     inst.push(0x8B);
-    mem_operand_into(inst, dst, gpr::RSP, slot);
+    mem_operand_into(inst, dst, base, disp);
 }
 
 /// The 4-bit condition an x86 `jcc` tests: the conditions the emitter
@@ -1676,10 +1693,12 @@ impl<'m, T: X86> Inst<Bound<'m, T>, T> {
             Inst::Mov { dst, src } => Code::<T>::m0f(0x28).rr(dst.number(), src.number()),
             Inst::LoadConst { dst, .. } => Code::<T>::m0f38_66(0x18).rip(dst.number()),
             Inst::SpillVector { src, slot } => {
-                Code::<T>::m0f(0x11).rm(src.number(), gpr::RSP, Imm32(slot_disp(slot)))
+                let (base, disp) = frame(slot);
+                Code::<T>::m0f(0x11).rm(src.number(), base, disp)
             }
             Inst::ReloadVector { dst, slot } => {
-                Code::<T>::m0f(0x10).rm(dst.number(), gpr::RSP, Imm32(slot_disp(slot)))
+                let (base, disp) = frame(slot);
+                Code::<T>::m0f(0x10).rm(dst.number(), base, disp)
             }
             Inst::Cvtt { dst, src } => Code::<T>::m0f_f3(0x2C).w1().rr(dst.number(), src.number()),
             Inst::Movq { dst, src } => Code::<T>::m0f_66(0x6E)
@@ -1816,8 +1835,10 @@ impl Disp for Imm32 {
 
 /// An address spelled `[base + disp]`.
 ///
-/// The base being a `Pointer` is the point: `rsp` is a value here, so one
-/// encoder serves it and every other base.
+/// The base being a `Pointer` is the point: an address is a value, so one
+/// encoder serves every base. `rsp` is in no class (the frame's, see
+/// `regalloc::resource::Frame`), so a frame slot is not a `Mem`: it is
+/// [`frame`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Mem<S: Stage, D> {
     /// The register the displacement is measured from.

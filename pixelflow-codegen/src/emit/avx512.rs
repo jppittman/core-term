@@ -27,11 +27,11 @@ use super::build::{Builder, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::x86_64;
 use super::x86_64::{
-    Direction, Evex, EvexPrefix, Imm32, Lanewise, Mem, NoDisp, Pred, Sign, Vex, X86, emit,
+    Direction, Evex, EvexPrefix, Lanewise, Mem, NoDisp, Pred, Sign, Vex, X86, emit,
 };
 use super::{
     Bound, ClassId, Edges, EncodedInst, Flags, Integer, LaneOp, Opmask, Pointer, Rebind, Selected,
-    Stage, Store, Test, Value, ValueName, Vector, slot_disp,
+    Stage, Store, Test, Value, ValueName, Vector,
 };
 use crate::error::CompileError;
 use crate::program::BinaryOp;
@@ -398,14 +398,12 @@ impl X86 for Avx512 {
             Extra::KOnes { dst } => Vex::m0f(KXNOR).rrr(dst.number(), K0, K0),
             Extra::KMov { dst, src } => Vex::m0f(0x90).xmm().rr(dst.number(), src.number()),
             Extra::SpillMask { src, slot } => {
-                Vex::m0f(0x91)
-                    .xmm()
-                    .rm(src.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
+                let (base, disp) = x86_64::frame(slot);
+                Vex::m0f(0x91).xmm().rm(src.number(), base, disp)
             }
             Extra::ReloadMask { dst, slot } => {
-                Vex::m0f(0x90)
-                    .xmm()
-                    .rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
+                let (base, disp) = x86_64::frame(slot);
+                Vex::m0f(0x90).xmm().rm(dst.number(), base, disp)
             }
         }
     }
