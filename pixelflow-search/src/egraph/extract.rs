@@ -2145,6 +2145,8 @@ struct ReachSets {
     /// cleared, so a union costs its members and nothing else.
     stamp: LiveTable<usize>,
     epoch: usize,
+    /// The members `members_below` last collected, in the order they entered;
+    /// `settle` appends the class itself before storing the set.
     scratch: Vec<u32>,
     words: usize,
     bytes: usize,
@@ -2152,32 +2154,62 @@ struct ReachSets {
 }
 
 impl ReachSets {
-    /// Union the children's reach sets into `scratch`, returning what those
-    /// classes cost with each member paid once.
+    /// What the children's reach sets cost together, with each member paid
+    /// once: the union `SharedPricer::price` takes, of which nothing is kept.
     ///
     /// `children` is a candidate's row in the [`AndOrGraph`](super::and_or::AndOrGraph).
     /// A leaf's row is empty, so it reaches nothing without a case of its own.
-    fn union_below(&mut self, children: &[Child]) -> usize {
+    fn cost_below(&mut self, children: &[Child]) -> usize {
         self.epoch += 1;
-        self.scratch.clear();
+        let epoch = self.epoch;
+        // Disjoint fields: the sets are read while the stamps are written.
+        let Self {
+            reach, own, stamp, ..
+        } = self;
         let mut below = 0usize;
         for &Child { live: ci, .. } in children {
-            // Taken and put back: the closure below needs `self` mutably
-            // while the set is read, and a set is never its own member's.
-            let set = self.reach[ci]
-                .take()
-                .expect("a priced candidate's children are settled");
-            set.for_each(|member| {
-                let m = Live::from_index(member as usize);
-                if self.stamp[m] != self.epoch {
-                    self.stamp[m] = self.epoch;
-                    below = below.saturating_add(self.own[m]);
-                    self.scratch.push(member);
-                }
-            });
-            self.reach[ci] = Some(set);
+            reach[ci]
+                .as_ref()
+                .expect("a priced candidate's children are settled")
+                .for_each(|member| {
+                    let m = Live::from_index(member as usize);
+                    if stamp[m] != epoch {
+                        stamp[m] = epoch;
+                        below = below.saturating_add(own[m]);
+                    }
+                });
         }
         below
+    }
+
+    /// Replace `scratch` with the members of the children's reach sets, each
+    /// once, in the order they first enter the union: what
+    /// `SharedPricer::settle` stores for the winner. It pays for nothing, so
+    /// it reads no `own`.
+    ///
+    /// `children` is as for [`cost_below`](Self::cost_below).
+    fn members_below(&mut self, children: &[Child]) {
+        self.epoch += 1;
+        self.scratch.clear();
+        let epoch = self.epoch;
+        let Self {
+            reach,
+            stamp,
+            scratch,
+            ..
+        } = self;
+        for &Child { live: ci, .. } in children {
+            reach[ci]
+                .as_ref()
+                .expect("a settling candidate's children are settled")
+                .for_each(|member| {
+                    let m = Live::from_index(member as usize);
+                    if stamp[m] != epoch {
+                        stamp[m] = epoch;
+                        scratch.push(member);
+                    }
+                });
+        }
     }
 }
 
@@ -2195,7 +2227,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
         let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
         let below = self
             .sets
-            .union_below(self.problem.graph().children(candidate));
+            .cost_below(self.problem.graph().children(candidate));
         let cost = own.saturating_add(below);
         self.dp
             .rec
@@ -2216,9 +2248,8 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
         // flight: the driver prices candidates for many unsettled classes
         // before any of them settles, so a stored winner set would be a
         // second copy of the frontier's reach.
-        let _ = self
-            .sets
-            .union_below(self.problem.graph().children(candidate));
+        self.sets
+            .members_below(self.problem.graph().children(candidate));
         let me = candidate.live();
         self.sets.scratch.push(
             u32::try_from(me.index()).expect("a live index is below the e-graph's u32 class count"),
