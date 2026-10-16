@@ -25,6 +25,7 @@
 
 use super::graph::EGraph;
 use super::node::EClassId;
+use super::provenance::ENodeId;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::ops::{Index, IndexMut};
@@ -138,6 +139,11 @@ pub(crate) struct AndOrGraph {
     /// `children[first_child[k]..first_child[k + 1]]`.
     first_child: Vec<usize>,
     children: Vec<Child>,
+    /// The node of the candidate in slot `k`, by id: the `k`-th tag of the
+    /// member walk that numbered the slots. A candidate is a position (what a
+    /// choice map records) and an id (what a pick holds); this is the map from
+    /// one to the other.
+    node_of_slot: Vec<ENodeId>,
     /// Candidates that name live class `i` are
     /// `parents[first_parent[i]..first_parent[i + 1]]`.
     first_parent: Vec<usize>,
@@ -174,9 +180,12 @@ impl AndOrGraph {
         let mut children: Vec<Child> = Vec::new();
         let mut parent_count = alloc::vec![0usize; classes.len()];
         let mut row: Vec<Child> = Vec::new();
+        let mut node_of_slot: Vec<ENodeId> = Vec::new();
         for &class in &classes {
             first_candidate.push(first_child.len() - 1);
-            for node in egraph.nodes(class) {
+            for tag in egraph.tags(class) {
+                let node = egraph.node(tag);
+                node_of_slot.push(tag);
                 row.clear();
                 // `children_slice`, not an `Op`'s operands: a `Reduce`'s body
                 // is a child too. A row that skipped it once swallowed a
@@ -234,6 +243,7 @@ impl AndOrGraph {
         first_candidate.shrink_to_fit();
         first_child.shrink_to_fit();
         children.shrink_to_fit();
+        node_of_slot.shrink_to_fit();
 
         Self {
             root,
@@ -241,6 +251,7 @@ impl AndOrGraph {
             first_candidate,
             first_child,
             children,
+            node_of_slot,
             first_parent,
             parents,
         }
@@ -321,6 +332,11 @@ impl AndOrGraph {
     /// per-candidate state.
     pub(crate) fn slot(&self, candidate: Candidate) -> usize {
         self.first_candidate[candidate.live.0] + candidate.idx
+    }
+
+    /// The node `candidate` is, by id.
+    pub(crate) fn node_id(&self, candidate: Candidate) -> ENodeId {
+        self.node_of_slot[self.slot(candidate)]
     }
 
     /// The distinct classes `candidate` needs, in first-occurrence order.

@@ -53,10 +53,9 @@ under a cost. `Optimizer::run` is its one entry; the five laws of §8 are its co
 - `Vocabulary` still admits `Gather` and `ENode::Buffer`; the language has no bound buffers
   (kernels-evaluate-kernels, 2026-10-15). `mod.rs` lists an `extraction` module that does not exist and
   says `all_rules` has 42 rules; `rule_order.rs` asserts 62.
-- The store's nodes are an arena and node ids are the provenance tags (CL 3b); membership is still a
-  per-class `Vec<ENodeId>`, `nodes(c).nth(k)` is a walk (`node_at` is the O(1) positional read), and
-  extraction records positions, not node ids: CLs 3c, 4 and 7 (node ids in extraction, membership as a
-  list, freeze drops saturation state) are open.
+- The store's nodes are an arena and node ids are the provenance tags (CL 3b), and extraction names the
+  node it picks by id (CL 3c; choice maps still record positions). Membership is still a per-class
+  `Vec<ENodeId>`: CLs 4 and 7 (membership as a list, freeze drops saturation state) are open.
 
 ## Decided in
 `docs/DENOTATION.md` §3, §4, §8; `docs/archive/plans/2026-09-02-optimizer-api.md`, `2026-09-01-production-budget-determinism.md`,

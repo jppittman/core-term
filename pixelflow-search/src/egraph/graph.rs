@@ -519,7 +519,9 @@ impl EGraph {
     ///
     /// An iterator and nothing more: no length, no reverse, no slice, no
     /// index, so a caller depends on the order and not on how the members
-    /// are stored. A count is [`Self::member_count`].
+    /// are stored. A count is `nodes(id).count()` and a position
+    /// `nodes(id).nth(k)`; both walk the members. Extraction reads the node it
+    /// chose by id ([`Self::node`]), not by position.
     pub fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
         let class = self.columns.root(id);
         self.columns
@@ -550,24 +552,6 @@ impl EGraph {
             .members(class)
             .iter()
             .map(move |&tag| self.columns.node(tag))
-    }
-
-    /// How many nodes [`Self::nodes`] yields for `id`'s class, without
-    /// walking them.
-    pub(crate) fn member_count(&self, id: EClassId) -> usize {
-        self.columns.members(self.columns.root(id)).len()
-    }
-
-    /// The node at `position` in [`Self::nodes`]`(id)`'s order, or `None`
-    /// past its end, without walking to it. The read for a position an
-    /// extraction recorded and reads back once per candidate priced; a walk
-    /// that is not on that path takes it from `nodes(id).nth(position)`, which
-    /// reads `position + 1` members.
-    pub(crate) fn node_at(&self, id: EClassId, position: usize) -> Option<&ENode> {
-        self.columns
-            .members(self.columns.root(id))
-            .get(position)
-            .map(|&tag| self.columns.node(tag))
     }
 
     /// The mutation log (origins, application log, union journal), or `None`
@@ -604,6 +588,15 @@ impl EGraph {
     /// retired node (law 7) and for a tag past this graph's end.
     pub fn is_member(&self, tag: ENodeId) -> bool {
         self.columns.class_of(tag).is_some() && !self.columns.is_retired(tag)
+    }
+
+    /// The node `tag` names in this graph's arena, as stored. For a tag the
+    /// caller read from [`Self::tags`] or that an extraction recorded, so known
+    /// to be a member: this is not a membership test, and a retired node is
+    /// answered too. A tag of unknown standing asks [`Self::node_for_tag`].
+    /// Panics past the end. O(1).
+    pub(crate) fn node(&self, tag: ENodeId) -> &ENode {
+        self.columns.node(tag)
     }
 
     /// The operand classes node `tag` names as stored, or none for a node that
