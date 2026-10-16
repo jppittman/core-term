@@ -21,7 +21,8 @@ preserves a value from its definition to every read.
 - No register is named outside this directory. A requirement the ABI or an
   instruction fixes (`cl`, `rax`/`rdx`, the argument registers) is a
   constraint on a *value* that selection states; the choice of any other
-  register is the allocator's, with no exception.
+  register is the allocator's, with no exception (JP, 2026-10-16: "No to
+  register allocation out of the allocator. Ever.").
 - No prediction from an earlier phase: it is told nothing about temps,
   scratch counts or reserves. Everything an instruction needs is a value
   selection defined; a reload result is a value the input DAG did not
