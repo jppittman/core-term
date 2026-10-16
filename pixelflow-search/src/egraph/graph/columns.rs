@@ -22,8 +22,10 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ops::{Index, IndexMut};
 use pixelflow_ir::Variance;
+use pixelflow_ir::kind::{OpKind, OpSet};
 
 use super::EClass;
+use crate::egraph::live::ClassesByKind;
 use crate::egraph::node::EClassId;
 
 /// A class that was canonical when it was asked for: the answer of
@@ -137,6 +139,9 @@ pub(super) struct Birth {
     pub(super) class: EClass,
     pub(super) const_fact: Option<u32>,
     pub(super) variance: Variance,
+    /// The node's shape, as `RootShapes::shape_of` names it: the one kind the
+    /// new class starts with.
+    pub(super) shape: Option<OpKind>,
     /// The mutation counter's value as of this `add`.
     pub(super) stamp: u64,
 }
@@ -186,6 +191,17 @@ pub(crate) struct Columns {
     /// class `c`'s own node list gained content — set at creation in `add`
     /// and bumped in `union` when `c` survives as the merge's parent.
     pub(super) last_changed: Column<Root, u64>,
+    /// The kinds this class's members have had. Set in `add`, ORed in `union`
+    /// and never cleared, so **`kind_mask[C] ⊇ {shape(n) : n a member of C}`**:
+    /// a node that retires leaves its kind behind, and a rule's per-node
+    /// `admits` check, which stays, rejects what the stale bit let through.
+    /// Checked by `EGraph::kind_index_covers_members` once per full rebuild.
+    pub(super) kind_mask: Column<Root, OpSet>,
+    /// The transpose of `kind_mask`: per kind, the classes whose mask holds
+    /// it. Written wherever the mask is, so the two agree by construction;
+    /// this is the one a rule scan reads, to visit only classes that can
+    /// root it.
+    pub(super) by_kind: ClassesByKind,
     /// Whether the slot has an entry on the worklist awaiting
     /// `rebuild_budgeted`. Guards `union`'s push: several unions landing on
     /// the same parent in one round used to enqueue it once per union, and
@@ -210,6 +226,14 @@ impl Columns {
         self.const_fact.push(birth.const_fact);
         self.var_fact.push(birth.variance);
         self.last_changed.push(birth.stamp);
+        self.kind_mask.push(
+            birth
+                .shape
+                .map_or(OpSet::EMPTY, |kind| OpSet::EMPTY.with(kind)),
+        );
+        if let Some(kind) = birth.shape {
+            self.by_kind.insert(kind, id);
+        }
         self.queued.push(false);
         id
     }
@@ -240,6 +264,16 @@ impl Columns {
     /// The representative `slot`'s class has now.
     pub(super) fn root_of(&self, slot: Slot) -> Root {
         self.root(slot.0)
+    }
+
+    /// Fold `child`'s kinds into `parent`'s, for a `child` being merged into
+    /// `parent`: its members become `parent`'s.
+    pub(super) fn merge_kinds(&mut self, child: Root, parent: Root) {
+        let absorbed = self.kind_mask[child];
+        self.kind_mask[parent] = self.kind_mask[parent].union(absorbed);
+        for kind in absorbed.iter() {
+            self.by_kind.insert(kind, parent.0);
+        }
     }
 
     /// Make `child`'s block part of `parent`'s.

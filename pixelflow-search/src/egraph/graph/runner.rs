@@ -832,6 +832,23 @@ impl Saturation {
             .is_some_and(|cap| self.applications + queued as u64 >= cap)
     }
 
+    /// The stop a scan is already at before it visits a class: the id budget
+    /// or the application allowance spent, as the first class's checks would
+    /// have found. A graph with no live class has no first class, so it
+    /// completes.
+    fn scan_entry_stop(&self, ceilings: &Ceilings) -> ScanStop {
+        if self.graph.live.iter().next().is_none() {
+            return ScanStop::Completed;
+        }
+        if self.graph.num_classes() > ceilings.minted {
+            return ScanStop::MintedCap;
+        }
+        if self.allowance_spent(ceilings, 0) {
+            return ScanStop::ApplicationBudget;
+        }
+        ScanStop::Completed
+    }
+
     /// Scan every live class for one rule, then commit what it found.
     ///
     /// Stops if the id budget, the application allowance or the deadline is
@@ -843,7 +860,7 @@ impl Saturation {
         // cheapest rule's `apply` — so polling it once per node would be a
         // measurable tax on every scan. It is polled instead at the three
         // places that make the ceiling hard without that tax: once per
-        // e-class (a clock read is lost in a class's worth of rule
+        // visited e-class (a clock read is lost in a class's worth of rule
         // evaluations), every `DEADLINE_POLL_NODES` nodes
         // within a class (so one enormous e-class cannot run unbounded), and
         // once after the scan and its commit (so a deadline that elapsed
@@ -858,7 +875,7 @@ impl Saturation {
         let mut evals = 0usize;
         let mut updates: Vec<(EClassId, RewriteAction)> = Vec::new();
         let mut estimated_new_nodes: usize = 0;
-        let mut scan = ScanStop::Completed;
+        let mut scan = self.scan_entry_stop(ceilings);
 
         // Captured before the scan touches anything: `class_is_dirty` below
         // compares every candidate class against `swept` (this rule's OWN
@@ -894,20 +911,22 @@ impl Saturation {
             !self.graph.live_has_drifted(),
             "the live-class set has drifted from the graph's canonical classes"
         );
-        'scan: for canonical in self.graph.live.iter() {
-            // Budget check: current graph + pending creates must stay under limit
-            if self.graph.num_classes() + estimated_new_nodes > max_nodes {
-                scan = ScanStop::MintedCap;
-                break;
-            }
+
+        // Only a class that has held a node in the rule's root shapes is
+        // visited at all (`candidate_classes`), and the budget checks that
+        // used to open every iteration are the entry check above and the ones
+        // after each action below: their inputs change nowhere else. The
+        // deadline is the one that does not, so it stays per visited class.
+        let classes = match scan {
+            ScanStop::Completed => Some(self.graph.candidate_classes(roots)),
+            _ => None,
+        };
+        'scan: for canonical in classes.into_iter().flatten() {
             if ceilings.expired() {
                 scan = ScanStop::Deadline;
                 break;
             }
-            if self.allowance_spent(ceilings, updates.len()) {
-                scan = ScanStop::ApplicationBudget;
-                break;
-            }
+            // The kind index is a superset, and a stale bit costs only this.
             // Only a node in the rule's root shapes can produce an action, so
             // a class with none is skipped exactly as a clean class is.
             if !self.graph.columns.classes[canonical]

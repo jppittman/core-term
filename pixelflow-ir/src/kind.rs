@@ -1164,6 +1164,63 @@ impl<T> IndexMut<OpKind> for OpMap<T> {
     }
 }
 
+// ============================================================================
+// OpSet
+// ============================================================================
+
+// One bit per op in a `u64`. Like `OpCode`'s width, this is checked where it
+// would otherwise wrap silently: the 65th op fails the build, not a shift.
+const _: () = assert!(
+    OpKind::COUNT <= u64::BITS as usize,
+    "op set outgrew OpSet's width: widen its backing integer"
+);
+
+/// A set of [`OpKind`]s: [`OpMap<bool>`] in one word.
+///
+/// A set is a different object from a table of booleans, and a hot path asks
+/// different questions of it: "does any member of this class have one of
+/// these kinds" is an AND against a word, not a walk over a table. Like
+/// [`OpMap`], it is the only way the numbering is turned into a subscript —
+/// here, a bit position — so callers never see which bit an op is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct OpSet(u64);
+
+impl OpSet {
+    /// The set holding no op.
+    pub const EMPTY: Self = Self(0);
+
+    /// This set and `kind`.
+    #[must_use]
+    pub const fn with(self, kind: OpKind) -> Self {
+        Self(self.0 | 1 << kind.index())
+    }
+
+    /// Everything in this set or in `other`.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether `kind` is in the set.
+    #[must_use]
+    pub const fn contains(self, kind: OpKind) -> bool {
+        self.0 >> kind.index() & 1 == 1
+    }
+
+    /// The ops in the set, in [`OpMap::iter`] order.
+    pub fn iter(self) -> impl Iterator<Item = OpKind> {
+        let mut remaining = self.0;
+        core::iter::from_fn(move || {
+            if remaining == 0 {
+                return None;
+            }
+            let bit = remaining.trailing_zeros() as usize;
+            remaining &= remaining - 1;
+            Some(OpKind::ALL[bit])
+        })
+    }
+}
+
 /// Every op name the surface language accepts as a method — see
 /// [`OpKind::is_dsl_method`] for exactly which ops that is and why it is
 /// narrower than "not structural".
@@ -1194,7 +1251,7 @@ const METHOD_ALIASES: &[(&str, OpKind)] = &[("powf", OpKind::Pow)];
 
 #[cfg(test)]
 mod index_space {
-    use super::{OpCode, OpKind};
+    use super::{OpCode, OpKind, OpSet};
 
     /// Density, totality and round-tripping are proved at compile time by the
     /// `const` block above, so there is no runtime test for them here.
@@ -1230,6 +1287,30 @@ mod index_space {
                 "byte {b} decoded to {decoded:?}"
             );
         }
+    }
+
+    /// A set holds exactly the ops put in it, and iterates them back.
+    #[test]
+    fn an_op_set_holds_what_was_put_in_it() {
+        let evens: OpSet = OpKind::all()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .fold(OpSet::EMPTY, |set, (_, op)| set.with(op));
+        for (i, op) in OpKind::all().enumerate() {
+            assert_eq!(evens.contains(op), i % 2 == 0, "{op:?}");
+        }
+        let expected: alloc::vec::Vec<OpKind> = OpKind::all()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(evens.iter().collect::<alloc::vec::Vec<_>>(), expected);
+        assert_eq!(OpSet::EMPTY.iter().count(), 0);
+        let odds = OpKind::all()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 1)
+            .fold(OpSet::EMPTY, |set, (_, op)| set.with(op));
+        assert_eq!(evens.union(odds).iter().count(), OpKind::COUNT);
     }
 
     /// `from_name` matches on `&str` and can never be exhaustive, so nothing

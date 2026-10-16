@@ -2,11 +2,11 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
-use super::live::LiveClasses;
+use super::live::ClassSet;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::provenance::{ENodeId, Provenance};
-use super::rewrite::RewriteAction;
+use super::rewrite::{RewriteAction, RootShapes};
 use alloc::collections::BTreeMap;
 use columns::{Birth, Columns, Slot};
 use pixelflow_ir::kind::OpKind;
@@ -50,7 +50,7 @@ pub struct EGraph {
     /// ([`Self::add`], [`Self::union`], [`Self::rebuild_budgeted`]). Checked
     /// against `class_ids` whenever a rebuild finishes, so a site that forgets
     /// to call it fails loudly instead of dropping classes from every scan.
-    live: LiveClasses,
+    live: ClassSet,
     worklist: Vec<Slot>,
     /// Global monotonic counter minting `ENodeId`s in `add()`.
     next_enode_id: u64,
@@ -145,7 +145,7 @@ impl EGraph {
         Self {
             columns: Columns::default(),
             memo: HashMap::default(),
-            live: LiveClasses::default(),
+            live: ClassSet::default(),
             worklist: Vec::new(),
             next_enode_id: 0,
             units: BTreeMap::new(),
@@ -301,6 +301,7 @@ impl EGraph {
             },
             const_fact: node.as_f32().map(f32::to_bits),
             variance,
+            shape: RootShapes::shape_of(&node),
             stamp: self.mutation_counter,
         });
         self.track_liveness(id);
@@ -390,6 +391,7 @@ impl EGraph {
         }
         let (parent, child) = if a < b { (a, b) } else { (b, a) };
         self.columns.link(child, parent);
+        self.columns.merge_kinds(child, parent);
         let child_nodes = std::mem::take(&mut self.columns.classes[child].nodes);
         let child_tags = std::mem::take(&mut self.columns.classes[child].tags);
         self.columns.classes[parent].nodes.extend(child_nodes);
@@ -423,6 +425,10 @@ impl EGraph {
     /// Rebuild the e-graph completely. Processes the entire worklist.
     pub fn rebuild(&mut self) {
         self.rebuild_budgeted(usize::MAX);
+        debug_assert!(
+            self.kind_index_covers_members(),
+            "a live class holds a node whose kind its kind mask or the per-kind class set lacks"
+        );
     }
 
     /// Process up to `budget` worklist items. Each item canonicalizes one
@@ -711,7 +717,7 @@ impl EGraph {
         self.find(id) == id && !self.columns.classes[id].nodes.is_empty()
     }
 
-    /// Restate [`Self::is_live`] for `id` in the [`LiveClasses`] set. The one
+    /// Restate [`Self::is_live`] for `id` in the [`ClassSet`] `live`. The one
     /// writer of that set.
     fn track_liveness(&mut self, id: EClassId) {
         match self.is_live(id) {
@@ -720,7 +726,40 @@ impl EGraph {
         }
     }
 
-    /// Whether the [`LiveClasses`] set disagrees with [`Self::class_ids`].
+    /// The live classes a rule rooted in `roots` can match at, in ascending
+    /// id order: every live class that has held a node of one of its kinds.
+    ///
+    /// A superset of the classes holding such a node now (see
+    /// `Columns::kind_mask`), so a visited class is still checked node by
+    /// node. [`RootShapes::Any`] names no kind and visits every live class.
+    pub(super) fn candidate_classes(
+        &self,
+        roots: RootShapes,
+    ) -> impl Iterator<Item = EClassId> + '_ {
+        self.live.iter_within(move |word| match roots {
+            RootShapes::Any => u64::MAX,
+            RootShapes::Kinds(kinds) => self.columns.by_kind.word_of_any(kinds, word),
+        })
+    }
+
+    /// Whether every member of every live class has its kind in the class's
+    /// mask and the class in that kind's set: the superset law
+    /// `candidate_classes` is sound by.
+    fn kind_index_covers_members(&self) -> bool {
+        self.class_ids().all(|id| {
+            let root = self.columns.root(id);
+            self.columns.classes[root]
+                .nodes
+                .iter()
+                .filter_map(RootShapes::shape_of)
+                .all(|kind| {
+                    self.columns.kind_mask[root].contains(kind)
+                        && self.columns.by_kind.contains(kind, id)
+                })
+        })
+    }
+
+    /// Whether the `live` set disagrees with [`Self::class_ids`].
     fn live_has_drifted(&self) -> bool {
         !self.live.iter().eq(self.class_ids())
     }
@@ -2964,6 +3003,53 @@ mod tests {
             "no budget derived any probe equality — the monotonicity ladder \
              is vacuous and no longer tests L2"
         );
+    }
+
+    /// A rule's scan visits exactly the live classes that can root it, in
+    /// ascending order: a merge carries the absorbed class's kinds to the
+    /// survivor, and a stale bit may only add a class, never lose one.
+    #[test]
+    fn candidate_classes_are_the_live_classes_that_can_root_the_rule() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let product = eg.add(ENode::apply(OpKind::Mul, &[x, y]));
+        let neg = eg.add(ENode::apply(OpKind::Neg, &[sum]));
+        // `product` is merged into `sum`'s class (the smaller id survives),
+        // so the survivor now roots both `Add` and `Mul`.
+        let merged = eg.union(sum, product);
+        eg.rebuild();
+
+        let candidates = |roots: RootShapes| eg.candidate_classes(roots).collect::<Vec<_>>();
+        assert_eq!(candidates(RootShapes::kind(OpKind::Mul)), vec![merged]);
+        assert_eq!(candidates(RootShapes::kind(OpKind::Add)), vec![merged]);
+        assert_eq!(candidates(RootShapes::kind(OpKind::Neg)), vec![neg]);
+        assert_eq!(
+            candidates(RootShapes::kinds(&[OpKind::Neg, OpKind::Var])),
+            vec![x, y, neg]
+        );
+        assert_eq!(candidates(RootShapes::nothing()), Vec::<EClassId>::new());
+        assert_eq!(
+            candidates(RootShapes::Any),
+            eg.class_ids().collect::<Vec<_>>()
+        );
+    }
+
+    /// A class that merges away keeps its bits in the per-kind sets, but it is
+    /// not live, so a scan never visits it.
+    #[test]
+    fn a_merged_away_class_is_not_a_candidate() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let c = eg.add(ENode::Const(1.0f32.to_bits()));
+        let survivor = eg.union(x, c);
+        eg.rebuild();
+        assert_eq!(survivor, x);
+        let candidates = eg
+            .candidate_classes(RootShapes::kind(OpKind::Const))
+            .collect::<Vec<_>>();
+        assert_eq!(candidates, vec![x], "the survivor now holds the constant");
     }
 }
 
