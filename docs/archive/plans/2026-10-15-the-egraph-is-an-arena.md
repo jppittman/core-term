@@ -1,10 +1,10 @@
-> **Archived 2026-10-16 — status `Landed`.** The e-graph's store as an arena (node ids are tags, membership an intrusive list, per-id columns, a per-kind class index, a cache value with no `add`), byte-identical by gate: all 13 CLs landed in five PRs (#1416, #1418, #1420, #1422, #TBD-GROUP-E). §7 and `docs/research-problems/2026-10-15-the-egraph.md` hold what remains; §8's decisions are JP's. Kept for rationale; not authoritative about the tree.
+> **Archived 2026-10-16 — status `Landed`.** The e-graph's store as an arena (node ids are tags, membership an intrusive list, per-id columns, a per-kind class index, a cache value with no `add`), byte-identical by gate: all 13 CLs landed in five PRs (#1416, #1418, #1420, #1422, #1423). §7 and `docs/research-problems/2026-10-15-the-egraph.md` hold what remains; §8's decisions are JP's. Kept for rationale; not authoritative about the tree.
 
 # The e-graph is an arena
 
 **Status:** `Landed` (JP, 2026-10-15: "write the arena plan. Execute it."). All 13 CLs of §6 are in, as five PRs:
 group A (CLs 0, 3a, 2) #1416, group B (CLs 5a–d, 6) #1418, group C (CLs 1, 3b) #1420, group D (CLs 3c, 4) #1422, and
-group E (CL 7) #TBD-GROUP-E (PR to come: the orchestrator replaces this marker with the number). What is left is §7, which is research, and §8, which is JP's.
+group E (CL 7) #1423. What is left is §7, which is research, and §8, which is JP's.
 **Verified against:** `43f6923a` (CL 7 and its review fixes, the final source commit); written at `2a99d933`; CLs 0, 3a and 2 landed as `4af25113`; CLs 5a–d and 6 on `43019669`; CLs 1 and 3b on `98fb75a7`; CLs 3c and 4 on `4183ecf6`; CL 7 first on `ae195ab2`. Changes
 representation only: every CL below left `byte_probe` and the 29 font
 programs' extracted kernels byte-identical (§3.2, gates 1 and 1b) and was
@@ -483,7 +483,7 @@ gates 1, 1b, 2 and (from group B) 2x identical at every step:
 | B (#1418) | 5a–d, 6 | 6,096 M → 5,383 M (−11.7%) | 2,408 M → 2,261 M | 1,647 M → 1,074 M (−34.8%) | 4,646 M → 3,889 M | 137.7 → 137.6 MB |
 | C (#1420) | 1, 3b | 5,383 M → 5,210 M (−3.2%) | 2,261 M → 2,093 M | 1,074 M → 1,082 M | 3,903 M → 3,727 M (−4.5%, one host: see below) | 137.6 → 126.7 MB |
 | D (#1422) | 3c, 4 | 5,210 M → 5,103 M (−2.1%) | 2,093 M → 1,950 M | 1,082 M → 1,083 M | 3,727 M → 3,528 M (−5.4%) | 126.7 → 123.7 MB |
-| E (#TBD-GROUP-E) | 7 | 5,103 M → 5,097 M (−0.1%, zero) | 1,950 M → 1,952 M | 1,083 M → 1,082 M | 3,528 M → 3,512 M (−0.4%) | 123.7 → 89.7 MB (−27.5%) |
+| E (#1423) | 7 | 5,103 M → 5,097 M (−0.1%, zero) | 1,950 M → 1,952 M | 1,083 M → 1,082 M | 3,528 M → 3,512 M (−0.4%) | 123.7 → 89.7 MB (−27.5%) |
 | **plan total** | all 13 | 7,520 M → 5,097 M (−32.2%) | 3,817 M → 1,952 M (−48.9%) | 1,650 M → 1,082 M (−34.4%, not like-for-like: see below) | 6,361 M → 3,889 M on one geometry (−38.9%), 3,903 M → 3,512 M on the other (−10.0%) | 133.3 → 89.7 MB (−32.7%) |
 
 Against the estimates: 5a alone took −470 M of extraction, more than the
