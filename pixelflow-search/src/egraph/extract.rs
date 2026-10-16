@@ -2106,12 +2106,14 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
 /// emitted kernel does: the term materializes as one node per
 /// reachable class and codegen let-binds the shared ones.
 ///
-/// A union is taken by stamping: every member of every child's set is
-/// visited once, and a per-class epoch mark says whether it has been seen
-/// under this candidate, so the cost of a candidate is the size of its
-/// children's sets, not the size of the graph. Memory is the sum of the
-/// sets, each in the smaller of its two forms, and is held under `budget`:
-/// the first class whose set would carry the total past it ends the pass
+/// A union is taken from its largest child's set, which is already priced
+/// and already built: a candidate pays for the classes its other children
+/// add to that set, found by stamping — a per-class epoch mark says whether
+/// a class has been seen under this candidate — so the cost of a candidate
+/// is the size of its smaller children's sets, not the size of the graph.
+/// Memory is the sum of the sets, each in the smaller of its two forms, and
+/// is held under `budget`: the first class whose set would carry the total
+/// past it ends the pass
 /// with [`SharedPassOutcome::choices`] `None`, and the caller returns the
 /// tree term as [`ExtractionObjective::TreeOnly`]. The dense form bounds
 /// the worst case at `live² / 8` bytes (the 2026-09-08 memory profile's
@@ -2161,15 +2163,17 @@ struct ReachSets {
     own: LiveTable<usize>,
     /// The settled cost of each live class: its own weighted cost plus
     /// `own` summed over everything in its set, each member once. What a
-    /// candidate whose only child is this class pays below itself.
+    /// candidate whose largest child is this class pays below itself for
+    /// everything in that class's set.
     total: LiveTable<usize>,
     /// `stamp[i] == epoch` iff live class `i` has entered the union being
     /// taken for the current candidate. One epoch per candidate; never
     /// cleared, so a union costs its members and nothing else.
     stamp: LiveTable<usize>,
     epoch: usize,
-    /// The members `members_below` last collected, in the order they entered;
-    /// `settle` appends the class itself before storing the set.
+    /// The classes `residue` last collected, in the order they entered;
+    /// `settle` appends the class itself before adding them to the largest
+    /// child's set.
     scratch: Vec<u32>,
     words: usize,
     bytes: usize,
@@ -2181,73 +2185,88 @@ impl ReachSets {
     /// once: the union `SharedPricer::price` takes, of which nothing is kept.
     ///
     /// `children` is a candidate's row in the [`AndOrGraph`](super::and_or::AndOrGraph).
-    /// A leaf's row is empty, so it reaches nothing without a case of its own.
+    /// A leaf's row is empty, so it reaches nothing and pays nothing.
     ///
-    /// A row of one class (`Mul(a, a)` is one, used twice) unions a single
-    /// set, and a set is its class's own entry plus the sets below it: its
-    /// sum is that class's settled `total`, with nothing to walk or stamp. A
-    /// saturating sum of non-negative terms is `min(sum, usize::MAX)` however
-    /// the terms are grouped, so the two agree even where a sentinel cost
-    /// saturates.
+    /// The largest child's set is a part of the union already summed: its
+    /// `total` is `own` over that set, so only what the others add is
+    /// walked. A saturating sum of non-negative terms is `min(sum,
+    /// usize::MAX)` however the terms are grouped, so the two agree even
+    /// where a sentinel cost saturates.
     fn cost_below(&mut self, children: &[Child]) -> usize {
-        if let [only] = children {
-            debug_assert!(
-                self.reach[only.live].is_some(),
-                "a priced candidate's children are settled"
-            );
-            return self.total[only.live];
+        let base = self.residue(children).map_or(0, |child| self.total[child]);
+        self.scratch.iter().fold(base, |below, &member| {
+            below.saturating_add(self.own[Live::from_index(member as usize)])
+        })
+    }
+
+    /// Replace `scratch` with the classes the children's sets hold beyond
+    /// the largest child's, each once, in the order they enter, and return
+    /// that child: the first of equals, `None` for a leaf. What
+    /// `SharedPricer::settle` adds to that child's set for the winner. It
+    /// pays for nothing, so it reads no `own`.
+    ///
+    /// Which child is the largest decides how much is walked and nothing
+    /// else: the union, its sum, its member count and so the form it takes
+    /// are the same whichever child its other members are counted against.
+    /// A class is no member of its children's sets (a set holds only classes
+    /// settled before its owner), so the union is exactly the largest set
+    /// and the residue, disjoint.
+    ///
+    /// `children` is as for [`cost_below`](Self::cost_below).
+    fn residue(&mut self, children: &[Child]) -> Option<Live> {
+        self.scratch.clear();
+        // `min_by_key` keeps the first of equal keys, so the first of the
+        // largest sets in row order wins a tie.
+        let largest = children
+            .iter()
+            .min_by_key(|child| Reverse(settled(&self.reach, child.live).len()))?
+            .live;
+        // A row of one class (`Mul(a, a)` is one, used twice) has nothing
+        // beyond its largest set, and stamping that set would be all it did.
+        if children.len() == 1 {
+            return Some(largest);
         }
         self.epoch += 1;
         let epoch = self.epoch;
         // Disjoint fields: the sets are read while the stamps are written.
-        let Self {
-            reach, own, stamp, ..
-        } = self;
-        let mut below = 0usize;
-        for &Child { live: ci, .. } in children {
-            reach[ci]
-                .as_ref()
-                .expect("a priced candidate's children are settled")
-                .for_each(|member| {
-                    let m = Live::from_index(member as usize);
-                    if stamp[m] != epoch {
-                        stamp[m] = epoch;
-                        below = below.saturating_add(own[m]);
-                    }
-                });
-        }
-        below
-    }
-
-    /// Replace `scratch` with the members of the children's reach sets, each
-    /// once, in the order they first enter the union: what
-    /// `SharedPricer::settle` stores for the winner. It pays for nothing, so
-    /// it reads no `own`.
-    ///
-    /// `children` is as for [`cost_below`](Self::cost_below).
-    fn members_below(&mut self, children: &[Child]) {
-        self.epoch += 1;
-        self.scratch.clear();
-        let epoch = self.epoch;
         let Self {
             reach,
             stamp,
             scratch,
             ..
         } = self;
-        for &Child { live: ci, .. } in children {
-            reach[ci]
-                .as_ref()
-                .expect("a settling candidate's children are settled")
-                .for_each(|member| {
-                    let m = Live::from_index(member as usize);
-                    if stamp[m] != epoch {
-                        stamp[m] = epoch;
-                        scratch.push(member);
-                    }
-                });
+        // A dense largest set answers membership by its bits. A sparse one
+        // has no cheaper answer than the stamps, so its members are stamped
+        // first and the stamp test below covers it; it offers no bits.
+        let bits: &[u64] = match settled(reach, largest) {
+            Reach::Dense { bits, .. } => bits,
+            Reach::Sparse(members) => {
+                for &member in members {
+                    stamp[Live::from_index(member as usize)] = epoch;
+                }
+                &[]
+            }
+        };
+        for child in children.iter().filter(|child| child.live != largest) {
+            settled(reach, child.live).for_each(|member| {
+                let m = Live::from_index(member as usize);
+                if holds(bits, member) || stamp[m] == epoch {
+                    return;
+                }
+                stamp[m] = epoch;
+                scratch.push(member);
+            });
         }
+        Some(largest)
     }
+}
+
+/// The set live class `live` settled with: its children's, a priced or
+/// settling candidate's, are all in.
+fn settled(reach: &LiveTable<Option<Reach>>, live: Live) -> &Reach {
+    reach[live]
+        .as_ref()
+        .expect("a candidate's children are settled")
 }
 
 /// [`shared_dag_dp_pass`]'s pricing.
@@ -2283,13 +2302,14 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
         // flight: the driver prices candidates for many unsettled classes
         // before any of them settles, so a stored winner set would be a
         // second copy of the frontier's reach.
-        self.sets
-            .members_below(self.problem.graph().children(candidate));
         let me = candidate.live();
+        let largest = self.sets.residue(self.problem.graph().children(candidate));
         self.sets.scratch.push(
             u32::try_from(me.index()).expect("a live index is below the e-graph's u32 class count"),
         );
-        let set = Reach::smaller_of(&self.sets.scratch, self.sets.words);
+        let set = largest
+            .map_or(&Reach::EMPTY, |child| settled(&self.sets.reach, child))
+            .grown(&self.sets.scratch, self.sets.words);
         self.sets.bytes = self.sets.bytes.saturating_add(set.bytes());
         if self.sets.bytes > self.sets.budget {
             return false;
@@ -2318,44 +2338,79 @@ const REACH_WORD_BITS: usize = u64::BITS as usize;
 /// sub-DAG contains — in whichever of two forms is smaller.
 ///
 /// The sparse form is the members themselves, four bytes each; the dense
-/// form is one bit per live class. [`Reach::smaller_of`] picks per set, so
+/// form is one bit per live class. [`Reach::grown`] picks per set, so
 /// a leaf's set is four bytes and the root's is a bitset, and the total
 /// held by [`shared_dag_dp_pass`] is never above the dense bound and is far
 /// below it on any graph that is not a chain.
 enum Reach {
     Sparse(Vec<u32>),
-    Dense(Vec<u64>),
+    /// The bits, and how many are set: a count is what the form is chosen
+    /// from, and what the largest of a candidate's children is chosen by.
+    Dense {
+        bits: Vec<u64>,
+        count: usize,
+    },
 }
 
 impl Reach {
-    /// `members` as the smaller of the two forms over `words` dense words.
-    /// `members` must be distinct.
-    fn smaller_of(members: &[u32], words: usize) -> Self {
-        let sparse_bytes = std::mem::size_of_val(members);
+    /// The set of no classes: what a leaf's children reach.
+    const EMPTY: Self = Self::Sparse(Vec::new());
+
+    /// This set and `added`, as the smaller of the two forms over `words`
+    /// dense words. `added` must be distinct and outside this set.
+    ///
+    /// The form is a function of the member count alone, so it does not
+    /// depend on the order the members arrive in. A dense set stays dense:
+    /// it already outweighs the sparse form, and adding members only
+    /// widens that.
+    fn grown(&self, added: &[u32], words: usize) -> Self {
+        let count = self.len() + added.len();
+        let sparse_bytes = count * core::mem::size_of::<u32>();
         let dense_bytes = words * core::mem::size_of::<u64>();
-        if sparse_bytes <= dense_bytes {
-            return Self::Sparse(members.to_vec());
+        match self {
+            Self::Sparse(members) if sparse_bytes <= dense_bytes => {
+                let mut grown = Vec::with_capacity(count);
+                grown.extend_from_slice(members);
+                grown.extend_from_slice(added);
+                Self::Sparse(grown)
+            }
+            Self::Sparse(members) => {
+                let mut bits = alloc::vec![0u64; words];
+                set_bits(&mut bits, members);
+                set_bits(&mut bits, added);
+                Self::Dense { bits, count }
+            }
+            Self::Dense { bits, .. } => {
+                debug_assert!(
+                    sparse_bytes > dense_bytes,
+                    "a dense set grows into a dense set"
+                );
+                let mut bits = bits.clone();
+                set_bits(&mut bits, added);
+                Self::Dense { bits, count }
+            }
         }
-        let mut bits = alloc::vec![0u64; words];
-        for &m in members {
-            let m = m as usize;
-            bits[m / REACH_WORD_BITS] |= 1u64 << (m % REACH_WORD_BITS);
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Sparse(members) => members.len(),
+            Self::Dense { count, .. } => *count,
         }
-        Self::Dense(bits)
     }
 
     fn bytes(&self) -> usize {
         match self {
             Self::Sparse(v) => v.len() * core::mem::size_of::<u32>(),
-            Self::Dense(v) => v.len() * core::mem::size_of::<u64>(),
+            Self::Dense { bits, .. } => bits.len() * core::mem::size_of::<u64>(),
         }
     }
 
     fn for_each(&self, mut f: impl FnMut(u32)) {
         match self {
             Self::Sparse(v) => v.iter().copied().for_each(f),
-            Self::Dense(v) => {
-                for (w, &word) in v.iter().enumerate() {
+            Self::Dense { bits, .. } => {
+                for (w, &word) in bits.iter().enumerate() {
                     let mut bits = word;
                     while bits != 0 {
                         let bit = bits.trailing_zeros() as usize;
@@ -2366,6 +2421,25 @@ impl Reach {
             }
         }
     }
+}
+
+/// The word of a dense set that holds `member`, and its mask there.
+fn bit_of(member: u32) -> (usize, u64) {
+    let member = member as usize;
+    (member / REACH_WORD_BITS, 1u64 << (member % REACH_WORD_BITS))
+}
+
+fn set_bits(bits: &mut [u64], members: &[u32]) {
+    for &member in members {
+        let (word, mask) = bit_of(member);
+        bits[word] |= mask;
+    }
+}
+
+/// Whether `member` is set in `bits`; no bit is set past their end.
+fn holds(bits: &[u64], member: u32) -> bool {
+    let (word, mask) = bit_of(member);
+    bits.get(word).is_some_and(|&bits| bits & mask != 0)
 }
 
 #[cfg(test)]
@@ -2529,10 +2603,10 @@ mod tests {
         let words = 4;
         let few: Vec<u32> = vec![3, 200, 77];
         let many: Vec<u32> = (0..words as u32 * 40).collect();
-        let sparse = Reach::smaller_of(&few, words);
-        let dense = Reach::smaller_of(&many, words);
+        let sparse = Reach::EMPTY.grown(&few, words);
+        let dense = Reach::EMPTY.grown(&many, words);
         assert!(matches!(sparse, Reach::Sparse(_)));
-        assert!(matches!(dense, Reach::Dense(_)));
+        assert!(matches!(dense, Reach::Dense { .. }));
         assert_eq!(sparse.bytes(), few.len() * 4);
         assert_eq!(dense.bytes(), words * 8);
         let mut seen = Vec::new();
@@ -2541,6 +2615,37 @@ mod tests {
         seen.clear();
         dense.for_each(|m| seen.push(m));
         assert_eq!(seen, many);
+    }
+
+    /// A set grown from another is the set built whole: the same members,
+    /// the same form and so the same bytes, whichever form it grew from and
+    /// into — a sparse set that stays sparse, one that crosses into dense,
+    /// and a dense one.
+    #[test]
+    fn a_grown_reach_set_is_the_set_built_whole() {
+        let words = 4;
+        // Sparse up to 8 members, dense from 9.
+        let members: Vec<u32> = (0..40).map(|i| (i * 7) % 256).collect();
+        for (base, added) in [(0, 3), (3, 4), (3, 20), (9, 5), (25, 15), (0, 40)] {
+            let (head, tail) = members.split_at(base);
+            let tail = &tail[..added];
+            let grown = Reach::EMPTY.grown(head, words).grown(tail, words);
+            let whole = Reach::EMPTY.grown(&members[..base + added], words);
+            assert_eq!(grown.len(), base + added);
+            assert_eq!(grown.bytes(), whole.bytes(), "{base}+{added}: bytes");
+            assert_eq!(
+                matches!(grown, Reach::Dense { .. }),
+                matches!(whole, Reach::Dense { .. }),
+                "{base}+{added}: form"
+            );
+            let sorted = |set: &Reach| {
+                let mut seen = Vec::new();
+                set.for_each(|m| seen.push(m));
+                seen.sort_unstable();
+                seen
+            };
+            assert_eq!(sorted(&grown), sorted(&whole), "{base}+{added}: members");
+        }
     }
 
     /// The sharing-aware DP as it shipped before the reach sets went hybrid
@@ -4224,6 +4329,92 @@ mod tests {
         assert_eq!(
             cost(root),
             own(root) + own(m) + own(n) + own(q) + own(s) + own(x)
+        );
+    }
+
+    /// A candidate with several children pays for each class in the union
+    /// of their sets once, whichever child's set it starts from and whichever
+    /// form that set is in: here the largest child's set is sparse for `T`
+    /// (two children whose sets overlap in `q` and `w2`) and dense for `V`
+    /// (a long chain that shares `q` and `w2` with the other child), in a
+    /// graph big enough that a short set is sparse. Checked against
+    /// hand-written sums.
+    #[test]
+    fn a_union_pays_for_each_class_once_from_a_sparse_or_a_dense_largest_set() {
+        #[derive(Default)]
+        struct Prices(Vec<(EClassId, usize, usize)>);
+        impl StageRecorder for Prices {
+            fn candidate(&mut self, class: EClassId, _idx: usize, cost: usize, own: usize) {
+                self.0.push((class, cost, own));
+            }
+            fn settled(&mut self, _: EClassId, _: usize) {}
+        }
+
+        // A chain of 300 gives the graph 600+ live classes: 10 dense words,
+        // so a set of 20 or fewer is sparse.
+        let (mut egraph, filler) = add_chain(300);
+        let leaf = |egraph: &mut EGraph, axis: u8| egraph.add(ENode::Var(axis));
+        let op = |egraph: &mut EGraph, op: OpKind, children: &[EClassId]| {
+            egraph.add(ENode::apply(op, children))
+        };
+        let (w1, w2, w3) = (
+            leaf(&mut egraph, 1),
+            leaf(&mut egraph, 2),
+            leaf(&mut egraph, 3),
+        );
+        let p = op(&mut egraph, OpKind::Sin, &[w1]);
+        let q = op(&mut egraph, OpKind::Cos, &[w2]);
+        let r = op(&mut egraph, OpKind::Sqrt, &[w3]);
+        // {P, p, w1, q, w2} and {Q, q, w2, r, w3} overlap in {q, w2}.
+        let big_p = op(&mut egraph, OpKind::Mul, &[p, q]);
+        let big_q = op(&mut egraph, OpKind::Mul, &[q, r]);
+        let t = op(&mut egraph, OpKind::Add, &[big_p, big_q]);
+        // A chain of 25 above `q`: dense, and it shares `q` and `w2` with P.
+        let mut chain = vec![op(&mut egraph, OpKind::Rsqrt, &[q])];
+        for i in 1..25 {
+            let kind = [OpKind::Neg, OpKind::Abs][i % 2];
+            let below = chain[i - 1];
+            chain.push(op(&mut egraph, kind, &[below]));
+        }
+        let top = *chain.last().unwrap();
+        let v = op(&mut egraph, OpKind::Add, &[top, big_p]);
+        // Three children, none a subset of another's set.
+        let u = op(&mut egraph, OpKind::MulAdd, &[big_p, big_q, top]);
+        let below_root = op(&mut egraph, OpKind::Add, &[t, v]);
+        let below_root = op(&mut egraph, OpKind::Add, &[below_root, u]);
+        let root = op(&mut egraph, OpKind::Add, &[filler, below_root]);
+        egraph.rebuild();
+
+        let costs = CostModel::latency_prior();
+        let mut dp = Dp::new(&costs, LatticeShape::POINT, Insertion, Prices::default());
+        shared_dag_dp_pass(Frozen::new(&egraph, root).problem(), &mut dp, usize::MAX)
+            .outcome
+            .expect("unbounded");
+        let priced = dp.into_recorder().0;
+        let row = |c: EClassId| {
+            let mut rows = priced.iter().filter(|&&(class, ..)| class == c);
+            let row = rows.next().expect("every class has a candidate");
+            assert!(rows.next().is_none(), "each class here has one candidate");
+            *row
+        };
+        let own = |c: EClassId| row(c).2;
+        let sum = |classes: &[EClassId]| classes.iter().map(|&c| own(c)).sum::<usize>();
+
+        let chain_set: Vec<EClassId> = chain.iter().copied().chain([q, w2]).collect();
+        assert_eq!(
+            row(t).1,
+            own(t) + sum(&[big_p, p, w1, q, w2, big_q, r, w3]),
+            "sparse largest set: the shared q and w2 enter once"
+        );
+        assert_eq!(
+            row(v).1,
+            own(v) + sum(&chain_set) + sum(&[big_p, p, w1]),
+            "dense largest set: the shared q and w2 enter once"
+        );
+        assert_eq!(
+            row(u).1,
+            own(u) + sum(&chain_set) + sum(&[big_p, p, w1, big_q, r, w3]),
+            "three children, each class once"
         );
     }
 
