@@ -303,7 +303,7 @@ impl EGraph {
             },
             const_fact: node.as_f32().map(f32::to_bits),
             variance,
-            shape: RootShapes::shape_of(&node),
+            shape: node.shape(),
             stamp: self.mutation_counter,
         });
         self.track_liveness(id);
@@ -758,7 +758,7 @@ impl EGraph {
             self.columns.classes[root]
                 .nodes
                 .iter()
-                .filter_map(RootShapes::shape_of)
+                .filter_map(ENode::shape)
                 .all(|kind| {
                     self.columns.kind_mask[root].contains(kind)
                         && self.columns.by_kind.contains(kind, id)

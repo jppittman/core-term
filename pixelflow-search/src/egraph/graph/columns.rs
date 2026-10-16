@@ -149,7 +149,7 @@ pub(super) struct Birth {
     pub(super) class: EClass,
     pub(super) const_fact: Option<u32>,
     pub(super) variance: Variance,
-    /// The node's shape, as `RootShapes::shape_of` names it: the one kind the
+    /// The node's shape, as `ENode::shape` names it: the one kind the
     /// new class starts with.
     pub(super) shape: Option<OpKind>,
     /// The mutation counter's value as of this `add`.

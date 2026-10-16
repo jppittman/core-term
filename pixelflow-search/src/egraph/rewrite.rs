@@ -279,26 +279,7 @@ impl RootShapes {
     pub fn admits(&self, node: &ENode) -> bool {
         match self {
             Self::Any => true,
-            Self::Kinds(kinds) => Self::shape_of(node).is_some_and(|kind| kinds.contains(kind)),
-        }
-    }
-
-    /// The shape of `node`; `None` for a [`ENode::Ref`], which no `OpKind` names.
-    ///
-    /// The one kind function: the scan's per-node check, the e-graph's
-    /// per-class kind masks and its per-kind class sets all ask it, so they
-    /// cannot disagree about what a node is.
-    pub(super) fn shape_of(node: &ENode) -> Option<OpKind> {
-        match node {
-            ENode::Var(_) => Some(OpKind::Var),
-            ENode::Const(_) => Some(OpKind::Const),
-            ENode::Buffer(_) => Some(OpKind::Buffer),
-            ENode::Uniform(_) => Some(OpKind::Uniform),
-            ENode::Param(_) => Some(OpKind::Param),
-            ENode::Reduce { .. } => Some(OpKind::Reduce),
-            ENode::Op { op, .. } => Some(*op),
-            ENode::Shift { direction, .. } => Some(direction.op()),
-            ENode::Ref { .. } => None,
+            Self::Kinds(kinds) => node.shape().is_some_and(|kind| kinds.contains(kind)),
         }
     }
 }
