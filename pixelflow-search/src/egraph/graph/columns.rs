@@ -6,6 +6,11 @@
 //! The id is also the node's index in the arena: the node a memo miss adds is
 //! pushed at the arena's length, and the id it gets is that index.
 //!
+//! The columns are two types. [`Columns`] holds what a frozen graph keeps
+//! (`super::FrozenGraph`); [`SaturationColumns`] holds what only saturation
+//! reads (`last_changed`, the kind index, `queued`). `push` grows both, and is
+//! the only thing that grows either.
+//!
 //! An id is read three ways, and the columns keep the readings apart by the
 //! type that indexes them:
 //!
@@ -56,6 +61,8 @@ use crate::egraph::provenance::ENodeId;
 /// `Root` is not held across a union of its class: ask again, unless the
 /// holder needs the name the class had and says so (`union` reads the
 /// merged-away side after linking it, `rebuild_budgeted` keeps its item's).
+/// It indexes the per-representative columns of both [`Columns`] and
+/// [`SaturationColumns`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Root(EClassId);
 
@@ -294,6 +301,15 @@ pub(crate) struct Columns {
     ///   fact is still a superset, so a rule reading it may miss an
     ///   opportunity but can never fire wrongly; soundness needs no repair.
     pub(super) var_fact: Column<Root, Variance>,
+}
+
+/// The per-id columns only saturation reads: the stamps the scan's dirty check
+/// compares, the kind index the scan's class filter reads, and the worklist
+/// flag. Grown only by [`Columns::push`], with the columns it holds, so the two
+/// types are equally long because neither has another way to grow; dropped
+/// with the rest of saturation's state by `EGraph::freeze`.
+#[derive(Clone, Default)]
+pub(crate) struct SaturationColumns {
     /// The mutation counter's value as of the most recent time canonical
     /// class `c`'s own node list gained content — set at creation in `add`
     /// and bumped in `union` when `c` survives as the merge's parent.
@@ -333,9 +349,9 @@ impl Columns {
         self.parent.len()
     }
 
-    /// Mint the next id, with its entry in every column. The one place a
-    /// column grows.
-    pub(super) fn push(&mut self, birth: Birth) -> EClassId {
+    /// Mint the next id, with its entry in every column, `saturation`'s
+    /// included. The one place a column of either type grows.
+    pub(super) fn push(&mut self, saturation: &mut SaturationColumns, birth: Birth) -> EClassId {
         let id = EClassId::from_index(self.len());
         self.nodes.push(birth.node);
         self.parent.push(id);
@@ -345,16 +361,16 @@ impl Columns {
         self.tail.push(Link::to(tag_of(id)));
         self.const_fact.push(birth.const_fact);
         self.var_fact.push(birth.variance);
-        self.last_changed.push(birth.stamp);
+        saturation.last_changed.push(birth.stamp);
         let kinds = match birth.shape {
             Some(kind) => {
-                self.by_kind.insert(kind, id);
+                saturation.by_kind.insert(kind, id);
                 OpSet::EMPTY.with(kind)
             }
             None => OpSet::EMPTY,
         };
-        self.kind_mask.push(kinds);
-        self.queued.push(false);
+        saturation.kind_mask.push(kinds);
+        saturation.queued.push(false);
         self.live.insert(id);
         id
     }
@@ -514,6 +530,13 @@ impl Columns {
         self.root(slot.0)
     }
 
+    /// Make `child`'s block part of `parent`'s.
+    pub(super) fn link(&mut self, child: Root, parent: Root) {
+        self.parent.entries[child.0.index()] = parent.0;
+    }
+}
+
+impl SaturationColumns {
     /// Fold `child`'s kinds into `parent`'s, for a `child` being merged into
     /// `parent`: its members become `parent`'s.
     pub(super) fn merge_kinds(&mut self, child: Root, parent: Root) {
@@ -524,10 +547,5 @@ impl Columns {
         for kind in absorbed.iter() {
             self.by_kind.insert(kind, parent.0);
         }
-    }
-
-    /// Make `child`'s block part of `parent`'s.
-    pub(super) fn link(&mut self, child: Root, parent: Root) {
-        self.parent.entries[child.0.index()] = parent.0;
     }
 }

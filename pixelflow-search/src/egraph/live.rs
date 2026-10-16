@@ -90,7 +90,7 @@ impl ClassSet {
 /// It only grows, so it is a superset of the classes holding the kind *now*:
 /// a node that leaves a class (a refused rebuild item retires it) leaves its
 /// bit behind, and a scan that reads a stale bit pays one per-node check that
-/// rejects it. See `Columns::kind_mask`, whose union it mirrors.
+/// rejects it. See `SaturationColumns::kind_mask`, whose union it mirrors.
 #[derive(Clone, Debug)]
 pub(super) struct ClassesByKind {
     sets: OpMap<ClassSet>,

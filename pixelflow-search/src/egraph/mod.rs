@@ -81,6 +81,7 @@ pub use extract::{
     ExtractionReport, SHARED_DAG_PASS_BYTE_BUDGET, SharedPassStats, extract, extract_dag,
 };
 pub use fold_rules::{EmptyFold, FactorFold, HalveFold, PeelFold, fold_rules};
+pub(crate) use graph::FrozenGraph;
 pub use graph::{
     ApplicationMask, EGraph, HARD_MINTED_LIMIT, Limits, MaskScope, RewriteTarget, Saturation,
     SaturationStats, SaturationStop,

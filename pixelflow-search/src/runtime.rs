@@ -106,7 +106,7 @@
 
 use crate::egraph::and_or::Frozen;
 use crate::egraph::{
-    Declined, EGraph, Optimizer, OptimizerStats, RuleSet, SaturationKey, Vocabulary, insert,
+    Declined, FrozenGraph, Optimizer, OptimizerStats, RuleSet, SaturationKey, Vocabulary, insert,
 };
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
@@ -481,7 +481,7 @@ impl Job<'_> {
         let saturated = &obtained.saturated;
         let problem = saturated.frozen.problem();
         let optimized = optimizer.extract_over(problem, saturated.stats.clone());
-        let (extracted, extracted_root) = optimized.to_arena(problem.egraph(), problem.root());
+        let (extracted, extracted_root) = optimized.to_arena_over(problem.egraph(), problem.root());
         #[cfg(feature = "saturation-telemetry")]
         if let Some(facts) = &obtained.ran_here {
             crate::telemetry::record(crate::telemetry::SaturationInvocation {
@@ -572,8 +572,9 @@ struct Saturated {
     /// The saturated graph beside what extraction needs of it that no lattice
     /// changes — the classes the root reaches, their candidates and who
     /// depends on whom — read off once here, so each shape's extraction adds
-    /// only its weights and its settlement.
-    frozen: Frozen<EGraph>,
+    /// only its weights and its settlement. The graph is frozen: its memo and
+    /// saturation-only columns are gone, and it cannot be added to.
+    frozen: Frozen<FrozenGraph>,
     stats: OptimizerStats,
     /// The saturating composition's declarations in canonical slot order:
     /// what an extraction's leaves — which carry that composition's names —
@@ -722,7 +723,7 @@ fn saturate(
     let stats = optimizer.saturate_term(&mut egraph);
 
     Ok(Saturated {
-        frozen: Frozen::new(egraph.into_graph(), root_class),
+        frozen: Frozen::new(egraph.into_graph().freeze(), root_class),
         stats,
         buffers: canon.buffers.clone(),
         uniforms: canon.uniforms.clone(),
@@ -1216,7 +1217,7 @@ mod congruence_gap_probe {
     use super::*;
     use crate::arena_corpus::{category_of, load_arena_dump, median, percentile};
     use crate::egraph::rule_order::{RuleOrder, build_rule_set};
-    use crate::egraph::{CostModel, EClassId, ENode, RuleSet, SaturationStop};
+    use crate::egraph::{CostModel, EClassId, EGraph, ENode, RuleSet, SaturationStop};
     use crate::nnue::{BwdGenConfig, BwdGenerator};
     use std::path::{Path, PathBuf};
 

@@ -304,7 +304,7 @@ fn chosen_tagged_nodes(
     root: EClassId,
     choices: &[Option<usize>],
 ) -> Vec<(EClassId, ENodeId)> {
-    let term = Selection::of_map(egraph, root, choices).unwrap_or_else(|refused| {
+    let term = Selection::of_map(egraph.as_frozen(), root, choices).unwrap_or_else(|refused| {
         panic!(
             "chosen_tagged_nodes: `choices` names no term from root {}: {refused}",
             root.index()

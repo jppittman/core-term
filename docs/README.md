@@ -32,7 +32,6 @@ A live document is one that still decides something or owns open work. Its statu
 - [`compiler/2026-09-07-benchmark-correction.md`](compiler/2026-09-07-benchmark-correction.md) — `Plan of record`. Plan of record for real-shader benchmarking; §E re-validation items 0 and 2-6 remain unrun, and the 2026-10-15 ruling supersedes only two metrics.
 - [`compiler/2026-09-07-demand-is-a-dag-property.md`](compiler/2026-09-07-demand-is-a-dag-property.md) — `Superseded`. Demand-as-DAG-property plan, superseded by the one-conditional and kernels-evaluate-kernels plans; kept in place because BACKLOG C2 (the open '8' waist bug) cites its section 9.
 - [`compiler/2026-09-08-extraction-judge-registration.md`](compiler/2026-09-08-extraction-judge-registration.md) — `Registered`. Pre-registration for a learned per-class node scorer as the extraction DP's local objective; no run yet, §9 results empty.
-- [`compiler/2026-10-15-the-egraph-is-an-arena.md`](compiler/2026-10-15-the-egraph-is-an-arena.md) — `Plan of record`. The e-graph's store as an arena (node ids are tags, membership a list, per-id columns, a per-kind class index), byte-identical by gate; CLs 0, 3a, 2, 5a–d, 6, 1, 3b, 3c and 4 landed, 7 open.
 - [`research-problems/2026-10-15-the-egraph.md`](research-problems/2026-10-15-the-egraph.md) — `Draft`. The open research problem: what saturation is for when it never finishes — budget allocation, the Guide's inconclusive results, linear vs bilinear unsettled, fonts a held-out domain only.
 
 ### Codegen and the schedule
@@ -81,6 +80,7 @@ Everything under [`archive/`](archive/) is history: landed, closed, superseded o
 
 ### Plans
 
+- [`archive/plans/2026-10-15-the-egraph-is-an-arena.md`](archive/plans/2026-10-15-the-egraph-is-an-arena.md) — `Landed` The e-graph's store as an arena (node ids are tags, membership an intrusive list, per-id columns, a per-kind class index, a cache value with no `add`), byte-identical by gate: all 13 CLs landed (#1416, #1418, #1420, #1422, #1423), Ir -32.2% and peak RSS -32.7% on the 29 font programs; §7 and the research problem hold what remains, §8 is JP's.
 - [`archive/plans/2026-10-12-placement-reads-demand.md`](archive/plans/2026-10-12-placement-reads-demand.md) — `Superseded` Proposed D1 placement-by-demand design; its literals, demand and projected regions are withdrawn by the 2026-10-15 kernels ruling.
 - [`archive/plans/2026-10-08-selection-is-a-phase.md`](archive/plans/2026-10-08-selection-is-a-phase.md) — `Landed` Selection phase plan (A–G series) fully landed on main through #1409; its If shape, arm guards and pass-chain-per-backend are replaced by the 2026-10-15 kernels-evaluate-kernels ruling.
 - [`archive/plans/2026-09-23-an-integral-is-a-fold.md`](archive/plans/2026-09-23-an-integral-is-a-fold.md) — `Superseded` Interval-fold integral design, superseded by JP's 2026-09-29 deletion of all integral machinery; demand and mispredict-priced If parts superseded by kernels-evaluate-kernels.

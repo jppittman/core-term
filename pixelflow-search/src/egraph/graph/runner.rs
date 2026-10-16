@@ -436,7 +436,8 @@ impl Saturation {
         self
     }
 
-    /// The store, dropping the runner. What a cache of saturated graphs keeps.
+    /// The store, dropping the runner. A cache of saturated graphs keeps
+    /// `into_graph().freeze()`, which drops the store's saturation-only state too.
     #[must_use]
     pub fn into_graph(self) -> EGraph {
         self.graph
@@ -1083,7 +1084,7 @@ impl Saturation {
                 if same_rule
                     && key.content
                         == crate::egraph::candidate::ClassContentKey::of(
-                            &self.graph,
+                            self.graph.as_frozen(),
                             self.graph.find(class_id),
                         )
                 {
@@ -1132,7 +1133,7 @@ impl Saturation {
                 let key = crate::egraph::candidate::CandidateKey {
                     rule: self.rules.id(rule_idx),
                     content: crate::egraph::candidate::ClassContentKey::of(
-                        &self.graph,
+                        self.graph.as_frozen(),
                         self.graph.find(class_id),
                     ),
                 };

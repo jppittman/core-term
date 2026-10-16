@@ -7,7 +7,7 @@ use super::ops;
 use super::provenance::{ENodeId, Provenance};
 use super::rewrite::{RewriteAction, RootShapes};
 use alloc::collections::BTreeMap;
-use columns::{Birth, Columns, Kept, Slot};
+use columns::{Birth, Columns, Kept, SaturationColumns, Slot};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::{KernelKey, Variance};
 
@@ -18,8 +18,10 @@ pub use runner::{
     SaturationStats, SaturationStop,
 };
 
-/// The store: classes, the union-find over them, the memo that hash-conses
-/// their nodes, the per-class facts, and the graph's own mutation log.
+/// The store: a `FrozenGraph` (classes, the union-find over them, the
+/// per-class facts, the units) and what only saturation reads beside it: the
+/// memo that hash-conses their nodes, the worklist, the graph's own mutation
+/// log and the columns the scan and rebuild keep.
 ///
 /// It holds no rules and counts no applications — those belong to the runner
 /// that sweeps it ([`Saturation`]). What a store does know about rewriting is
@@ -28,26 +30,17 @@ pub use runner::{
 /// kept, the journal that attributes its mutations.
 #[derive(Clone)]
 pub struct EGraph {
-    /// The per-id columns: the node arena, the union-find, the member lists
-    /// and the live set, the facts and the worklist flag. See the `columns`
-    /// module.
-    columns: Columns,
+    /// The classes, their facts and the units: what freezing keeps
+    /// (`FrozenGraph`). Written only by this type.
+    graph: FrozenGraph,
+    /// The per-id columns only saturation reads, grown with `graph`'s by
+    /// `Columns::push`.
+    saturation: SaturationColumns,
     /// Canonical node forms to the class each was in when computed (law 2).
     /// Each key is a copy, not a node id: `rebuild` rewrites the arena's
     /// stored operands in place, and a key keeps the form it was computed in.
     memo: HashMap<ENode, EClassId>,
     worklist: Vec<Slot>,
-    /// The units this graph may hold as leaves, with the variance each
-    /// carries — told to it by the runtime tier's unit walk
-    /// ([`EGraph::admit_unit`]) before the term is inserted. A
-    /// [`ENode::Ref`] is only its key, so this is where its variance is read
-    /// from. A unit's body is not in this graph, so its variance cannot be
-    /// computed here; and a
-    /// reference the graph was not told about is one [`insert`](super::insert)
-    /// declines, which is what keeps every other path — the macro tier,
-    /// research tools — exactly as it was (docs/language/2026-09-25-the-language-is-kernel.md
-    /// §4, O1).
-    units: BTreeMap<KernelKey, Variance>,
     /// Unions REFUSED because they would assert two numerically unequal
     /// constants equal — a proved falsehood the graph declines to absorb.
     /// Distinct (bits, bits) pairs, kept for reporting and tests; see
@@ -70,6 +63,96 @@ pub struct EGraph {
     /// current step and the application being executed); see
     /// [`Provenance::open_application`].
     journal: Option<Provenance>,
+}
+
+/// An e-graph's classes once nothing will add to them: the node arena, the
+/// union-find, the member lists and the live set, the per-class facts, and the
+/// units the graph admitted. Everything extraction reads, and only that.
+///
+/// It has no `add`, `union` or `rebuild`, and no method that takes `&mut self`.
+/// [`EGraph`] holds one and is the only thing that writes it;
+/// [`EGraph::freeze`] hands it over and drops what only saturation reads (the
+/// memo, the worklist, the change log, the scan's and rebuild's columns, the
+/// journal and the refusal record), and [`EGraph::as_frozen`] lends it. A cache
+/// of saturated graphs keeps one of these, so a cached graph cannot be added to:
+/// there is no method to call.
+#[derive(Clone)]
+pub(crate) struct FrozenGraph {
+    /// The per-id columns extraction reads. See the `columns` module.
+    columns: Columns,
+    /// The units this graph may hold as leaves, with the variance each
+    /// carries — told to it by the runtime tier's unit walk
+    /// ([`EGraph::admit_unit`]) before the term is inserted. A
+    /// [`ENode::Ref`] is only its key, so this is where its variance is read
+    /// from. A unit's body is not in this graph, so its variance cannot be
+    /// computed here; and a
+    /// reference the graph was not told about is one [`insert`](super::insert)
+    /// declines, which is what keeps every other path — the macro tier,
+    /// research tools — exactly as it was (docs/language/2026-09-25-the-language-is-kernel.md
+    /// §4, O1).
+    units: BTreeMap<KernelKey, Variance>,
+}
+
+impl FrozenGraph {
+    /// [`EGraph::find`], on the frozen graph.
+    pub(crate) fn find(&self, id: EClassId) -> EClassId {
+        self.columns.root(id).id()
+    }
+
+    /// [`EGraph::canonical_node`], on the frozen graph.
+    pub(crate) fn canonical_node(&self, mut node: ENode) -> ENode {
+        for child in node.children_slice_mut() {
+            *child = self.find(*child);
+        }
+        node
+    }
+
+    /// [`EGraph::unit_variance`], on the frozen graph.
+    pub(crate) fn unit_variance(&self, key: KernelKey) -> Option<Variance> {
+        self.units.get(&key).copied()
+    }
+
+    /// [`EGraph::ref_variance`], on the frozen graph.
+    pub(crate) fn ref_variance(&self, key: KernelKey) -> Variance {
+        self.unit_variance(key)
+            .unwrap_or_else(|| panic!("EGraph: a Ref to {key:?}, which no unit walk admitted"))
+    }
+
+    /// [`EGraph::nodes`], on the frozen graph.
+    pub(crate) fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
+        let class = self.columns.root(id);
+        self.columns
+            .members(class)
+            .map(move |tag| self.columns.node(tag))
+    }
+
+    /// [`EGraph::tags`], on the frozen graph.
+    pub(crate) fn tags(&self, id: EClassId) -> impl Iterator<Item = ENodeId> + Clone + '_ {
+        self.columns.members(self.columns.root(id))
+    }
+
+    /// [`EGraph::node_for_tag`], on the frozen graph.
+    pub(crate) fn node_for_tag(&self, id: EClassId, tag: ENodeId) -> Option<&ENode> {
+        let minted_as = self.columns.class_of(tag)?;
+        if self.columns.is_retired(tag) || self.find(minted_as) != self.find(id) {
+            return None;
+        }
+        Some(self.columns.node(tag))
+    }
+
+    /// The node `tag` names in this graph's arena, as stored. For a tag the
+    /// caller read from [`Self::tags`] or that an extraction recorded, so known
+    /// to be a member: this is not a membership test, and a retired node is
+    /// answered too. A tag of unknown standing asks [`Self::node_for_tag`].
+    /// Panics past the end. O(1).
+    pub(crate) fn node(&self, tag: ENodeId) -> &ENode {
+        self.columns.node(tag)
+    }
+
+    /// [`EGraph::num_classes`], on the frozen graph.
+    pub(crate) fn num_classes(&self) -> usize {
+        self.columns.len()
+    }
 }
 
 /// Why a research walk over the journal refused a graph that keeps none.
@@ -126,10 +209,13 @@ impl EGraph {
     /// [`Saturation::over`].
     pub fn new() -> Self {
         Self {
-            columns: Columns::default(),
+            graph: FrozenGraph {
+                columns: Columns::default(),
+                units: BTreeMap::new(),
+            },
+            saturation: SaturationColumns::default(),
             memo: HashMap::default(),
             worklist: Vec::new(),
-            units: BTreeMap::new(),
             refused_const_unions: Vec::new(),
             mutation_counter: 0,
             journal: Some(Provenance::new()),
@@ -146,13 +232,30 @@ impl EGraph {
     #[must_use]
     pub fn without_journal(mut self) -> Self {
         assert!(
-            self.columns.len() == 0,
+            self.graph.columns.len() == 0,
             "a journal is chosen when the graph is built: this graph already holds {} classes, \
              whose births it would have to forget",
-            self.columns.len(),
+            self.graph.columns.len(),
         );
         self.journal = None;
         self
+    }
+
+    /// The graph without what only saturation reads: the memo, the worklist,
+    /// the change log, the scan's and rebuild's columns, the journal and the
+    /// refusal record are dropped, and what extraction reads is moved, not
+    /// copied. What a cache of saturated graphs keeps: a [`FrozenGraph`] has
+    /// no `add`, so nothing can add to a graph whose memo is gone.
+    #[must_use]
+    pub(crate) fn freeze(self) -> FrozenGraph {
+        self.graph
+    }
+
+    /// What [`Self::freeze`] would keep, borrowed: for extraction over a graph
+    /// that stays live.
+    #[must_use]
+    pub(crate) fn as_frozen(&self) -> &FrozenGraph {
+        &self.graph
     }
 
     /// Advance the journal's step, if one is kept. The runner's cursor: the
@@ -166,7 +269,7 @@ impl EGraph {
     }
 
     pub fn find(&self, id: EClassId) -> EClassId {
-        self.columns.root(id).id()
+        self.graph.find(id)
     }
 
     /// `node` with every operand class replaced by its canonical class: the
@@ -175,11 +278,8 @@ impl EGraph {
     /// Every operand, a fold's body included. A graph between a `union` and
     /// the `rebuild` that follows it holds nodes naming merged-away classes,
     /// and only this copy can be compared with another.
-    pub(crate) fn canonical_node(&self, mut node: ENode) -> ENode {
-        for child in node.children_slice_mut() {
-            *child = self.find(*child);
-        }
-        node
+    pub(crate) fn canonical_node(&self, node: ENode) -> ENode {
+        self.graph.canonical_node(node)
     }
 
     /// Tell this graph that `key` names a **unit** varying as `variance` says,
@@ -207,7 +307,7 @@ impl EGraph {
              closed over the coordinates, and this one reads a binder no \
              rewrite outside it could substitute"
         );
-        if let Some(admitted) = self.units.insert(key, variance) {
+        if let Some(admitted) = self.graph.units.insert(key, variance) {
             assert_eq!(
                 admitted, variance,
                 "EGraph::admit_unit: {key:?} was admitted as varying as {admitted:?} and is \
@@ -219,7 +319,7 @@ impl EGraph {
     /// The variance a unit admitted by [`Self::admit_unit`] carries, or
     /// `None` if `key` was never admitted.
     pub(crate) fn unit_variance(&self, key: KernelKey) -> Option<Variance> {
-        self.units.get(&key).copied()
+        self.graph.unit_variance(key)
     }
 
     /// The variance of the unit a [`ENode::Ref`] to `key` names: what
@@ -230,8 +330,7 @@ impl EGraph {
     /// Panics if `key` was never admitted. [`Self::add`] refuses a `Ref` to
     /// such a unit, so no node in the graph names one.
     pub(crate) fn ref_variance(&self, key: KernelKey) -> Variance {
-        self.unit_variance(key)
-            .unwrap_or_else(|| panic!("EGraph: a Ref to {key:?}, which no unit walk admitted"))
+        self.graph.ref_variance(key)
     }
 
     /// Insert `node`, returning the e-class that contains it.
@@ -268,16 +367,19 @@ impl EGraph {
         // it as it was.
         let variance = node.variance(
             |key| self.ref_variance(key),
-            |child| self.columns.var_fact[self.columns.root(child)],
+            |child| self.graph.columns.var_fact[self.graph.columns.root(child)],
         );
         self.mutation_counter += 1;
-        let id = self.columns.push(Birth {
-            node,
-            const_fact: node.as_f32().map(f32::to_bits),
-            variance,
-            shape: node.shape(),
-            stamp: self.mutation_counter,
-        });
+        let id = self.graph.columns.push(
+            &mut self.saturation,
+            Birth {
+                node,
+                const_fact: node.as_f32().map(f32::to_bits),
+                variance,
+                shape: node.shape(),
+                stamp: self.mutation_counter,
+            },
+        );
         #[cfg(feature = "provenance-journal")]
         if let Some(journal) = &mut self.journal {
             journal.record_birth(columns::tag_of(id));
@@ -304,12 +406,12 @@ impl EGraph {
     /// rather than of one representative.
     #[must_use]
     pub(crate) fn variance(&self, class: EClassId) -> Variance {
-        self.columns.var_fact[self.columns.root(class)]
+        self.graph.columns.var_fact[self.graph.columns.root(class)]
     }
 
     pub fn union(&mut self, a: EClassId, b: EClassId) -> EClassId {
-        let a = self.columns.root_mut(a);
-        let b = self.columns.root_mut(b);
+        let a = self.graph.columns.root_mut(a);
+        let b = self.graph.columns.root_mut(b);
         if a == b {
             return a.id();
         }
@@ -339,7 +441,10 @@ impl EGraph {
         // Read the class-level fact, NOT the members: `rebuild` detaches a
         // class's members before performing congruence unions, so a
         // member-scanning guard is blind exactly when congruence closure runs.
-        let (fa, fb) = (self.columns.const_fact[a], self.columns.const_fact[b]);
+        let (fa, fb) = (
+            self.graph.columns.const_fact[a],
+            self.graph.columns.const_fact[b],
+        );
         if let (Some(ba), Some(bb)) = (fa, fb) {
             let (ca, cb) = (f32::from_bits(ba), f32::from_bits(bb));
             if ca != cb && ba != bb {
@@ -369,24 +474,24 @@ impl EGraph {
         let (parent, child) = if a < b { (a, b) } else { (b, a) };
         // Everything read at `child` happens before `link`, while it is still
         // a representative.
-        self.columns.merge_kinds(child, parent);
-        self.columns.absorb(child, parent);
+        self.saturation.merge_kinds(child, parent);
+        self.graph.columns.absorb(child, parent);
         // The guard above proved the two facts agree (or that at most one
         // exists), so `or` is a merge, not a choice.
-        if self.columns.const_fact[parent].is_none() {
-            self.columns.const_fact[parent] = self.columns.const_fact[child];
+        if self.graph.columns.const_fact[parent].is_none() {
+            self.graph.columns.const_fact[parent] = self.graph.columns.const_fact[child];
         }
         // Intersection, not a choice: see `var_fact`'s law.
-        self.columns.var_fact[parent] =
-            self.columns.var_fact[parent].intersection(self.columns.var_fact[child]);
-        self.columns.link(child, parent);
+        self.graph.columns.var_fact[parent] =
+            self.graph.columns.var_fact[parent].intersection(self.graph.columns.var_fact[child]);
+        self.graph.columns.link(child, parent);
         // `parent`'s own node list just changed (gained `child`'s nodes) —
         // see `class_is_dirty`/`DIRTY_TRACKING_MAX_DEPTH`.
         self.mutation_counter += 1;
-        self.columns.last_changed[parent] = self.mutation_counter;
+        self.saturation.last_changed[parent] = self.mutation_counter;
         let slot = Slot::at(parent);
-        if !self.columns.queued[slot] {
-            self.columns.queued[slot] = true;
+        if !self.saturation.queued[slot] {
+            self.saturation.queued[slot] = true;
             self.worklist.push(slot);
         }
         #[cfg(feature = "provenance-journal")]
@@ -428,21 +533,21 @@ impl EGraph {
             // Cleared by the slot pushed at (not the class it now
             // canonicalizes to) — matches `union`'s guard, which sets it by
             // the same slot.
-            self.columns.queued[slot] = false;
+            self.saturation.queued[slot] = false;
             // The item's class as it is now. A union inside the item can
             // merge it away, and the item keeps this name on purpose: the
             // memo takes it for the nodes the item keeps, `existing != id`
             // compares against it, and only the write-back asks again.
-            let id = self.columns.root_of(slot);
-            let mut detached = self.columns.detach(id);
+            let id = self.graph.columns.root_of(slot);
+            let mut detached = self.graph.columns.detach(id);
             let mut kept = Kept::new();
-            while let Some(tag) = self.columns.walk(&mut detached) {
-                let node = self.canonical_node(*self.columns.node(tag));
+            while let Some(tag) = self.graph.columns.walk(&mut detached) {
+                let node = self.canonical_node(*self.graph.columns.node(tag));
                 // The stored names are state: the arena keeps the form
                 // canonicalized now, retired or kept.
-                self.columns.set_node(tag, node);
+                self.graph.columns.set_node(tag, node);
                 if let Some(&existing) = self.memo.get(&node) {
-                    let existing = self.columns.root(existing);
+                    let existing = self.graph.columns.root(existing);
                     if existing != id {
                         // `union` keeps `min(id, existing)`, so this call
                         // can go either way, and the write-back at the
@@ -474,18 +579,18 @@ impl EGraph {
                         // one it can no longer be merged with, which is
                         // under-merging: it costs CSE, not correctness.
                         if self.find(id.id()) != self.find(existing.id()) {
-                            self.columns.retire(tag);
+                            self.graph.columns.retire(tag);
                             continue;
                         }
                     }
                 } else {
                     self.memo.insert(node, id.id());
                 }
-                self.columns.keep(&mut kept, tag);
+                self.graph.columns.keep(&mut kept, tag);
             }
             // After what the class `id` is in now holds: see
             // `Columns::write_back`.
-            self.columns.write_back(id, kept);
+            self.graph.columns.write_back(id, kept);
         }
         self.worklist.len()
     }
@@ -519,20 +624,17 @@ impl EGraph {
     /// index, so a caller depends on the order and not on how the members
     /// are stored. A count is `nodes(id).count()` and a position
     /// `nodes(id).nth(k)`; both walk the members. Extraction reads the node it
-    /// chose by id ([`Self::node`]), not by position. The members are a list
+    /// chose by id (`FrozenGraph::node`), not by position. The members are a list
     /// threaded through the arena, so a walk is one dependent load per member.
     pub fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
-        let class = self.columns.root(id);
-        self.columns
-            .members(class)
-            .map(move |tag| self.columns.node(tag))
+        self.graph.nodes(id)
     }
 
     /// The stable `ENodeId` tags of the class's nodes, yielded in step with
     /// [`Self::nodes`]: the k-th tag names the k-th node. A tag is the node's
     /// id in this graph: the k-th tag is the id of the k-th node.
     pub fn tags(&self, id: EClassId) -> impl Iterator<Item = ENodeId> + Clone + '_ {
-        self.columns.members(self.columns.root(id))
+        self.graph.tags(id)
     }
 
     /// [`Self::nodes`] for a class that is already its own representative, as
@@ -544,10 +646,11 @@ impl EGraph {
             canonical,
             "nodes_of_canonical is for a representative"
         );
-        let class = self.columns.root(canonical);
-        self.columns
+        let class = self.graph.columns.root(canonical);
+        self.graph
+            .columns
             .members(class)
-            .map(move |tag| self.columns.node(tag))
+            .map(move |tag| self.graph.columns.node(tag))
     }
 
     /// The mutation log (origins, application log, union journal), or `None`
@@ -573,26 +676,13 @@ impl EGraph {
     /// for a node another class holds, a retired node (law 7), or a tag past
     /// this graph's end. O(1).
     pub fn node_for_tag(&self, id: EClassId, tag: ENodeId) -> Option<&ENode> {
-        let minted_as = self.columns.class_of(tag)?;
-        if self.columns.is_retired(tag) || self.find(minted_as) != self.find(id) {
-            return None;
-        }
-        Some(self.columns.node(tag))
+        self.graph.node_for_tag(id, tag)
     }
 
     /// Whether node `tag` is a member of a class now: false exactly for a
     /// retired node (law 7) and for a tag past this graph's end.
     pub fn is_member(&self, tag: ENodeId) -> bool {
-        self.columns.class_of(tag).is_some() && !self.columns.is_retired(tag)
-    }
-
-    /// The node `tag` names in this graph's arena, as stored. For a tag the
-    /// caller read from [`Self::tags`] or that an extraction recorded, so known
-    /// to be a member: this is not a membership test, and a retired node is
-    /// answered too. A tag of unknown standing asks [`Self::node_for_tag`].
-    /// Panics past the end. O(1).
-    pub(crate) fn node(&self, tag: ENodeId) -> &ENode {
-        self.columns.node(tag)
+        self.graph.columns.class_of(tag).is_some() && !self.graph.columns.is_retired(tag)
     }
 
     /// The operand classes node `tag` names as stored, or none for a node that
@@ -601,7 +691,7 @@ impl EGraph {
     #[cfg(feature = "provenance-journal")]
     fn children_of(&self, tag: ENodeId) -> Vec<EClassId> {
         match self.is_member(tag) {
-            true => self.columns.node(tag).children(),
+            true => self.graph.columns.node(tag).children(),
             false => Vec::new(),
         }
     }
@@ -675,7 +765,7 @@ impl EGraph {
     /// it — so this is the count [`Limits::minted`] bounds, not the number of
     /// live classes ([`Self::class_ids`] yields those).
     pub fn num_classes(&self) -> usize {
-        self.columns.len()
+        self.graph.num_classes()
     }
 
     /// Iterate over all canonical e-class IDs.
@@ -684,23 +774,26 @@ impl EGraph {
     /// of their union-find tree) and have at least one node. Read from the
     /// live set the member store keeps.
     pub fn class_ids(&self) -> impl Iterator<Item = EClassId> + '_ {
-        self.columns.live().iter()
+        self.graph.columns.live().iter()
     }
 
     /// The live classes a rule rooted in `roots` can match at, in ascending
     /// id order: every live class that has held a node of one of its kinds.
     ///
     /// A superset of the classes holding such a node now (see
-    /// `Columns::kind_mask`), so a visited class is still checked node by
+    /// `SaturationColumns::kind_mask`), so a visited class is still checked node by
     /// node. [`RootShapes::Any`] names no kind and visits every live class.
     pub(super) fn candidate_classes(
         &self,
         roots: RootShapes,
     ) -> impl Iterator<Item = EClassId> + '_ {
-        self.columns.live().iter_within(move |word| match roots {
-            RootShapes::Any => u64::MAX,
-            RootShapes::Kinds(kinds) => self.columns.by_kind.word_of_any(kinds, word),
-        })
+        self.graph
+            .columns
+            .live()
+            .iter_within(move |word| match roots {
+                RootShapes::Any => u64::MAX,
+                RootShapes::Kinds(kinds) => self.saturation.by_kind.word_of_any(kinds, word),
+            })
     }
 
     /// Whether every member of every live class has its kind in the class's
@@ -708,12 +801,12 @@ impl EGraph {
     /// `candidate_classes` is sound by.
     fn kind_index_covers_members(&self) -> bool {
         self.class_ids().all(|id| {
-            let root = self.columns.root(id);
+            let root = self.graph.columns.root(id);
             self.nodes_of_canonical(id)
                 .filter_map(ENode::shape)
                 .all(|kind| {
-                    self.columns.kind_mask[root].contains(kind)
-                        && self.columns.by_kind.contains(kind, id)
+                    self.saturation.kind_mask[root].contains(kind)
+                        && self.saturation.by_kind.contains(kind, id)
                 })
         })
     }
@@ -721,7 +814,7 @@ impl EGraph {
     /// Nodes minted and not retired (law 7), duplicates counted: every member
     /// of every live class.
     pub fn node_count(&self) -> usize {
-        self.columns.len() - self.columns.retired_count()
+        self.graph.columns.len() - self.graph.columns.retired_count()
     }
 
     pub fn contains_const(&self, id: EClassId, val: f32) -> bool {
@@ -742,24 +835,24 @@ impl EGraph {
     /// that happened after the node was written, and `last_changed` is only
     /// ever indexed by canonical class slots.
     fn class_is_dirty(&self, canonical: EClassId, swept: u64) -> bool {
-        let canonical = self.columns.root(canonical);
-        if self.columns.last_changed[canonical] > swept {
+        let canonical = self.graph.columns.root(canonical);
+        if self.saturation.last_changed[canonical] > swept {
             return true;
         }
-        for tag in self.columns.members(canonical) {
-            let node = self.columns.node(tag);
+        for tag in self.graph.columns.members(canonical) {
+            let node = self.graph.columns.node(tag);
             for &child in node.children_slice() {
-                let child = self.columns.root(child);
-                if self.columns.last_changed[child] > swept {
+                let child = self.graph.columns.root(child);
+                if self.saturation.last_changed[child] > swept {
                     return true;
                 }
                 if DIRTY_TRACKING_MAX_DEPTH < 2 {
                     continue;
                 }
-                for gtag in self.columns.members(child) {
-                    let gnode = self.columns.node(gtag);
+                for gtag in self.graph.columns.members(child) {
+                    let gnode = self.graph.columns.node(gtag);
                     for &gchild in gnode.children_slice() {
-                        if self.columns.last_changed[self.columns.root(gchild)] > swept {
+                        if self.saturation.last_changed[self.graph.columns.root(gchild)] > swept {
                             return true;
                         }
                     }
@@ -1853,6 +1946,7 @@ mod tests {
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Distributive, Identity,
         InverseAnnihilation, Involution, MulRecip,
     };
+    use pixelflow_ir::{Kernel, KernelStore};
 
     /// `class`'s members in order, to compare with a literal.
     fn members(eg: &EGraph, class: EClassId) -> Vec<ENode> {
@@ -1875,7 +1969,7 @@ mod tests {
             let tag = ENodeId(id.index() as u64);
             match (
                 eg.node_for_tag(eg.find(id), tag),
-                eg.columns.is_retired(tag),
+                eg.graph.columns.is_retired(tag),
             ) {
                 (Some(member), false) => assert_eq!(
                     eg.canonical_node(*member),
@@ -1894,7 +1988,7 @@ mod tests {
         let listed: usize = eg.class_ids().map(|class| eg.tags(class).count()).sum();
         assert_eq!(
             listed,
-            eg.num_classes() - eg.columns.retired_count(),
+            eg.num_classes() - eg.graph.columns.retired_count(),
             "each id is listed by exactly one class, or retired"
         );
         assert_eq!(eg.pending_rebuilds(), 0, "the recipe ran the worklist dry");
@@ -2106,7 +2200,7 @@ mod tests {
             None,
             "a tag past the graph names nothing"
         );
-        assert!(eg.columns.is_retired(retired));
+        assert!(eg.graph.columns.is_retired(retired));
         assert!(!eg.is_member(retired));
         assert!(
             !eg.is_member(ENodeId(u64::MAX)),
@@ -2165,7 +2259,7 @@ mod tests {
             "the kept members follow in walk order"
         );
         assert_eq!(members(&eg, neg_b), [ENode::constant(2.0), ENode::Var(7)]);
-        assert!(eg.columns.is_retired(ENodeId(4)));
+        assert!(eg.graph.columns.is_retired(ENodeId(4)));
         assert!(!eg.is_member(ENodeId(4)));
         assert_eq!(eg.node_for_tag(neg_b, ENodeId(4)), None);
         assert_eq!(
@@ -2214,7 +2308,7 @@ mod tests {
         );
         assert_eq!(eg.tags(x).collect::<Vec<_>>(), [ENodeId(3), ENodeId(6)]);
         assert_eq!(members(&eg, x), [ENode::Var(5), ENode::constant(2.0)]);
-        assert!(eg.columns.is_retired(ENodeId(5)));
+        assert!(eg.graph.columns.is_retired(ENodeId(5)));
         assert_eq!(eg.node_count(), eg.num_classes() - 1);
         assert_every_id_is_a_member(
             &eg,
@@ -3213,6 +3307,98 @@ mod tests {
             1,
             "the sum the first prediction minted is not the product's growth"
         );
+    }
+
+    /// Freezing moves the arena rather than copying it: the cache's peak is the
+    /// graph's, not twice it.
+    #[test]
+    fn freezing_moves_the_arena() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let one = eg.add(ENode::constant(1.0));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, one]));
+        let tag = eg.tags(sum).next().expect("a class has a member");
+        let before: *const ENode = eg.as_frozen().node(tag);
+        let frozen = eg.freeze();
+        assert!(core::ptr::eq(frozen.node(tag), before));
+        assert_eq!(frozen.find(sum), sum);
+        assert_eq!(frozen.nodes(sum).count(), 1);
+    }
+
+    /// A frozen graph keeps what extraction reads, as literal facts about the
+    /// recipe of `a_node_whose_union_is_refused_leaves_its_class` (same ids):
+    /// each class's members and tags in order, the retired node answered by no
+    /// class, a live node answered in its own class only, the ids minted, and
+    /// the variance of a unit admitted before the freeze.
+    #[test]
+    fn a_frozen_graph_keeps_what_extraction_reads() {
+        let admitted = KernelStore::intern(&Kernel::x().add(&Kernel::constant(0.75)));
+        let never_admitted = KernelStore::intern(&Kernel::y().add(&Kernel::constant(0.75)));
+        let mut eg = EGraph::new();
+        eg.admit_unit(admitted, Variance::X);
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let two = eg.add(ENode::constant(2.0)); // 1
+        let a = eg.add(ENode::Var(0)); // 2
+        let b = eg.add(ENode::Var(1)); // 3
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 4
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 5
+        eg.union(neg_a, one);
+        eg.union(neg_b, two);
+        eg.union(a, b);
+        eg.rebuild();
+        let retired = ENodeId(5);
+        assert!(
+            !eg.is_member(retired),
+            "precondition: the recipe retires node 5"
+        );
+
+        let frozen = eg.freeze();
+
+        assert_eq!(frozen.num_classes(), 6, "six ids were minted");
+        assert_eq!(frozen.find(b), a, "the smaller id survives");
+        assert_eq!(frozen.find(neg_a), one);
+        assert_eq!(frozen.find(neg_b), two);
+        assert_eq!(
+            frozen.nodes(one).copied().collect::<Vec<_>>(),
+            [ENode::constant(1.0), ENode::apply(OpKind::Neg, &[a])]
+        );
+        assert_eq!(
+            frozen.tags(one).collect::<Vec<_>>(),
+            [ENodeId(0), ENodeId(4)]
+        );
+        assert_eq!(
+            frozen.nodes(two).copied().collect::<Vec<_>>(),
+            [ENode::constant(2.0)]
+        );
+        assert_eq!(frozen.tags(two).collect::<Vec<_>>(), [ENodeId(1)]);
+        assert_eq!(
+            frozen.nodes(b).copied().collect::<Vec<_>>(),
+            [ENode::Var(0), ENode::Var(1)],
+            "a union gives the survivor's members, then the absorbed ones"
+        );
+        assert_eq!(frozen.tags(a).collect::<Vec<_>>(), [ENodeId(2), ENodeId(3)]);
+
+        assert_eq!(frozen.node_for_tag(two, retired), None);
+        assert_eq!(frozen.node_for_tag(one, retired), None);
+        assert_eq!(
+            frozen.node_for_tag(one, ENodeId(0)),
+            Some(&ENode::constant(1.0)),
+            "a live node answers in its own class"
+        );
+        assert_eq!(
+            frozen.node_for_tag(two, ENodeId(0)),
+            None,
+            "a live node answers nothing in another class"
+        );
+        assert_eq!(
+            frozen.node_for_tag(one, ENodeId(1_000)),
+            None,
+            "a tag past the graph names nothing"
+        );
+
+        assert_eq!(frozen.unit_variance(admitted), Some(Variance::X));
+        assert_eq!(frozen.ref_variance(admitted), Variance::X);
+        assert_eq!(frozen.unit_variance(never_admitted), None);
     }
 }
 
