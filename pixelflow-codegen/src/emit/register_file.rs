@@ -4,7 +4,8 @@
 //! constructor checks, so a declaration that contradicts itself does not
 //! exist for `Pool::mint` or `Leases::new` to trust.
 
-use super::FileId;
+use super::regalloc::resource::RegNo;
+use super::{FileId, GeneralFile};
 
 /// The allocatable members of each file, by hardware number.
 #[derive(Copy, Clone, Debug)]
@@ -18,9 +19,9 @@ pub(super) struct Members {
 /// Where the ABI puts the collapse's three arguments.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct EntryRegisters {
-    pub(super) ctx: u8,
-    pub(super) out: u8,
-    pub(super) pitch: u8,
+    pub(super) ctx: RegNo<GeneralFile>,
+    pub(super) out: RegNo<GeneralFile>,
+    pub(super) pitch: RegNo<GeneralFile>,
 }
 
 /// What a backend's register files *are*: the allocatable members of each, by
@@ -85,6 +86,7 @@ impl RegisterFile {
         );
         assert!(members.flags.len() <= 1, "there is one flags register");
         let EntryRegisters { ctx, out, pitch } = entry;
+        let (ctx, out, pitch) = (ctx.bits(), out.bits(), pitch.bits());
         assert!(
             contains(members.general, ctx)
                 && contains(members.general, out)
@@ -135,10 +137,13 @@ mod tests {
         opmask: &[1, 2],
         flags: &[0],
     };
+    const fn general(number: u8) -> RegNo<GeneralFile> {
+        RegNo::architectural(number)
+    }
     const VALID_ENTRY: EntryRegisters = EntryRegisters {
-        ctx: 0,
-        out: 1,
-        pitch: 2,
+        ctx: general(0),
+        out: general(1),
+        pitch: general(2),
     };
 
     #[test]
@@ -148,9 +153,9 @@ mod tests {
         assert_eq!(file.members(FileId::General), VALID_MEMBERS.general);
         assert_eq!(file.members(FileId::Opmask), VALID_MEMBERS.opmask);
         assert_eq!(file.members(FileId::Flags), VALID_MEMBERS.flags);
-        assert_eq!(file.entry().ctx, 0);
-        assert_eq!(file.entry().out, 1);
-        assert_eq!(file.entry().pitch, 2);
+        assert_eq!(file.entry().ctx, general(0));
+        assert_eq!(file.entry().out, general(1));
+        assert_eq!(file.entry().pitch, general(2));
         assert_eq!(file.vector_bytes(), 32);
     }
 
@@ -198,7 +203,7 @@ mod tests {
     #[should_panic(expected = "an entry argument arrives in a register outside the general file")]
     fn an_entry_register_outside_the_general_file_is_refused() {
         let entry = EntryRegisters {
-            ctx: 9,
+            ctx: general(9),
             ..VALID_ENTRY
         };
         RegisterFile::new(VALID_MEMBERS, entry, 32);
@@ -208,9 +213,9 @@ mod tests {
     #[should_panic(expected = "two entry arguments arrive in one register")]
     fn two_entry_arguments_sharing_one_register_are_refused() {
         let entry = EntryRegisters {
-            ctx: 0,
-            out: 0,
-            pitch: 2,
+            ctx: general(0),
+            out: general(0),
+            pitch: general(2),
         };
         RegisterFile::new(VALID_MEMBERS, entry, 32);
     }

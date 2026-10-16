@@ -26,11 +26,12 @@
 //! AVX-512 tier resets `k1`.
 
 use super::build::Builder;
+use super::regalloc::resource::RegNo;
 use super::x86_64;
 use super::x86_64::{Alu, Imm8, Lanewise, Mem, NoDisp, Pred, Sign, Vex, VexPrefix, X86, emit};
 use super::{
     Bound, Edges, EncodedInst, Integer, LaneOp, Pointer, Rebind, Selected, Stage, Store, Test,
-    Value, ValueName, Vector,
+    Value, ValueName, Vector, VectorFile,
 };
 use crate::error::CompileError;
 use crate::program::IfArm;
@@ -98,7 +99,7 @@ impl X86 for Avx2 {
     const VECTOR_BYTES: u64 = 32;
 
     /// `vpcmpeqd dst, dst, dst`
-    fn ones(dst: u8) -> EncodedInst {
+    fn ones(dst: RegNo<VectorFile>) -> EncodedInst {
         Vex::m0f_66(0x76).rrr(dst, dst, dst)
     }
 

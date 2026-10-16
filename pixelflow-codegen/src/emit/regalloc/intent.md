@@ -44,15 +44,18 @@ preserves a value from its definition to every read.
 `mod.rs`: `local` is the allocator (`Allocate`, the `Pass` from a selected
 `Function` to an allocated one), `policy` is what it prefers
 (`EvictionRank`, `carried`), `resource` is what it allocates from (`Reg`,
-`Pool`, `Lease`, `Frame`, the `In`/`Out`/`InOut` borrows). Everything is
-`pub(super)` or `pub(in crate::emit)`; nothing escapes `emit/`.
+`RegNo`, `Pool`, `Lease`, `Frame`, the `In`/`Out`/`InOut` borrows). Everything
+is `pub(super)` or `pub(in crate::emit)`; nothing escapes `emit/`.
 
 ## Enforced by
 - Types: `Reg` is not `Copy`, has one constructor, and is branded by backend,
   so a register chosen elsewhere, two holders of one register, or an AVX-512
-  token in an AVX2 encoder does not compile (`resource.rs`).
+  token in an AVX2 encoder does not compile (`resource.rs`). A register
+  field takes a `RegNo<F>`, read off a `Reg` or one of the ISA's own
+  constants, and never a bare `u8`; an opcode's `/digit` is another type.
 - `scripts/check-emit-boundary.sh` (CI job "Emit boundary"): `program/`
-  names no allocator and no register.
+  names no allocator and no register, and `RegNo::architectural` appears
+  only as a `const` declaration of a literal.
 - desloppify `registers-come-from-the-allocator`, `phases-in-order`,
   `invariant-in-comment` (`copyable_resource`).
 - The as-if contract: tests observe values, refusals and no-crash through
@@ -61,8 +64,6 @@ preserves a value from its definition to every read.
   `residency.rs`, `loops.rs`; `docs/process/2026-10-13-tests-check-the-as-if-contract.md`).
 
 ## Behind
-- An encoder's register field takes a bare `u8` from `Reg::number`, so the
-  header's promise is one step weaker than it reads (S3).
 - Nothing in CI checks the ABI's callee-saved registers (S1).
 
 ## Decided in

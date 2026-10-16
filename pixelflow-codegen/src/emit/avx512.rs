@@ -24,14 +24,14 @@
 //! red zone).
 
 use super::build::{Builder, Spiller};
-use super::regalloc::resource::FrameSlot;
+use super::regalloc::resource::{FrameSlot, RegNo};
 use super::x86_64;
 use super::x86_64::{
-    Direction, Evex, EvexPrefix, Imm32, Lanewise, Mem, NoDisp, Pred, Sign, Vex, X86, emit,
+    Direction, Evex, EvexPrefix, Lanewise, Mem, NoDisp, Pred, Sign, Vex, X86, emit,
 };
 use super::{
-    Bound, ClassId, Edges, EncodedInst, Flags, Integer, LaneOp, Opmask, Pointer, Rebind, Selected,
-    Stage, Store, Test, Value, ValueName, Vector, slot_disp,
+    Bound, ClassId, Edges, EncodedInst, Flags, Integer, LaneOp, Opmask, OpmaskFile, Pointer,
+    Rebind, Selected, Stage, Store, Test, Value, ValueName, Vector, VectorFile,
 };
 use crate::error::CompileError;
 use crate::program::BinaryOp;
@@ -163,7 +163,7 @@ const KXNOR: u8 = 0x46;
 
 /// `k0`, which nothing writes: `kxnorw dst, k0, k0` is all-ones however it was
 /// left.
-const K0: u8 = 0;
+const K0: RegNo<OpmaskFile> = RegNo::architectural(0);
 
 /// `vpternlogd`'s truth table for all-ones.
 const TERNLOG_ONES: u8 = 0xFF;
@@ -216,7 +216,7 @@ impl X86 for Avx512 {
     const VECTOR_BYTES: u64 = 64;
 
     /// `vpternlogd dst, dst, dst, 0xFF`
-    fn ones(dst: u8) -> EncodedInst {
+    fn ones(dst: RegNo<VectorFile>) -> EncodedInst {
         Evex::m0f3a_66(0x25).imm(TERNLOG_ONES).rrr(dst, dst, dst)
     }
 
@@ -398,14 +398,12 @@ impl X86 for Avx512 {
             Extra::KOnes { dst } => Vex::m0f(KXNOR).rrr(dst.number(), K0, K0),
             Extra::KMov { dst, src } => Vex::m0f(0x90).xmm().rr(dst.number(), src.number()),
             Extra::SpillMask { src, slot } => {
-                Vex::m0f(0x91)
-                    .xmm()
-                    .rm(src.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
+                let (base, disp) = x86_64::frame(slot);
+                Vex::m0f(0x91).xmm().rm(src.number(), base, disp)
             }
             Extra::ReloadMask { dst, slot } => {
-                Vex::m0f(0x90)
-                    .xmm()
-                    .rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
+                let (base, disp) = x86_64::frame(slot);
+                Vex::m0f(0x90).xmm().rm(dst.number(), base, disp)
             }
         }
     }

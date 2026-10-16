@@ -13,12 +13,12 @@
 
 use super::asm::Encoding;
 use super::build::{Builder, Def, Spiller};
-use super::regalloc::resource::FrameSlot;
+use super::regalloc::resource::{FrameSlot, RegNo};
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
-    Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
-    LaneOp, Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName,
-    Vector, frame_bytes, slot_disp,
+    Bound, Class, ClassId, Edges, EncodedInst, File, Flags, FrameSize, GeneralFile, Integer,
+    IsaBackend, Label, LaneOp, OpmaskFile, Pointer, Rebind, STACK_PAGE, Selected, Stage, Store,
+    Target, Test, Value, ValueName, Vector, VectorFile, frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
 use crate::program::{BinaryOp, CompareOp, ShiftOp, UnaryOp};
@@ -39,16 +39,19 @@ pub(super) const PTR_BYTES: i32 = 8;
 /// three arguments, and the stack pointer. Every other register is the
 /// allocator's choice.
 pub(super) mod gpr {
+    use crate::emit::GeneralFile;
+    use crate::emit::regalloc::resource::RegNo;
+
     /// 3rd integer argument: the pitch.
-    pub(in crate::emit) const RDX: u8 = 2;
+    pub(in crate::emit) const RDX: RegNo<GeneralFile> = RegNo::architectural(2);
     /// The stack pointer.
-    pub(in crate::emit) const RSP: u8 = 4;
+    pub(in crate::emit) const RSP: RegNo<GeneralFile> = RegNo::architectural(4);
     /// 2nd integer argument: the output plane.
-    pub(in crate::emit) const RSI: u8 = 6;
+    pub(in crate::emit) const RSI: RegNo<GeneralFile> = RegNo::architectural(6);
     /// 1st integer argument: the context pointer — the array of buffer base
     /// pointers, then the uniform and origin blocks. Read-only for the whole
     /// kernel.
-    pub(in crate::emit) const RDI: u8 = 7;
+    pub(in crate::emit) const RDI: RegNo<GeneralFile> = RegNo::architectural(7);
 }
 
 /// An x86-64 general-register instruction.
@@ -276,16 +279,16 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
             }
             Gp::MovImm32 { dst, imm } => {
                 let dst = dst.number();
-                if dst >= 8 {
+                if bit(dst, 3) == 1 {
                     inst.push(0x41);
                 }
-                inst.push(0xB8 | (dst & 7));
+                inst.push(0xB8 | low3(dst));
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Movabs { dst, imm } => {
                 let dst = dst.number();
-                inst.push(0x48 | ((dst >> 3) & 1));
-                inst.push(0xB8 | (dst & 7));
+                inst.push(0x48 | bit(dst, 3));
+                inst.push(0xB8 | low3(dst));
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Imul { dst, src, .. } => {
@@ -297,7 +300,7 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
             }
             Gp::Lea4 { dst, base, index } => {
                 let (dst, base, index) = (dst.number(), base.number(), index.number());
-                debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
+                debug_assert!(low3(index) != RM_SIB, "rsp/r12 cannot index a SIB");
                 inst.push(0x48 | (bit(dst, 3) << 2) | (bit(index, 3) << 1) | bit(base, 3));
                 inst.push(0x8D);
                 scaled4_operand_into(&mut inst, dst, base, index);
@@ -309,36 +312,37 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
                 mem_operand_into(&mut inst, dst, base, src.disp);
             }
             Gp::SpillPtr { src, slot } => {
-                spill_into(&mut inst, src.number(), Imm32(slot_disp(slot)));
+                spill_into(&mut inst, src.number(), slot);
             }
             Gp::SpillInt { src, slot } => {
-                spill_into(&mut inst, src.number(), Imm32(slot_disp(slot)));
+                spill_into(&mut inst, src.number(), slot);
             }
             Gp::ReloadPtr { dst, slot } => {
-                reload_into(&mut inst, dst.number(), Imm32(slot_disp(slot)));
+                reload_into(&mut inst, dst.number(), slot);
             }
             Gp::ReloadInt { dst, slot } => {
-                reload_into(&mut inst, dst.number(), Imm32(slot_disp(slot)));
+                reload_into(&mut inst, dst.number(), slot);
             }
             Gp::Test { src, .. } => {
                 let src = src.number();
-                if src >= 8 {
+                if bit(src, 3) == 1 {
                     inst.push(0x45);
                 }
                 inst.push(0x85);
                 inst.push(modrm_rr(src, src));
             }
             Gp::CmpByte { src, imm, .. } => {
-                match src.number() {
+                let src = src.number();
+                match (bit(src, 3), low3(src)) {
                     // The accumulator has a short form.
-                    0 => inst.push(0x3C),
-                    n => {
+                    (0, 0) => inst.push(0x3C),
+                    (high, low) => {
                         // Without a REX prefix 4-7 name `ah`..`bh`, not `spl`..`dil`.
-                        if n >= 4 {
-                            inst.push(0x40 | ((n >> 3) & 1));
+                        if high == 1 || low >= 4 {
+                            inst.push(0x40 | high);
                         }
                         inst.push(0x80);
-                        inst.push(modrm_rr(7, n));
+                        inst.push(modrm_rr(Digit::CMP, src));
                     }
                 }
                 inst.push(*imm);
@@ -348,8 +352,7 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
             Gp::Fallthrough { .. } => {}
             Gp::Enter { size, .. } => inst = sub_rsp(frame_bytes(*size)),
             Gp::Ret { size, .. } => {
-                inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(0, gpr::RSP)]);
-                inst.extend(&frame_bytes(*size).to_le_bytes());
+                inst = add_rsp(frame_bytes(*size));
                 // `vzeroupper`: `VEX.128.0F.WIG 77`, zeroing bits 128 and up of
                 // vector registers 0–15, the sixteen a legacy-SSE instruction
                 // can name. VEX on every tier.
@@ -421,7 +424,7 @@ pub(super) trait X86: Sized + 'static {
     const VECTOR_BYTES: u64;
 
     /// All-ones in register `dst`, whatever it held.
-    fn ones(dst: u8) -> EncodedInst;
+    fn ones(dst: RegNo<VectorFile>) -> EncodedInst;
     /// The mask `Neg` xors and `Abs` ands: the sign bit, or all that is below
     /// it.
     fn sign_mask(b: &mut Builder<Self>, sign: Sign) -> Result<Value<Vector>, CompileError>;
@@ -921,21 +924,81 @@ pub(super) struct Imm8(pub(super) i8);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Imm32(pub(super) i32);
 
+/// An opcode extension: the `/digit` an instruction carries in ModRM.reg where
+/// another form of it names a register. A different type from [`RegNo`], so
+/// `modrm_rr(5, rsp)` is not a thing and neither is a digit where a register
+/// belongs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) struct Digit(u8);
+
+impl Digit {
+    /// `81 /0`: `add r/m64, imm32`.
+    const ADD: Self = Self(0);
+    /// `81 /5`: `sub r/m64, imm32`.
+    const SUB: Self = Self(5);
+    /// `80 /7`: `cmp r/m8, imm8`.
+    const CMP: Self = Self(7);
+}
+
+/// What the ModRM.reg field holds: a register, or the opcode's [`Digit`]. The
+/// one place a backend turns a [`RegNo`] into the bits it assembles, so the
+/// helpers below (`bit`, `low3`, `nibble`) are the only readers of a number.
+pub(super) trait RegField: Copy {
+    fn field(self) -> u8;
+}
+
+impl<F: File> RegField for RegNo<F> {
+    fn field(self) -> u8 {
+        self.bits()
+    }
+}
+
+impl RegField for Digit {
+    fn field(self) -> u8 {
+        self.0
+    }
+}
+
+/// One bit of a register number, as 0 or 1.
+fn bit(register: impl RegField, at: u8) -> u8 {
+    (register.field() >> at) & 1
+}
+
+/// The low three bits of a register number: the part ModRM and SIB hold.
+fn low3(register: impl RegField) -> u8 {
+    register.field() & 7
+}
+
+/// The low four bits of a register number: what VEX's and EVEX's `vvvv` hold.
+fn nibble(register: impl RegField) -> u8 {
+    register.field() & 0xF
+}
+
 /// `REX.W` plus the extension bits for a two-register form.
 ///
 /// `R` extends the ModRM.reg field (the source here), `B` extends ModRM.rm
 /// (the destination).
 #[inline(always)]
-const fn rex_w(reg: u8, rm: u8) -> u8 {
-    0x48 | (((reg >> 3) & 1) << 2) | ((rm >> 3) & 1)
+fn rex_w(reg: impl RegField, rm: impl RegField) -> u8 {
+    0x48 | (bit(reg, 3) << 2) | bit(rm, 3)
+}
+
+/// `rsp` moved by `bytes`: `81 /digit id`, whose `/digit` says add or sub.
+fn rsp_imm32(digit: Digit, bytes: u32) -> EncodedInst {
+    let mut inst = EncodedInst::new();
+    inst.extend(&[rex_w(digit, gpr::RSP), 0x81, modrm_rr(digit, gpr::RSP)]);
+    inst.extend(&bytes.to_le_bytes());
+    inst
+}
+
+/// `add rsp, imm32`.
+fn add_rsp(bytes: u32) -> EncodedInst {
+    rsp_imm32(Digit::ADD, bytes)
 }
 
 /// `sub rsp, imm32`.
 fn sub_rsp(bytes: u32) -> EncodedInst {
-    let mut inst = EncodedInst::new();
-    inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(5, gpr::RSP)]);
-    inst.extend(&bytes.to_le_bytes());
-    inst
+    rsp_imm32(Digit::SUB, bytes)
 }
 
 /// `mov dword [rsp], 0`: `C7 /0 id` at the SIB form `rsp` always takes.
@@ -960,28 +1023,36 @@ fn enter_probing(size: u32, out: &mut Encoding<'_>) {
 
 /// ModRM for the register-direct form: `mod = 11`.
 #[inline(always)]
-const fn modrm_rr(reg: u8, rm: u8) -> u8 {
-    0xC0 | ((reg & 7) << 3) | (rm & 7)
+fn modrm_rr(reg: impl RegField, rm: impl RegField) -> u8 {
+    0xC0 | (low3(reg) << 3) | low3(rm)
 }
 
 /// `REX.W opcode /r` with both operands in registers.
 #[inline(always)]
-const fn rr(opcode: u8, dst: u8, src: u8) -> [u8; 3] {
+fn rr(opcode: u8, dst: impl RegField, src: impl RegField) -> [u8; 3] {
     [rex_w(src, dst), opcode, modrm_rr(src, dst)]
 }
 
+/// A frame slot as a memory operand: the base and displacement of `[rsp + slot]`.
+/// The one place the stack pointer addresses a slot.
+pub(super) fn frame(slot: &FrameSlot) -> (RegNo<GeneralFile>, Imm32) {
+    (gpr::RSP, Imm32(slot_disp(slot)))
+}
+
 /// `mov [rsp + slot], src`.
-fn spill_into(inst: &mut EncodedInst, src: u8, slot: Imm32) {
-    inst.push(rex_w(src, gpr::RSP));
+fn spill_into(inst: &mut EncodedInst, src: RegNo<GeneralFile>, slot: &FrameSlot) {
+    let (base, disp) = frame(slot);
+    inst.push(rex_w(src, base));
     inst.push(0x89);
-    mem_operand_into(inst, src, gpr::RSP, slot);
+    mem_operand_into(inst, src, base, disp);
 }
 
 /// `mov dst, [rsp + slot]`.
-fn reload_into(inst: &mut EncodedInst, dst: u8, slot: Imm32) {
-    inst.push(rex_w(dst, gpr::RSP));
+fn reload_into(inst: &mut EncodedInst, dst: RegNo<GeneralFile>, slot: &FrameSlot) {
+    let (base, disp) = frame(slot);
+    inst.push(rex_w(dst, base));
     inst.push(0x8B);
-    mem_operand_into(inst, dst, gpr::RSP, slot);
+    mem_operand_into(inst, dst, base, disp);
 }
 
 /// The 4-bit condition an x86 `jcc` tests: the conditions the emitter
@@ -1075,12 +1146,22 @@ pub(super) enum Rounding {
     Ceil = 2,
 }
 
-/// The direction of an integer shift by an immediate: the `/digit` of its
-/// opcode.
+/// The direction of an integer shift by an immediate, which is the `/digit` of
+/// its opcode ([`Direction::digit`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Direction {
-    Left = 6,
-    Right = 2,
+    Left,
+    Right,
+}
+
+impl Direction {
+    /// `0F 72 /6` is `pslld`, `/2` is `psrld`.
+    const fn digit(self) -> Digit {
+        match self {
+            Direction::Left => Digit(6),
+            Direction::Right => Digit(2),
+        }
+    }
 }
 
 // =============================================================================
@@ -1115,23 +1196,44 @@ pub(super) enum Pp {
     F3 = 2,
 }
 
-/// The registers one instruction names, by hardware number and uninverted:
-/// what a [`Scheme`] folds into its prefix bits.
+/// The register bits one instruction's prefix carries, uninverted: what a
+/// [`Scheme`] folds into its prefix.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Ext {
-    /// ModRM.reg (or the `/digit`): `R`, and EVEX's `R'`.
-    reg: u8,
+    /// `R`: bit 3 of ModRM.reg (or of the `/digit`).
+    r: u8,
+    /// EVEX's `R'`: bit 4 of ModRM.reg.
+    r4: u8,
     /// `X`: bit 3 of the SIB index, or, where `rm` is a register, bit 4 of it,
     /// which only EVEX has the room to say.
     x: u8,
     /// `B`: bit 3 of ModRM.rm, or of the base.
     b: u8,
-    /// `vvvv`: the second source, or `None` where the instruction has none and
-    /// the field must read `1111`.
+    /// `vvvv`: the low four bits of the second source, or `None` where the
+    /// instruction has none and the field must read `1111`.
     vvvv: Option<u8>,
-    /// The register whose bit 4 is EVEX's `V'`: the `vvvv` source, or a VSIB
-    /// index.
+    /// EVEX's `V'`: bit 4 of the `vvvv` source, or of a VSIB index.
     v: u8,
+}
+
+impl Ext {
+    /// The bits ModRM.reg contributes.
+    fn reg(reg: impl RegField) -> Self {
+        Self {
+            r: bit(reg, 3),
+            r4: bit(reg, 4),
+            ..Self::default()
+        }
+    }
+
+    /// With `source` as the `vvvv` operand.
+    fn vvvv(self, source: impl RegField) -> Self {
+        Self {
+            vvvv: Some(nibble(source)),
+            v: bit(source, 4),
+            ..self
+        }
+    }
 }
 
 /// A prefix encoding for the vector instructions: [`VexPrefix`] or
@@ -1149,11 +1251,6 @@ pub(super) trait Scheme: Copy {
     fn xmm(self) -> Self;
     /// Write the prefix and the opcode byte.
     fn write(op: &Opcode<Self>, ext: Ext, inst: &mut EncodedInst);
-}
-
-/// One bit of a register number, as 0 or 1.
-const fn bit(register: u8, at: u8) -> u8 {
-    (register >> at) & 1
 }
 
 /// A prefix stores the register-extension bits inverted.
@@ -1182,7 +1279,7 @@ impl Scheme for VexPrefix {
     fn write(op: &Opcode<Self>, e: Ext, inst: &mut EncodedInst) {
         let rest =
             ((!e.vvvv.unwrap_or(0) & 0xF) << 3) | ((op.scheme.l256 as u8) << 2) | op.pp as u8;
-        let r = inverted(bit(e.reg, 3)) << 7;
+        let r = inverted(e.r) << 7;
         if op.map == Map::M0F && !op.w && e.x | e.b == 0 {
             inst.extend(&[0xC5, r | rest]);
         } else {
@@ -1201,14 +1298,17 @@ impl Scheme for VexPrefix {
 pub(super) struct EvexPrefix {
     /// `EVEX.L'L`: `10` for the `zmm` form, `00` for `xmm`.
     ll: u8,
-    /// `EVEX.aaa`: the writemask register, or 0 for none. Merge-masking
+    /// `EVEX.aaa`: the writemask register, or none (`aaa = 0`). Merge-masking
     /// (`z = 0`), which for a store means the masked-off lanes are left in
     /// memory untouched.
-    aaa: u8,
+    aaa: Option<RegNo<OpmaskFile>>,
 }
 
 impl Scheme for EvexPrefix {
-    const FULL: Self = Self { ll: 0b10, aaa: 0 };
+    const FULL: Self = Self {
+        ll: 0b10,
+        aaa: None,
+    };
     const RSQRT: Opcode<Self> = Opcode::m0f38_66(0x4E);
     const RECIP: Opcode<Self> = Opcode::m0f38_66(0x4C);
 
@@ -1218,16 +1318,17 @@ impl Scheme for EvexPrefix {
 
     fn write(op: &Opcode<Self>, e: Ext, inst: &mut EncodedInst) {
         let vvvv = !e.vvvv.unwrap_or(0) & 0xF;
+        let aaa = op.scheme.aaa.map_or(0, RegField::field);
         inst.extend(&[
             0x62,
-            (inverted(bit(e.reg, 3)) << 7)
+            (inverted(e.r) << 7)
                 | (inverted(e.x) << 6)
                 | (inverted(e.b) << 5)
-                | (inverted(bit(e.reg, 4)) << 4)
+                | (inverted(e.r4) << 4)
                 | op.map as u8,
             ((op.w as u8) << 7) | (vvvv << 3) | (1 << 2) | op.pp as u8,
             // z = 0 (merge), L'L, b(roadcast) = 0, V', aaa.
-            (op.scheme.ll << 5) | (inverted(bit(e.v, 4)) << 3) | op.scheme.aaa,
+            (op.scheme.ll << 5) | (inverted(e.v) << 3) | aaa,
             op.byte,
         ]);
     }
@@ -1361,22 +1462,25 @@ impl<S: Scheme> Opcode<S> {
     }
 
     /// `op reg, vvvv, rm` with `rm` a register: the three-operand form.
-    pub(super) fn rrr(self, reg: u8, vvvv: u8, rm: u8) -> EncodedInst {
-        self.registers(reg, Some(vvvv), rm)
+    pub(super) fn rrr<V: File, M: File>(
+        self,
+        reg: impl RegField,
+        vvvv: RegNo<V>,
+        rm: RegNo<M>,
+    ) -> EncodedInst {
+        self.registers(Ext::reg(reg).vvvv(vvvv), reg, rm)
     }
 
     /// `op reg, rm` with no `vvvv` source.
-    pub(super) fn rr(self, reg: u8, rm: u8) -> EncodedInst {
-        self.registers(reg, None, rm)
+    pub(super) fn rr<M: File>(self, reg: impl RegField, rm: RegNo<M>) -> EncodedInst {
+        self.registers(Ext::reg(reg), reg, rm)
     }
 
-    fn registers(self, reg: u8, vvvv: Option<u8>, rm: u8) -> EncodedInst {
+    fn registers<M: File>(self, ext: Ext, reg: impl RegField, rm: RegNo<M>) -> EncodedInst {
         let ext = Ext {
-            reg,
             x: bit(rm, 4),
             b: bit(rm, 3),
-            vvvv,
-            v: vvvv.unwrap_or(0),
+            ..ext
         };
         self.encode(ext, |inst| inst.push(modrm_rr(reg, rm)))
     }
@@ -1388,35 +1492,39 @@ impl<S: Scheme> Opcode<S> {
 
     /// `op reg, [base + disp]`: the memory-operand form, for any base and any
     /// displacement the scheme reads as written.
-    pub(super) fn rm<D: DispIn<S>>(self, reg: u8, base: u8, disp: D) -> EncodedInst {
+    pub(super) fn rm<D: DispIn<S>>(
+        self,
+        reg: impl RegField,
+        base: RegNo<GeneralFile>,
+        disp: D,
+    ) -> EncodedInst {
         let ext = Ext {
-            reg,
             b: bit(base, 3),
-            ..Ext::default()
+            ..Ext::reg(reg)
         };
         self.encode(ext, |inst| mem_operand_into(inst, reg, base, disp))
     }
 
     /// `op reg, [rip + disp32]`: the displacement is the last four bytes, a
     /// label field.
-    pub(super) fn rip(self, reg: u8) -> EncodedInst {
-        let ext = Ext {
-            reg,
-            ..Ext::default()
-        };
+    pub(super) fn rip(self, reg: impl RegField) -> EncodedInst {
         debug_assert!(self.imm.is_none(), "an imm8 would follow the label field");
-        self.encode(ext, |inst| rip_operand_into(inst, reg))
+        self.encode(Ext::reg(reg), |inst| rip_operand_into(inst, reg))
     }
 
     /// `op reg, [base + index*4]` — the SIB form with a scaled index, which a
     /// broadcast load reads one element of a plane through.
-    pub(super) fn rm_scaled4(self, reg: u8, base: u8, index: u8) -> EncodedInst {
-        debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
+    pub(super) fn rm_scaled4(
+        self,
+        reg: impl RegField,
+        base: RegNo<GeneralFile>,
+        index: RegNo<GeneralFile>,
+    ) -> EncodedInst {
+        debug_assert!(low3(index) != RM_SIB, "rsp/r12 cannot index a SIB");
         let ext = Ext {
-            reg,
             x: bit(index, 3),
             b: bit(base, 3),
-            ..Ext::default()
+            ..Ext::reg(reg)
         };
         self.encode(ext, |inst| scaled4_operand_into(inst, reg, base, index))
     }
@@ -1428,28 +1536,28 @@ impl<S: Scheme> Opcode<S> {
     /// `vvvv` is the gather's mask; EVEX has the mask in `aaa` and none here.
     pub(super) fn vsib_scaled4(
         self,
-        reg: u8,
-        vvvv: Option<u8>,
-        base: u8,
-        index: u8,
+        reg: impl RegField,
+        vvvv: Option<RegNo<VectorFile>>,
+        base: RegNo<GeneralFile>,
+        index: RegNo<VectorFile>,
     ) -> EncodedInst {
         let ext = Ext {
-            reg,
             x: bit(index, 3),
             b: bit(base, 3),
-            vvvv,
-            v: index,
+            vvvv: vvvv.map(nibble),
+            v: bit(index, 4),
+            ..Ext::reg(reg)
         };
         self.encode(ext, |inst| scaled4_operand_into(inst, reg, base, index))
     }
 }
 
 impl Evex {
-    /// This instruction under the writemask register numbered `k`.
-    pub(super) const fn masked(self, k: u8) -> Self {
+    /// This instruction under the writemask register `k`.
+    pub(super) const fn masked(self, k: RegNo<OpmaskFile>) -> Self {
         Self {
             scheme: EvexPrefix {
-                aaa: k,
+                aaa: Some(k),
                 ..self.scheme
             },
             ..self
@@ -1661,7 +1769,7 @@ impl<'m, T: X86> Inst<Bound<'m, T>, T> {
                 src,
                 amount,
             } => Code::<T>::m0f_66(0x72).imm(*amount).rrr(
-                *direction as u8,
+                direction.digit(),
                 dst.number(),
                 src.number(),
             ),
@@ -1676,10 +1784,12 @@ impl<'m, T: X86> Inst<Bound<'m, T>, T> {
             Inst::Mov { dst, src } => Code::<T>::m0f(0x28).rr(dst.number(), src.number()),
             Inst::LoadConst { dst, .. } => Code::<T>::m0f38_66(0x18).rip(dst.number()),
             Inst::SpillVector { src, slot } => {
-                Code::<T>::m0f(0x11).rm(src.number(), gpr::RSP, Imm32(slot_disp(slot)))
+                let (base, disp) = frame(slot);
+                Code::<T>::m0f(0x11).rm(src.number(), base, disp)
             }
             Inst::ReloadVector { dst, slot } => {
-                Code::<T>::m0f(0x10).rm(dst.number(), gpr::RSP, Imm32(slot_disp(slot)))
+                let (base, disp) = frame(slot);
+                Code::<T>::m0f(0x10).rm(dst.number(), base, disp)
             }
             Inst::Cvtt { dst, src } => Code::<T>::m0f_f3(0x2C).w1().rr(dst.number(), src.number()),
             Inst::Movq { dst, src } => Code::<T>::m0f_66(0x6E)
@@ -1816,8 +1926,10 @@ impl Disp for Imm32 {
 
 /// An address spelled `[base + disp]`.
 ///
-/// The base being a `Pointer` is the point: `rsp` is a value here, so one
-/// encoder serves it and every other base.
+/// The base being a `Pointer` is the point: an address is a value, so one
+/// encoder serves every base. `rsp` is in no class (the frame's, see
+/// `regalloc::resource::Frame`), so a frame slot is not a `Mem`: it is
+/// [`frame`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Mem<S: Stage, D> {
     /// The register the displacement is measured from.
@@ -1852,23 +1964,33 @@ const SIB_BASE_ONLY: u8 = 0x24;
 /// of `f32`s, addressed in one instruction, or a gather's VSIB. The tail is the
 /// architecture's, not the prefix's, so VEX and EVEX share it the way they
 /// share [`mem_operand_into`]. Registers are hardware numbers.
-fn scaled4_operand_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
+fn scaled4_operand_into<I: File>(
+    inst: &mut EncodedInst,
+    reg: impl RegField,
+    base: RegNo<GeneralFile>,
+    index: RegNo<I>,
+) {
     assert!(
-        base & 7 != RM_RIP_AT_MOD0,
-        "[r{base} + index*4] has no mod=00 form: rbp/r13 as a SIB base means no base"
+        low3(base) != RM_RIP_AT_MOD0,
+        "[r{base:?} + index*4] has no mod=00 form: rbp/r13 as a SIB base means no base"
     );
-    inst.push(((reg & 7) << 3) | RM_SIB);
-    inst.push((0b10 << 6) | ((index & 7) << 3) | (base & 7));
+    inst.push((low3(reg) << 3) | RM_SIB);
+    inst.push((0b10 << 6) | (low3(index) << 3) | low3(base));
 }
 
 /// Write the ModRM/SIB/disp tail of `[base + disp]` into an `EncodedInst`.
-fn mem_operand_into<D: Disp>(inst: &mut EncodedInst, reg: u8, base: u8, disp: D) {
-    let rm = base & 7;
+fn mem_operand_into<D: Disp>(
+    inst: &mut EncodedInst,
+    reg: impl RegField,
+    base: RegNo<GeneralFile>,
+    disp: D,
+) {
+    let rm = low3(base);
     debug_assert!(
         D::MOD != NoDisp::MOD || rm != RM_RIP_AT_MOD0,
         "[rbp]/[r13] has no mod=00 form: that encoding is RIP-relative"
     );
-    inst.push(D::MOD | ((reg & 7) << 3) | rm);
+    inst.push(D::MOD | (low3(reg) << 3) | rm);
     if rm == RM_SIB {
         inst.push(SIB_BASE_ONLY);
     }
@@ -1877,8 +1999,8 @@ fn mem_operand_into<D: Disp>(inst: &mut EncodedInst, reg: u8, base: u8, disp: D)
 
 /// The ModRM and `disp32` of `[rip + label]`: the displacement is a label
 /// field, the last four bytes of the instruction.
-fn rip_operand_into(inst: &mut EncodedInst, reg: u8) {
-    inst.push(((reg & 7) << 3) | RM_RIP_AT_MOD0);
+fn rip_operand_into(inst: &mut EncodedInst, reg: impl RegField) {
+    inst.push((low3(reg) << 3) | RM_RIP_AT_MOD0);
     inst.extend(&[0, 0, 0, 0]);
 }
 

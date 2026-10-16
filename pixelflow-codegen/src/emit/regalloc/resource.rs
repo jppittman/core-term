@@ -5,6 +5,10 @@
 //! [`Out`] or [`InOut`] only from a lease, so a register chosen anywhere but
 //! the allocator does not compile. Values and labels are names and copy;
 //! these are resources and move.
+//!
+//! What an encoder's register field takes is a [`RegNo`], never a bare byte:
+//! one is read off a [`Reg`], or it is one of the architecture's own
+//! constants.
 
 use crate::emit::{
     Class, File, FileId, FlagsFile, GeneralFile, IsaBackend, OpmaskFile, VectorFile,
@@ -29,15 +33,70 @@ pub(in crate::emit) const FRAME_OVERFLOW: &str = "spill frame overflow: exceeds 
 /// Branded by backend, so an AVX-512 token cannot reach an AVX2 encoder, whose
 /// VEX prefix would drop bit 4 and encode `zmm20` as `ymm12`.
 pub(in crate::emit) struct Reg<B: IsaBackend, F: File> {
-    number: u8,
-    _brand: PhantomData<(fn() -> B, F)>,
+    number: RegNo<F>,
+    _brand: PhantomData<fn() -> B>,
 }
 
 impl<B: IsaBackend, F: File> Reg<B, F> {
     /// The number the encoding's register fields take (`ModRM`, `VEX.vvvv`,
     /// `Rd`/`Rn`/`Rm`): a width the ISA dictates.
-    pub(in crate::emit) fn number(&self) -> u8 {
+    pub(in crate::emit) fn number(&self) -> RegNo<F> {
         self.number
+    }
+}
+
+/// A hardware register number in file `F`: what an encoding's register field
+/// holds, and not a byte that merely fits one.
+///
+/// Read off a [`Reg`] by [`Reg::number`], or one of the registers the ISA or
+/// the ABI itself fixes (`rsp`, `k0`, `xzr`, `sp`, `x30`, the entry
+/// arguments), declared as a `const` by the backend that names it. There is
+/// no other way to make one, so `rrr(0, 1, 2)` is not an instruction and an
+/// opcode's `/digit` is not a register: each is a different type. The file is
+/// in the type, so a `k` register does not stand where a `ymm` does.
+pub(in crate::emit) struct RegNo<F: File> {
+    bits: u8,
+    _file: PhantomData<fn() -> F>,
+}
+
+impl<F: File> RegNo<F> {
+    /// A register the architecture or the ABI fixes. Only a backend's `const`
+    /// declaration of one calls this: the allocator's registers arrive through
+    /// [`Reg::number`], and a register chosen at any other call site is the
+    /// choice JP ruled out (2026-10-16).
+    pub(in crate::emit) const fn architectural(number: u8) -> Self {
+        Self {
+            bits: number,
+            _file: PhantomData,
+        }
+    }
+
+    /// The bits of the encoding's register field. A backend calls this where
+    /// it assembles those bits, once, and nowhere else.
+    pub(in crate::emit) const fn bits(self) -> u8 {
+        self.bits
+    }
+}
+
+impl<F: File> Clone for RegNo<F> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<F: File> Copy for RegNo<F> {}
+
+impl<F: File> PartialEq for RegNo<F> {
+    fn eq(&self, other: &Self) -> bool {
+        self.bits == other.bits
+    }
+}
+
+impl<F: File> Eq for RegNo<F> {}
+
+impl<F: File> core::fmt::Debug for RegNo<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.bits)
     }
 }
 
@@ -57,7 +116,10 @@ impl<B: IsaBackend> Pool<B> {
                 .members(F::ID)
                 .iter()
                 .map(|&number| Reg {
-                    number,
+                    number: RegNo {
+                        bits: number,
+                        _file: PhantomData,
+                    },
                     _brand: PhantomData,
                 })
                 .collect()
@@ -82,7 +144,7 @@ pub(in crate::emit) struct Lease<'m, B: IsaBackend, F: File>(&'m Reg<B, F>);
 
 impl<'m, B: IsaBackend, F: File> Lease<'m, B, F> {
     fn number(&self) -> u8 {
-        self.0.number
+        self.0.number.bits()
     }
 
     /// The register as an instruction's read.
@@ -166,11 +228,11 @@ impl<'m, B: IsaBackend> Leases<'m, B> {
         }
         fn take<'m, B: IsaBackend>(
             general: &mut Vec<Lease<'m, B, GeneralFile>>,
-            number: u8,
+            number: RegNo<GeneralFile>,
         ) -> Lease<'m, B, GeneralFile> {
             let at = general
                 .iter()
-                .position(|lease| lease.number() == number)
+                .position(|lease| lease.0.number() == number)
                 .expect("RegisterFile::new proves each entry register is a general member");
             general.remove(at)
         }
