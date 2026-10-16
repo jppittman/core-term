@@ -54,7 +54,8 @@ is `pub(super)` or `pub(in crate::emit)`; nothing escapes `emit/`.
   field takes a `RegNo<F>`, read off a `Reg` or one of the ISA's own
   constants, and never a bare `u8`; an opcode's `/digit` is another type.
 - `scripts/check-emit-boundary.sh` (CI job "Emit boundary"): `program/`
-  names no allocator and no register.
+  names no allocator and no register, and `RegNo::architectural` appears
+  only as a `const` declaration of a literal.
 - desloppify `registers-come-from-the-allocator`, `phases-in-order`,
   `invariant-in-comment` (`copyable_resource`).
 - The as-if contract: tests observe values, refusals and no-crash through
