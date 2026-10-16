@@ -304,6 +304,25 @@ impl ENode {
         }
     }
 
+    /// The node's shape: the one `OpKind` that names what it is, leaves and
+    /// folds included; `None` for a [`ENode::Ref`], which no `OpKind` names.
+    ///
+    /// The one kind function: a rule's root-shape check, the e-graph's
+    /// per-class kind masks and its per-kind class sets all ask it, so they
+    /// cannot disagree about what a node is.
+    pub(crate) fn shape(&self) -> Option<OpKind> {
+        match self {
+            ENode::Var(_) => Some(OpKind::Var),
+            ENode::Const(_) => Some(OpKind::Const),
+            ENode::Buffer(_) => Some(OpKind::Buffer),
+            ENode::Uniform(_) => Some(OpKind::Uniform),
+            ENode::Param(_) => Some(OpKind::Param),
+            ENode::Reduce { .. } => Some(OpKind::Reduce),
+            ENode::Op { .. } | ENode::Shift { .. } => self.op(),
+            ENode::Ref { .. } => None,
+        }
+    }
+
     /// The fold this node performs, if it is one.
     pub fn fold(&self) -> Option<Fold> {
         match self {

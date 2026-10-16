@@ -1,8 +1,8 @@
 # The e-graph: what saturation is for when it never finishes
 
-**Status:** open research problem, 2026-10-15. A statement of the problem, not a plan and
-not a solution. Companion engineering plan (representation and matching cost only):
-`docs/plans/2026-10-15-the-egraph-is-an-arena.md`.
+**Status:** `Draft` — an open research problem, 2026-10-15. A statement of the problem, not a
+plan and not a solution; nothing in it is agreed. Companion engineering plan (representation and matching cost only):
+`docs/compiler/2026-10-15-the-egraph-is-an-arena.md`.
 
 Citations are tree paths. One source is not tracked: the 2026-10-15 profile and telemetry of
 the 29 font programs, `/home/user/scratch/egraph/prof2/profile.md` (taken at 7cd96a32, an
@@ -23,7 +23,7 @@ A kernel is lowered to an `ExprArena`, inserted into an e-graph (hash-consed, so
 at insertion), saturated with a fixed rule set, and one term is extracted per root.
 
 **Saturation runs under a deterministic budget** (`pixelflow-search/src/egraph/saturate.rs`;
-design record `docs/plans/2026-09-01-production-budget-determinism.md`). Three counts bound
+design record `docs/archive/plans/2026-09-01-production-budget-determinism.md`). Three counts bound
 it: rule applications (`APPLICATIONS_PER_CLASS = 40` times the class cap), a cap on
 **minted** e-class ids (`max_minted`; ids only rise, so classes unioned away still count),
 and iterations. The tier is chosen from the inserted class count
@@ -44,7 +44,7 @@ pass only, and `dag` equals the flat `dag_cost` (every node priced once) only at
 (`:1550-1580`): it checks every extraction in debug and test builds, not in release
 (`docs/results/2026-09-08-extraction-fixpoint.md`, `docs/results/2026-09-08-cse-mispricing.md`).
 
-**The contract** is the as-if rule (`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`):
+**The contract** is the as-if rule (`docs/process/2026-10-13-tests-check-the-as-if-contract.md`):
 the compiled kernel owes its meaning within tolerance, and nothing about how it was produced.
 No bit-level determinism of compiled output is promised (item 4). Everything below concerns
 what the optimizer *chooses*, which the contract leaves free; speed is measured, never
@@ -93,7 +93,7 @@ unmeasured.
 **The process is not monotone in the cap.** 33 of 139 candidate pairs have a subterm of the
 smaller-budget term absent from the larger-budget graph
 (`docs/results/2026-09-08-extraction-witnesses.md:94-130`): a different cap is a different
-trajectory, not a prefix extension. Law L2 of `docs/plans/2026-09-02-optimizer-api.md` as
+trajectory, not a prefix extension. Law L2 of `docs/archive/plans/2026-09-02-optimizer-api.md` as
 written (the partition at t+1 refines t) holds. Its pin,
 `saturation_at_any_budget_never_removes_an_equality` (`graph.rs:2797`), is a cross-budget
 ladder over probe equalities on one seed, which a missing term does not break. The
@@ -134,7 +134,7 @@ settled at B/8 on 40 of 94 old glyphs.
 **The target is generality.** Performance on the selection set is not evidence of generality.
 The font programs are DEV, not held out: core-term loads NotoSansMono-Regular
 (`core-term/src/terminal_app.rs:76`), which the plan of record classes as DEV
-(`docs/plans/2026-09-07-benchmark-correction.md:39`); the shipped 8x multiplier was chosen at
+(`docs/compiler/2026-09-07-benchmark-correction.md:39`); the shipped 8x multiplier was chosen at
 the 6-to-7 cliff on DejaVu glyphs (`docs/results/2026-09-08-class-cap-sweep.md:27`); and this
 document has already read their profile. `program(n)` does not depend on the face, since every
 glyph value is an unwritten uniform (`pixelflow-graphics/src/fonts/loop_blinn/program.rs:240-258`),
@@ -153,7 +153,7 @@ kernels regret in DAG units is 43.2% at B=100, 29.18% at B=800 and 0 only near B
 
 ### 3.1 What the Guide program established, and what it did not
 
-The thesis (`docs/plans/2026-07-07-guided-saturation-redesign.md`: a learned Guide lets the
+The thesis (`docs/compiler/2026-07-07-guided-saturation-redesign.md`: a learned Guide lets the
 rule library grow past what full saturation can afford) **has not been tested above the
 shipped class cap.** At the shipped cap, on the old glyph kernel, a tuned bilinear
 (rule, class) filter was null on every family [not in tree], because the e-graph's cost was
@@ -234,7 +234,7 @@ contexts against the additive head's 1. `pythagorean` fires zero times in every 
 budget (lines 258-266), so no functional form could learn to prefer it; and `constant-fold`
 and `differentiate` both encode to the zero vector, so the model cannot tell them apart
 (`docs/results/2026-09-02-bilinear-guide-training.md:131-136`). The settling run is
-`docs/plans/2026-09-07-benchmark-correction.md` section E item 6, which runs only if item 5 is
+`docs/compiler/2026-09-07-benchmark-correction.md` section E item 6, which runs only if item 5 is
 non-null; item 5 is "expected null" (lines 141-142), so under the plan of record the question
 is never asked again.
 
@@ -244,7 +244,7 @@ is never asked again.
 attribution for rule-set decisions (which rules to delete, keep or reorder); a label for a
 learned Guide is one consumer of it. Hindsight provenance (`egraph/provenance.rs`,
 `labeler.rs`, feature `provenance-journal`) gives exact *ancestry*, not exact *credit*
-(`docs/plans/2026-09-01-guide-return-to-go.md`). The loose, tight and strict labels are
+(`docs/archive/plans/2026-09-01-guide-return-to-go.md`). The loose, tight and strict labels are
 proxies with known defects: loose credits every node in a class and every union by
 membership; strict credits only minted nodes, so a rewrite whose right-hand side is a memo hit
 earns nothing (`pythagorean` 0/231, `identity` 0/35,387; L040).
@@ -302,16 +302,16 @@ ports), `PerRuleRate` reached 0.982 `dag_cost` on glyphs while bytes rose 6.9% a
 entries 62% [not in tree, rules-filter line 625], and a 33x cost-table perturbation changed 0
 of 190 glyph extractions (L066). A non-additive schedule cost has a seam (`Reranker`,
 `extract.rs`; no implementation ships) and a denotation, analytic table plus learned residual
-(`docs/plans/2026-09-01-schedule-cost-model-denotation.md`). Objections to reranking: (i) before
+(`docs/compiler/2026-09-01-schedule-cost-model-denotation.md`). Objections to reranking: (i) before
 the fixpoint, the swap neighbourhood held 7 of 56 witnesses and no path to the rest
 (`docs/results/2026-09-08-extraction-witnesses.md:445-458, 490-493`); after it, objective
 witnesses on DEV fell 49 -> 28, CYCLE-PRICED 23 -> 0, and COORDINATED (44) is what remains
 (`docs/results/2026-09-08-extraction-fixpoint.md:160-193`); realizability was not re-measured.
 (ii) It keeps the DAG as the domain; that was raised against schedule-valued extraction, which
-`docs/plans/2026-10-15-kernels-evaluate-kernels.md` section 3 has since ruled the CPU backend's,
+`docs/language/2026-10-15-kernels-evaluate-kernels.md` section 3 has since ruled the CPU backend's,
 so the objection holds only if extraction is to choose schedules. (iii) L088 retracts "the cost
 model does 95% of the work". A different learned object, a per-class scorer against a
-uniform-random-among-argmin null, is registered (`docs/plans/2026-09-08-extraction-judge-registration.md`)
+uniform-random-among-argmin null, is registered (`docs/compiler/2026-09-08-extraction-judge-registration.md`)
 and has not been run: its results section is empty. Whether any non-additive structure is
 left in extraction (fold unrolled vs loop, BACKLOG E6) is open.
 
@@ -320,7 +320,7 @@ left in extraction (fold unrolled vs loop, BACKLOG E6) is open.
 Every rule scans every live class each sweep; 64% of saturation is finding matches, and
 malloc/free is 17-18% of all instructions. The representation is the classic egg layout
 (per-class heap `Vec`s, a parallel `ENode` type, three conversions) beside an `ExprArena` that
-is already a hash-consed DAG; `docs/plans/2026-10-15-the-egraph-is-an-arena.md` addresses the
+is already a hash-consed DAG; `docs/compiler/2026-10-15-the-egraph-is-an-arena.md` addresses the
 representation, keeps scan and member order, and is byte-identical on the font programs.
 
 Under a truncating cap, **match order is part of the output**: a matcher that finds the same

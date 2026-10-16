@@ -1,6 +1,7 @@
 # The e-graph is an arena
 
-**Status:** Proposed (2026-10-15). **Verified against:** `2a99d933`. Changes
+**Status:** `Plan of record` (JP, 2026-10-15: "write the arena plan. Execute it.").
+**Verified against:** `2a99d933` (written); CLs 0, 3a and 2 landed on `d6369602`. Changes
 representation only: every CL below leaves `byte_probe` and the 29 font
 programs' extracted kernels byte-identical (§3.2, gates 1 and 1b) and is
 measured, not asserted. What would change the optimizer (congruence
@@ -215,14 +216,15 @@ drift is no longer representable.
 ### 2.5 The per-kind class index (CL 2)
 
 The scan's class filter (`runner.rs:913-916`) asks of every live class, for
-every rule, whether any member has a root shape the rule admits: 36.1 M
-`admits` calls, 88% rejected, 0.72 G Ir. It becomes a lookup:
+every rule, whether any member has a root shape the rule admits: 15.2 M
+(rule, class) visits making 36.1 M `admits` calls, 88% of the visits rejected,
+0.72 G Ir. It becomes a lookup:
 
 - **One kind function**, `RootShapes::shape_of` (`rewrite.rs:288-307`), for
   `admits`, the masks and the bitsets. `ENode::op()` is `None` for every leaf
   and `Reduce`, where the fold rules root. A `Ref` has no shape, sets no bit.
 - **A bit per `OpKind`** needs a numbering, and `OpKind::index()` is
-  `pub(crate)` on purpose (`docs/designs/opkind-numbering-is-private.md`).
+  `pub(crate)` on purpose (`docs/archive/designs/opkind-numbering-is-private.md`).
   So an `OpSet` (`u64`) goes beside `OpMap` in `pixelflow-ir/src/kind.rs`
   with a const assertion that the kinds fit, and the public
   `RootShapes::Kinds` carries one (§5).
@@ -340,7 +342,7 @@ Every CL passes all of these before it is submitted.
   each member as an (id, `ENode` value) pair in order, `find`, facts,
   `last_changed`, the stamp, `queued`, the live set, the worklist, the memo
   and `refused_const_unions` in order, plus membership; deleted before
-  submit (`docs/plans/2026-10-13-tests-check-the-as-if-contract.md`).
+  submit (`docs/process/2026-10-13-tests-check-the-as-if-contract.md`).
 - **Gate 4.** Each crate the CL touches, tested per crate (`cargo test -p
   <crate>`, with `--all-features` where a feature gates changed code; never
   `--workspace` locally), and `cargo clippy --workspace --all-targets
@@ -438,6 +440,13 @@ checks run only on a non-empty `live`, and production passes no deadline.
 CL 7's rests on nothing adding to a graph after `into_graph()`, which
 `Frozen` already prevents and its probe confirms on the 29 programs.
 
+**Landed** (group A: CLs 0, 3a, 2, and the review fixes on them). On the
+cold compile of the 29 font programs, callgrind Ir 7,520 M → 6,122 M
+(−18.6%), saturation 3,817 M → 2,432 M; the cache-sim sum 6,361 M → 4,672 M
+(−26.6%); RSS 133.3 → 137.5 MB, the per-kind index's cost (plan estimate +9
+to +10 MB). Gates 1, 1b and 2 identical at every step. Next: group B (CLs
+5a–d, 6), then C (1, 3b), D (3c, 4), E (7), each its own PR.
+
 ## 7. What this does not address
 
 Each changes what saturation or extraction does, hence the emitted kernels;
@@ -457,7 +466,7 @@ none is a representation change. They are open problems in
   operands through `find`: each is a different optimizer, with budgets and
   pins re-derived in its own measured, re-baselined change.
 - **Extraction's objective.** The tree/DAG gap and the schedule cost
-  (`docs/plans/2026-09-01-schedule-cost-model-denotation.md`).
+  (`docs/compiler/2026-09-01-schedule-cost-model-denotation.md`).
 - **The host kernel build** (19% of the cold run, 36% of it in the
   allocator), which is outside the e-graph.
 

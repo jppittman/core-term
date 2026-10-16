@@ -35,13 +35,14 @@ The current rule is one sentence:
 | `OpKind` variants, `name`, `arity`, … | `pub` | what an op *is* |
 | `OpKind::all()` | `pub` | enumerate every op |
 | `OpMap<T>`, `OpMap::LEN` | `pub` | a total per-op table |
+| `OpSet` (`EMPTY`, `with`, `union`, `contains`, `iter`) | `pub` | a set of ops as one word; the bit positions are private |
 | `OpKind::marshal` / `unmarshal`, `OpCode` | `pub` | an op as bytes, opaquely |
 | `COUNT`, `ALL`, `index()`, `from_index()` | `pub(crate)` | the numbering itself |
 
 `index()` is a subscript and nothing else: it exists so `OpMap` has somewhere
-to put things. `OpCode` promises a round trip and a current width, and promises
-nothing about which byte any op encodes to or that it is stable across
-releases.
+to put things, and `OpSet` somewhere to put bits. `OpCode` promises a round trip
+and a current width, and promises nothing about which byte any op encodes to or
+that it is stable across releases.
 
 ## 2. Why `marshal` exists at all
 

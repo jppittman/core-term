@@ -530,9 +530,9 @@ impl Saturation {
         for rule_idx in self.rules.indices() {
             let rule = self.rules.rule(rule_idx);
             for class_id in self.graph.class_ids() {
-                let nodes = &self.graph.classes[class_id.index()].nodes;
+                let nodes = &self.graph.columns.classes[class_id].nodes;
 
-                let tags = &self.graph.classes[class_id.index()].tags;
+                let tags = &self.graph.columns.classes[class_id].tags;
                 for (node_idx, node) in nodes.iter().enumerate() {
                     // Check if rule matches this node
                     if rule.apply(&self.graph, class_id, node).is_some() {
@@ -571,12 +571,12 @@ impl Saturation {
         tag: ENodeId,
     ) -> bool {
         assert!(
-            self.graph.classes.len() < HARD_MINTED_LIMIT,
+            self.graph.num_classes() < HARD_MINTED_LIMIT,
             "apply_single_rule: e-graph is at the hard minted-id limit \
              ({} ids, limit {HARD_MINTED_LIMIT}) — this entry point applies \
              one action per call and carries no budget, so the caller's \
              rewrite loop must impose one (see `saturate_with_limits`)",
-            self.graph.classes.len(),
+            self.graph.num_classes(),
         );
 
         let class_id = self.graph.find(class_id);
@@ -714,7 +714,7 @@ impl Saturation {
                 stop = SaturationStop::Timeout;
                 break;
             }
-            if self.graph.classes.len() > max_minted {
+            if self.graph.num_classes() > max_minted {
                 stop = SaturationStop::MintedCap;
                 break;
             }
@@ -786,7 +786,7 @@ impl Saturation {
         let mut total = 0;
         let mut sweep = ScanStop::Completed;
         for rule_idx in self.rules.indices() {
-            if self.graph.classes.len() > ceilings.minted {
+            if self.graph.num_classes() > ceilings.minted {
                 sweep = ScanStop::MintedCap;
                 break;
             }
@@ -832,7 +832,25 @@ impl Saturation {
             .is_some_and(|cap| self.applications + queued as u64 >= cap)
     }
 
-    /// Scan every live class for one rule, then commit what it found.
+    /// The stop a scan is already at before it visits a class: the id budget
+    /// or the application allowance spent. Neither input changes until the
+    /// scan queues an action, so one look at entry stands for every class.
+    /// A graph with no live class has nothing to scan, so it completes.
+    fn scan_entry_stop(&self, ceilings: &Ceilings) -> ScanStop {
+        if self.graph.live.iter().next().is_none() {
+            return ScanStop::Completed;
+        }
+        if self.graph.num_classes() > ceilings.minted {
+            return ScanStop::MintedCap;
+        }
+        if self.allowance_spent(ceilings, 0) {
+            return ScanStop::ApplicationBudget;
+        }
+        ScanStop::Completed
+    }
+
+    /// Scan the live classes that can root one rule
+    /// ([`EGraph::candidate_classes`]), then commit what it found.
     ///
     /// Stops if the id budget, the application allowance or the deadline is
     /// reached, and says which in [`ApplyResult::scan`].
@@ -843,7 +861,7 @@ impl Saturation {
         // cheapest rule's `apply` — so polling it once per node would be a
         // measurable tax on every scan. It is polled instead at the three
         // places that make the ceiling hard without that tax: once per
-        // e-class (a clock read is lost in a class's worth of rule
+        // visited e-class (a clock read is lost in a class's worth of rule
         // evaluations), every `DEADLINE_POLL_NODES` nodes
         // within a class (so one enormous e-class cannot run unbounded), and
         // once after the scan and its commit (so a deadline that elapsed
@@ -858,7 +876,7 @@ impl Saturation {
         let mut evals = 0usize;
         let mut updates: Vec<(EClassId, RewriteAction)> = Vec::new();
         let mut estimated_new_nodes: usize = 0;
-        let mut scan = ScanStop::Completed;
+        let mut scan = self.scan_entry_stop(ceilings);
 
         // Captured before the scan touches anything: `class_is_dirty` below
         // compares every candidate class against `swept` (this rule's OWN
@@ -894,28 +912,20 @@ impl Saturation {
             !self.graph.live_has_drifted(),
             "the live-class set has drifted from the graph's canonical classes"
         );
-        'scan: for canonical in self.graph.live.iter() {
-            // Budget check: current graph + pending creates must stay under limit
-            if self.graph.classes.len() + estimated_new_nodes > max_nodes {
-                scan = ScanStop::MintedCap;
-                break;
-            }
+
+        // Only a class that has held a node in the rule's root shapes is
+        // visited at all (`candidate_classes`). The id-budget and allowance
+        // checks run once at entry (`scan_entry_stop`) and after each action
+        // below, the only places their inputs change; the deadline can elapse
+        // anywhere, so it is checked per visited class.
+        let classes = match scan {
+            ScanStop::Completed => Some(self.graph.candidate_classes(roots)),
+            _ => None,
+        };
+        'scan: for canonical in classes.into_iter().flatten() {
             if ceilings.expired() {
                 scan = ScanStop::Deadline;
                 break;
-            }
-            if self.allowance_spent(ceilings, updates.len()) {
-                scan = ScanStop::ApplicationBudget;
-                break;
-            }
-            // Only a node in the rule's root shapes can produce an action, so
-            // a class with none is skipped exactly as a clean class is.
-            if !self.graph.classes[canonical.index()]
-                .nodes
-                .iter()
-                .any(|node| roots.admits(node))
-            {
-                continue;
             }
             // Nothing within DIRTY_TRACKING_MAX_DEPTH hops of `canonical`
             // has changed since this rule last swept the whole graph, so
@@ -928,7 +938,9 @@ impl Saturation {
             // Borrowed, not cloned: the scan only reads the graph (a rule's
             // `apply` takes `&EGraph`, and every write waits for the commit
             // below), so nothing can move the class's nodes under the loop.
-            for node in &self.graph.classes[canonical.index()].nodes {
+            // The kind index is a superset, so a stale bit costs a visit to a
+            // class whose nodes `admits` all decline here.
+            for node in &self.graph.columns.classes[canonical].nodes {
                 if !roots.admits(node) {
                     continue;
                 }
@@ -966,7 +978,7 @@ impl Saturation {
                     estimated_new_nodes += action_cost;
 
                     // If this action would push us over budget, stop scanning
-                    if self.graph.classes.len() + estimated_new_nodes > max_nodes {
+                    if self.graph.num_classes() + estimated_new_nodes > max_nodes {
                         // Don't add this action — discard it and stop
                         scan = ScanStop::MintedCap;
                         break 'scan;
@@ -1198,7 +1210,7 @@ impl Saturation {
             // invariant of the representation, not an assumption of the
             // measurement — pinned here rather than merely relied upon.
             debug_assert_eq!(
-                self.graph.classes.len() as u64,
+                self.graph.num_classes() as u64,
                 self.graph.next_enode_id,
                 "EGraph::add's one-class-per-node invariant broke; growth's \
                  nodes_added/classes_added equivalence depends on it"

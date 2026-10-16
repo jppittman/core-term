@@ -17,7 +17,7 @@ use pixelflow_ir::Rooted;
 /// wrapped rather than forcing a `Debug` impl onto `ExprArena` itself,
 /// which would be a wider API surface change than this justifies.
 use pixelflow_ir::expr::ExprData;
-use pixelflow_ir::kind::OpMap;
+use pixelflow_ir::kind::OpSet;
 
 /// A rewrite RHS pattern, shared.
 #[derive(Clone)]
@@ -230,24 +230,15 @@ pub enum RootShapes {
     /// inspects the root's shape itself, or a probe that must see them all.
     Any,
     /// Exactly the nodes whose shape is marked.
-    Kinds(OpMap<bool>),
+    Kinds(OpSet),
 }
 
-// Prints the marked kinds only: `OpMap`'s derived `Debug` lists every kind,
-// marked or not, which buries the answer in a failed assertion.
+// Prints the kinds as a bare set, so a failed assertion names them directly.
 impl core::fmt::Debug for RootShapes {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Any => f.write_str("Any"),
-            Self::Kinds(marked) => f
-                .debug_set()
-                .entries(
-                    marked
-                        .iter()
-                        .filter(|(_, in_set)| **in_set)
-                        .map(|(kind, _)| kind),
-                )
-                .finish(),
+            Self::Kinds(kinds) => f.debug_set().entries(kinds.iter()).finish(),
         }
     }
 }
@@ -256,7 +247,7 @@ impl RootShapes {
     /// No node: a rule that can never match.
     #[must_use]
     pub const fn nothing() -> Self {
-        Self::Kinds(OpMap::splat(false))
+        Self::Kinds(OpSet::EMPTY)
     }
 
     /// Nodes of this one shape.
@@ -268,11 +259,7 @@ impl RootShapes {
     /// Nodes of any of these shapes.
     #[must_use]
     pub fn kinds(kinds: &[OpKind]) -> Self {
-        let mut marked = OpMap::splat(false);
-        for &kind in kinds {
-            marked[kind] = true;
-        }
-        Self::Kinds(marked)
+        Self::Kinds(kinds.iter().fold(OpSet::EMPTY, |set, &kind| set.with(kind)))
     }
 
     /// Every operation node, [`ENode::Op`] whatever its op or [`ENode::Shift`]
@@ -280,7 +267,11 @@ impl RootShapes {
     /// operation, which [`Vocabulary::Runtime`] already states.
     #[must_use]
     pub fn every_op() -> Self {
-        Self::Kinds(OpMap::from_fn(|kind| Vocabulary::Runtime.admits(kind)))
+        Self::Kinds(
+            OpKind::all()
+                .filter(|&kind| Vocabulary::Runtime.admits(kind))
+                .fold(OpSet::EMPTY, OpSet::with),
+        )
     }
 
     /// Whether `node` is in the set.
@@ -288,22 +279,7 @@ impl RootShapes {
     pub fn admits(&self, node: &ENode) -> bool {
         match self {
             Self::Any => true,
-            Self::Kinds(marked) => Self::shape_of(node).is_some_and(|kind| marked[kind]),
-        }
-    }
-
-    /// The shape of `node`; `None` for a [`ENode::Ref`], which no `OpKind` names.
-    fn shape_of(node: &ENode) -> Option<OpKind> {
-        match node {
-            ENode::Var(_) => Some(OpKind::Var),
-            ENode::Const(_) => Some(OpKind::Const),
-            ENode::Buffer(_) => Some(OpKind::Buffer),
-            ENode::Uniform(_) => Some(OpKind::Uniform),
-            ENode::Param(_) => Some(OpKind::Param),
-            ENode::Reduce { .. } => Some(OpKind::Reduce),
-            ENode::Op { op, .. } => Some(*op),
-            ENode::Shift { direction, .. } => Some(direction.op()),
-            ENode::Ref { .. } => None,
+            Self::Kinds(kinds) => node.shape().is_some_and(|kind| kinds.contains(kind)),
         }
     }
 }
