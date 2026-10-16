@@ -6,8 +6,9 @@ under a cost. `Optimizer::run` is its one entry; the five laws of §8 are its co
 
 ## Owns
 - The store and the runner: `EGraph` (hash-consing, `union`, `rebuild`; a node arena whose index is the
-  node's id and its provenance tag, a member-id list per class and the live set the store restates at every
-  write to one, the per-class constant and variance facts, the per-kind class index a rule's scan reads) and
+  node's id and its provenance tag, a member list per class threaded through the arena (`next` per node,
+  `head` and `tail` per class) and the live set the store restates at every write to one, the per-class
+  constant and variance facts, the per-kind class index a rule's scan reads) and
   `Saturation`, the store paired with its `RuleSet` and every count denominated in that sweep. Rule identity (`RuleId`, `Fingerprint`) and admission (`Vocabulary`, `template_may_name`).
 - The budget: `Budget` resolves to `Limits` (iterations, minted ids, applications); `SaturationConfig`
   picks the tier from the input.
@@ -53,9 +54,9 @@ under a cost. `Optimizer::run` is its one entry; the five laws of §8 are its co
 - `Vocabulary` still admits `Gather` and `ENode::Buffer`; the language has no bound buffers
   (kernels-evaluate-kernels, 2026-10-15). `mod.rs` lists an `extraction` module that does not exist and
   says `all_rules` has 42 rules; `rule_order.rs` asserts 62.
-- The store's nodes are an arena and node ids are the provenance tags (CL 3b), and extraction names the
-  node it picks by id (CL 3c; choice maps still record positions). Membership is still a per-class
-  `Vec<ENodeId>`: CLs 4 and 7 (membership as a list, freeze drops saturation state) are open.
+- The store's nodes are an arena, node ids are the provenance tags (CL 3b), extraction names the node it
+  picks by id (CL 3c; choice maps still record positions), and membership is a list through the arena
+  (CL 4). CL 7 (freeze drops saturation state) is open.
 
 ## Decided in
 `docs/DENOTATION.md` §3, §4, §8; `docs/archive/plans/2026-09-02-optimizer-api.md`, `2026-09-01-production-budget-determinism.md`,

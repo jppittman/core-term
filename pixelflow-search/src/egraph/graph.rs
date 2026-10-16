@@ -7,7 +7,7 @@ use super::ops;
 use super::provenance::{ENodeId, Provenance};
 use super::rewrite::{RewriteAction, RootShapes};
 use alloc::collections::BTreeMap;
-use columns::{Birth, Columns, Slot};
+use columns::{Birth, Columns, Kept, Slot};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::{KernelKey, Variance};
 
@@ -434,10 +434,9 @@ impl EGraph {
             // memo takes it for the nodes the item keeps, `existing != id`
             // compares against it, and only the write-back asks again.
             let id = self.columns.root_of(slot);
-            let mut members = self.columns.detach(id);
-            let mut kept = 0;
-            for read in 0..members.len() {
-                let tag = members[read];
+            let mut detached = self.columns.detach(id);
+            let mut kept = Kept::new();
+            while let Some(tag) = self.columns.walk(&mut detached) {
                 let node = self.canonical_node(*self.columns.node(tag));
                 // The stored names are state: the arena keeps the form
                 // canonicalized now, retired or kept.
@@ -448,10 +447,10 @@ impl EGraph {
                         // `union` keeps `min(id, existing)`, so this call
                         // can go either way, and the write-back at the
                         // bottom of the loop has to survive both:
-                        //   - `id` survives: `union` appends `existing`'s
-                        //     members to `id`'s list, which `detach` just
-                        //     emptied — so the write-back must extend, not
-                        //     overwrite, or those are dropped.
+                        //   - `id` survives: `union` splices `existing`'s
+                        //     members onto `id`'s list, which `detach` just
+                        //     emptied — so the write-back must splice after
+                        //     them, not overwrite, or those are dropped.
                         //   - `existing` survives: `id` is merged away and
                         //     its list stops being reachable through `find`
                         //     — so the write-back must target `root(id)`,
@@ -482,12 +481,11 @@ impl EGraph {
                 } else {
                     self.memo.insert(node, id.id());
                 }
-                members[kept] = tag;
-                kept += 1;
+                self.columns.keep(&mut kept, tag);
             }
-            members.truncate(kept);
-            // To the class `id` is in now: see `Columns::write_back`.
-            self.columns.write_back(id, members);
+            // After what the class `id` is in now holds: see
+            // `Columns::write_back`.
+            self.columns.write_back(id, kept);
         }
         self.worklist.len()
     }
@@ -521,21 +519,20 @@ impl EGraph {
     /// index, so a caller depends on the order and not on how the members
     /// are stored. A count is `nodes(id).count()` and a position
     /// `nodes(id).nth(k)`; both walk the members. Extraction reads the node it
-    /// chose by id ([`Self::node`]), not by position.
+    /// chose by id ([`Self::node`]), not by position. The members are a list
+    /// threaded through the arena, so a walk is one dependent load per member.
     pub fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
         let class = self.columns.root(id);
         self.columns
             .members(class)
-            .iter()
-            .map(move |&tag| self.columns.node(tag))
+            .map(move |tag| self.columns.node(tag))
     }
 
     /// The stable `ENodeId` tags of the class's nodes, yielded in step with
     /// [`Self::nodes`]: the k-th tag names the k-th node. A tag is the node's
     /// id in this graph: the k-th tag is the id of the k-th node.
     pub fn tags(&self, id: EClassId) -> impl Iterator<Item = ENodeId> + Clone + '_ {
-        let class = self.columns.root(id);
-        self.columns.members(class).iter().copied()
+        self.columns.members(self.columns.root(id))
     }
 
     /// [`Self::nodes`] for a class that is already its own representative, as
@@ -550,8 +547,7 @@ impl EGraph {
         let class = self.columns.root(canonical);
         self.columns
             .members(class)
-            .iter()
-            .map(move |&tag| self.columns.node(tag))
+            .map(move |tag| self.columns.node(tag))
     }
 
     /// The mutation log (origins, application log, union journal), or `None`
@@ -750,7 +746,7 @@ impl EGraph {
         if self.columns.last_changed[canonical] > swept {
             return true;
         }
-        for &tag in self.columns.members(canonical) {
+        for tag in self.columns.members(canonical) {
             let node = self.columns.node(tag);
             for &child in node.children_slice() {
                 let child = self.columns.root(child);
@@ -760,7 +756,7 @@ impl EGraph {
                 if DIRTY_TRACKING_MAX_DEPTH < 2 {
                     continue;
                 }
-                for &gtag in self.columns.members(child) {
+                for gtag in self.columns.members(child) {
                     let gnode = self.columns.node(gtag);
                     for &gchild in gnode.children_slice() {
                         if self.columns.last_changed[self.columns.root(gchild)] > swept {
