@@ -1152,7 +1152,8 @@ impl<T> Index<OpKind> for OpMap<T> {
 
     #[inline]
     fn index(&self, op: OpKind) -> &T {
-        // The only place in the workspace where an op becomes a subscript.
+        // With `OpSet`'s bit positions, the only place in the workspace
+        // where an op becomes a subscript.
         &self.slots[op.index()]
     }
 }
@@ -1179,11 +1180,18 @@ const _: () = assert!(
 ///
 /// A set is a different object from a table of booleans, and a hot path asks
 /// different questions of it: "does any member of this class have one of
-/// these kinds" is an AND against a word, not a walk over a table. Like
+/// these kinds" is an AND against a word, not a walk over a table. With
 /// [`OpMap`], it is the only way the numbering is turned into a subscript —
-/// here, a bit position — so callers never see which bit an op is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// here, a bit position — so callers never see which bit an op is, and its
+/// `Debug` lists the ops rather than the word.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct OpSet(u64);
+
+impl core::fmt::Debug for OpSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
+    }
+}
 
 impl OpSet {
     /// The set holding no op.

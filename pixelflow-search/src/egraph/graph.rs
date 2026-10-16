@@ -281,8 +281,10 @@ impl EGraph {
         if let Some(&id) = self.memo.get(&node) {
             return self.find(id);
         }
-        // `node` is canonical, so every child indexes its class's live fact.
-        // Read before the graph changes: a refusal leaves it as it was.
+        // `node` is canonical, so each child is already its class's root; the
+        // walk is the identity here and only hands the fact column the `Root`
+        // it is indexed by. Read before the graph changes: a refusal leaves
+        // it as it was.
         let variance = node.variance(
             |key| self.ref_variance(key),
             |child| self.columns.var_fact[self.columns.root(child)],
@@ -390,14 +392,13 @@ impl EGraph {
             }
         }
         let (parent, child) = if a < b { (a, b) } else { (b, a) };
-        self.columns.link(child, parent);
+        // Everything read at `child` happens before `link`, while it is still
+        // a representative.
         self.columns.merge_kinds(child, parent);
         let child_nodes = std::mem::take(&mut self.columns.classes[child].nodes);
         let child_tags = std::mem::take(&mut self.columns.classes[child].tags);
         self.columns.classes[parent].nodes.extend(child_nodes);
         self.columns.classes[parent].tags.extend(child_tags);
-        self.track_liveness(child.id());
-        self.track_liveness(parent.id());
         // The guard above proved the two facts agree (or that at most one
         // exists), so `or` is a merge, not a choice.
         if self.columns.const_fact[parent].is_none() {
@@ -406,6 +407,9 @@ impl EGraph {
         // Intersection, not a choice: see `var_fact`'s law.
         self.columns.var_fact[parent] =
             self.columns.var_fact[parent].intersection(self.columns.var_fact[child]);
+        self.columns.link(child, parent);
+        self.track_liveness(child.id());
+        self.track_liveness(parent.id());
         // `parent`'s own node list just changed (gained `child`'s nodes) —
         // see `class_is_dirty`/`DIRTY_TRACKING_MAX_DEPTH`.
         self.mutation_counter += 1;
@@ -451,14 +455,17 @@ impl EGraph {
             // canonicalizes to) — matches `union`'s guard, which sets it by
             // the same slot.
             self.columns.queued[slot] = false;
+            // The item's class as it is now. A union inside the item can
+            // merge it away, and the item keeps this name on purpose: the
+            // memo takes it for the nodes the item keeps, `existing != id`
+            // compares against it, and only the write-back asks again.
             let id = self.columns.root_of(slot);
             let mut nodes = std::mem::take(&mut self.columns.classes[id].nodes);
             // `tags` must stay zipped with `nodes` through this loop: both
             // are compacted in place, a kept node moving from index `read` to
             // `kept` together with its tag, in the order they were drained,
-            // so every tag stays pointed at the right node. Compacting the
-            // taken buffers (rather than building fresh ones) is what spares
-            // this hot loop two allocations and two frees per worklist item.
+            // so every tag stays pointed at the right node. Compacting in
+            // place spares two allocations and two frees per worklist item.
             let mut tags = std::mem::take(&mut self.columns.classes[id].tags);
             debug_assert_eq!(
                 nodes.len(),
@@ -477,14 +484,14 @@ impl EGraph {
                         // bottom of the loop has to survive both:
                         //   - `id` survives: `union`'s extend() appends
                         //     `existing`'s nodes (and tags) directly onto
-                        //     `self.classes[id.index()]`, which mem::take
-                        //     just emptied — so the write-back must EXTEND,
-                        //     not overwrite, or those are dropped.
+                        //     `columns.classes[id]`, which mem::take just
+                        //     emptied — so the write-back must EXTEND, not
+                        //     overwrite, or those are dropped.
                         //   - `existing` survives: `id` is merged away and
-                        //     `classes[id.index()]` stops being reachable
+                        //     `columns.classes[id]` stops being reachable
                         //     through `find` — so the write-back must target
-                        //     `self.find(id)`, or everything still in
-                        //     `new_nodes` is orphaned.
+                        //     `columns.root(id)`, or the kept nodes are
+                        //     orphaned.
                         // This is a rebuild-time
                         // congruence-closure union, not a rule firing, so it
                         // carries no rule_idx in the provenance journal
@@ -519,7 +526,7 @@ impl EGraph {
             // Write back to the class `id` CANONICALIZES TO, not to `id`.
             // A mid-loop union() above picks `min(id, existing)` as the
             // surviving parent, so when `existing.0 < id.0` it is `id` that
-            // was merged away — and `classes[id.index()]` is then a slot
+            // was merged away — and `columns.classes[id]` is then a slot
             // `find` no longer routes to. Every node written there is
             // orphaned: `nodes()`/`tags()` canonicalize first, so nothing
             // can read them again. That is lost extraction alternatives
@@ -531,7 +538,7 @@ impl EGraph {
             // case, where `id` survives, union()'s extend() has already
             // appended `existing`'s nodes and tags onto this very vector
             // (which mem::take emptied above), and an assignment would
-            // clobber them. `find(id) == id` there, so one write-back handles
+            // clobber them. `root(id) == id` there, so one write-back handles
             // both directions.
             let dest = self.columns.root(id.id());
             restore_after_rebuild(&mut self.columns.classes[dest].nodes, nodes);
@@ -2217,8 +2224,8 @@ mod tests {
 
     /// A rebuild item whose class survives a union made during the item gives
     /// `[absorbed] ++ [kept]`: what the union appended, then the item's own
-    /// nodes in the order they were walked. Built as the first regression test
-    /// above is: the item is class 3, it absorbs class 4, and 3 < 4.
+    /// nodes in the order they were walked. The item is class 3, it absorbs
+    /// class 4, and 3 < 4.
     #[test]
     fn a_rebuild_item_that_survives_gives_absorbed_then_kept() {
         let mut eg = EGraph::new();
@@ -3007,7 +3014,7 @@ mod tests {
 
     /// A rule's scan visits exactly the live classes that can root it, in
     /// ascending order: a merge carries the absorbed class's kinds to the
-    /// survivor, and a stale bit may only add a class, never lose one.
+    /// survivor.
     #[test]
     fn candidate_classes_are_the_live_classes_that_can_root_the_rule() {
         let mut eg = EGraph::new();

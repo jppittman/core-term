@@ -1221,11 +1221,11 @@ mod congruence_gap_probe {
     use std::path::{Path, PathBuf};
 
     /// Number of canonical (live) e-classes: `find(i) == i`. Distinct from
-    /// `SaturationResult::classes_after`, which is `EGraph::classes.len()` —
+    /// `SaturationResult::classes_after`, which is `EGraph::num_classes()` —
     /// the raw allocation count, which never shrinks on `union` (the
     /// production 5,000-class cap is checked against THIS raw count, not the
     /// live count — see `Saturation::saturate_with_limits`,
-    /// `self.classes.len() > max_minted`).
+    /// `num_classes() > max_minted`).
     fn live_class_count(egraph: &EGraph) -> usize {
         (0..egraph.num_classes())
             .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))

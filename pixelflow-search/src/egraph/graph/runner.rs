@@ -833,9 +833,9 @@ impl Saturation {
     }
 
     /// The stop a scan is already at before it visits a class: the id budget
-    /// or the application allowance spent, as the first class's checks would
-    /// have found. A graph with no live class has no first class, so it
-    /// completes.
+    /// or the application allowance spent. Neither input changes until the
+    /// scan queues an action, so one look at entry stands for every class.
+    /// A graph with no live class has nothing to scan, so it completes.
     fn scan_entry_stop(&self, ceilings: &Ceilings) -> ScanStop {
         if self.graph.live.iter().next().is_none() {
             return ScanStop::Completed;
@@ -849,7 +849,8 @@ impl Saturation {
         ScanStop::Completed
     }
 
-    /// Scan every live class for one rule, then commit what it found.
+    /// Scan the live classes that can root one rule
+    /// ([`EGraph::candidate_classes`]), then commit what it found.
     ///
     /// Stops if the id budget, the application allowance or the deadline is
     /// reached, and says which in [`ApplyResult::scan`].
@@ -913,10 +914,10 @@ impl Saturation {
         );
 
         // Only a class that has held a node in the rule's root shapes is
-        // visited at all (`candidate_classes`), and the budget checks that
-        // used to open every iteration are the entry check above and the ones
-        // after each action below: their inputs change nowhere else. The
-        // deadline is the one that does not, so it stays per visited class.
+        // visited at all (`candidate_classes`). The id-budget and allowance
+        // checks run once at entry (`scan_entry_stop`) and after each action
+        // below, the only places their inputs change; the deadline can elapse
+        // anywhere, so it is checked per visited class.
         let classes = match scan {
             ScanStop::Completed => Some(self.graph.candidate_classes(roots)),
             _ => None,
@@ -925,16 +926,6 @@ impl Saturation {
             if ceilings.expired() {
                 scan = ScanStop::Deadline;
                 break;
-            }
-            // The kind index is a superset, and a stale bit costs only this.
-            // Only a node in the rule's root shapes can produce an action, so
-            // a class with none is skipped exactly as a clean class is.
-            if !self.graph.columns.classes[canonical]
-                .nodes
-                .iter()
-                .any(|node| roots.admits(node))
-            {
-                continue;
             }
             // Nothing within DIRTY_TRACKING_MAX_DEPTH hops of `canonical`
             // has changed since this rule last swept the whole graph, so
@@ -947,6 +938,8 @@ impl Saturation {
             // Borrowed, not cloned: the scan only reads the graph (a rule's
             // `apply` takes `&EGraph`, and every write waits for the commit
             // below), so nothing can move the class's nodes under the loop.
+            // The kind index is a superset, so a stale bit costs a visit to a
+            // class whose nodes `admits` all decline here.
             for node in &self.graph.columns.classes[canonical].nodes {
                 if !roots.admits(node) {
                     continue;

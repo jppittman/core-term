@@ -215,8 +215,9 @@ drift is no longer representable.
 ### 2.5 The per-kind class index (CL 2)
 
 The scan's class filter (`runner.rs:913-916`) asks of every live class, for
-every rule, whether any member has a root shape the rule admits: 36.1 M
-`admits` calls, 88% rejected, 0.72 G Ir. It becomes a lookup:
+every rule, whether any member has a root shape the rule admits: 15.2 M
+(rule, class) visits making 36.1 M `admits` calls, 88% of the visits rejected,
+0.72 G Ir. It becomes a lookup:
 
 - **One kind function**, `RootShapes::shape_of` (`rewrite.rs:288-307`), for
   `admits`, the masks and the bitsets. `ENode::op()` is `None` for every leaf

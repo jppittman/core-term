@@ -8,12 +8,14 @@
 //! type that indexes them:
 //!
 //! - **per node**: the id names a node and the slot it was minted into
-//!   (`parent`, and `classes`, whose slots only the class a node founded fills
-//!   or drains). Indexed by [`EClassId`].
+//!   (`parent`). Indexed by [`EClassId`].
 //! - **per representative**: the id is the answer of [`Columns::root`], the
 //!   class whose block of the equivalence the facts describe. Indexed by
-//!   [`Root`], which only `root` and `root_mut` return, so a fact read at a
-//!   merged-away id, where it is silently stale, does not type-check.
+//!   [`Root`], which only `root` and `root_mut` return, so a fact is never
+//!   read at an id nobody asked `root` about. `classes` holds this kind of
+//!   content (a class's members, emptied when the class is merged away) but is
+//!   still indexed by raw id too, because readers outside this module hold raw
+//!   ids; the member store of the next change moves it to [`Root`] alone.
 //! - **per worklist slot**: the id is where a [`Slot`] was pushed, which
 //!   `queued` is keyed by, whatever that id has since been merged into.
 //!   Indexed by [`Slot`].
@@ -31,9 +33,13 @@ use crate::egraph::node::EClassId;
 /// A class that was canonical when it was asked for: the answer of
 /// [`Columns::root`] or [`Columns::root_mut`], and nothing else makes one.
 ///
-/// It is a name for the class at that moment. A union that merges the class
-/// away leaves its `Root` naming a slot that is no longer a representative,
-/// so a `Root` is not held across a union of its class: ask again.
+/// It is a name for the class at that moment, and what the type enforces is
+/// that a per-representative column is not indexed by an id nobody asked
+/// `root` about. It does not follow the class through a later union, which
+/// leaves a `Root` naming a slot that is no longer a representative. So a
+/// `Root` is not held across a union of its class: ask again, unless the
+/// holder needs the name the class had and says so (`union` reads the
+/// merged-away side after linking it, `rebuild_budgeted` keeps its item's).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Root(EClassId);
 
@@ -73,7 +79,11 @@ impl<I, T> Column<I, T> {
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }
+}
 
+// Walking every entry is only meaningful for a column that is not
+// per-representative: over every slot it would read the merged-away ones.
+impl<T> Column<EClassId, T> {
     pub(super) fn iter(&self) -> core::slice::Iter<'_, T> {
         self.entries.iter()
     }
@@ -173,15 +183,16 @@ pub(crate) struct Columns {
     /// absent from the fact is a binder the class is provably constant along.
     ///
     /// - **Seeded** in `EGraph::add` by `ENode::variance`, the node's
-    ///   transfer function, over its children's facts *as they stand then*. Each child's fact over-approximates the child, and the
-    ///   transfer is monotone, so the seed over-approximates the node.
-    /// - **Merged** in `EGraph::union` by *intersection*. Both classes denote the same function and both facts
-    ///   over-approximate it, so a bit either one lacks is a bit the function
-    ///   lacks. A fact only ever shrinks from its seed and never grows up
-    ///   from `∅` — the greatest fixpoint, not the least — which is why a
-    ///   cycle cannot certify an invariance: a class holding `x` and `x + 0`
-    ///   got each member's fact from facts that already existed, never from
-    ///   an assumption about itself.
+    ///   transfer function, over its children's facts *as they stand then*.
+    ///   Each child's fact over-approximates the child, and the transfer is
+    ///   monotone, so the seed over-approximates the node.
+    /// - **Merged** in `EGraph::union` by *intersection*. Both classes denote
+    ///   the same function and both facts over-approximate it, so a bit either
+    ///   one lacks is a bit the function lacks. A fact only ever shrinks from
+    ///   its seed and never grows up from `∅` — the greatest fixpoint, not
+    ///   the least — which is why a cycle cannot certify an invariance: a
+    ///   class holding `x` and `x + 0` got each member's fact from facts that
+    ///   already existed, never from an assumption about itself.
     /// - **Never repaired upward.** A union that shrinks a child's fact does
     ///   not revisit the parents seeded from the larger one. A stale parent
     ///   fact is still a superset, so a rule reading it may miss an
@@ -200,7 +211,10 @@ pub(crate) struct Columns {
     /// The transpose of `kind_mask`: per kind, the classes whose mask holds
     /// it. Written wherever the mask is, so the two agree by construction;
     /// this is the one a rule scan reads, to visit only classes that can
-    /// root it.
+    /// root it. Keyed by raw id, not [`Root`]: the set type is shared with
+    /// the live set and lives outside this module, and only this module
+    /// writes it. A merged-away class's bit is left set and filtered by
+    /// `live`, as the mask's stale bits are filtered by the per-node check.
     pub(super) by_kind: ClassesByKind,
     /// Whether the slot has an entry on the worklist awaiting
     /// `rebuild_budgeted`. Guards `union`'s push: several unions landing on
@@ -226,14 +240,14 @@ impl Columns {
         self.const_fact.push(birth.const_fact);
         self.var_fact.push(birth.variance);
         self.last_changed.push(birth.stamp);
-        self.kind_mask.push(
-            birth
-                .shape
-                .map_or(OpSet::EMPTY, |kind| OpSet::EMPTY.with(kind)),
-        );
-        if let Some(kind) = birth.shape {
-            self.by_kind.insert(kind, id);
-        }
+        let kinds = match birth.shape {
+            Some(kind) => {
+                self.by_kind.insert(kind, id);
+                OpSet::EMPTY.with(kind)
+            }
+            None => OpSet::EMPTY,
+        };
+        self.kind_mask.push(kinds);
         self.queued.push(false);
         id
     }
@@ -271,6 +285,8 @@ impl Columns {
     pub(super) fn merge_kinds(&mut self, child: Root, parent: Root) {
         let absorbed = self.kind_mask[child];
         self.kind_mask[parent] = self.kind_mask[parent].union(absorbed);
+        // Inserting a kind the parent already has changes nothing, and is
+        // cheaper than asking: skipping those cost 19 M Ir on the 29 programs.
         for kind in absorbed.iter() {
             self.by_kind.insert(kind, parent.0);
         }
