@@ -1050,7 +1050,7 @@ impl Rewrite for ConstantFold {
 
 /// The value of the first `Const` in `class`, if it holds one.
 fn constant_of(egraph: &EGraph, class: EClassId) -> Option<f32> {
-    egraph.nodes(class).iter().find_map(ENode::as_f32)
+    egraph.nodes(class).find_map(ENode::as_f32)
 }
 
 // ============================================================================

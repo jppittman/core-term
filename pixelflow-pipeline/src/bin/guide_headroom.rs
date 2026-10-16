@@ -224,15 +224,18 @@ fn chosen_node_tags(
                 root.index()
             )
         });
-        let nodes = egraph.nodes(canonical);
-        assert!(
-            node_idx < nodes.len(),
-            "guide_headroom: node_idx {node_idx} out of bounds ({}) for e-class {idx}",
-            nodes.len()
-        );
-        let tags = egraph.tags(canonical);
-        result.push(tags[node_idx]);
-        for child in nodes[node_idx].children() {
+        let (node, tag) = egraph
+            .nodes(canonical)
+            .zip(egraph.tags(canonical))
+            .nth(node_idx)
+            .unwrap_or_else(|| {
+                panic!(
+                    "guide_headroom: node_idx {node_idx} out of bounds ({}) for e-class {idx}",
+                    egraph.nodes(canonical).count()
+                )
+            });
+        result.push(tag);
+        for child in node.children() {
             stack.push(child);
         }
     }

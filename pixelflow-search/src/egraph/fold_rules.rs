@@ -272,7 +272,7 @@ impl PlanBuilder {
 /// The node a substitution rebuilds `class` through: its first. See the
 /// module doc.
 fn representative(egraph: &EGraph, class: EClassId) -> Option<&ENode> {
-    egraph.nodes(class).first()
+    egraph.nodes(class).next()
 }
 
 /// `⊕_{[lo,hi) step s} f = ⊕_{[lo,hi-s) step s} f ⊕ f(hi-s)`.
@@ -491,7 +491,6 @@ impl Rewrite for FactorFold {
         let binder = fold.binder();
         let [factor, rest] = egraph
             .nodes(*body)
-            .iter()
             .find_map(|spelling| factored(egraph, spelling, distributor, binder))?;
         let mut plan = PlanBuilder::default();
         let folded = plan.reduce(*fold, HeadRef::Class(rest));
@@ -652,7 +651,7 @@ mod tests {
 
         let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        let body_class = match eg.nodes(class).first() {
+        let body_class = match eg.nodes(class).next() {
             Some(ENode::Reduce { body, .. }) => eg.find(*body),
             other => panic!("expected a fold, got {other:?}"),
         };
@@ -662,7 +661,6 @@ mod tests {
 
         let sum = eg
             .nodes(class)
-            .iter()
             .find_map(|n| match n {
                 ENode::Op { op, children } if *op == OpKind::Add => Some(*children),
                 _ => None,
@@ -678,11 +676,11 @@ mod tests {
              body never reads is the identity, and hash-consing says so"
         );
         let rest_class = eg.find(sum[0]);
-        match eg.nodes(rest_class).iter().find_map(ENode::fold) {
+        match eg.nodes(rest_class).find_map(ENode::fold) {
             Some(rest) => {
                 assert_eq!(rest.range(), 0..2, "the rest is the shorter range");
                 assert_eq!(
-                    eg.find(match eg.nodes(rest_class).first() {
+                    eg.find(match eg.nodes(rest_class).next() {
                         Some(ENode::Reduce { body, .. }) => *body,
                         other => panic!("expected a fold, got {other:?}"),
                     }),
@@ -710,7 +708,7 @@ mod tests {
         let even = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..8), x);
         let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, even, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        let ENode::Reduce { fold, body } = eg.nodes(class).first().cloned().expect("a fold") else {
+        let ENode::Reduce { fold, body } = eg.nodes(class).next().cloned().expect("a fold") else {
             panic!("expected a fold");
         };
         assert!(
@@ -726,7 +724,7 @@ mod tests {
         let ENode::Reduce {
             fold: fold2,
             body: body2,
-        } = eg2.nodes(class2).first().cloned().expect("a fold")
+        } = eg2.nodes(class2).next().cloned().expect("a fold")
         else {
             panic!("expected a fold");
         };
@@ -757,7 +755,7 @@ mod tests {
 
         let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        let body_class = match eg.nodes(class).first() {
+        let body_class = match eg.nodes(class).next() {
             Some(ENode::Reduce { body, .. }) => eg.find(*body),
             other => panic!("expected a fold, got {other:?}"),
         };
@@ -773,7 +771,6 @@ mod tests {
         // which would just return whichever comes first.
         let (doubled_fold, new_body_class) = eg
             .nodes(class)
-            .iter()
             .find_map(|n| match n {
                 ENode::Reduce { fold, body } if fold.stride() > 1 => Some((*fold, eg.find(*body))),
                 _ => None,
@@ -787,7 +784,6 @@ mod tests {
         );
         let sum = eg
             .nodes(new_body_class)
-            .iter()
             .find_map(|n| match n {
                 ENode::Op { op, children } if *op == OpKind::Add => Some(*children),
                 _ => None,
@@ -824,7 +820,7 @@ mod tests {
 
                 let mut eg = Saturation::over(RuleSet::new(fold_rules()));
                 let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-                let node = *eg.nodes(class).first().expect("a fold");
+                let node = *eg.nodes(class).next().expect("a fold");
 
                 let Some(RewriteAction::Plan(plan)) = rule.apply(&eg, class, &node) else {
                     panic!("{direction:?} {range:?}: {} did not plan", rule.name());
@@ -1003,12 +999,12 @@ mod tests {
     /// `factor ⊗ ⊕_{fold} rest`, for a factoring of one class by one class.
     fn holds(eg: &EGraph, class: EClassId, factoring: &Factoring) -> bool {
         let folds_rest = |c: EClassId| {
-            eg.nodes(c).iter().any(|n| {
+            eg.nodes(c).any(|n| {
                 matches!(n, ENode::Reduce { fold, body }
                     if *fold == factoring.fold && eg.find(*body) == eg.find(factoring.rest))
             })
         };
-        eg.nodes(class).iter().any(|n| match n {
+        eg.nodes(class).any(|n| match n {
             ENode::Op { op, children } if *op == factoring.distributor => {
                 let [factor, folded] = children[..] else {
                     return false;

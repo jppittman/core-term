@@ -358,15 +358,13 @@ fn reconstruct_applications(
     // Step 1: ENodeId -> arity, one O(final graph size) walk.
     let mut arity_of: HashMap<ENodeId, usize> = HashMap::new();
     for id in egraph.class_ids() {
-        let tags = egraph.tags(id);
-        let nodes = egraph.nodes(id);
         debug_assert_eq!(
-            tags.len(),
-            nodes.len(),
+            egraph.tags(id).count(),
+            egraph.nodes(id).count(),
             "guide_scope_saturation_delta: tags/nodes length mismatch — provenance invariant violated"
         );
-        for (tag, node) in tags.iter().zip(nodes.iter()) {
-            arity_of.insert(*tag, node.children().len());
+        for (tag, node) in egraph.tags(id).zip(egraph.nodes(id)) {
+            arity_of.insert(tag, node.children().len());
         }
     }
 

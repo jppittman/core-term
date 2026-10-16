@@ -106,8 +106,8 @@ pub const REGISTERED_PRIMARY_BUDGET_APPLICATIONS: usize = 100;
 pub struct ClassContentKey(Vec<ENode>);
 
 impl ClassContentKey {
-    /// Number of nodes recorded in this class: exactly
-    /// `egraph.nodes(class).len()` for the class this key was built from.
+    /// Number of nodes recorded in this class: exactly how many
+    /// `egraph.nodes(class)` yields for the class this key was built from.
     /// They are distinct nodes on a rebuilt graph; between a `union` and its
     /// `rebuild` two stored nodes can canonicalize equal and both count.
     #[must_use]
@@ -124,7 +124,6 @@ impl ClassContentKey {
     pub(crate) fn of(egraph: &EGraph, canonical: EClassId) -> Self {
         let mut nodes: Vec<ENode> = egraph
             .nodes(canonical)
-            .iter()
             .map(|&node| egraph.canonical_node(node))
             .collect();
         nodes.sort();

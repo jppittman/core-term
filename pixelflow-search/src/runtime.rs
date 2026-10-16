@@ -1260,8 +1260,7 @@ mod congruence_gap_probe {
                     // vector is empty and re-scanning it would be a no-op.
                     continue;
                 }
-                let nodes = egraph.columns.classes[id].nodes.clone();
-                for node in nodes {
+                for node in egraph.nodes(id).copied() {
                     // Not `EGraph::canonical_node`: this probe has always left
                     // a fold's body as stored, and the gap it counted in
                     // docs/results was measured that way.
@@ -1774,17 +1773,15 @@ mod congruence_gap_probe {
         extracted_nodes: usize,
     }
 
-    /// Count e-nodes sitting in slots `find` no longer routes to.
+    /// Count e-nodes sitting in slots `find` no longer routes to: what
+    /// `node_count`, which sums every slot, holds beyond the reachable ones.
     ///
     /// `union` empties a merged-away class with `mem::take`, so in a healthy
     /// graph every non-canonical slot is empty and this is 0. A non-zero
     /// count means something wrote to a class after it stopped being
     /// canonical — which is exactly the `rebuild_budgeted` write-back bug.
     fn orphaned_node_count(egraph: &EGraph) -> usize {
-        (0..egraph.num_classes())
-            .filter(|&i| egraph.find(EClassId::from_index(i)) != EClassId::from_index(i))
-            .map(|i| egraph.columns.classes[EClassId::from_index(i)].nodes.len())
-            .sum()
+        egraph.node_count() - reachable_node_count(egraph)
     }
 
     /// Sum of e-nodes over canonical classes — everything still reachable
@@ -1792,7 +1789,7 @@ mod congruence_gap_probe {
     fn reachable_node_count(egraph: &EGraph) -> usize {
         (0..egraph.num_classes())
             .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
-            .map(|i| egraph.columns.classes[EClassId::from_index(i)].nodes.len())
+            .map(|i| egraph.member_count(EClassId::from_index(i)))
             .sum()
     }
 

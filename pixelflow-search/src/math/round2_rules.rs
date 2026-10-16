@@ -83,7 +83,7 @@ fn instantiate_rhs(rule: &dyn Rewrite, bindings: Vec<EClassId>) -> RewriteAction
 
 /// Extract the constant value held by an e-class, if any node in it is one.
 fn eclass_const(egraph: &EGraph, id: EClassId) -> Option<f32> {
-    egraph.nodes(id).iter().find_map(ENode::as_f32)
+    egraph.nodes(id).find_map(ENode::as_f32)
 }
 
 /// If any node in `class` is `Op(kind)` with exactly one child, return it.

@@ -422,9 +422,8 @@ fn saturate_at(
 }
 
 fn node_label(egraph: &EGraph, class: EClassId, idx: usize) -> String {
-    let nodes = egraph.nodes(class);
-    let Some(node) = nodes.get(idx) else {
-        return format!("<idx {idx} of {}>", nodes.len());
+    let Some(node) = egraph.nodes(class).nth(idx) else {
+        return format!("<idx {idx} of {}>", egraph.nodes(class).count());
     };
     match node {
         ENode::Var(i) => format!("Var({i})"),
@@ -465,8 +464,7 @@ fn show(cost: Option<usize>) -> String {
 
 /// The rule that minted node `idx` of `class`, or `seed`.
 fn minting_rule(sat: &Saturated, class: EClassId, idx: usize) -> String {
-    let tags = sat.egraph.tags(class);
-    let Some(&tag) = tags.get(idx) else {
+    let Some(tag) = sat.egraph.tags(class).nth(idx) else {
         return "unknown".into();
     };
     match sat.egraph.journal().origin(tag) {
@@ -566,7 +564,11 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
     for &c in &reach_t {
         let idx = c_t[c.index()].expect("reachable under C_T");
         let mut any = false;
-        for &ch in egraph.nodes(c)[idx].children_slice() {
+        let node = egraph
+            .nodes(c)
+            .nth(idx)
+            .expect("a choice indexes its class's e-nodes");
+        for &ch in node.children_slice() {
             let ch = egraph.find(ch);
             any |= is_div[ch.index()] || below_diverges[ch.index()];
         }

@@ -421,13 +421,13 @@ fn reachable_canonical_classes(
                  but has no recorded choice — extractor/labeler invariant violated"
             )
         });
-        let nodes = egraph.nodes(canonical);
-        assert!(
-            node_idx < nodes.len(),
-            "counterfactual_credit: node_idx {node_idx} out of bounds ({}) for class {idx}",
-            nodes.len()
-        );
-        for child in nodes[node_idx].children() {
+        let node = egraph.nodes(canonical).nth(node_idx).unwrap_or_else(|| {
+            panic!(
+                "counterfactual_credit: node_idx {node_idx} out of bounds ({}) for class {idx}",
+                egraph.nodes(canonical).count()
+            )
+        });
+        for child in node.children() {
             stack.push(child);
         }
     }
@@ -501,7 +501,7 @@ fn build_expr_context(
 
     let mut node_to_class: HashMap<ENodeId, EClassId> = HashMap::new();
     for class in egraph.class_ids() {
-        for &tag in egraph.tags(class) {
+        for tag in egraph.tags(class) {
             node_to_class.insert(tag, class);
         }
     }

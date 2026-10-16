@@ -311,7 +311,13 @@ fn chosen_tagged_nodes(
         )
     });
     term.picks()
-        .map(|(class, idx)| (class, egraph.tags(class)[idx]))
+        .map(|(class, idx)| {
+            let tag = egraph
+                .tags(class)
+                .nth(idx)
+                .expect("a pick is one of its class's e-nodes");
+            (class, tag)
+        })
         .collect()
 }
 
@@ -386,8 +392,6 @@ mod tests {
     fn tag_created_by(egraph: &EGraph, class: EClassId, app_id: ApplicationId) -> ENodeId {
         egraph
             .tags(class)
-            .iter()
-            .copied()
             .find(|&t| egraph.journal().origin(t) == Some(Origin::Rule(app_id)))
             .unwrap_or_else(|| panic!("no node in class {class:?} was created by {app_id:?}"))
     }
@@ -437,11 +441,7 @@ mod tests {
         // need them.
         let sum_class = eg.find(sum);
         let commuted_tag = tag_created_by(&eg, sum_class, app_load_bearing);
-        let commuted_idx = eg
-            .tags(sum_class)
-            .iter()
-            .position(|&t| t == commuted_tag)
-            .unwrap();
+        let commuted_idx = eg.tags(sum_class).position(|t| t == commuted_tag).unwrap();
 
         let mut choices: Vec<Option<usize>> = vec![None; eg.num_classes()];
         choices[eg.find(x).index()] = Some(0);
@@ -502,8 +502,7 @@ mod tests {
         let b_product_tag = tag_created_by(&eg, outer_class, app_b);
         let b_product_idx = eg
             .tags(outer_class)
-            .iter()
-            .position(|&t| t == b_product_tag)
+            .position(|t| t == b_product_tag)
             .unwrap();
 
         // B's product is `z + (x + y)`: its children are z and inner's
@@ -513,8 +512,7 @@ mod tests {
         let a_product_tag = tag_created_by(&eg, inner_class, app_a);
         let a_product_idx = eg
             .tags(inner_class)
-            .iter()
-            .position(|&t| t == a_product_tag)
+            .position(|t| t == a_product_tag)
             .unwrap();
 
         let mut choices: Vec<Option<usize>> = vec![None; eg.num_classes()];
@@ -609,8 +607,7 @@ mod tests {
         let commuted_tag = tag_created_by(&eg, sum_class, app0);
         let commuted_idx = eg
             .tags(sum_class)
-            .iter()
-            .position(|&t| t == commuted_tag)
+            .position(|t| t == commuted_tag)
             .expect("the commuted node is in the class it was created in");
 
         let mut choices: Vec<Option<usize>> = vec![None; eg.num_classes()];

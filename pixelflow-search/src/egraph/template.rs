@@ -597,6 +597,11 @@ mod tests {
     use crate::egraph::{RuleSet, Saturation};
     use pixelflow_ir::OpKind;
 
+    /// The first node of `class`: the one a rule rooted there is shown.
+    fn first_member(eg: &EGraph, class: EClassId) -> ENode {
+        *eg.nodes(class).next().expect("a class has a first member")
+    }
+
     /// `a - b -> a + neg(b)`, hand-built as a template — should behave
     /// exactly like `math::algebra::Canonicalize::<AddNeg>`.
     fn sub_to_add_neg() -> TemplateRewrite {
@@ -618,7 +623,7 @@ mod tests {
         let y = eg.add(ENode::Var(1));
         let sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
         let root = eg.find(sub);
-        let node = eg.nodes(root)[0];
+        let node = first_member(&eg, root);
         let rule = sub_to_add_neg();
         let action = rule
             .apply(&eg, root, &node)
@@ -644,11 +649,11 @@ mod tests {
         let other_sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
 
         let self_root = eg.find(self_sub);
-        let self_node = eg.nodes(self_root)[0];
+        let self_node = first_member(&eg, self_root);
         assert!(rule.apply(&eg, self_root, &self_node).is_some());
 
         let other_root = eg.find(other_sub);
-        let other_node = eg.nodes(other_root)[0];
+        let other_node = first_member(&eg, other_root);
         assert!(
             rule.apply(&eg, other_root, &other_node).is_none(),
             "repeated metavariable must refuse two different classes"
@@ -673,7 +678,7 @@ mod tests {
         let y = eg.add(ENode::Var(1));
         let sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
         let sub_root = eg.find(sub);
-        let sub_node = eg.nodes(sub_root)[0];
+        let sub_node = first_member(&eg, sub_root);
         let action = rule.apply(&eg, sub_root, &sub_node).expect("must match");
         matches!(action, RewriteAction::Instantiate { .. });
     }

@@ -57,17 +57,13 @@ impl Rewrite for ChainRule {
         let var_class = children[1];
 
         // The differentiation variable is encoded as a constant operand.
-        let var = egraph.nodes(var_class).iter().find_map(ENode::as_f32)? as u8;
+        let var = egraph.nodes(var_class).find_map(ENode::as_f32)? as u8;
 
         // Differentiate a representative of the differentiand. All nodes in the
         // class are equal, so any non-`Dwrt` representative gives the same
         // derivative; skipping `Dwrt` nodes avoids differentiating a pending
         // derivative back into itself.
-        let inner = egraph
-            .nodes(expr_class)
-            .iter()
-            .find(|n| !is_dwrt(n))
-            .cloned()?;
+        let inner = egraph.nodes(expr_class).find(|n| !is_dwrt(n)).cloned()?;
 
         Some(RewriteAction::Differentiate { inner, var })
     }

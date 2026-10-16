@@ -168,7 +168,7 @@ impl<'g> Extraction<'g> {
         let mut choices = self.choices.clone();
         choices[canonical.index()] = Some(node_idx);
 
-        let new_children = operation_operands(self.egraph.nodes(canonical).get(node_idx));
+        let new_children = operation_operands(self.egraph.nodes(canonical).nth(node_idx));
 
         for &child in new_children {
             backfill_well_founded(self.egraph, child, &mut choices);
@@ -281,8 +281,8 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
 
             for &class in &active {
                 let canonical = egraph.find(class);
-                let nodes = egraph.nodes(canonical);
-                if nodes.len() <= 1 {
+                let member_count = egraph.member_count(canonical);
+                if member_count <= 1 {
                     continue;
                 }
 
@@ -294,7 +294,7 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
                         canonical.0
                     )
                 });
-                let candidates_to_try = nodes.len().min(self.top_k);
+                let candidates_to_try = member_count.min(self.top_k);
 
                 // Best-improvement: evaluate ALL candidates, pick the
                 // cheapest. Each candidate is evaluated on a COMPLETE choice
@@ -304,7 +304,8 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
                 let mut best_swap_cost = current_cost;
                 let mut best_swap: Option<Extraction<'g>> = None;
 
-                for (node_idx, node) in nodes.iter().enumerate().take(candidates_to_try) {
+                for (node_idx, node) in egraph.nodes(canonical).enumerate().take(candidates_to_try)
+                {
                     if node_idx == current_node_idx {
                         continue;
                     }
@@ -380,10 +381,9 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
                     canonical.0
                 )
             });
-            let nodes = egraph.nodes(canonical);
-            if node_idx < nodes.len() {
+            if let Some(node) = egraph.nodes(canonical).nth(node_idx) {
                 {
-                    let children = nodes[node_idx].children_slice();
+                    let children = node.children_slice();
                     for &child in children {
                         stack.push(child);
                     }
@@ -466,10 +466,9 @@ fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option
     let mut reverse: Vec<Vec<(usize, usize)>> = alloc::vec![Vec::new(); scope.len()];
     let mut ready: Vec<EClassId> = Vec::new();
     for (pos, &canonical) in scope.iter().enumerate() {
-        let nodes = egraph.nodes(canonical);
-        let mut per_node = Vec::with_capacity(nodes.len());
+        let mut per_node = Vec::with_capacity(egraph.member_count(canonical));
         let mut any_ready = false;
-        for (node_idx, node) in nodes.iter().enumerate() {
+        for (node_idx, node) in egraph.nodes(canonical).enumerate() {
             let mut count = 0usize;
             {
                 let children = (node).children_slice();
@@ -561,7 +560,7 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
         // the one place a missing choice would become a wrong *term* is
         // `Selection::of_map`, which refuses it instead.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
-        for &child in operation_operands(egraph.nodes(canonical).get(node_idx))
+        for &child in operation_operands(egraph.nodes(canonical).nth(node_idx))
             .iter()
             .rev()
         {
@@ -618,7 +617,7 @@ fn choices_have_cycle_through(
         // same reason: extra edges can only over-report reachability, which
         // costs a rejected swap and never a wrong term.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
-        stack.extend_from_slice(operation_operands(egraph.nodes(c).get(node_idx)));
+        stack.extend_from_slice(operation_operands(egraph.nodes(c).nth(node_idx)));
     }
 
     false
@@ -779,7 +778,9 @@ impl Selection {
                 continue;
             }
             let class = candidate.class();
-            let operands = egraph.nodes(class)[idx]
+            let operands = egraph
+                .node_at(class, idx)
+                .expect("a settled pick is one of its class's e-nodes")
                 .children_slice()
                 .iter()
                 .map(|&operand| {
@@ -823,14 +824,18 @@ impl Selection {
                 .copied()
                 .flatten()
                 .ok_or(Refused::Missing(class))?;
-            (idx < egraph.nodes(class).len())
+            (idx < egraph.member_count(class))
                 .then_some(idx)
                 .ok_or(Refused::OutOfBounds { class, idx })
         };
         stack.push((root, chosen(root)?, 0));
 
         while let Some(&mut (class, idx, ref mut entered_operands)) = stack.last_mut() {
-            let operands = egraph.nodes(class)[idx].children_slice();
+            let operands = egraph
+                .nodes(class)
+                .nth(idx)
+                .expect("`chosen` checked the index against the class")
+                .children_slice();
             if let Some(&operand) = operands.get(*entered_operands) {
                 *entered_operands += 1;
                 let child = egraph.find(operand);
@@ -876,7 +881,7 @@ impl Selection {
     /// is in bounds more often than it is the same node.
     fn node<'g>(&self, egraph: &'g EGraph, position: usize) -> &'g ENode {
         let Pick { class, idx, .. } = self.picks[position];
-        let node = egraph.nodes(class).get(idx).unwrap_or_else(|| {
+        let node = egraph.node_at(class, idx).unwrap_or_else(|| {
             panic!(
                 "Selection: e-class {} has no node {idx} in this e-graph — the selection was \
                  made from another graph, or this one was rebuilt since",
@@ -1767,8 +1772,13 @@ impl TieBreak for Canonical {
         incumbent: usize,
         challenger: usize,
     ) -> bool {
-        let nodes = egraph.nodes(class);
-        egraph.canonical_node(nodes[challenger]) < egraph.canonical_node(nodes[incumbent])
+        let member = |position| {
+            *egraph
+                .nodes(class)
+                .nth(position)
+                .expect("a candidate indexes its class's e-nodes")
+        };
+        egraph.canonical_node(member(challenger)) < egraph.canonical_node(member(incumbent))
     }
 }
 
@@ -1886,9 +1896,12 @@ impl<'a, S: Settling> Settlement<'a, S> {
     /// cheaper, or equal and preferred.
     fn relax(&mut self, candidate: Candidate) {
         let (class, live, idx) = (candidate.class(), candidate.live(), candidate.idx());
-        let priced = self
-            .pricer
-            .price(candidate, &self.problem.egraph().nodes(class)[idx]);
+        let node = self
+            .problem
+            .egraph()
+            .node_at(class, idx)
+            .expect("a candidate indexes its class's e-nodes");
+        let priced = self.pricer.price(candidate, node);
         let takes = match self.best[live] {
             None => true,
             Some((incumbent_priced, incumbent)) => {
@@ -2503,7 +2516,11 @@ mod tests {
         let chosen = |shape| {
             let dag = extract_dag_scoped(&egraph, root, &costs, shape);
             let idx = dag.choices[egraph.find(root).index()].expect("root is chosen");
-            match &egraph.nodes(egraph.find(root))[idx] {
+            match egraph
+                .nodes(egraph.find(root))
+                .nth(idx)
+                .expect("the choice indexes the root's class")
+            {
                 ENode::Op { op, .. } => *op,
                 other => panic!("root should be an op, got {other:?}"),
             }
@@ -2695,7 +2712,7 @@ mod tests {
         let mut scratch: Vec<usize> = alloc::vec![0; words];
         for canonical in order.iter().copied() {
             let me = compact[canonical.index()] as usize;
-            let nodes = egraph.nodes(canonical);
+            let nodes: Vec<ENode> = egraph.nodes(canonical).copied().collect();
             let mut min_cost = usize::MAX;
             let mut min_idx = 0;
             let mut min_var = Variance::CONST;
@@ -2850,7 +2867,7 @@ mod tests {
         let mut priced: Vec<bool> = alloc::vec![false; egraph.num_classes()];
         let mut sentinel = Vec::new();
         for &class in &order {
-            let all_cyclic = egraph.nodes(class).iter().all(|node| match node {
+            let all_cyclic = egraph.nodes(class).all(|node| match node {
                 ENode::Op { children, .. } => children
                     .iter()
                     .any(|&c| egraph.find(c) == class || !priced[egraph.find(c).index()]),
@@ -2921,7 +2938,10 @@ mod tests {
             .enumerate()
             .filter_map(|(i, pick)| {
                 let class = EClassId::from_index(i);
-                let node = &egraph.nodes(class)[(*pick)?];
+                let node = egraph
+                    .nodes(class)
+                    .nth((*pick)?)
+                    .expect("a pick indexes its class's e-nodes");
                 let children = node
                     .children_slice()
                     .iter()
@@ -3036,7 +3056,9 @@ mod tests {
             let root = eg.find(root);
             let picked = |ties| {
                 let (choices, _) = extract_under(&eg, root, &costs, LatticeShape::POINT, ties);
-                eg.nodes(root)[choices[root.index()].expect("the root is chosen")]
+                *eg.nodes(root)
+                    .nth(choices[root.index()].expect("the root is chosen"))
+                    .expect("the choice indexes the root's class")
             };
             assert_eq!(
                 picked(Ties::Canonical),
@@ -3045,7 +3067,9 @@ mod tests {
             );
             assert_eq!(
                 picked(Ties::Insertion),
-                eg.nodes(root)[0],
+                *eg.nodes(root)
+                    .next()
+                    .expect("the root's class has a first node"),
                 "inserted as {order:?}"
             );
         }
@@ -3366,7 +3390,6 @@ mod tests {
     fn neg_index(egraph: &EGraph, class: EClassId) -> Option<usize> {
         egraph
             .nodes(egraph.find(class))
-            .iter()
             .position(|n| matches!(n, ENode::Op { .. }))
     }
 
@@ -3415,12 +3438,12 @@ mod tests {
             Selection::of_map(&egraph, merged, &choices),
             Err(Refused::Missing(m))
         );
-        choices[m.index()] = Some(egraph.nodes(m).len());
+        choices[m.index()] = Some(egraph.member_count(m));
         assert_eq!(
             Selection::of_map(&egraph, merged, &choices),
             Err(Refused::OutOfBounds {
                 class: m,
-                idx: egraph.nodes(m).len()
+                idx: egraph.member_count(m)
             })
         );
     }
@@ -3469,7 +3492,6 @@ mod tests {
         let (egraph, merged, _n1) = cyclic_capable_egraph();
         let var_idx = egraph
             .nodes(merged)
-            .iter()
             .position(|n| matches!(n, ENode::Var(_)))
             .expect("merged class holds Var(0)");
         let dag = extract_dag(&egraph, merged, &VarAboveTwoNegs);
@@ -4087,13 +4109,12 @@ mod tests {
         egraph.rebuild();
 
         let canonical = egraph.find(merged);
-        let nodes = egraph.nodes(canonical);
-        let sin_idx = nodes
-            .iter()
+        let sin_idx = egraph
+            .nodes(canonical)
             .position(|nd| matches!(nd, ENode::Op { op, .. } if *op == pixelflow_ir::OpKind::Sin))
             .expect("merged class holds Sin(x)");
-        let neg_idx = nodes
-            .iter()
+        let neg_idx = egraph
+            .nodes(canonical)
             .position(|nd| matches!(nd, ENode::Op { op, .. } if *op == pixelflow_ir::OpKind::Neg))
             .expect("merged class holds Neg(merged)");
         (egraph, canonical, sin_idx, neg_idx)
@@ -4119,7 +4140,10 @@ mod tests {
         );
 
         let costs = SinAboveTheCycleSentinel;
-        let sin_node = &egraph.nodes(merged)[sin_idx];
+        let sin_node = egraph
+            .nodes(merged)
+            .nth(sin_idx)
+            .expect("sin_idx indexes the merged class");
         assert!(
             costs.node_cost(sin_node, None) > usize::MAX / 4,
             "the premise: Sin is dearer than CYCLE_COST, so pricing the self-reference \
@@ -4306,7 +4330,8 @@ mod tests {
         .expect("unbounded");
 
         let own = |c: EClassId| -> usize {
-            weighted_own(&costs, &egraph.nodes(c)[dp.choices[c.index()].unwrap()], 1)
+            let pick = dp.choices[c.index()].unwrap();
+            weighted_own(&costs, egraph.nodes(c).nth(pick).unwrap(), 1)
         };
         assert_eq!(
             dp.root_cost,
@@ -4574,7 +4599,7 @@ mod tests {
         let mut settled = alloc::vec![false; egraph.num_classes()];
         let mut blind = 0usize;
         for &class in AndOrGraph::of(&egraph, root).classes() {
-            let has_form = egraph.nodes(class).iter().any(|node| match node {
+            let has_form = egraph.nodes(class).any(|node| match node {
                 ENode::Op { children, .. } => {
                     children.iter().all(|&c| settled[egraph.find(c).index()])
                 }

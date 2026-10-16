@@ -539,16 +539,13 @@ impl Saturation {
         for rule_idx in self.rules.indices() {
             let rule = self.rules.rule(rule_idx);
             for class_id in self.graph.class_ids() {
-                let nodes = &self.graph.columns.classes[class_id].nodes;
-
-                let tags = &self.graph.columns.classes[class_id].tags;
-                for (node_idx, node) in nodes.iter().enumerate() {
+                for (node, tag) in self.graph.nodes(class_id).zip(self.graph.tags(class_id)) {
                     // Check if rule matches this node
                     if rule.apply(&self.graph, class_id, node).is_some() {
                         matches.push(RewriteTarget {
                             rule_idx,
                             class_id,
-                            tag: tags[node_idx],
+                            tag,
                         });
                     }
                 }
@@ -950,7 +947,7 @@ impl Saturation {
             // below), so nothing can move the class's nodes under the loop.
             // The kind index is a superset, so a stale bit costs a visit to a
             // class whose nodes `admits` all decline here.
-            for node in &self.graph.columns.classes[canonical].nodes {
+            for node in self.graph.nodes_of_canonical(canonical) {
                 if !roots.admits(node) {
                     continue;
                 }
@@ -1165,7 +1162,7 @@ impl Saturation {
 
         #[cfg(feature = "provenance-journal")]
         {
-            let minted_from = self.graph.next_enode_id;
+            let minted_from = self.graph.nodes_minted();
             let opening = Opening {
                 rule: self.rules.id(rule_idx),
                 rule_idx,
@@ -1178,8 +1175,9 @@ impl Saturation {
                 .as_mut()
                 .map(|journal| journal.open_application(opening));
             let result = self.apply_measured(rule_idx, class_id, action);
+            let minted = minted_from..self.graph.nodes_minted();
             if let (Some(open), Some(journal)) = (open, self.graph.journal.as_mut()) {
-                journal.close_application(open, minted_from..self.graph.next_enode_id, result);
+                journal.close_application(open, minted, result);
             }
             result
         }
@@ -1217,16 +1215,16 @@ impl Saturation {
             let predicted = self
                 .graph
                 .predicted_growth(&action, &mut self.predictor_pending);
-            let nodes_before = self.graph.next_enode_id;
+            let nodes_before = self.graph.nodes_minted();
             let unions = self.graph.apply_action(class_id, action);
-            let nodes_added = (self.graph.next_enode_id - nodes_before) as usize;
+            let nodes_added = (self.graph.nodes_minted() - nodes_before) as usize;
             // See `crate::egraph::growth`'s module doc: `add()` mints exactly
             // one new class per new node, always, so this equality is an
             // invariant of the representation, not an assumption of the
             // measurement — pinned here rather than merely relied upon.
             debug_assert_eq!(
                 self.graph.num_classes() as u64,
-                self.graph.next_enode_id,
+                self.graph.nodes_minted(),
                 "EGraph::add's one-class-per-node invariant broke; growth's \
                  nodes_added/classes_added equivalence depends on it"
             );

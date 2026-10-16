@@ -41,7 +41,7 @@ pub(crate) struct EClass {
 pub struct EGraph {
     /// The per-id columns: every id's nodes, union-find parent, facts and
     /// worklist flag, grown together by one `push`. See the `columns` module.
-    pub(crate) columns: Columns,
+    columns: Columns,
     memo: HashMap<ENode, EClassId>,
     /// The classes [`Self::class_ids`] yields, as a set: a rule scan reads it
     /// instead of asking `find` of every class ever minted. Written only by
@@ -311,6 +311,13 @@ impl EGraph {
         id
     }
 
+    /// How many nodes this graph has minted, retired ones included: the id
+    /// the next [`Self::add`] miss gives its node.
+    #[cfg(any(feature = "provenance-journal", feature = "saturation-telemetry"))]
+    fn nodes_minted(&self) -> u64 {
+        self.next_enode_id
+    }
+
     /// Refused constant unions: `(bits, bits)` pairs the graph declined to
     /// assert equal. Non-empty means some kernel hit the folding-vs-algebra
     /// collision — see the refusal block in [`EGraph::union`].
@@ -578,16 +585,48 @@ impl EGraph {
     /// A node whose canonical form collides with a class it cannot merge with
     /// leaves the class, and rebuild deduplicates nothing: two members may be
     /// equal.
-    pub fn nodes(&self, id: EClassId) -> &[ENode] {
+    ///
+    /// An iterator and nothing more: no length, no reverse, no slice, no
+    /// index, so a caller depends on the order and not on how the members
+    /// are stored. A count is [`Self::member_count`].
+    pub fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
         let id = self.columns.root(id);
-        &self.columns.classes[id].nodes
+        self.columns.classes[id].nodes.iter()
     }
 
-    /// Get the stable `ENodeId` tags for the canonical class's nodes,
-    /// parallel to `nodes(id)` — `tags(id)[i]` names `nodes(id)[i]`.
-    pub fn tags(&self, id: EClassId) -> &[ENodeId] {
+    /// The stable `ENodeId` tags of the class's nodes, yielded in step with
+    /// [`Self::nodes`]: the k-th tag names the k-th node.
+    pub fn tags(&self, id: EClassId) -> impl Iterator<Item = ENodeId> + Clone + '_ {
         let id = self.columns.root(id);
-        &self.columns.classes[id].tags
+        self.columns.classes[id].tags.iter().copied()
+    }
+
+    /// [`Self::nodes`] for a class that is already its own representative, as
+    /// [`Self::candidate_classes`] yields: the rule scan's read, without the
+    /// walk to the representative it has already done.
+    fn nodes_of_canonical(&self, canonical: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
+        debug_assert_eq!(
+            self.find(canonical),
+            canonical,
+            "nodes_of_canonical is for a representative"
+        );
+        self.columns.classes[canonical].nodes.iter()
+    }
+
+    /// How many nodes [`Self::nodes`] yields for `id`'s class, without
+    /// walking them.
+    pub(crate) fn member_count(&self, id: EClassId) -> usize {
+        let id = self.columns.root(id);
+        self.columns.classes[id].nodes.len()
+    }
+
+    /// The node at `position` in [`Self::nodes`]`(id)`'s order, or `None`
+    /// past its end, without walking to it. The read for a position an
+    /// extraction recorded and reads back once per candidate priced; a walk
+    /// that is not on that path takes it from `nodes(id).nth(position)`.
+    pub(crate) fn node_at(&self, id: EClassId, position: usize) -> Option<&ENode> {
+        let id = self.columns.root(id);
+        self.columns.classes[id].nodes.get(position)
     }
 
     /// The mutation log (origins, application log, union journal), or `None`
@@ -631,7 +670,7 @@ impl EGraph {
         &self,
         chosen_nodes: &[(EClassId, ENodeId)],
     ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
-        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).to_vec() };
+        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).collect() };
         let children_of = |tag: ENodeId| -> Vec<EClassId> {
             for class in self.columns.classes.iter() {
                 if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
@@ -675,7 +714,7 @@ impl EGraph {
         seeds: &[(EClassId, ENodeId)],
         chosen_nodes: &[(EClassId, ENodeId)],
     ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
-        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).to_vec() };
+        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).collect() };
         let children_of = |tag: ENodeId| -> Vec<EClassId> {
             for class in self.columns.classes.iter() {
                 if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
@@ -777,7 +816,7 @@ impl EGraph {
     }
 
     pub fn contains_const(&self, id: EClassId, val: f32) -> bool {
-        self.nodes(id).iter().any(|n| n.is_const(val))
+        self.nodes(id).any(|n| n.is_const(val))
     }
 
     /// Whether `canonical`'s forward neighborhood — itself, its direct
@@ -1924,6 +1963,11 @@ mod tests {
         InverseAnnihilation, Involution, MulRecip,
     };
 
+    /// `class`'s members in order, to compare with a literal.
+    fn members(eg: &EGraph, class: EClassId) -> Vec<ENode> {
+        eg.nodes(class).copied().collect()
+    }
+
     /// The canonical copy of a node names the surviving class of every operand
     /// the node has, whichever variant holds it: an operation's operands, a
     /// shift's operand and a fold's body. The graph is not rebuilt between
@@ -2043,7 +2087,7 @@ mod tests {
             "nc and nb should have been unioned via the canonicalization collision"
         );
 
-        let nodes = eg.nodes(surviving);
+        let nodes = members(&eg, surviving);
         assert!(
             !nodes.is_empty(),
             "rebuild_budgeted must not silently drop all nodes from the surviving class"
@@ -2144,7 +2188,7 @@ mod tests {
         // surviving class. The orphaning bug writes it back to class 4,
         // which `find` routes past — `nodes()` canonicalizes, so it is
         // unreachable from every public entry point from then on.
-        let nodes = eg.nodes(surviving);
+        let nodes = members(&eg, surviving);
         assert!(
             nodes.iter().any(|n| matches!(n, ENode::Var(9))),
             "expected Var(9) (nc's unique marker) to still be reachable via \
@@ -2156,8 +2200,8 @@ mod tests {
 
         // Tags must stay zipped with nodes through the redirected write-back.
         assert_eq!(
-            eg.nodes(surviving).len(),
-            eg.tags(surviving).len(),
+            eg.member_count(surviving),
+            eg.tags(surviving).count(),
             "EClass.nodes and EClass.tags must never desync"
         );
 
@@ -2168,7 +2212,7 @@ mod tests {
         // definition, so the only honest way to catch one is to check that
         // everything reachable is still there.
         let holds = |eg: &EGraph, id: EClassId, want: &ENode| -> bool {
-            eg.nodes(eg.find(id)).iter().any(|n| n == want)
+            eg.nodes(eg.find(id)).any(|n| n == want)
         };
         let neg_b = ENode::apply(OpKind::Neg, &[eg.find(b)]);
         for (id, want) in [
@@ -2190,7 +2234,7 @@ mod tests {
         // orphaning bug leaves the worklist naming a class whose nodes went
         // somewhere else, so "reachable" was not yet a fixpoint — a state
         // that can look correct until something rebuilds again.
-        let before: Vec<ENode> = eg.nodes(surviving).to_vec();
+        let before = members(&eg, surviving);
         eg.rebuild();
         assert_eq!(
             eg.find(nc),
@@ -2198,8 +2242,8 @@ mod tests {
             "a second rebuild must not move the surviving class"
         );
         assert_eq!(
-            eg.nodes(eg.find(nc)),
-            before.as_slice(),
+            members(&eg, eg.find(nc)),
+            before,
             "rebuild must be idempotent once the worklist is drained"
         );
     }
@@ -2217,7 +2261,7 @@ mod tests {
             let parent = eg.union(parent, parent_peer);
             let child = eg.union(child, child_peer);
             assert_eq!(
-                eg.nodes(parent),
+                members(&eg, parent),
                 [ENode::Var(0), ENode::Var(1)],
                 "a union of two classes gives the first then the second"
             );
@@ -2229,11 +2273,11 @@ mod tests {
             };
             assert_eq!(survivor, parent, "the smaller id survives");
             assert_eq!(
-                eg.nodes(survivor),
+                members(&eg, survivor),
                 [ENode::Var(0), ENode::Var(1), ENode::Var(2), ENode::Var(3)],
                 "parent then child (flipped argument order: {flipped})"
             );
-            assert_eq!(eg.nodes(child), eg.nodes(parent));
+            assert_eq!(members(&eg, child), members(&eg, parent));
         }
     }
 
@@ -2255,12 +2299,12 @@ mod tests {
         eg.union(nb, marker);
         eg.union(b, c);
         assert_eq!(
-            eg.nodes(nc),
+            members(&eg, nc),
             [ENode::apply(OpKind::Neg, &[c]), ENode::Var(3)],
             "the item's nodes before the rebuild, the first still naming c"
         );
         assert_eq!(
-            eg.nodes(nb),
+            members(&eg, nb),
             [ENode::apply(OpKind::Neg, &[b]), ENode::Var(9)]
         );
 
@@ -2272,12 +2316,16 @@ mod tests {
         let neg_b = ENode::apply(OpKind::Neg, &[b]);
         let expected = [neg_b, ENode::Var(9), neg_b, ENode::Var(3)];
         assert_eq!(
-            eg.nodes(nc),
+            members(&eg, nc),
             expected,
             "[absorbed: Neg(b), Var(9)] ++ [kept: Neg(b), Var(3)]"
         );
         eg.rebuild();
-        assert_eq!(eg.nodes(nc), expected, "a further rebuild keeps the order");
+        assert_eq!(
+            members(&eg, nc),
+            expected,
+            "a further rebuild keeps the order"
+        );
     }
 
     /// A rebuild item whose class loses a union made during the item gives
@@ -2309,7 +2357,7 @@ mod tests {
             "the recipe assumes these ids"
         );
         assert_eq!(
-            eg.nodes(neg_c),
+            members(&eg, neg_c),
             [
                 ENode::apply(OpKind::Neg, &[c]),
                 ENode::apply(OpKind::Abs, &[c]),
@@ -2337,10 +2385,10 @@ mod tests {
             abs,
             ENode::Var(9), // kept, in the order they were walked
         ];
-        assert_eq!(eg.nodes(neg_b), expected);
+        assert_eq!(members(&eg, neg_b), expected);
         eg.rebuild();
         assert_eq!(
-            eg.nodes(neg_b),
+            members(&eg, neg_b),
             expected,
             "a further rebuild keeps the order"
         );
@@ -2621,7 +2669,7 @@ mod tests {
 
         // Hand-derivation: x, y, and sum are all seeds.
         for &(class, _) in &[(x, "x"), (y, "y"), (sum, "sum")] {
-            for &tag in eg.tags(class) {
+            for tag in eg.tags(class) {
                 assert_eq!(
                     eg.journal().origin(tag),
                     Some(Origin::Seed),
@@ -2652,8 +2700,6 @@ mod tests {
         let commuted_class = eg.find(sum);
         let rule_origin_tags: Vec<ENodeId> = eg
             .tags(commuted_class)
-            .iter()
-            .copied()
             .filter(|&t| matches!(eg.journal().origin(t), Some(Origin::Rule(_))))
             .collect();
         assert_eq!(
@@ -2706,8 +2752,6 @@ mod tests {
         let outer_class = eg.find(outer);
         let b_product_tag = eg
             .tags(outer_class)
-            .iter()
-            .copied()
             .find(|&t| eg.journal().origin(t) == Some(Origin::Rule(app_b)))
             .expect("expected a node created by application B in outer's class");
 
@@ -2900,7 +2944,7 @@ mod tests {
         let fresh = eg.add(ENode::Var(200));
         assert_eq!(eg.num_classes(), HARD_MINTED_LIMIT);
         assert!(
-            matches!(eg.nodes(eg.find(fresh)).first(), Some(ENode::Var(200))),
+            matches!(eg.nodes(eg.find(fresh)).next(), Some(ENode::Var(200))),
             "add past the limit returned a class that does not hold the node"
         );
         assert_ne!(
@@ -3184,7 +3228,6 @@ mod variance_fact_tests {
         let class = eg.find(x);
         assert!(
             eg.nodes(class)
-                .iter()
                 .any(|n| n.children_slice().iter().any(|&c| eg.find(c) == class)),
             "precondition: the class reaches itself"
         );

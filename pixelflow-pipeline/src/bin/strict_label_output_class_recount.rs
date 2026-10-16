@@ -148,7 +148,11 @@ struct Report {
 fn render_chosen(eg: &EGraph, choices: &[Option<usize>], class: EClassId) -> String {
     let c = eg.find(class);
     let idx = choices[c.index()].unwrap_or_else(|| panic!("class e{} has no choice", c.index()));
-    match &eg.nodes(c)[idx] {
+    match eg
+        .nodes(c)
+        .nth(idx)
+        .expect("a choice indexes its class's e-nodes")
+    {
         ENode::Var(v) => format!("v{v}"),
         ENode::Const(bits) => format!("{}", f32::from_bits(*bits)),
         ENode::Buffer(_) => "buf".to_string(),
@@ -195,8 +199,13 @@ fn chosen_path(out: &AnytimeCurveOutput) -> HashMap<EClassId, ENodeId> {
                 c.index()
             )
         });
-        chosen.insert(c, eg.tags(c)[idx]);
-        stack.extend(eg.nodes(c)[idx].children());
+        let (node, tag) = eg
+            .nodes(c)
+            .zip(eg.tags(c))
+            .nth(idx)
+            .expect("a choice indexes its class's e-nodes");
+        chosen.insert(c, tag);
+        stack.extend(node.children());
     }
     chosen
 }
@@ -356,12 +365,8 @@ fn tally_expression(
                 chosen_origin_in_output_class: BTreeSet::new(),
                 extracted: render_chosen(eg, &out.extraction.choices, out.root),
                 const_one_on_path: path.iter().any(|(c, tag)| {
-                    let i = eg
-                        .tags(*c)
-                        .iter()
-                        .position(|t| t == tag)
-                        .expect("tag in class");
-                    matches!(eg.nodes(*c)[i], ENode::Const(b) if b == 1.0_f32.to_bits())
+                    let i = eg.tags(*c).position(|t| t == *tag).expect("tag in class");
+                    matches!(eg.nodes(*c).nth(i), Some(&ENode::Const(b)) if b == 1.0_f32.to_bits())
                 }),
                 strict_credited_rules: BTreeMap::new(),
             });
