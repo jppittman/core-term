@@ -36,12 +36,12 @@ pub struct RewriteTarget {
     /// The e-class to apply the rule to
     pub class_id: EClassId,
     /// The node the rule should try to match, named by its stable
-    /// [`ENodeId`] rather than by a position in the class's node vector.
+    /// [`ENodeId`] rather than by a position in the class's member order.
     ///
     /// A position goes stale: a caller that enumerates a round's matches
     /// and then applies them one at a time can rebuild the class between
-    /// enumeration and application, and `rebuild`'s take/canonicalize/extend
-    /// cycle renumbers it. Re-fetching a stale *index* silently applies the
+    /// enumeration and application, and `rebuild`'s detach and write-back
+    /// renumber it. Re-fetching a stale *index* silently applies the
     /// rule to whichever node inherited that slot, credited to the original
     /// candidate's score and dedup key. Re-resolving a stale *tag* finds
     /// either the same node or nothing at all.

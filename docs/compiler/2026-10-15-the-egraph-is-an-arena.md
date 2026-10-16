@@ -154,8 +154,11 @@ with a singly linked list through the arena that reproduces law 8:
 - `add`: `[t]`. `union`: splice the child's list after the parent's tail,
   O(1). An empty child splices nothing; an empty parent takes the child's
   head. Today's `extend` does both implicitly (`graph.rs:461-464`), and both
-  are ordinary: the class under rebuild is empty at every mid-item union,
-  and retirement can empty a class.
+  are ordinary: the class under rebuild is empty when its item's first
+  mid-item union makes it the parent or the child. Retirement cannot empty a
+  class: a refusal needs a constant fact on both sides, a fact is seeded only
+  by a `Const` node, and that node's own form hits its own memo entry, so it is
+  never retired.
 
 `nodes(c)` and `tags(c)` are opaque iterators from CL 1. All 53 production
 rules that read a child class already read it by an ordered scan with no
@@ -262,8 +265,9 @@ or rebuilt since"; node ids remove the second case only, and the public
 `Optimized::to_arena` documents that panic (`optimizer.rs:290-308`). So it
 becomes the O(1), stronger `find(id) == pick.class && id ∉ R`, kept in
 production. (A brand tying `Selection` to its graph would make it a type;
-not this plan.) CL 3c is needed only by CL 4, since a positional read over
-CL 3b's vectors is O(1), and lands just before it.
+not this plan.) CL 3c is needed only by CL 4, since `node_at`'s positional read
+over CL 3b's vectors is O(1) (`nodes(c).nth(k)` is a walk of `k + 1` members,
+because `nodes` is an iterator adapter), and lands just before it.
 
 Public choice APIs keep positions: `ExtractedDAG.choices`,
 `Optimized.choices`, `Extraction::choice` and the labeler's
@@ -373,7 +377,10 @@ members, then any it absorbs later in the item, then `[kept]`. That is
 
 Layout tests become the law they stood for. The rebuild regressions
 (`graph.rs:1953`, `2065`) become: every id ever added is a member of
-`find(id)` or retired, and a second `rebuild` changes nothing.
+`find(id)` or retired, and listed by exactly one class. (A second `rebuild`
+changing nothing was in this sentence and is not: after a rebuild that ran the
+worklist dry it pops nothing, so it cannot fail. The fixpoint worth stating is
+the one congruence has not reached, law 5.)
 `eg.classes.len()` (`graph.rs:2712`, `2720`) becomes `num_classes()`. Slice
 patterns (`insert.rs:363, 417`, `extraction_gap.rs:184`,
 `tests/root_shapes.rs:240`) and `[0]` (`template.rs` tests) read the

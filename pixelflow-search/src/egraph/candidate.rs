@@ -95,8 +95,8 @@ pub const REGISTERED_PRIMARY_BUDGET_APPLICATIONS: usize = 100;
 /// The key holds the class's nodes themselves, operands canonicalized through
 /// `find` and sorted by `ENode`'s own order. The order is exact, so two keys
 /// are equal precisely when the two canonical node multisets are, and no
-/// collision can let the layout of a class's node vector (which
-/// `rebuild_budgeted` reorders) leak into the comparison. A multiset because
+/// collision can let the order of a class's members (which
+/// `rebuild_budgeted` rearranges) leak into the comparison. A multiset because
 /// a class can hold two members whose canonical forms coincide, before a
 /// rebuild or after one (rebuild deduplicates nothing), and the key keeps
 /// both. A `Ref` node is

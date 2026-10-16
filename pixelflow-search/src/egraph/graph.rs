@@ -55,10 +55,10 @@ pub struct EGraph {
     refused_const_unions: Vec<(u32, u32)>,
     /// Global monotonic counter, bumped once per class-content mutation
     /// (`add`'s memo miss, `union`'s merge) — never reset, never bumped by
-    /// anything that only re-canonicalizes existing content (`nodes()`
-    /// already resolves through `find`, so rewriting a child's stored id to
-    /// its current canonical form during rebuild surfaces nothing a lookup
-    /// couldn't already see). See [`Self::class_is_dirty`].
+    /// anything that only re-canonicalizes existing content (rewriting a
+    /// child's stored id to its current representative during rebuild changes
+    /// a name, not the class's content, and `class_is_dirty` follows every id
+    /// through `find`). See [`Self::class_is_dirty`].
     mutation_counter: u64,
     /// The graph's mutation log, or `None` when the graph was built without
     /// one ([`Self::without_journal`]).
@@ -561,7 +561,8 @@ impl EGraph {
     /// The node at `position` in [`Self::nodes`]`(id)`'s order, or `None`
     /// past its end, without walking to it. The read for a position an
     /// extraction recorded and reads back once per candidate priced; a walk
-    /// that is not on that path takes it from `nodes(id).nth(position)`.
+    /// that is not on that path takes it from `nodes(id).nth(position)`, which
+    /// reads `position + 1` members.
     pub(crate) fn node_at(&self, id: EClassId, position: usize) -> Option<&ENode> {
         self.columns
             .members(self.columns.root(id))
@@ -744,7 +745,7 @@ impl EGraph {
     /// [`Self::mutation_counter`] value from some rule's last complete scan.
     ///
     /// Reads only `EClassId`s and `last_changed` entries, never clones a
-    /// node vector or calls a rule's `apply` — this is the cheap check
+    /// node or calls a rule's `apply` — this is the cheap check
     /// the runner's rule scan uses to decide whether the
     /// expensive path (clone the class's nodes, run every rule against
     /// every one) is worth paying for at all. Canonicalizes every id it
@@ -1872,13 +1873,10 @@ mod tests {
     /// What a rebuild owes a caller whatever the store's layout: every id
     /// `add` handed out is a member of `find(id)`'s class, still the node it
     /// was born as (up to its operands' names), or retired, and no other class
-    /// lists it; and once the worklist is empty a second `rebuild` changes
-    /// nothing. `added` is every node the recipe added, with the id `add`
-    /// returned. Retired nodes are read from the store's retired bit.
-    fn assert_every_id_is_a_member_and_rebuild_is_at_rest(
-        eg: &mut EGraph,
-        added: &[(EClassId, ENode)],
-    ) {
+    /// lists it. `added` is every node the recipe added, with the id `add`
+    /// returned. Retired nodes are read from the store's retired bit. Called
+    /// once the recipe's `rebuild` has emptied the worklist.
+    fn assert_every_id_is_a_member(eg: &EGraph, added: &[(EClassId, ENode)]) {
         assert_eq!(
             added.len(),
             eg.num_classes(),
@@ -1911,25 +1909,6 @@ mod tests {
             "each id is listed by exactly one class, or retired"
         );
         assert_eq!(eg.pending_rebuilds(), 0, "the recipe ran the worklist dry");
-        type Snapshot = (Vec<EClassId>, Vec<(EClassId, Vec<(ENodeId, ENode)>)>);
-        let snapshot = |eg: &EGraph| -> Snapshot {
-            let finds = (0..eg.num_classes())
-                .map(|i| eg.find(EClassId::from_index(i)))
-                .collect();
-            let classes = eg
-                .class_ids()
-                .map(|class| {
-                    (
-                        class,
-                        eg.tags(class).zip(eg.nodes(class).copied()).collect(),
-                    )
-                })
-                .collect();
-            (finds, classes)
-        };
-        let before = snapshot(&*eg);
-        eg.rebuild();
-        assert_eq!(snapshot(&*eg), before, "a second rebuild changes nothing");
     }
 
     /// The canonical copy of a node names the surviving class of every operand
@@ -1981,7 +1960,7 @@ mod tests {
     /// (The order that gives is pinned by
     /// `a_rebuild_item_that_survives_gives_absorbed_then_kept`.) Stated as the
     /// law rather than as which marker survived: every id is a member of
-    /// `find(id)`'s class, and a second rebuild changes nothing.
+    /// `find(id)`'s class, or retired, and listed once.
     #[test]
     fn rebuild_budgeted_does_not_drop_nodes_when_current_class_survives_union() {
         let mut eg = EGraph::new();
@@ -2009,8 +1988,8 @@ mod tests {
             "nc and nb should have been unioned via the canonicalization collision"
         );
         assert_eq!(eg.find(nb), nc, "the item survived");
-        assert_every_id_is_a_member_and_rebuild_is_at_rest(
-            &mut eg,
+        assert_every_id_is_a_member(
+            &eg,
             &[
                 (a, ENode::Var(0)),
                 (b, ENode::Var(1)),
@@ -2030,8 +2009,8 @@ mod tests {
     /// `find(4)`: written back to the item's own id they would sit where
     /// `find` no longer leads. (The order is pinned by
     /// `a_rebuild_item_that_loses_gives_prior_then_later_absorbed_then_kept`.)
-    /// Stated as the law: every id is a member of `find(id)`'s class, and a
-    /// second rebuild changes nothing.
+    /// Stated as the law: every id is a member of `find(id)`'s class, or
+    /// retired, and listed once.
     #[test]
     fn rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away() {
         let mut eg = EGraph::new();
@@ -2064,8 +2043,8 @@ mod tests {
              i.e. the `existing.0 < id.0` branch"
         );
 
-        assert_every_id_is_a_member_and_rebuild_is_at_rest(
-            &mut eg,
+        assert_every_id_is_a_member(
+            &eg,
             &[
                 (a, ENode::Var(0)),
                 (b, ENode::Var(1)),
@@ -2109,6 +2088,16 @@ mod tests {
         let retired = ENodeId(5);
         assert_eq!(eg.node_for_tag(eg.find(neg_b), retired), None);
         assert_eq!(eg.node_for_tag(eg.find(neg_a), retired), None);
+        assert_eq!(
+            eg.node_for_tag(one, ENodeId(0)),
+            Some(&ENode::constant(1.0)),
+            "a live node answers in its own class"
+        );
+        assert_eq!(
+            eg.node_for_tag(two, ENodeId(0)),
+            None,
+            "a live node answers nothing in another class"
+        );
         assert!(
             eg.class_ids()
                 .all(|class| eg.tags(class).all(|t| t != retired))
@@ -2135,8 +2124,8 @@ mod tests {
             "a tag past the graph is no member"
         );
         assert!(eg.is_member(ENodeId(4)));
-        assert_every_id_is_a_member_and_rebuild_is_at_rest(
-            &mut eg,
+        assert_every_id_is_a_member(
+            &eg,
             &[
                 (one, ENode::constant(1.0)),
                 (two, ENode::constant(2.0)),

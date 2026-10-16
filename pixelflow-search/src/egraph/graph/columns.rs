@@ -22,10 +22,11 @@
 //!   `queued` is keyed by, whatever that id has since been merged into.
 //!   Indexed by [`Slot`].
 //!
-//! `members`, `live` and the retired bit are private, and `push`, `absorb`,
-//! `detach`, `write_back` and `retire` are the only writes to them, so a
-//! class is filled or emptied only here and the live set is restated at each
-//! of those writes.
+//! `members`, `live` and the retired bit are private. `push`, `absorb`,
+//! `detach` and `write_back` are the only writes to a member list, so a class
+//! is filled or emptied only here and the live set is restated at each of
+//! them; `retire` sets the retired bit and changes no list, because its node
+//! left the class at `detach`.
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -236,7 +237,7 @@ pub(crate) struct Columns {
     /// `rebuild_budgeted`. Guards `union`'s push: several unions landing on
     /// the same parent in one round used to enqueue it once per union, and
     /// `rebuild_budgeted` paid a full canonicalize-and-memo-probe pass over
-    /// that class's node vector per redundant entry even though only the
+    /// that class's member list per redundant entry even though only the
     /// state after the *last* union in the round matters.
     pub(super) queued: Column<Slot, bool>,
 }

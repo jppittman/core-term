@@ -67,7 +67,7 @@
 //! e-class a later candidate matched against. [`RewriteTarget`] therefore
 //! names the matched node by its stable
 //! [`ENodeId`](super::provenance::ENodeId), not by a position in the class's
-//! node vector, and `apply_single_rule` re-resolves that identity before
+//! member order, and `apply_single_rule` re-resolves that identity before
 //! re-checking the rule — so a mid-round rebuild either leaves the exact
 //! matched node in place (the rule is re-checked against it, as before) or
 //! removes it, in which case nothing fires and nothing is recorded. It can

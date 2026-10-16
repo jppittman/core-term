@@ -366,7 +366,7 @@ fn reconstruct_applications(
     // Step 2: ApplicationId -> the ENodeIds it created, one pass over
     // `origins()` -- filtered to nodes that actually survive into the final
     // canonical structure (`arity_of`, step 1). `rebuild_budgeted` can
-    // permanently drop a node from its class's node/tag vectors: when
+    // retire a node, dropping it from its class's members for good: when
     // canonicalizing finds a memo collision with an existing, *different*
     // class whose constant fact conflicts (`graph.rs`'s `union` refusal for
     // provably-unequal constants -- an ill-conditioned-kernel detector, not
