@@ -257,8 +257,10 @@ pub(crate) struct Columns {
     /// end exactly when `head` is.
     tail: Column<Root, Link>,
     /// The classes with at least one member, as a set: the representatives
-    /// whose list is not empty. Restated by every write to a list, so it
-    /// agrees with them by construction.
+    /// whose list is not empty. Restated by `push`, `absorb`, `detach` and
+    /// `write_back`, the writes that can change whether a class has members
+    /// (`keep` and `retire` cannot: a kept node is in no class until
+    /// `write_back`), so it agrees with the lists by construction.
     live: ClassSet,
     /// The constant each class is known to equal, as f32 bits — maintained
     /// independently of the member list on purpose.
@@ -410,7 +412,7 @@ impl Columns {
     }
 
     /// The classes with at least one member, which this module restates at
-    /// each write to a member list.
+    /// each write that can change whether a class has members.
     pub(super) fn live(&self) -> &ClassSet {
         &self.live
     }

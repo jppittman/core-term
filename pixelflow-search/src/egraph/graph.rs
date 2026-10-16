@@ -2392,6 +2392,86 @@ mod tests {
         );
     }
 
+    /// A rebuild item that survives one union made during it and then loses a
+    /// later one hands the survivor what it absorbed in between: the
+    /// survivor's prior nodes, then the nodes the item absorbed while it still
+    /// stood, then whatever the survivor absorbs after the loss, then
+    /// `[kept]`. The item is class 4. Its first node canonicalizes into class
+    /// 5, which 4 absorbs (4 < 5); its second into class 3, which survives
+    /// with a prior member (3 < 4), so the item's list, class 5's nodes, goes
+    /// to the survivor; its third into class 7, which 3 then absorbs.
+    #[test]
+    fn a_rebuild_item_that_survives_then_loses_gives_prior_then_absorbed_then_kept() {
+        let mut eg = EGraph::new();
+        let _a = eg.add(ENode::Var(0));
+        let b = eg.add(ENode::Var(1));
+        let c = eg.add(ENode::Var(2));
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3, survives
+        let abs_c = eg.add(ENode::apply(OpKind::Abs, &[c])); // class 4, the item
+        let abs_b = eg.add(ENode::apply(OpKind::Abs, &[b])); // class 5, absorbed first
+        let neg_c = eg.add(ENode::apply(OpKind::Neg, &[c]));
+        let sqrt_b = eg.add(ENode::apply(OpKind::Sqrt, &[b])); // class 7, absorbed later
+        let sqrt_c = eg.add(ENode::apply(OpKind::Sqrt, &[c]));
+        let prior = eg.add(ENode::Var(7));
+        let first = eg.add(ENode::Var(8));
+        let later = eg.add(ENode::Var(10));
+        let marker = eg.add(ENode::Var(9));
+        eg.union(neg_b, prior);
+        eg.union(abs_b, first);
+        eg.union(sqrt_b, later);
+        eg.union(abs_c, neg_c);
+        eg.union(abs_c, sqrt_c);
+        eg.union(abs_c, marker);
+        eg.union(b, c);
+        assert_eq!(
+            [neg_b, abs_c, abs_b, sqrt_b].map(EClassId::index),
+            [3, 4, 5, 7],
+            "the recipe assumes these ids"
+        );
+        assert_eq!(
+            members(&eg, abs_c),
+            [
+                ENode::apply(OpKind::Abs, &[c]),
+                ENode::apply(OpKind::Neg, &[c]),
+                ENode::apply(OpKind::Sqrt, &[c]),
+                ENode::Var(9)
+            ]
+        );
+
+        // The worklist is a stack of 3, 5, 7, 4, 1: class 1 pops, then 4.
+        assert_eq!(
+            eg.rebuild_budgeted(2),
+            4,
+            "the union in item 4 that 4 survives queues 4; the one it loses queues nothing"
+        );
+        assert_eq!(eg.find(abs_c), neg_b, "the item lost to class 3");
+        assert_eq!(eg.find(abs_b), neg_b, "after absorbing class 5");
+        assert_eq!(eg.find(sqrt_b), neg_b, "and 3 absorbed class 7 during it");
+
+        let neg = ENode::apply(OpKind::Neg, &[b]);
+        let abs = ENode::apply(OpKind::Abs, &[b]);
+        let sqrt = ENode::apply(OpKind::Sqrt, &[b]);
+        let expected = [
+            neg,
+            ENode::Var(7), // the survivor's prior nodes
+            abs,
+            ENode::Var(8), // absorbed by the item before it lost
+            sqrt,
+            ENode::Var(10), // absorbed by the survivor after
+            abs,
+            neg,
+            sqrt,
+            ENode::Var(9), // kept, in the order they were walked
+        ];
+        assert_eq!(members(&eg, neg_b), expected);
+        eg.rebuild();
+        assert_eq!(
+            members(&eg, neg_b),
+            expected,
+            "a further rebuild keeps the order"
+        );
+    }
+
     /// Create an e-graph with standard algebraic rules for testing.
     fn egraph_with_rules() -> Saturation {
         let rules: Vec<Box<dyn Rewrite>> = vec![

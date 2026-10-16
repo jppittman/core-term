@@ -1,7 +1,7 @@
 # The e-graph is an arena
 
 **Status:** `Plan of record` (JP, 2026-10-15: "write the arena plan. Execute it.").
-**Verified against:** `2a99d933` (written); CLs 0, 3a and 2 landed as `4af25113`; CLs 5a–d and 6 on `43019669`; CLs 1 and 3b on `98fb75a7`. Changes
+**Verified against:** `2a99d933` (written); CLs 0, 3a and 2 landed as `4af25113`; CLs 5a–d and 6 on `43019669`; CLs 1 and 3b on `98fb75a7`; CLs 3c and 4 on `4183ecf6`. Changes
 representation only: every CL below leaves `byte_probe` and the 29 font
 programs' extracted kernels byte-identical (§3.2, gates 1 and 1b) and is
 measured, not asserted. What would change the optimizer (congruence
@@ -301,8 +301,8 @@ to at least 4 slots) × 134 k live classes ≈ 21 MB.
 | 3a, 1, 5a-d, 6 | ~0 |
 | 2 | +9 to +10 MB while the graph is cached (8-byte mask, 53 bits per id, × 1.44) |
 | 3b | about −15 MB (node and tag vectors; a member-id vector remains); measured −10.5 MB |
-| 3c | up to +3.6 MB (`node_of_slot`) |
-| 4 | about −5 MB (the member-id vector, ~40 B per live class) |
+| 3c | up to +3.6 MB (`node_of_slot`); measured +3.9 MB |
+| 4 | about −5 MB (the member-id vector, ~40 B per live class); measured −6.7 MB |
 | 7 | the memo and saturation-only columns; the memo's entry count at freeze is measured first |
 
 The shape cache keeps every saturated graph for the process
@@ -373,7 +373,13 @@ CL 0 pins law 8 through the public `nodes()`: `union` gives parent then
 child; a rebuild item whose class survives a mid-item union gives
 `[absorbed] ++ [kept]`; one whose class loses gives the survivor's prior
 members, then any it absorbs later in the item, then `[kept]`. That is
-`nodes()`'s documented contract, not a layout pin.
+`nodes()`'s documented contract, not a layout pin. CL 4's review adds the fourth
+case, which a reading of §2.2 as "an empty child splices nothing" does not
+mention: an item that survives one mid-item union and then loses a later one hands
+the survivor everything it absorbed while it stood, so the order is the survivor's
+prior members, then the item's absorbed ones, then whatever the survivor absorbs
+after the loss, then `[kept]`
+(`a_rebuild_item_that_survives_then_loses_gives_prior_then_absorbed_then_kept`).
 
 Layout tests become the law they stood for. The rebuild regressions
 (`graph.rs:1953`, `2065`) become: every id ever added is a member of
@@ -455,6 +461,7 @@ gates 1, 1b, 2 and (from group B) 2x identical at every step:
 | A (#1416) | 0, 3a, 2 | 7,520 M → 6,122 M (−18.6%) | 3,817 M → 2,432 M | ~1,648 M | 6,361 M → 4,672 M | 133.3 → 137.5 MB |
 | B | 5a–d, 6 | 6,096 M → 5,383 M (−11.7%) | 2,408 M → 2,261 M | 1,647 M → 1,074 M (−34.8%) | 4,646 M → 3,889 M | 137.7 → 137.6 MB |
 | C | 1, 3b | 5,383 M → 5,210 M (−3.2%) | 2,261 M → 2,093 M | 1,074 M → 1,082 M | 3,903 M → 3,727 M (−4.5%, one host: see below) | 137.6 → 126.7 MB |
+| D | 3c, 4 | 5,210 M → 5,103 M (−2.1%) | 2,093 M → 1,950 M | 1,082 M → 1,083 M | 3,727 M → 3,528 M (−5.4%) | 126.7 → 123.7 MB |
 
 Against the estimates: 5a alone took −470 M of extraction, more than the
 −0.3 to −0.5 G expected of 5a–c; 5b measured zero (one-child rows are 2.9%
@@ -484,7 +491,41 @@ measures −94.3 M (−2.43% of the base) by itself, so the arena and the member
 store are the other −58.9 M (−1.52%). Peak RSS fell 10.5 MB where §2.8
 estimated about 15 MB.
 
-Next: group D (CLs 3c, 4), then E (7), each its own PR.
+Group D's rows are against final-C, the end of group C. Both ran on a machine that
+simulates the same cache (I1 and D1 32 KiB 8-way, LL 34 MiB 17-way: checked before the
+first edit and in each row's recorded geometry), so final-C's cache-sim sum is
+comparable and nothing was re-taken. CL 3c took Ir +2.8 M (zero, under the 10 M floor),
+extraction −7.9 M (an index into `node_of_slot` where `node_at` walked to a root and
+loaded from a slice), the sum −14.3 M (−0.38%) and peak RSS +3.9 MB (`node_of_slot` is
+8 bytes per slot and lives with the snapshot; §2.8 estimated up to +3.6 MB). It is not
+decided by the cache rule; its sum is CL 4's base. Group D as a whole: Ir −107.3 M
+(−2.06%), saturate −142.5 M (−6.81%), extraction +0.8 M (zero), the sum −199.6 M
+(−5.36%), peak RSS −3.0 MB; against the plan's base row Ir is −32.1% and saturate
+−48.9%.
+
+**CL 4's decision** (the cache-sim sum falls by at least 1%, or the previous layout
+stands): it passes. Against CL 3c's row, on the same geometry, the sum is
+3,712,851,651 → 3,527,575,057, −4.99% (the rule needed 3,675,723,134 or less), with Ir
+−110.1 M (−2.11%), saturate −143.1 M (−6.84%), extraction +8.7 M (+0.81%), L1 misses
+−9.9% and LL misses −7.5%; peak RSS fell 6.7 MB where §2.8 estimated about 5 MB. The Ir
+carries it, not the load chain §2.2 bet on: the sum's change is −134.4 M of Ir (73%),
+−40.9 M of L1 misses (22%) and −9.9 M of LL misses (5%), and the Ir is the allocator and
+the splice. `union` no longer extends a vector per merge and `add` no longer allocates
+one for a one-node class (`realloc` −92.5 M Ir, `free` −21.4 M, `EGraph::union`
+−133.4 M, `EGraph::add` −54.3 M, `rebuild_budgeted` −33.5 M), while the rule scan, which
+walks a list where it walked a slice, costs +67.0 M Ir and saves 2.7 M of L1 misses
+(+42.1 M on the metric). The walk is a cost the allocator's saving repays more than three
+times over, not the gain.
+
+During development a lock-step shadow of the CL 3c store was compared against the new
+one after every `add`, `union` and `rebuild_budgeted` call and deleted before submit;
+two deliberate mutations of the new store (`absorb` putting the child's members first,
+`write_back` overwriting where it should splice) both failed it. The fourth case of §3.3,
+an item that survives one union and then loses a later one, was pinned only by that
+shadow until CL 4's review added a test; a mutant of `absorb` that skips a
+child whose list was set mid-item fails it and passes the three tests before it.
+
+Next: group E (CL 7), its own PR.
 
 ## 7. What this does not address
 
