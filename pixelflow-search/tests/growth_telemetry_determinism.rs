@@ -7,7 +7,7 @@
 //! feature happens to be compiled in and switched on — an instrument is
 //! optional only if attaching it cannot change what the instrumented thing
 //! does. `docs/archive/plans/2026-08-31-guide-design-revision.md` §4.1's growth
-//! telemetry reads counters (`EGraph::next_enode_id`, `EGraph::classes.len()`)
+//! telemetry reads one counter (`EGraph::num_classes`, the node arena's length)
 //! around the same `apply_action` call every path already makes and writes
 //! only into its own accumulator, so it should be inert by construction —
 //! this file is that claim, checked rather than assumed.

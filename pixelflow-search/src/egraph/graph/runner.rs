@@ -36,12 +36,12 @@ pub struct RewriteTarget {
     /// The e-class to apply the rule to
     pub class_id: EClassId,
     /// The node the rule should try to match, named by its stable
-    /// [`ENodeId`] rather than by a position in the class's node vector.
+    /// [`ENodeId`] rather than by a position in the class's member order.
     ///
     /// A position goes stale: a caller that enumerates a round's matches
     /// and then applies them one at a time can rebuild the class between
-    /// enumeration and application, and `rebuild`'s take/canonicalize/extend
-    /// cycle renumbers it. Re-fetching a stale *index* silently applies the
+    /// enumeration and application, and `rebuild`'s detach and write-back
+    /// renumber it. Re-fetching a stale *index* silently applies the
     /// rule to whichever node inherited that slot, credited to the original
     /// candidate's score and dedup key. Re-resolving a stale *tag* finds
     /// either the same node or nothing at all.
@@ -265,7 +265,9 @@ pub struct SaturationStats {
 ///
 /// It bounds the graph *approximately*: a sweep predicts the ids each pending
 /// action will mint against the graph as it stands (`EGraph::predicted_growth`;
-/// exact for one action, an over-count for several that share nodes) and
+/// exact for one action, and for several neither an upper nor a lower bound:
+/// shared nodes over-count, and an earlier commit's union can turn a
+/// predicted hit into a miss) and
 /// then commits the batch it accepted, so the bound holds to the prediction's
 /// slack. That is precisely why the limit can live at the driver — it guards
 /// memory, not meaning, and a bounded overshoot of a 100 000-id ceiling costs
@@ -539,16 +541,13 @@ impl Saturation {
         for rule_idx in self.rules.indices() {
             let rule = self.rules.rule(rule_idx);
             for class_id in self.graph.class_ids() {
-                let nodes = &self.graph.columns.classes[class_id].nodes;
-
-                let tags = &self.graph.columns.classes[class_id].tags;
-                for (node_idx, node) in nodes.iter().enumerate() {
+                for (node, tag) in self.graph.nodes(class_id).zip(self.graph.tags(class_id)) {
                     // Check if rule matches this node
                     if rule.apply(&self.graph, class_id, node).is_some() {
                         matches.push(RewriteTarget {
                             rule_idx,
                             class_id,
-                            tag: tags[node_idx],
+                            tag,
                         });
                     }
                 }
@@ -846,7 +845,7 @@ impl Saturation {
     /// scan queues an action, so one look at entry stands for every class.
     /// A graph with no live class has nothing to scan, so it completes.
     fn scan_entry_stop(&self, ceilings: &Ceilings) -> ScanStop {
-        if self.graph.live.iter().next().is_none() {
+        if self.graph.class_ids().next().is_none() {
             return ScanStop::Completed;
         }
         if self.graph.num_classes() > ceilings.minted {
@@ -916,13 +915,6 @@ impl Saturation {
         let rule = self.rules.rule(rule_idx);
         let roots = rule.root_shapes();
 
-        // The scan only reads the graph (every write waits for the commit
-        // below), so nothing can add or merge a class under the iterator.
-        debug_assert!(
-            !self.graph.live_has_drifted(),
-            "the live-class set has drifted from the graph's canonical classes"
-        );
-
         // Only a class that has held a node in the rule's root shapes is
         // visited at all (`candidate_classes`). The id-budget and allowance
         // checks run once at entry (`scan_entry_stop`) and after each action
@@ -950,7 +942,7 @@ impl Saturation {
             // below), so nothing can move the class's nodes under the loop.
             // The kind index is a superset, so a stale bit costs a visit to a
             // class whose nodes `admits` all decline here.
-            for node in &self.graph.columns.classes[canonical].nodes {
+            for node in self.graph.nodes_of_canonical(canonical) {
                 if !roots.admits(node) {
                     continue;
                 }
@@ -979,11 +971,11 @@ impl Saturation {
                     // owns the regression — decision JP, 2026-09-09; see
                     // docs/archive/plans/2026-08-31-guide-design-revision.md §4.2.
                     //
-                    // Sound as an upper bound on the whole scan's real
-                    // growth even though sibling actions found later in this
-                    // same scan (still uncommitted, so invisible to this
-                    // call) may end up sharing some of the same nodes: real
-                    // growth can only come in lower.
+                    // Exact for this action against the graph as it stands.
+                    // The running sum is not a bound on the scan's real
+                    // growth in either direction (see `predicted_growth`), so
+                    // the cap check below holds the batch to the prediction's
+                    // slack, which is what `HARD_MINTED_LIMIT` allows.
                     let action_cost = self
                         .graph
                         .predicted_growth(&action, &mut self.predictor_pending);
@@ -1165,7 +1157,7 @@ impl Saturation {
 
         #[cfg(feature = "provenance-journal")]
         {
-            let minted_from = self.graph.next_enode_id;
+            let minted_from = self.graph.num_classes() as u64;
             let opening = Opening {
                 rule: self.rules.id(rule_idx),
                 rule_idx,
@@ -1178,8 +1170,9 @@ impl Saturation {
                 .as_mut()
                 .map(|journal| journal.open_application(opening));
             let result = self.apply_measured(rule_idx, class_id, action);
+            let minted = minted_from..(self.graph.num_classes() as u64);
             if let (Some(open), Some(journal)) = (open, self.graph.journal.as_mut()) {
-                journal.close_application(open, minted_from..self.graph.next_enode_id, result);
+                journal.close_application(open, minted, result);
             }
             result
         }
@@ -1217,19 +1210,11 @@ impl Saturation {
             let predicted = self
                 .graph
                 .predicted_growth(&action, &mut self.predictor_pending);
-            let nodes_before = self.graph.next_enode_id;
+            let classes_before = self.graph.num_classes();
             let unions = self.graph.apply_action(class_id, action);
-            let nodes_added = (self.graph.next_enode_id - nodes_before) as usize;
-            // See `crate::egraph::growth`'s module doc: `add()` mints exactly
-            // one new class per new node, always, so this equality is an
-            // invariant of the representation, not an assumption of the
-            // measurement — pinned here rather than merely relied upon.
-            debug_assert_eq!(
-                self.graph.num_classes() as u64,
-                self.graph.next_enode_id,
-                "EGraph::add's one-class-per-node invariant broke; growth's \
-                 nodes_added/classes_added equivalence depends on it"
-            );
+            // `add` pushes one node per memo miss and returns its index as
+            // the new class: nodes added and classes added are one count.
+            let nodes_added = self.graph.num_classes() - classes_before;
             let rule = self.rules.id(rule_idx);
             assert_eq!(
                 predicted,

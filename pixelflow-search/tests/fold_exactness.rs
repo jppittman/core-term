@@ -106,8 +106,8 @@ fn exact_and_ordinary_folds_still_fold() {
 }
 
 /// The refusal guard must hold during REBUILD, not just during rule
-/// application. `rebuild` drains a class's nodes with `mem::take` and only
-/// then performs congruence unions, so a guard that scanned the node vector
+/// application. `rebuild` detaches a class's members and only then
+/// performs congruence unions, so a guard that scanned the member list
 /// was blind at exactly the moment congruence closure does its merging: the
 /// class looked constant-free and a contradictory merge went through.
 ///

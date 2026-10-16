@@ -95,10 +95,11 @@ pub const REGISTERED_PRIMARY_BUDGET_APPLICATIONS: usize = 100;
 /// The key holds the class's nodes themselves, operands canonicalized through
 /// `find` and sorted by `ENode`'s own order. The order is exact, so two keys
 /// are equal precisely when the two canonical node multisets are, and no
-/// collision can let the layout of a class's node vector (which
-/// `rebuild_budgeted` reorders) leak into the comparison. A multiset because
-/// between a `union` and its `rebuild` a class can hold two stored nodes
-/// whose canonical forms coincide, and the key keeps both. A `Ref` node is
+/// collision can let the order of a class's members (which
+/// `rebuild_budgeted` rearranges) leak into the comparison. A multiset because
+/// a class can hold two members whose canonical forms coincide, before a
+/// rebuild or after one (rebuild deduplicates nothing), and the key keeps
+/// both. A `Ref` node is
 /// only its key, so two classes holding the same unit compare equal; what the
 /// unit varies as is the graph's record of it (`admit_unit` admits one
 /// variance per referent), not part of the content.
@@ -106,10 +107,10 @@ pub const REGISTERED_PRIMARY_BUDGET_APPLICATIONS: usize = 100;
 pub struct ClassContentKey(Vec<ENode>);
 
 impl ClassContentKey {
-    /// Number of nodes recorded in this class: exactly
-    /// `egraph.nodes(class).len()` for the class this key was built from.
-    /// They are distinct nodes on a rebuilt graph; between a `union` and its
-    /// `rebuild` two stored nodes can canonicalize equal and both count.
+    /// Number of nodes recorded in this class: exactly how many
+    /// `egraph.nodes(class)` yields for the class this key was built from.
+    /// Two of them can be equal, on a rebuilt graph too (rebuild
+    /// deduplicates nothing), and both count.
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.0.len()
@@ -124,7 +125,6 @@ impl ClassContentKey {
     pub(crate) fn of(egraph: &EGraph, canonical: EClassId) -> Self {
         let mut nodes: Vec<ENode> = egraph
             .nodes(canonical)
-            .iter()
             .map(|&node| egraph.canonical_node(node))
             .collect();
         nodes.sort();

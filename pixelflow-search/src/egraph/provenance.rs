@@ -6,16 +6,12 @@
 //!
 //! # Design
 //!
-//! E-nodes have no stable identity of their own: they live at `(EClassId,
-//! node_idx)`, and `node_idx` shifts whenever `EGraph::union` extends a
-//! class's node vector or `EGraph::rebuild_budgeted` rewrites it in place.
-//! To track provenance we mint a process-wide stable [`ENodeId`] for every
-//! e-node the instant it is created in `EGraph::add` (the sole creation
-//! choke point), and thread a parallel `tags: Vec<ENodeId>` alongside every
-//! `EClass::nodes: Vec<ENode>` so the tag at index `i` always names the node
-//! at index `i` — including through `union`'s `extend()` and
-//! `rebuild_budgeted`'s take/canonicalize/extend cycle, which move node
-//! *values* but never reassign identity.
+//! E-nodes are named by their index in the graph's node arena, an
+//! [`ENodeId`]: `EGraph::add` (the sole creation choke point) pushes every
+//! node that is not a memo hit at the arena's length and returns that index
+//! as the class the node founds. A class's members are a list of these ids.
+//! `EGraph::union` moves ids between lists and `EGraph::rebuild_budgeted`
+//! rewrites a node's stored operands in place, and neither changes an id.
 //!
 //! Three append-only records make up the provenance store:
 //!
@@ -78,12 +74,15 @@ use super::node::EClassId;
 #[cfg(feature = "provenance-journal")]
 use super::rules::{RuleId, RuleIdx};
 
-/// Stable, process-wide identity for an e-node, independent of its current
-/// `(EClassId, node_idx)` position.
+/// An e-node's identity: its index in this graph's node arena.
 ///
-/// Minted once, in `EGraph::add`, for every node that isn't a memo hit.
-/// Never reused, never renumbered — this is the whole point: `(EClassId,
-/// node_idx)` shifts under union and rebuild, `ENodeId` never does.
+/// `EGraph::add` pushes every node that is not a memo hit at the arena's
+/// length and returns that index as the id of the class the node founds, so
+/// a node's id, its founding class's id and its tag are one integer. Never
+/// reused, never renumbered: a union moves the id to another class's member
+/// list and a rebuild rewrites the node's stored operands, and neither
+/// changes the index. Per graph: a tag names a node only in the graph that
+/// minted it, and in its clones for the tags minted before the clone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ENodeId(pub(crate) u64);
 

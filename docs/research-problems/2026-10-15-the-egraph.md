@@ -4,14 +4,16 @@
 plan and not a solution; nothing in it is agreed. Companion engineering plan (representation and matching cost only):
 `docs/compiler/2026-10-15-the-egraph-is-an-arena.md`.
 
-Citations are tree paths. One source is not tracked: the 2026-10-15 profile and telemetry of
+Citations are tree paths. Two sources are not tracked: the 2026-10-15 profile and telemetry of
 the 29 font programs, `/home/user/scratch/egraph/prof2/profile.md` (taken at 7cd96a32, an
-ancestor of this tree). Since then `saturate.rs`, `graph.rs` and `graph/runner.rs` are
-unchanged, and `pixelflow-search`'s other diffs are non-semantic (FNV hashing moved to
-`pixelflow_ir::key::fnv1a64` with the same digest, comments in `cost.rs`, a counter deleted
-from `runtime.rs`), so its saturation telemetry is expected, not re-run, to reproduce. Its
-extraction figures are dated by db126b77 (#1392), a 155-line change to `extract.rs` that makes
-the tree pass average an `If`'s arms (section 1). Telemetry is reproducible with
+ancestor of this tree), and the arena plan's one-time probes,
+`/home/user/scratch/egraph/arena/gates/probe3b.txt`. Since the profile, groups A to C of the
+arena plan rewrote `graph.rs`, `graph/runner.rs` and `extract.rs`'s storage and pricing, each
+change byte-identical in the optimizer's output and in the saturation and extraction telemetry
+by that plan's gates. So the profile's counts (applications, unions, classes, matches) still
+hold, while its instruction and time figures predate those changes; the plan's ledger records
+the new ones. The profile's extraction figures are also dated by db126b77 (#1392), a 155-line
+change to `extract.rs` that makes the tree pass average an `If`'s arms (section 1). Telemetry is reproducible with
 `--features saturation-telemetry` and `$PIXELFLOW_SATURATION_TELEMETRY` (CLAUDE.md, "Why did
 the e-graph pick that?"). Ledger rows `Lnnn` are `docs/results/2026-09-07-claims-ledger.csv`.
 Results marked **[not in tree]** are on an unmerged branch; no problem below is stated only on
@@ -72,6 +74,17 @@ section 6):
 - **The cut decides the output.** Because the run stops mid-sweep, which applications land
   is a function of rule order and live-class scan order. It is deterministic, but it is the
   result of a truncation, not of a closure.
+- **Equal members and retired nodes, after a full rebuild** (a one-time probe of the 29
+  programs at `feb82335`: each saturated graph cloned and rebuilt to an empty worklist, the
+  original left to extraction; the probe was not kept, its 29 lines are in
+  `/home/user/scratch/egraph/arena/gates/probe3b.txt`). 28 of 29 programs hold classes with
+  two or more members whose canonical forms (operands read through `find`) are equal: 5,243
+  such classes in all (at most 536 in one program, n=40) and 13,469 surplus members, counted
+  as members beyond one per distinct canonical form (at most 1,448, also n=40). The blank
+  program has none. Retired nodes, those taken out of their class for good when their
+  canonical form collided with a class they could not merge with: 0 in all 29, in the graph
+  as saturation left it and again after the rebuild. Worklist items pending when saturation
+  stopped: 0 in all 29.
 
 The old real corpus agrees in kind, under a different regime: 93% of 207 real kernels stopped
 on the cap, median 2 iterations, median 5,422 applications (L090, L091). Those 207 are the 190

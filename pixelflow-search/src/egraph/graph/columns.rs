@@ -3,22 +3,30 @@
 //! Every id [`EGraph::add`](super::EGraph::add) mints owns one entry in each
 //! column, pushed together by [`Columns::push`] and by nothing else, so the
 //! columns are equally long because the type has no other way to grow them.
+//! The id is also the node's index in the arena: the node a memo miss adds is
+//! pushed at the arena's length, and the id it gets is that index.
 //!
 //! An id is read three ways, and the columns keep the readings apart by the
 //! type that indexes them:
 //!
-//! - **per node**: the id names a node and the slot it was minted into
-//!   (`parent`). Indexed by [`EClassId`].
+//! - **per node**: the id names a node (`nodes`, the arena), the slot it was
+//!   minted into (`parent`) and whether it has left its class for good (the
+//!   retired bit). Indexed by [`EClassId`], and by [`ENodeId`] for the arena,
+//!   which is the same integer.
 //! - **per representative**: the id is the answer of [`Columns::root`], the
-//!   class whose block of the equivalence the facts describe. Indexed by
-//!   [`Root`], which only `root` and `root_mut` return, so a fact is never
-//!   read at an id nobody asked `root` about. `classes` holds this kind of
-//!   content (a class's members, emptied when the class is merged away) but is
-//!   still indexed by raw id too, because readers outside this module hold raw
-//!   ids; the member store of the next change moves it to [`Root`] alone.
+//!   class whose block of the equivalence the member list, the facts and the
+//!   kind mask describe. Indexed by [`Root`], which only `root` and
+//!   `root_mut` return, so a fact is never read at an id nobody asked `root`
+//!   about.
 //! - **per worklist slot**: the id is where a [`Slot`] was pushed, which
 //!   `queued` is keyed by, whatever that id has since been merged into.
 //!   Indexed by [`Slot`].
+//!
+//! `members`, `live` and the retired bit are private. `push`, `absorb`,
+//! `detach` and `write_back` are the only writes to a member list, so a class
+//! is filled or emptied only here and the live set is restated at each of
+//! them; `retire` sets the retired bit and changes no list, because its node
+//! left the class at `detach`.
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -26,9 +34,9 @@ use core::ops::{Index, IndexMut};
 use pixelflow_ir::Variance;
 use pixelflow_ir::kind::{OpKind, OpSet};
 
-use super::EClass;
-use crate::egraph::live::ClassesByKind;
-use crate::egraph::node::EClassId;
+use crate::egraph::live::{ClassSet, ClassesByKind};
+use crate::egraph::node::{EClassId, ENode};
+use crate::egraph::provenance::ENodeId;
 
 /// A class that was canonical when it was asked for: the answer of
 /// [`Columns::root`] or [`Columns::root_mut`], and nothing else makes one.
@@ -81,14 +89,6 @@ impl<I, T> Column<I, T> {
     }
 }
 
-// Walking every entry is only meaningful for a column that is not
-// per-representative: over every slot it would read the merged-away ones.
-impl<T> Column<EClassId, T> {
-    pub(super) fn iter(&self) -> core::slice::Iter<'_, T> {
-        self.entries.iter()
-    }
-}
-
 impl<I, T> Default for Column<I, T> {
     fn default() -> Self {
         Self {
@@ -133,8 +133,10 @@ macro_rules! index_mut_by {
     };
 }
 
-// A per-node column reads at any id and, being per-node, at a `Root` too.
+// A per-node column reads at any id, at a node id (the arena's own index) and,
+// being per-node, at a `Root` too.
 index_by!(EClassId, EClassId, |id: EClassId| id.index());
+index_by!(EClassId, ENodeId, |tag: ENodeId| tag.0 as usize);
 index_by!(EClassId, Root, |root: Root| root.0.index());
 index_mut_by!(EClassId, Root, |root: Root| root.0.index());
 // A per-representative column reads only at a representative.
@@ -146,7 +148,8 @@ index_mut_by!(Slot, Slot, |slot: Slot| slot.0.index());
 
 /// What `add` seeds one id's entries with.
 pub(super) struct Birth {
-    pub(super) class: EClass,
+    /// The canonical node `add` pushes into the arena.
+    pub(super) node: ENode,
     pub(super) const_fact: Option<u32>,
     pub(super) variance: Variance,
     /// The node's shape, as `ENode::shape` names it: the one kind the
@@ -159,24 +162,38 @@ pub(super) struct Birth {
 /// The per-id columns and the union-find they share. See the module docs.
 #[derive(Clone, Default)]
 pub(crate) struct Columns {
+    /// The node each id names, in id order: the arena. `add` pushes a node
+    /// that is not a memo hit at its length, and the id it returns is that
+    /// index. A stored operand names the class it named when the node was
+    /// last canonicalized (see [`Self::set_node`]).
+    nodes: Column<EClassId, ENode>,
     /// `parent[t]` is the next id toward `t`'s representative; a
     /// representative is its own parent.
     parent: Column<EClassId, EClassId>,
-    /// The nodes of the class founded at each id, and their tags. A merged-away
-    /// class's slot is empty: `union` drains it.
-    pub(crate) classes: Column<EClassId, EClass>,
+    /// Whether the node at each id has left its class for good: set by
+    /// [`Self::retire`], never cleared.
+    retired: Column<EClassId, bool>,
+    /// How many ids are retired.
+    retired_count: usize,
+    /// The ids of the nodes in each representative's class, in the order the
+    /// graph gives them. A merged-away class's list is empty: `absorb` moves
+    /// it. A retired node is in no list.
+    members: Column<Root, Vec<ENodeId>>,
+    /// The classes with at least one member, as a set: the representatives
+    /// whose list is not empty. Restated by every write to `members`, so it
+    /// agrees with them by construction.
+    live: ClassSet,
     /// The constant each class is known to equal, as f32 bits — maintained
-    /// independently of `EClass::nodes` on purpose.
-    /// `rebuild` drains a class's nodes with `mem::take` and only THEN
-    /// performs congruence unions, so a guard that scanned the node vector
-    /// saw an empty class and waved contradictory merges through at exactly
-    /// the moment congruence closure does its work. The fact must outlive the
-    /// nodes.
+    /// independently of the member list on purpose.
+    /// `rebuild` detaches a class's members and only THEN performs congruence
+    /// unions, so a guard that scanned the member list saw an empty class and
+    /// waved contradictory merges through at exactly the moment congruence
+    /// closure does its work. The fact must outlive the members.
     pub(super) const_fact: Column<Root, Option<u32>>,
     /// Which binders each class may depend on — the per-class variance fact
     /// (docs/archive/plans/2026-09-23-an-integral-is-a-fold.md §1, §3), kept beside
-    /// `const_fact` and out of `EClass::nodes` for the same reason: a guard
-    /// read mid-`rebuild` must not see a drained class.
+    /// `const_fact` and out of the member list for the same reason: a guard
+    /// read mid-`rebuild` must not see a detached class.
     ///
     /// **Law:** `var_fact[C] ⊇ var(⟦C⟧)` — the fact over-approximates the
     /// variance of the one function every member of `C` denotes, so a bit
@@ -220,9 +237,36 @@ pub(crate) struct Columns {
     /// `rebuild_budgeted`. Guards `union`'s push: several unions landing on
     /// the same parent in one round used to enqueue it once per union, and
     /// `rebuild_budgeted` paid a full canonicalize-and-memo-probe pass over
-    /// that class's node vector per redundant entry even though only the
+    /// that class's member list per redundant entry even though only the
     /// state after the *last* union in the round matters.
     pub(super) queued: Column<Slot, bool>,
+}
+
+/// The tag of the node at `id`: a node's id and the class it founds are one
+/// integer.
+pub(super) fn tag_of(id: EClassId) -> ENodeId {
+    ENodeId(u64::from(id.0))
+}
+
+/// A rebuilt buffer is shrunk when its unused capacity exceeds `1 /
+/// REBUILT_SLACK_DIVISOR` of its length.
+const REBUILT_SLACK_DIVISOR: usize = 2;
+
+/// Put a rebuilt buffer back into a class slot. A slot that is still empty
+/// takes the buffer as is; one a mid-rebuild `union` already appended onto
+/// keeps those entries and gains the rebuilt ones after them.
+fn restore_after_rebuild<T: Copy>(slot: &mut Vec<T>, mut rebuilt: Vec<T>) {
+    if slot.is_empty() {
+        // The buffer was grown by pushes and keeps that slack; a class lives
+        // for the whole saturation, so slack is peak memory. Only a buffer
+        // with a large share unused is worth a realloc to give it back.
+        if rebuilt.capacity() - rebuilt.len() > rebuilt.len() / REBUILT_SLACK_DIVISOR {
+            rebuilt.shrink_to_fit();
+        }
+        *slot = rebuilt;
+        return;
+    }
+    slot.extend(rebuilt);
 }
 
 impl Columns {
@@ -235,8 +279,10 @@ impl Columns {
     /// column grows.
     pub(super) fn push(&mut self, birth: Birth) -> EClassId {
         let id = EClassId::from_index(self.len());
+        self.nodes.push(birth.node);
         self.parent.push(id);
-        self.classes.push(birth.class);
+        self.retired.push(false);
+        self.members.push(alloc::vec![tag_of(id)]);
         self.const_fact.push(birth.const_fact);
         self.var_fact.push(birth.variance);
         self.last_changed.push(birth.stamp);
@@ -249,7 +295,98 @@ impl Columns {
         };
         self.kind_mask.push(kinds);
         self.queued.push(false);
+        self.live.insert(id);
         id
+    }
+
+    /// The node `tag` names. Panics past the end: a caller holding a tag it
+    /// did not read from a member list asks [`Self::class_of`] first.
+    pub(super) fn node(&self, tag: ENodeId) -> &ENode {
+        &self.nodes[tag]
+    }
+
+    /// Replace node `tag`'s stored form: rebuild's canonicalization, in place.
+    /// The arena is append-only in length and not in content, because a stored
+    /// operand is state that rules can read.
+    pub(super) fn set_node(&mut self, tag: ENodeId, node: ENode) {
+        self.nodes.entries[tag.0 as usize] = node;
+    }
+
+    /// The class id `tag` was minted as, or `None` for a tag past this
+    /// graph's end.
+    pub(super) fn class_of(&self, tag: ENodeId) -> Option<EClassId> {
+        usize::try_from(tag.0)
+            .ok()
+            .filter(|&index| index < self.len())
+            .map(EClassId::from_index)
+    }
+
+    /// The member ids of `class`, in the order the graph gives them.
+    pub(super) fn members(&self, class: Root) -> &[ENodeId] {
+        &self.members[class]
+    }
+
+    /// Whether the node at `tag` has left its class for good.
+    pub(super) fn is_retired(&self, tag: ENodeId) -> bool {
+        self.retired[tag]
+    }
+
+    /// How many nodes have left their class for good.
+    pub(super) fn retired_count(&self) -> usize {
+        self.retired_count
+    }
+
+    /// Take `tag` out of membership for good. Only a refused union during a
+    /// rebuild item calls it.
+    pub(super) fn retire(&mut self, tag: ENodeId) {
+        let slot = &mut self.retired.entries[tag.0 as usize];
+        debug_assert!(!*slot, "a node is retired once");
+        *slot = true;
+        self.retired_count += 1;
+    }
+
+    /// The classes with at least one member, which this module restates at
+    /// each write to a member list.
+    pub(super) fn live(&self) -> &ClassSet {
+        &self.live
+    }
+
+    /// `union`'s member move: `parent`'s members, then `child`'s. Both are
+    /// representatives now; the caller links them afterwards.
+    pub(super) fn absorb(&mut self, child: Root, parent: Root) {
+        let moved = core::mem::take(&mut self.members[child]);
+        let into = &mut self.members[parent];
+        if into.is_empty() {
+            *into = moved;
+        } else {
+            into.extend(moved);
+        }
+        self.live.remove(child.id());
+        self.set_live(parent);
+    }
+
+    /// A rebuild item's start: take `item`'s members out, so a union during
+    /// the item appends to the class and not to the list being walked.
+    pub(super) fn detach(&mut self, item: Root) -> Vec<ENodeId> {
+        self.live.remove(item.id());
+        core::mem::take(&mut self.members[item])
+    }
+
+    /// A rebuild item's end: the kept ids go to the class `item` is in now,
+    /// resolved here so no caller can name a merged-away class. A move when
+    /// that class is empty, an extend otherwise.
+    pub(super) fn write_back(&mut self, item: Root, kept: Vec<ENodeId>) {
+        let dest = self.root(item.id());
+        restore_after_rebuild(&mut self.members[dest], kept);
+        self.set_live(dest);
+    }
+
+    /// Restate `class`'s liveness from its member list.
+    fn set_live(&mut self, class: Root) {
+        match self.members[class].is_empty() {
+            true => self.live.remove(class.id()),
+            false => self.live.insert(class.id()),
+        }
     }
 
     /// The representative of `id`'s block.

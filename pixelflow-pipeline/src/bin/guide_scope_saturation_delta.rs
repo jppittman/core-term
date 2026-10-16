@@ -358,22 +358,15 @@ fn reconstruct_applications(
     // Step 1: ENodeId -> arity, one O(final graph size) walk.
     let mut arity_of: HashMap<ENodeId, usize> = HashMap::new();
     for id in egraph.class_ids() {
-        let tags = egraph.tags(id);
-        let nodes = egraph.nodes(id);
-        debug_assert_eq!(
-            tags.len(),
-            nodes.len(),
-            "guide_scope_saturation_delta: tags/nodes length mismatch — provenance invariant violated"
-        );
-        for (tag, node) in tags.iter().zip(nodes.iter()) {
-            arity_of.insert(*tag, node.children().len());
+        for (tag, node) in egraph.tags(id).zip(egraph.nodes(id)) {
+            arity_of.insert(tag, node.children().len());
         }
     }
 
     // Step 2: ApplicationId -> the ENodeIds it created, one pass over
     // `origins()` -- filtered to nodes that actually survive into the final
     // canonical structure (`arity_of`, step 1). `rebuild_budgeted` can
-    // permanently drop a node from its class's node/tag vectors: when
+    // retire a node, dropping it from its class's members for good: when
     // canonicalizing finds a memo collision with an existing, *different*
     // class whose constant fact conflicts (`graph.rs`'s `union` refusal for
     // provably-unequal constants -- an ill-conditioned-kernel detector, not
@@ -381,8 +374,8 @@ fn reconstruct_applications(
     // than merged (`if self.find(id) != self.find(existing) { continue; }`).
     // `Provenance::origins()` is an append-only log and still names that
     // node's creating application forever, but the node is gone from every
-    // canonical class by the time this function's `arity_of` walk runs. A
-    // origin whose tag has no `arity_of` entry is exactly this case: it was
+    // canonical class by the time this function's `arity_of` walk runs.
+    // `EGraph::is_member` is false exactly in this case: it was
     // minted, then pruned before this post-hoc reconstruction ran. Excluding
     // it from BOTH `nodes_added` and `edges_added` (rather than counting it
     // toward nodes_added while defaulting its arity to 0, which would make
@@ -395,7 +388,7 @@ fn reconstruct_applications(
     let mut dropped_origins = 0usize;
     for (enode_id, origin) in egraph.journal().origins() {
         if let Origin::Rule(app_id) = origin {
-            if arity_of.contains_key(&enode_id) {
+            if egraph.is_member(enode_id) {
                 nodes_by_app
                     .entry(app_id.as_u64())
                     .or_default()

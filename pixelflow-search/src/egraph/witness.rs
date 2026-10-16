@@ -340,7 +340,7 @@ pub fn induce<I: Ir>(
         if canonical != class {
             continue;
         }
-        for (idx, node) in egraph.nodes(canonical).iter().enumerate() {
+        for (idx, node) in egraph.nodes(canonical).enumerate() {
             // A fold's body is keyed as stored. This walk has never read it
             // through `find`, and the miss counts in
             // docs/results/2026-09-08-extraction-witnesses.md were measured

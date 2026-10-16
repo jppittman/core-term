@@ -1255,13 +1255,11 @@ mod congruence_gap_probe {
                 let id = EClassId::from_index(idx);
                 let canon = egraph.find(id);
                 if canon != id {
-                    // Merged-away class: `union`'s mem::take already moved
-                    // its nodes onto the surviving parent, so its own node
-                    // vector is empty and re-scanning it would be a no-op.
+                    // Merged-away class: `union` moved its members to the
+                    // survivor, which this loop visits under its own id.
                     continue;
                 }
-                let nodes = egraph.columns.classes[id].nodes.clone();
-                for node in nodes {
+                for node in egraph.nodes(id).copied() {
                     // Not `EGraph::canonical_node`: this probe has always left
                     // a fold's body as stored, and the gap it counted in
                     // docs/results was measured that way.
@@ -1774,17 +1772,12 @@ mod congruence_gap_probe {
         extracted_nodes: usize,
     }
 
-    /// Count e-nodes sitting in slots `find` no longer routes to.
-    ///
-    /// `union` empties a merged-away class with `mem::take`, so in a healthy
-    /// graph every non-canonical slot is empty and this is 0. A non-zero
-    /// count means something wrote to a class after it stopped being
-    /// canonical — which is exactly the `rebuild_budgeted` write-back bug.
+    /// E-nodes counted by `node_count` (minted and not retired) that no
+    /// canonical class lists. 0 is the membership law, which the member store
+    /// keeps by writing back only to the class an item is in now
+    /// (`Columns::write_back`).
     fn orphaned_node_count(egraph: &EGraph) -> usize {
-        (0..egraph.num_classes())
-            .filter(|&i| egraph.find(EClassId::from_index(i)) != EClassId::from_index(i))
-            .map(|i| egraph.columns.classes[EClassId::from_index(i)].nodes.len())
-            .sum()
+        egraph.node_count() - reachable_node_count(egraph)
     }
 
     /// Sum of e-nodes over canonical classes — everything still reachable
@@ -1792,7 +1785,7 @@ mod congruence_gap_probe {
     fn reachable_node_count(egraph: &EGraph) -> usize {
         (0..egraph.num_classes())
             .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
-            .map(|i| egraph.columns.classes[EClassId::from_index(i)].nodes.len())
+            .map(|i| egraph.member_count(EClassId::from_index(i)))
             .sum()
     }
 
@@ -1887,8 +1880,8 @@ mod congruence_gap_probe {
     /// The invariant the write-back fix restores, asserted on the real
     /// corpus rather than on a hand-built graph: after production
     /// saturation, no e-node may sit in a class `find` no longer routes to.
-    /// `union` empties a merged-away class with `mem::take`, so the only way
-    /// to strand one is to write to a slot after it stopped being canonical.
+    /// Every node is a member of `find` of its id or retired, so this holds by
+    /// construction; the test checks it at corpus scale.
     ///
     /// This is the corpus-scale complement to
     /// `rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away`:

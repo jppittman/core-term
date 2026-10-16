@@ -931,7 +931,10 @@ fn term_of_chosen(
     class: EClassId,
     node_idx: usize,
 ) -> Term {
-    let node = &egraph.nodes(class)[node_idx];
+    let node = egraph
+        .nodes(class)
+        .nth(node_idx)
+        .expect("a choice indexes its class's e-nodes");
     match node {
         ENode::Op { op, children } => Term::Op {
             op: *op,
@@ -1063,8 +1066,8 @@ fn enabler_diag(
     }
     let mut class_of_tag: HashMap<ENodeId, (EClassId, usize)> = HashMap::new();
     for c in eg.class_ids() {
-        for (i, tag) in eg.tags(c).iter().enumerate() {
-            class_of_tag.insert(*tag, (c, i));
+        for (i, tag) in eg.tags(c).enumerate() {
+            class_of_tag.insert(tag, (c, i));
         }
     }
     // The extraction's complete class -> chosen-node map, and the set of
@@ -1089,8 +1092,13 @@ fn enabler_diag(
                     c.index()
                 )
             });
-            out.push((c, eg.tags(c)[idx]));
-            stack.extend(eg.nodes(c)[idx].children());
+            let (node, tag) = eg
+                .nodes(c)
+                .zip(eg.tags(c))
+                .nth(idx)
+                .expect("a choice indexes its class's e-nodes");
+            out.push((c, tag));
+            stack.extend(node.children());
         }
         out
     };
@@ -1142,11 +1150,18 @@ fn enabler_diag(
             let mut ancestry = eg.derivation_ancestors_tight_from(&[(class, tag)], &chosen_map);
             ancestry.remove(&app);
             enabled |= ancestry.iter().any(|&a| structural_app(a));
-            let node = &eg.nodes(class)[node_idx];
+            let node = eg
+                .nodes(class)
+                .nth(node_idx)
+                .expect("a tag's position indexes its class's e-nodes");
             direct |= node.children().iter().any(|&child| {
                 let c = eg.find(child);
                 let idx = choices[c.index()].expect("chosen child has a choice");
-                matches!(prov.origin(eg.tags(c)[idx]), Some(Origin::Rule(a)) if structural_app(a))
+                let tag = eg
+                    .tags(c)
+                    .nth(idx)
+                    .expect("a choice indexes its class's e-nodes");
+                matches!(prov.origin(tag), Some(Origin::Rule(a)) if structural_app(a))
             });
             terms.push(term_of_chosen(eg, choices, class, node_idx));
         }

@@ -103,8 +103,8 @@ impl Candidate {
         self.live
     }
 
-    /// Index into the class's e-nodes (`egraph.nodes(class)[idx]`), which is
-    /// also what a choice map records.
+    /// Position among the class's e-nodes, in the order `egraph.nodes(class)`
+    /// yields them, which is also what a choice map records.
     pub(crate) fn idx(self) -> usize {
         self.idx
     }

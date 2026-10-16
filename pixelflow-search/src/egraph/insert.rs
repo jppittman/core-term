@@ -285,7 +285,6 @@ mod tests {
         let leaf = insert(&arena, reference, &mut eg, Vocabulary::Runtime).expect("admitted");
         assert!(
             eg.nodes(leaf)
-                .iter()
                 .any(|n| matches!(n, ENode::Ref { key: k } if *k == key)),
             "the leaf names the unit"
         );
@@ -360,7 +359,7 @@ mod tests {
         assert_eq!(eg.num_classes(), 2);
         assert_eq!(inserted_class_count(&arena, shifted), 2);
         assert!(matches!(
-            eg.nodes(class),
+            eg.nodes(class).collect::<Vec<_>>().as_slice(),
             [ENode::Shift {
                 direction: ShiftDirection::Left,
                 count,
@@ -414,7 +413,7 @@ mod tests {
                 "x and the shift, no class for the count"
             );
             assert!(matches!(
-                eg.nodes(class),
+                eg.nodes(class).collect::<Vec<_>>().as_slice(),
                 [ENode::Shift { count, .. }] if count.bits() == 0
             ));
             let same =
