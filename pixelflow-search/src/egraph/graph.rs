@@ -7,7 +7,7 @@ use super::ops;
 use super::provenance::{ENodeId, Provenance};
 use super::rewrite::{RewriteAction, RootShapes};
 use alloc::collections::BTreeMap;
-use columns::{Birth, Columns, Slot};
+use columns::{Birth, Columns, Kept, Slot};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::{KernelKey, Variance};
 
@@ -434,10 +434,9 @@ impl EGraph {
             // memo takes it for the nodes the item keeps, `existing != id`
             // compares against it, and only the write-back asks again.
             let id = self.columns.root_of(slot);
-            let mut members = self.columns.detach(id);
-            let mut kept = 0;
-            for read in 0..members.len() {
-                let tag = members[read];
+            let mut detached = self.columns.detach(id);
+            let mut kept = Kept::new();
+            while let Some(tag) = self.columns.walk(&mut detached) {
                 let node = self.canonical_node(*self.columns.node(tag));
                 // The stored names are state: the arena keeps the form
                 // canonicalized now, retired or kept.
@@ -448,10 +447,10 @@ impl EGraph {
                         // `union` keeps `min(id, existing)`, so this call
                         // can go either way, and the write-back at the
                         // bottom of the loop has to survive both:
-                        //   - `id` survives: `union` appends `existing`'s
-                        //     members to `id`'s list, which `detach` just
-                        //     emptied — so the write-back must extend, not
-                        //     overwrite, or those are dropped.
+                        //   - `id` survives: `union` splices `existing`'s
+                        //     members onto `id`'s list, which `detach` just
+                        //     emptied — so the write-back must splice after
+                        //     them, not overwrite, or those are dropped.
                         //   - `existing` survives: `id` is merged away and
                         //     its list stops being reachable through `find`
                         //     — so the write-back must target `root(id)`,
@@ -482,12 +481,11 @@ impl EGraph {
                 } else {
                     self.memo.insert(node, id.id());
                 }
-                members[kept] = tag;
-                kept += 1;
+                self.columns.keep(&mut kept, tag);
             }
-            members.truncate(kept);
-            // To the class `id` is in now: see `Columns::write_back`.
-            self.columns.write_back(id, members);
+            // After what the class `id` is in now holds: see
+            // `Columns::write_back`.
+            self.columns.write_back(id, kept);
         }
         self.worklist.len()
     }
@@ -519,21 +517,22 @@ impl EGraph {
     ///
     /// An iterator and nothing more: no length, no reverse, no slice, no
     /// index, so a caller depends on the order and not on how the members
-    /// are stored. A count is [`Self::member_count`].
+    /// are stored. A count is `nodes(id).count()` and a position
+    /// `nodes(id).nth(k)`; both walk the members. Extraction reads the node it
+    /// chose by id ([`Self::node`]), not by position. The members are a list
+    /// threaded through the arena, so a walk is one dependent load per member.
     pub fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
         let class = self.columns.root(id);
         self.columns
             .members(class)
-            .iter()
-            .map(move |&tag| self.columns.node(tag))
+            .map(move |tag| self.columns.node(tag))
     }
 
     /// The stable `ENodeId` tags of the class's nodes, yielded in step with
     /// [`Self::nodes`]: the k-th tag names the k-th node. A tag is the node's
     /// id in this graph: the k-th tag is the id of the k-th node.
     pub fn tags(&self, id: EClassId) -> impl Iterator<Item = ENodeId> + Clone + '_ {
-        let class = self.columns.root(id);
-        self.columns.members(class).iter().copied()
+        self.columns.members(self.columns.root(id))
     }
 
     /// [`Self::nodes`] for a class that is already its own representative, as
@@ -548,26 +547,7 @@ impl EGraph {
         let class = self.columns.root(canonical);
         self.columns
             .members(class)
-            .iter()
-            .map(move |&tag| self.columns.node(tag))
-    }
-
-    /// How many nodes [`Self::nodes`] yields for `id`'s class, without
-    /// walking them.
-    pub(crate) fn member_count(&self, id: EClassId) -> usize {
-        self.columns.members(self.columns.root(id)).len()
-    }
-
-    /// The node at `position` in [`Self::nodes`]`(id)`'s order, or `None`
-    /// past its end, without walking to it. The read for a position an
-    /// extraction recorded and reads back once per candidate priced; a walk
-    /// that is not on that path takes it from `nodes(id).nth(position)`, which
-    /// reads `position + 1` members.
-    pub(crate) fn node_at(&self, id: EClassId, position: usize) -> Option<&ENode> {
-        self.columns
-            .members(self.columns.root(id))
-            .get(position)
-            .map(|&tag| self.columns.node(tag))
+            .map(move |tag| self.columns.node(tag))
     }
 
     /// The mutation log (origins, application log, union journal), or `None`
@@ -604,6 +584,15 @@ impl EGraph {
     /// retired node (law 7) and for a tag past this graph's end.
     pub fn is_member(&self, tag: ENodeId) -> bool {
         self.columns.class_of(tag).is_some() && !self.columns.is_retired(tag)
+    }
+
+    /// The node `tag` names in this graph's arena, as stored. For a tag the
+    /// caller read from [`Self::tags`] or that an extraction recorded, so known
+    /// to be a member: this is not a membership test, and a retired node is
+    /// answered too. A tag of unknown standing asks [`Self::node_for_tag`].
+    /// Panics past the end. O(1).
+    pub(crate) fn node(&self, tag: ENodeId) -> &ENode {
+        self.columns.node(tag)
     }
 
     /// The operand classes node `tag` names as stored, or none for a node that
@@ -757,7 +746,7 @@ impl EGraph {
         if self.columns.last_changed[canonical] > swept {
             return true;
         }
-        for &tag in self.columns.members(canonical) {
+        for tag in self.columns.members(canonical) {
             let node = self.columns.node(tag);
             for &child in node.children_slice() {
                 let child = self.columns.root(child);
@@ -767,7 +756,7 @@ impl EGraph {
                 if DIRTY_TRACKING_MAX_DEPTH < 2 {
                     continue;
                 }
-                for &gtag in self.columns.members(child) {
+                for gtag in self.columns.members(child) {
                     let gnode = self.columns.node(gtag);
                     for &gchild in gnode.children_slice() {
                         if self.columns.last_changed[self.columns.root(gchild)] > swept {
@@ -2142,6 +2131,121 @@ mod tests {
         }
     }
 
+    /// A retired node that founded its class: the class keeps the members
+    /// after it, and its own id names a node that is no member of it (plan
+    /// §1: `node(c)` need not be a member of `c`). Class 4 is
+    /// `[Neg(b), 2, Var(7)]` with the fact 2; `union(a, b)` makes `Neg(b)`
+    /// congruent to `Neg(a)`, which is in class 0 with the fact 1. Item 4 is
+    /// refused that union and retires its first member.
+    #[test]
+    fn a_retired_founder_leaves_the_members_after_it() {
+        let mut eg = EGraph::new();
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let a = eg.add(ENode::Var(0)); // 1
+        let b = eg.add(ENode::Var(1)); // 2
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 3
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 4
+        let two = eg.add(ENode::constant(2.0)); // 5
+        let z = eg.add(ENode::Var(7)); // 6
+        assert_eq!(z.index(), 6, "the recipe assumes these ids");
+        eg.union(neg_a, one);
+        eg.union(neg_b, two);
+        eg.union(neg_b, z);
+        eg.union(a, b);
+        eg.rebuild();
+
+        assert_eq!(
+            eg.refused_const_unions(),
+            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..]
+        );
+        assert_eq!(eg.find(neg_b), neg_b, "class 4 survives its founder");
+        assert_eq!(
+            eg.tags(neg_b).collect::<Vec<_>>(),
+            [ENodeId(5), ENodeId(6)],
+            "the kept members follow in walk order"
+        );
+        assert_eq!(members(&eg, neg_b), [ENode::constant(2.0), ENode::Var(7)]);
+        assert!(eg.columns.is_retired(ENodeId(4)));
+        assert!(!eg.is_member(ENodeId(4)));
+        assert_eq!(eg.node_for_tag(neg_b, ENodeId(4)), None);
+        assert_eq!(
+            members(&eg, one),
+            [ENode::constant(1.0), ENode::apply(OpKind::Neg, &[a])]
+        );
+        assert_eq!(eg.node_count(), eg.num_classes() - 1);
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (one, ENode::constant(1.0)),
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (neg_a, ENode::apply(OpKind::Neg, &[a])),
+                (neg_b, ENode::apply(OpKind::Neg, &[b])),
+                (two, ENode::constant(2.0)),
+                (z, ENode::Var(7)),
+            ],
+        );
+    }
+
+    /// A retired member between two kept ones: the kept two are adjacent in
+    /// the class afterwards, the first still first. Class 3 is
+    /// `[Var(5), Neg(b), 2]` with the fact 2; item 3 keeps `Var(5)`, retires
+    /// `Neg(b)` (refused, as above) and keeps `2`.
+    #[test]
+    fn a_retired_middle_member_leaves_its_neighbours_adjacent() {
+        let mut eg = EGraph::new();
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let a = eg.add(ENode::Var(0)); // 1
+        let b = eg.add(ENode::Var(1)); // 2
+        let x = eg.add(ENode::Var(5)); // 3
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 4
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 5
+        let two = eg.add(ENode::constant(2.0)); // 6
+        assert_eq!(two.index(), 6, "the recipe assumes these ids");
+        eg.union(neg_a, one);
+        eg.union(x, neg_b);
+        eg.union(x, two);
+        eg.union(a, b);
+        eg.rebuild();
+
+        assert_eq!(
+            eg.refused_const_unions(),
+            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..]
+        );
+        assert_eq!(eg.tags(x).collect::<Vec<_>>(), [ENodeId(3), ENodeId(6)]);
+        assert_eq!(members(&eg, x), [ENode::Var(5), ENode::constant(2.0)]);
+        assert!(eg.columns.is_retired(ENodeId(5)));
+        assert_eq!(eg.node_count(), eg.num_classes() - 1);
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (one, ENode::constant(1.0)),
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (x, ENode::Var(5)),
+                (neg_a, ENode::apply(OpKind::Neg, &[a])),
+                (neg_b, ENode::apply(OpKind::Neg, &[b])),
+                (two, ENode::constant(2.0)),
+            ],
+        );
+    }
+
+    /// A clone owns its member lists: a union in the original after the clone
+    /// moves nothing in the copy (`EGraph: Clone` is derived; plan §8.4).
+    #[test]
+    fn a_clone_owns_its_member_lists() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let copy = eg.clone();
+        eg.union(x, y);
+        eg.rebuild();
+        assert_eq!(members(&eg, x), [ENode::Var(0), ENode::Var(1)]);
+        assert_eq!(members(&copy, x), [ENode::Var(0)]);
+        assert_eq!(members(&copy, y), [ENode::Var(1)]);
+        assert_ne!(copy.find(x), copy.find(y));
+    }
+
     /// `union` gives the surviving class's nodes, then the merged-away
     /// class's, whichever argument order the caller used.
     #[test]
@@ -2277,6 +2381,86 @@ mod tests {
             ENode::Var(8), // absorbed later in the item
             neg,
             abs,
+            ENode::Var(9), // kept, in the order they were walked
+        ];
+        assert_eq!(members(&eg, neg_b), expected);
+        eg.rebuild();
+        assert_eq!(
+            members(&eg, neg_b),
+            expected,
+            "a further rebuild keeps the order"
+        );
+    }
+
+    /// A rebuild item that survives one union made during it and then loses a
+    /// later one hands the survivor what it absorbed in between: the
+    /// survivor's prior nodes, then the nodes the item absorbed while it still
+    /// stood, then whatever the survivor absorbs after the loss, then
+    /// `[kept]`. The item is class 4. Its first node canonicalizes into class
+    /// 5, which 4 absorbs (4 < 5); its second into class 3, which survives
+    /// with a prior member (3 < 4), so the item's list, class 5's nodes, goes
+    /// to the survivor; its third into class 7, which 3 then absorbs.
+    #[test]
+    fn a_rebuild_item_that_survives_then_loses_gives_prior_then_absorbed_then_kept() {
+        let mut eg = EGraph::new();
+        let _a = eg.add(ENode::Var(0));
+        let b = eg.add(ENode::Var(1));
+        let c = eg.add(ENode::Var(2));
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3, survives
+        let abs_c = eg.add(ENode::apply(OpKind::Abs, &[c])); // class 4, the item
+        let abs_b = eg.add(ENode::apply(OpKind::Abs, &[b])); // class 5, absorbed first
+        let neg_c = eg.add(ENode::apply(OpKind::Neg, &[c]));
+        let sqrt_b = eg.add(ENode::apply(OpKind::Sqrt, &[b])); // class 7, absorbed later
+        let sqrt_c = eg.add(ENode::apply(OpKind::Sqrt, &[c]));
+        let prior = eg.add(ENode::Var(7));
+        let first = eg.add(ENode::Var(8));
+        let later = eg.add(ENode::Var(10));
+        let marker = eg.add(ENode::Var(9));
+        eg.union(neg_b, prior);
+        eg.union(abs_b, first);
+        eg.union(sqrt_b, later);
+        eg.union(abs_c, neg_c);
+        eg.union(abs_c, sqrt_c);
+        eg.union(abs_c, marker);
+        eg.union(b, c);
+        assert_eq!(
+            [neg_b, abs_c, abs_b, sqrt_b].map(EClassId::index),
+            [3, 4, 5, 7],
+            "the recipe assumes these ids"
+        );
+        assert_eq!(
+            members(&eg, abs_c),
+            [
+                ENode::apply(OpKind::Abs, &[c]),
+                ENode::apply(OpKind::Neg, &[c]),
+                ENode::apply(OpKind::Sqrt, &[c]),
+                ENode::Var(9)
+            ]
+        );
+
+        // The worklist is a stack of 3, 5, 7, 4, 1: class 1 pops, then 4.
+        assert_eq!(
+            eg.rebuild_budgeted(2),
+            4,
+            "the union in item 4 that 4 survives queues 4; the one it loses queues nothing"
+        );
+        assert_eq!(eg.find(abs_c), neg_b, "the item lost to class 3");
+        assert_eq!(eg.find(abs_b), neg_b, "after absorbing class 5");
+        assert_eq!(eg.find(sqrt_b), neg_b, "and 3 absorbed class 7 during it");
+
+        let neg = ENode::apply(OpKind::Neg, &[b]);
+        let abs = ENode::apply(OpKind::Abs, &[b]);
+        let sqrt = ENode::apply(OpKind::Sqrt, &[b]);
+        let expected = [
+            neg,
+            ENode::Var(7), // the survivor's prior nodes
+            abs,
+            ENode::Var(8), // absorbed by the item before it lost
+            sqrt,
+            ENode::Var(10), // absorbed by the survivor after
+            abs,
+            neg,
+            sqrt,
             ENode::Var(9), // kept, in the order they were walked
         ];
         assert_eq!(members(&eg, neg_b), expected);

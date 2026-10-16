@@ -8,6 +8,7 @@ use super::and_or::{Candidate, Child, Frozen, Live, LiveTable, Problem};
 use super::cost::CostFunction;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
+use super::provenance::ENodeId;
 use alloc::collections::BinaryHeap;
 use alloc::vec::Vec;
 use core::cmp::Reverse;
@@ -281,8 +282,8 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
 
             for &class in &active {
                 let canonical = egraph.find(class);
-                let member_count = egraph.member_count(canonical);
-                if member_count <= 1 {
+                // One member: nothing to swap to.
+                if egraph.nodes(canonical).nth(1).is_none() {
                     continue;
                 }
 
@@ -294,7 +295,6 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
                         canonical.0
                     )
                 });
-                let candidates_to_try = member_count.min(self.top_k);
 
                 // Best-improvement: evaluate ALL candidates, pick the
                 // cheapest. Each candidate is evaluated on a COMPLETE choice
@@ -304,8 +304,7 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
                 let mut best_swap_cost = current_cost;
                 let mut best_swap: Option<Extraction<'g>> = None;
 
-                for (node_idx, node) in egraph.nodes(canonical).enumerate().take(candidates_to_try)
-                {
+                for (node_idx, node) in egraph.nodes(canonical).enumerate().take(self.top_k) {
                     if node_idx == current_node_idx {
                         continue;
                     }
@@ -466,7 +465,7 @@ fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option
     let mut reverse: Vec<Vec<(usize, usize)>> = alloc::vec![Vec::new(); scope.len()];
     let mut ready: Vec<EClassId> = Vec::new();
     for (pos, &canonical) in scope.iter().enumerate() {
-        let mut per_node = Vec::with_capacity(egraph.member_count(canonical));
+        let mut per_node = Vec::new();
         let mut any_ready = false;
         for (node_idx, node) in egraph.nodes(canonical).enumerate() {
             let mut count = 0usize;
@@ -665,8 +664,8 @@ pub(crate) struct Selection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Pick {
     class: EClassId,
-    /// Index into the class's e-nodes.
-    idx: usize,
+    /// The chosen node, by id in the graph the selection was made from.
+    node: ENodeId,
     /// This pick's operands are `operands[previous.operands_end..operands_end]`.
     operands_end: usize,
 }
@@ -723,13 +722,13 @@ impl PostOrder {
     fn emit(
         &mut self,
         class: EClassId,
-        idx: usize,
+        node: ENodeId,
         operand_positions: impl Iterator<Item = usize>,
     ) -> usize {
         self.operands.extend(operand_positions);
         self.picks.push(Pick {
             class,
-            idx,
+            node,
             operands_end: self.operands.len(),
         });
         self.picks.len() - 1
@@ -778,20 +777,16 @@ impl Selection {
                 continue;
             }
             let class = candidate.class();
-            let operands = egraph
-                .node_at(class, idx)
-                .expect("a settled pick is one of its class's e-nodes")
-                .children_slice()
-                .iter()
-                .map(|&operand| {
-                    let operand = egraph.find(operand);
-                    let child = row
-                        .iter()
-                        .find(|child| graph.class(child.live) == operand)
-                        .expect("a candidate's row names every class its e-node does");
-                    position[child.live].expect("a settled class's children are emitted before it")
-                });
-            position[live] = Some(order.emit(class, idx, operands));
+            let node = graph.node_id(candidate);
+            let operands = egraph.node(node).children_slice().iter().map(|&operand| {
+                let operand = egraph.find(operand);
+                let child = row
+                    .iter()
+                    .find(|child| graph.class(child.live) == operand)
+                    .expect("a candidate's row names every class its e-node does");
+                position[child.live].expect("a settled class's children are emitted before it")
+            });
+            position[live] = Some(order.emit(class, node, operands));
             stack.pop();
         }
         order.finish(graph.root())
@@ -816,26 +811,23 @@ impl Selection {
         let mut position: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
         let mut entered: Vec<bool> = alloc::vec![false; egraph.num_classes()];
         entered[root.index()] = true;
-        // (class, chosen node index, how many operands are entered).
-        let mut stack: Vec<(EClassId, usize, usize)> = Vec::new();
-        let chosen = |class: EClassId| -> Result<usize, Refused> {
+        // (class, chosen node, how many operands are entered).
+        let mut stack: Vec<(EClassId, ENodeId, usize)> = Vec::new();
+        let chosen = |class: EClassId| -> Result<ENodeId, Refused> {
             let idx = choices
                 .get(class.index())
                 .copied()
                 .flatten()
                 .ok_or(Refused::Missing(class))?;
-            (idx < egraph.member_count(class))
-                .then_some(idx)
+            egraph
+                .tags(class)
+                .nth(idx)
                 .ok_or(Refused::OutOfBounds { class, idx })
         };
         stack.push((root, chosen(root)?, 0));
 
-        while let Some(&mut (class, idx, ref mut entered_operands)) = stack.last_mut() {
-            let operands = egraph
-                .nodes(class)
-                .nth(idx)
-                .expect("`chosen` checked the index against the class")
-                .children_slice();
+        while let Some(&mut (class, node, ref mut entered_operands)) = stack.last_mut() {
+            let operands = egraph.node(node).children_slice();
             if let Some(&operand) = operands.get(*entered_operands) {
                 *entered_operands += 1;
                 let child = egraph.find(operand);
@@ -852,7 +844,7 @@ impl Selection {
                 let child = egraph.find(operand);
                 positions.push(position[child.index()].ok_or(Refused::Cyclic(child))?);
             }
-            position[class.index()] = Some(order.emit(class, idx, positions.into_iter()));
+            position[class.index()] = Some(order.emit(class, node, positions.into_iter()));
             stack.pop();
         }
         Ok(order.finish(root))
@@ -868,31 +860,39 @@ impl Selection {
         self.picks.len()
     }
 
-    /// The classes the term reaches and the node index chosen for each,
+    /// The classes the term reaches and the node chosen for each, by id,
     /// children before parents.
-    pub(crate) fn picks(&self) -> impl Iterator<Item = (EClassId, usize)> + '_ {
-        self.picks.iter().map(|pick| (pick.class, pick.idx))
+    pub(crate) fn picks(&self) -> impl Iterator<Item = (EClassId, ENodeId)> + '_ {
+        self.picks.iter().map(|pick| (pick.class, pick.node))
     }
 
     /// The node chosen at `position`, checked against `egraph`.
     ///
-    /// A selection is read beside the graph it was made from; the arity check
-    /// is what notices it is not, since an index into another graph's class
-    /// is in bounds more often than it is the same node.
+    /// A selection is read beside the graph it was made from. A pick names its
+    /// node by id, so the check is membership, O(1): the node is not retired,
+    /// and its id finds to the pick's class, which is still canonical. Ids are
+    /// per graph and every graph mints from 0, so another graph can pass that
+    /// check; the arity check is a second, independent tell.
     fn node<'g>(&self, egraph: &'g EGraph, position: usize) -> &'g ENode {
-        let Pick { class, idx, .. } = self.picks[position];
-        let node = egraph.node_at(class, idx).unwrap_or_else(|| {
-            panic!(
-                "Selection: e-class {} has no node {idx} in this e-graph — the selection was \
-                 made from another graph, or this one was rebuilt since",
-                class.0
-            )
-        });
+        let Pick {
+            class, node: tag, ..
+        } = self.picks[position];
+        let node = egraph
+            .node_for_tag(class, tag)
+            .filter(|_| egraph.find(class) == class)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Selection: node {} is not a member of e-class {} in this e-graph — the \
+                     selection was made from another graph, or this one has since merged the \
+                     class away or retired the node",
+                    tag.0, class.0
+                )
+            });
         assert_eq!(
             node.children_slice().len(),
             self.operands_of(position).len(),
             "Selection: the node chosen for e-class {} has a different arity in this e-graph \
-             — the selection was made from another graph, or this one was rebuilt since",
+             — the selection was made from another graph",
             class.0
         );
         node
@@ -906,11 +906,17 @@ impl Selection {
         &self.operands[start..self.picks[position].operands_end]
     }
 
-    /// This selection as a choice map over `num_classes` classes: `Some` for
-    /// the classes it reaches.
-    pub(crate) fn to_map(&self, num_classes: usize) -> Vec<Option<usize>> {
-        let mut map = alloc::vec![None; num_classes];
-        for (class, idx) in self.picks() {
+    /// This selection as a choice map over `egraph`'s classes: each pick's
+    /// position in its class's members, `Some` for the classes it reaches.
+    /// Walks each pick's class to find the position, for the callers that keep
+    /// positions (the reranker's `Optimized::choices`).
+    pub(crate) fn to_map(&self, egraph: &EGraph) -> Vec<Option<usize>> {
+        let mut map = alloc::vec![None; egraph.num_classes()];
+        for (class, node) in self.picks() {
+            let idx = egraph
+                .tags(class)
+                .position(|tag| tag == node)
+                .expect("a pick is a member of its class");
             map[class.index()] = Some(idx);
         }
         map
@@ -1901,8 +1907,7 @@ impl<'a, S: Settling> Settlement<'a, S> {
         let node = self
             .problem
             .egraph()
-            .node_at(class, idx)
-            .expect("a candidate indexes its class's e-nodes");
+            .node(self.problem.graph().node_id(candidate));
         let priced = self.pricer.price(candidate, node);
         let takes = match self.best[live] {
             None => true,
@@ -3440,12 +3445,13 @@ mod tests {
             Selection::of_map(&egraph, merged, &choices),
             Err(Refused::Missing(m))
         );
-        choices[m.index()] = Some(egraph.member_count(m));
+        let count = egraph.nodes(m).count();
+        choices[m.index()] = Some(count);
         assert_eq!(
             Selection::of_map(&egraph, merged, &choices),
             Err(Refused::OutOfBounds {
                 class: m,
-                idx: egraph.member_count(m)
+                idx: count
             })
         );
     }

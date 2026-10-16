@@ -181,9 +181,7 @@ impl Instance {
         let mut folds = vec![false; graph.slot_count()];
         for live in graph.lives() {
             for at in graph.candidates(live) {
-                let node = egraph
-                    .node_at(at.class(), at.idx())
-                    .expect("a candidate indexes its class's e-nodes");
+                let node = egraph.node(graph.node_id(at));
                 own[graph.slot(at)] = model.node_cost_of(node);
                 folds[graph.slot(at)] = matches!(node, ENode::Reduce { .. });
             }

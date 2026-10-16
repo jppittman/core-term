@@ -10,23 +10,31 @@
 //! type that indexes them:
 //!
 //! - **per node**: the id names a node (`nodes`, the arena), the slot it was
-//!   minted into (`parent`) and whether it has left its class for good (the
-//!   retired bit). Indexed by [`EClassId`], and by [`ENodeId`] for the arena,
-//!   which is the same integer.
+//!   minted into (`parent`), the member after it in its class's list (`next`)
+//!   and whether it has left its class for good (the retired bit). Indexed by
+//!   [`EClassId`], and by [`ENodeId`] for the arena, which is the same
+//!   integer.
 //! - **per representative**: the id is the answer of [`Columns::root`], the
-//!   class whose block of the equivalence the member list, the facts and the
-//!   kind mask describe. Indexed by [`Root`], which only `root` and
-//!   `root_mut` return, so a fact is never read at an id nobody asked `root`
-//!   about.
+//!   class whose block of the equivalence the list's `head` and `tail`, the
+//!   facts and the kind mask describe. Indexed by [`Root`], which only `root`
+//!   and `root_mut` return, so a fact is never read at an id nobody asked
+//!   `root` about.
 //! - **per worklist slot**: the id is where a [`Slot`] was pushed, which
 //!   `queued` is keyed by, whatever that id has since been merged into.
 //!   Indexed by [`Slot`].
 //!
-//! `members`, `live` and the retired bit are private. `push`, `absorb`,
-//! `detach` and `write_back` are the only writes to a member list, so a class
-//! is filled or emptied only here and the live set is restated at each of
-//! them; `retire` sets the retired bit and changes no list, because its node
-//! left the class at `detach`.
+//! A class's members are a singly linked list through the arena: `head`
+//! and `tail` per representative, `next` per node, the end a private
+//! sentinel. Walking `next` from `head[c]` yields the members in the graph's
+//! order and stops at `tail[c]`; both are the end exactly when `c` has no
+//! members, and always for a merged-away class. `add` gives `[t]`, a union
+//! splices the child's list after the parent's tail, and a rebuild item
+//! detaches its class's list, keeps what survives in a list of its own and
+//! splices that after the class it ends up in. The links, `live` and the
+//! retired bit are private, and `push`, `absorb`, `detach`, `keep`,
+//! `write_back` and `retire` are the only writes to them, so a class is
+//! filled or emptied only here and the live set is restated at each of
+//! those that can change it.
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -159,6 +167,67 @@ pub(super) struct Birth {
     pub(super) stamp: u64,
 }
 
+/// A place in a member list: a node id, or the end of the list. The end is
+/// `u64::MAX`, which no node id reaches (ids range over `EClassId`, a `u32`),
+/// so a link is 8 bytes where an `Option<ENodeId>` would be 16. Private to this
+/// module: outside it a list is a [`Members`] walk and the end is `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Link(u64);
+
+impl Link {
+    const END: Self = Self(u64::MAX);
+
+    fn to(tag: ENodeId) -> Self {
+        debug_assert_ne!(tag.0, u64::MAX, "no node id is the end of a list");
+        Self(tag.0)
+    }
+
+    fn get(self) -> Option<ENodeId> {
+        (self != Self::END).then_some(ENodeId(self.0))
+    }
+}
+
+/// A class's members in law 8's order: a walk down `next` from the class's
+/// head, one dependent load per member.
+#[derive(Clone)]
+pub(super) struct Members<'a> {
+    links: &'a Column<EClassId, Link>,
+    at: Link,
+}
+
+impl Iterator for Members<'_> {
+    type Item = ENodeId;
+
+    fn next(&mut self) -> Option<ENodeId> {
+        let tag = self.at.get()?;
+        self.at = self.links[tag];
+        Some(tag)
+    }
+}
+
+/// A rebuild item's detached members, not yet walked: the chain `detach` took
+/// off the class. No class lists them, so no union can write their links
+/// before [`Columns::walk`] reads them.
+pub(super) struct Detached(Link);
+
+/// A rebuild item's kept members in walk order: a list through `next`, ended
+/// after every [`Columns::keep`], that no class holds until
+/// [`Columns::write_back`].
+pub(super) struct Kept {
+    head: Link,
+    tail: Link,
+}
+
+impl Kept {
+    /// No member kept yet.
+    pub(super) fn new() -> Self {
+        Self {
+            head: Link::END,
+            tail: Link::END,
+        }
+    }
+}
+
 /// The per-id columns and the union-find they share. See the module docs.
 #[derive(Clone, Default)]
 pub(crate) struct Columns {
@@ -175,13 +244,23 @@ pub(crate) struct Columns {
     retired: Column<EClassId, bool>,
     /// How many ids are retired.
     retired_count: usize,
-    /// The ids of the nodes in each representative's class, in the order the
-    /// graph gives them. A merged-away class's list is empty: `absorb` moves
-    /// it. A retired node is in no list.
-    members: Column<Root, Vec<ENodeId>>,
+    /// Per node: the member after this one in its class's list, or the end.
+    /// The end for a class's last member and for a retired node. While a
+    /// rebuild item walks its detached members, the chain they still form
+    /// (see [`Detached`]).
+    next: Column<EClassId, Link>,
+    /// Per representative: the first member of the class's list, or the end
+    /// exactly when the class has no members (a merged-away class, or one a
+    /// rebuild item has detached).
+    head: Column<Root, Link>,
+    /// Per representative: the last member, so a union's splice is O(1). The
+    /// end exactly when `head` is.
+    tail: Column<Root, Link>,
     /// The classes with at least one member, as a set: the representatives
-    /// whose list is not empty. Restated by every write to `members`, so it
-    /// agrees with them by construction.
+    /// whose list is not empty. Restated by `push`, `absorb`, `detach` and
+    /// `write_back`, the writes that can change whether a class has members
+    /// (`keep` and `retire` cannot: a kept node is in no class until
+    /// `write_back`), so it agrees with the lists by construction.
     live: ClassSet,
     /// The constant each class is known to equal, as f32 bits — maintained
     /// independently of the member list on purpose.
@@ -248,27 +327,6 @@ pub(super) fn tag_of(id: EClassId) -> ENodeId {
     ENodeId(u64::from(id.0))
 }
 
-/// A rebuilt buffer is shrunk when its unused capacity exceeds `1 /
-/// REBUILT_SLACK_DIVISOR` of its length.
-const REBUILT_SLACK_DIVISOR: usize = 2;
-
-/// Put a rebuilt buffer back into a class slot. A slot that is still empty
-/// takes the buffer as is; one a mid-rebuild `union` already appended onto
-/// keeps those entries and gains the rebuilt ones after them.
-fn restore_after_rebuild<T: Copy>(slot: &mut Vec<T>, mut rebuilt: Vec<T>) {
-    if slot.is_empty() {
-        // The buffer was grown by pushes and keeps that slack; a class lives
-        // for the whole saturation, so slack is peak memory. Only a buffer
-        // with a large share unused is worth a realloc to give it back.
-        if rebuilt.capacity() - rebuilt.len() > rebuilt.len() / REBUILT_SLACK_DIVISOR {
-            rebuilt.shrink_to_fit();
-        }
-        *slot = rebuilt;
-        return;
-    }
-    slot.extend(rebuilt);
-}
-
 impl Columns {
     /// The number of ids minted: every column's length.
     pub(super) fn len(&self) -> usize {
@@ -282,7 +340,9 @@ impl Columns {
         self.nodes.push(birth.node);
         self.parent.push(id);
         self.retired.push(false);
-        self.members.push(alloc::vec![tag_of(id)]);
+        self.next.push(Link::END);
+        self.head.push(Link::to(tag_of(id)));
+        self.tail.push(Link::to(tag_of(id)));
         self.const_fact.push(birth.const_fact);
         self.var_fact.push(birth.variance);
         self.last_changed.push(birth.stamp);
@@ -322,8 +382,11 @@ impl Columns {
     }
 
     /// The member ids of `class`, in the order the graph gives them.
-    pub(super) fn members(&self, class: Root) -> &[ENodeId] {
-        &self.members[class]
+    pub(super) fn members(&self, class: Root) -> Members<'_> {
+        Members {
+            links: &self.next,
+            at: self.head[class],
+        }
     }
 
     /// Whether the node at `tag` has left its class for good.
@@ -342,48 +405,82 @@ impl Columns {
         let slot = &mut self.retired.entries[tag.0 as usize];
         debug_assert!(!*slot, "a node is retired once");
         *slot = true;
+        // Its link was read by `walk` before it was retired; a retired node
+        // ends no list and is followed by nothing.
+        self.next.entries[tag.0 as usize] = Link::END;
         self.retired_count += 1;
     }
 
     /// The classes with at least one member, which this module restates at
-    /// each write to a member list.
+    /// each write that can change whether a class has members.
     pub(super) fn live(&self) -> &ClassSet {
         &self.live
     }
 
-    /// `union`'s member move: `parent`'s members, then `child`'s. Both are
-    /// representatives now; the caller links them afterwards.
+    /// `union`'s member move: `parent`'s members, then `child`'s, by a splice.
+    /// Both are representatives now; the caller links them afterwards.
     pub(super) fn absorb(&mut self, child: Root, parent: Root) {
-        let moved = core::mem::take(&mut self.members[child]);
-        let into = &mut self.members[parent];
-        if into.is_empty() {
-            *into = moved;
-        } else {
-            into.extend(moved);
-        }
+        let (first, last) = (self.head[child], self.tail[child]);
+        self.head[child] = Link::END;
+        self.tail[child] = Link::END;
+        self.splice(parent, first, last);
         self.live.remove(child.id());
         self.set_live(parent);
     }
 
-    /// A rebuild item's start: take `item`'s members out, so a union during
-    /// the item appends to the class and not to the list being walked.
-    pub(super) fn detach(&mut self, item: Root) -> Vec<ENodeId> {
+    /// A rebuild item's start: take `item`'s members out as a chain, so a union
+    /// during the item splices into the class and not into the chain walked.
+    pub(super) fn detach(&mut self, item: Root) -> Detached {
         self.live.remove(item.id());
-        core::mem::take(&mut self.members[item])
+        let first = self.head[item];
+        self.head[item] = Link::END;
+        self.tail[item] = Link::END;
+        Detached(first)
     }
 
-    /// A rebuild item's end: the kept ids go to the class `item` is in now,
-    /// resolved here so no caller can name a merged-away class. A move when
-    /// that class is empty, an extend otherwise.
-    pub(super) fn write_back(&mut self, item: Root, kept: Vec<ENodeId>) {
+    /// The next detached member, with the walk advanced past it first: its
+    /// link is read here, before `keep` or `retire` rewrites it.
+    pub(super) fn walk(&self, detached: &mut Detached) -> Option<ENodeId> {
+        let tag = detached.0.get()?;
+        detached.0 = self.next[tag];
+        Some(tag)
+    }
+
+    /// Append a walked member to the item's kept list, which stays ended.
+    pub(super) fn keep(&mut self, kept: &mut Kept, tag: ENodeId) {
+        self.next.entries[tag.0 as usize] = Link::END;
+        match kept.tail.get() {
+            Some(last) => self.next.entries[last.0 as usize] = Link::to(tag),
+            None => kept.head = Link::to(tag),
+        }
+        kept.tail = Link::to(tag);
+    }
+
+    /// A rebuild item's end: the kept list goes after the members of the class
+    /// `item` is in now, resolved here so no caller can name a merged-away
+    /// class.
+    pub(super) fn write_back(&mut self, item: Root, kept: Kept) {
         let dest = self.root(item.id());
-        restore_after_rebuild(&mut self.members[dest], kept);
+        self.splice(dest, kept.head, kept.tail);
         self.set_live(dest);
     }
 
-    /// Restate `class`'s liveness from its member list.
+    /// Put the list `first ..= last` after `class`'s last member, O(1). An
+    /// empty list changes nothing; an empty class takes `first` as its head.
+    fn splice(&mut self, class: Root, first: Link, last: Link) {
+        if first == Link::END {
+            return;
+        }
+        match self.tail[class].get() {
+            Some(end) => self.next.entries[end.0 as usize] = first,
+            None => self.head[class] = first,
+        }
+        self.tail[class] = last;
+    }
+
+    /// Restate `class`'s liveness from its list.
     fn set_live(&mut self, class: Root) {
-        match self.members[class].is_empty() {
+        match self.head[class] == Link::END {
             true => self.live.remove(class.id()),
             false => self.live.insert(class.id()),
         }

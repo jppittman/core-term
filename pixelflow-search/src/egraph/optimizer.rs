@@ -799,7 +799,7 @@ impl Optimizer {
             },
         );
         Optimized {
-            choices: selection.to_map(egraph.num_classes()),
+            choices: selection.to_map(egraph),
             selection,
             cost,
             extraction: ExtractionReport::external(),

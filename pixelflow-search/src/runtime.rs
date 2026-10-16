@@ -1785,7 +1785,7 @@ mod congruence_gap_probe {
     fn reachable_node_count(egraph: &EGraph) -> usize {
         (0..egraph.num_classes())
             .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
-            .map(|i| egraph.member_count(EClassId::from_index(i)))
+            .map(|i| egraph.nodes(EClassId::from_index(i)).count())
             .sum()
     }
 

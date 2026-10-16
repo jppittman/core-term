@@ -310,15 +310,7 @@ fn chosen_tagged_nodes(
             root.index()
         )
     });
-    term.picks()
-        .map(|(class, idx)| {
-            let tag = egraph
-                .tags(class)
-                .nth(idx)
-                .expect("a pick is one of its class's e-nodes");
-            (class, tag)
-        })
-        .collect()
+    term.picks().collect()
 }
 
 /// Result of running the full episode pipeline once: the extraction the
