@@ -1819,14 +1819,35 @@ impl StageRecorder for () {
 trait Settling {
     /// Price `candidate`, whose e-node is `node`. Every child class is
     /// settled, and none of them is the candidate's own.
-    fn price(&mut self, candidate: Candidate, node: &ENode) -> usize;
+    fn price(&mut self, candidate: Candidate, node: &ENode) -> Priced;
 
     /// Which of two candidates priced **equally** the class keeps.
     fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool;
 
-    /// Settle the candidate's class on `candidate`, whose e-node is `node`,
-    /// priced at `cost`. Returning `false` abandons the pass.
-    fn settle(&mut self, candidate: Candidate, node: &ENode, cost: usize) -> bool;
+    /// Settle the candidate's class on `candidate`, which was priced as
+    /// `priced`. Returning `false` abandons the pass.
+    fn settle(&mut self, candidate: Candidate, priced: Priced) -> bool;
+}
+
+/// What pricing one candidate produced: the cost it competes on, and the two
+/// numbers its class needs if it wins.
+///
+/// Carried to [`Settling::settle`] rather than recomputed there. Both are
+/// functions of the node, the cost function and the shape, which are fixed
+/// for the pass, and of the variances chosen for the candidate's children.
+/// Those are written when a child settles, which is before the candidate is
+/// priced (it waits on every child), and never again, since a class settles
+/// once. A class's own entry is not read at all: a candidate naming its own
+/// class waits on a child that settles only after the class does, so it is
+/// never priced.
+#[derive(Clone, Copy)]
+struct Priced {
+    /// The candidate's DP cost.
+    cost: usize,
+    /// Its weighted own cost.
+    own: usize,
+    /// Its variance, [`node_variance`] over its children's chosen forms.
+    var: Variance,
 }
 
 /// What a settlement tracks beside the problem it settles: the candidates it
@@ -1838,9 +1859,9 @@ struct Settlement<'a, S> {
     /// Unsettled distinct child classes per candidate, by
     /// [`AndOrGraph::slot`](super::and_or::AndOrGraph::slot).
     waiting: Vec<usize>,
-    /// The cheapest candidate priced so far for each live class: its cost
+    /// The cheapest candidate priced so far for each live class: its price
     /// and index.
-    best: LiveTable<Option<(usize, usize)>>,
+    best: LiveTable<Option<(Priced, usize)>>,
     /// Ordered by cost, then by the class's **e-graph id** (the live index
     /// rides along and decides nothing, the id being unique). Equal-cost
     /// classes settle in id order, and under `Insertion` that settle order is
@@ -1865,21 +1886,22 @@ impl<'a, S: Settling> Settlement<'a, S> {
     /// cheaper, or equal and preferred.
     fn relax(&mut self, candidate: Candidate) {
         let (class, live, idx) = (candidate.class(), candidate.live(), candidate.idx());
-        let cost = self
+        let priced = self
             .pricer
             .price(candidate, &self.problem.egraph().nodes(class)[idx]);
         let takes = match self.best[live] {
             None => true,
-            Some((incumbent_cost, incumbent)) => {
-                cost < incumbent_cost
-                    || (cost == incumbent_cost && self.pricer.prefer(class, incumbent, idx))
+            Some((incumbent_priced, incumbent)) => {
+                priced.cost < incumbent_priced.cost
+                    || (priced.cost == incumbent_priced.cost
+                        && self.pricer.prefer(class, incumbent, idx))
             }
         };
         if !takes {
             return;
         }
-        self.best[live] = Some((cost, idx));
-        self.heap.push(Reverse((cost, class, live)));
+        self.best[live] = Some((priced, idx));
+        self.heap.push(Reverse((priced.cost, class, live)));
     }
 
     fn run(mut self) -> Option<DpOutcome> {
@@ -1899,9 +1921,9 @@ impl<'a, S: Settling> Settlement<'a, S> {
             if settled[live] {
                 continue;
             }
-            let (incumbent_cost, incumbent) =
+            let (priced, incumbent) =
                 self.best[live].expect("a class in the heap has been priced at least once");
-            if incumbent_cost != cost {
+            if priced.cost != cost {
                 // A superseded entry: the class has since been priced cheaper,
                 // and that entry is still in the heap.
                 continue;
@@ -1909,11 +1931,7 @@ impl<'a, S: Settling> Settlement<'a, S> {
             let chosen = graph
                 .candidate(live, incumbent)
                 .expect("a priced candidate is one of its class's e-nodes");
-            if !self.pricer.settle(
-                chosen,
-                &egraph.nodes(chosen.class())[incumbent],
-                incumbent_cost,
-            ) {
+            if !self.pricer.settle(chosen, priced) {
                 return None;
             }
             settled[live] = true;
@@ -1946,7 +1964,10 @@ impl<'a, S: Settling> Settlement<'a, S> {
              a rewrite outcome",
             graph.root().0
         );
-        let root_cost = self.best[root].expect("a settled class has been priced").0;
+        let root_cost = self.best[root]
+            .expect("a settled class has been priced")
+            .0
+            .cost;
         let selection = Selection::settled(self.problem, |live| choice[graph.class(live).index()]);
         Some(DpOutcome {
             choices: choice,
@@ -2022,9 +2043,9 @@ struct TreePricer<'a, 'c, C, T, R> {
 }
 
 impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_, '_, C, T, R> {
-    fn price(&mut self, candidate: Candidate, node: &ENode) -> usize {
-        let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
-        let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
+    fn price(&mut self, candidate: Candidate, node: &ENode) -> Priced {
+        let var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
+        let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(var));
         let cost = match node {
             ENode::Var(_)
             | ENode::Const(_)
@@ -2056,7 +2077,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
         self.dp
             .rec
             .candidate(candidate.class(), candidate.idx(), cost, own);
-        cost
+        Priced { cost, own, var }
     }
 
     fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool {
@@ -2065,12 +2086,9 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
             .prefer(self.problem.egraph(), class, incumbent, challenger)
     }
 
-    fn settle(&mut self, candidate: Candidate, node: &ENode, cost: usize) -> bool {
-        // Read the children's variances before writing this class's, which
-        // `node_variance` never consults for an admissible candidate.
-        let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
-        self.cost[candidate.live()] = Some(cost);
-        self.var[candidate.class().index()] = node_var;
+    fn settle(&mut self, candidate: Candidate, priced: Priced) -> bool {
+        self.cost[candidate.live()] = Some(priced.cost);
+        self.var[candidate.class().index()] = priced.var;
         self.dp.rec.settled(candidate.class(), candidate.idx());
         true
     }
@@ -2241,9 +2259,9 @@ struct SharedPricer<'a, 'c, C, T, R> {
 }
 
 impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'_, '_, C, T, R> {
-    fn price(&mut self, candidate: Candidate, node: &ENode) -> usize {
-        let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
-        let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
+    fn price(&mut self, candidate: Candidate, node: &ENode) -> Priced {
+        let var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
+        let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(var));
         let below = self
             .sets
             .cost_below(self.problem.graph().children(candidate));
@@ -2251,7 +2269,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
         self.dp
             .rec
             .candidate(candidate.class(), candidate.idx(), cost, own);
-        cost
+        Priced { cost, own, var }
     }
 
     fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool {
@@ -2260,9 +2278,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
             .prefer(self.problem.egraph(), class, incumbent, challenger)
     }
 
-    fn settle(&mut self, candidate: Candidate, node: &ENode, cost: usize) -> bool {
-        let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
-        let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
+    fn settle(&mut self, candidate: Candidate, priced: Priced) -> bool {
         // Rebuild the winner's union rather than carrying one per class in
         // flight: the driver prices candidates for many unsettled classes
         // before any of them settles, so a stored winner set would be a
@@ -2279,9 +2295,9 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
             return false;
         }
         self.sets.reach[me] = Some(set);
-        self.sets.own[me] = own;
-        self.sets.total[me] = cost;
-        self.var[candidate.class().index()] = node_var;
+        self.sets.own[me] = priced.own;
+        self.sets.total[me] = priced.cost;
+        self.var[candidate.class().index()] = priced.var;
         self.dp.rec.settled(candidate.class(), candidate.idx());
         true
     }
