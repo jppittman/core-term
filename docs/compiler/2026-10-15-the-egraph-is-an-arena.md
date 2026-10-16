@@ -1,7 +1,7 @@
 # The e-graph is an arena
 
 **Status:** `Plan of record` (JP, 2026-10-15: "write the arena plan. Execute it.").
-**Verified against:** `2a99d933` (written); CLs 0, 3a and 2 landed on `d6369602`. Changes
+**Verified against:** `2a99d933` (written); CLs 0, 3a and 2 landed as `4af25113`; CLs 5a–d and 6 on `43019669`. Changes
 representation only: every CL below leaves `byte_probe` and the 29 font
 programs' extracted kernels byte-identical (§3.2, gates 1 and 1b) and is
 measured, not asserted. What would change the optimizer (congruence
@@ -440,12 +440,23 @@ checks run only on a non-empty `live`, and production passes no deadline.
 CL 7's rests on nothing adding to a graph after `into_graph()`, which
 `Frozen` already prevents and its probe confirms on the 29 programs.
 
-**Landed** (group A: CLs 0, 3a, 2, and the review fixes on them). On the
-cold compile of the 29 font programs, callgrind Ir 7,520 M → 6,122 M
-(−18.6%), saturation 3,817 M → 2,432 M; the cache-sim sum 6,361 M → 4,672 M
-(−26.6%); RSS 133.3 → 137.5 MB, the per-kind index's cost (plan estimate +9
-to +10 MB). Gates 1, 1b and 2 identical at every step. Next: group B (CLs
-5a–d, 6), then C (1, 3b), D (3c, 4), E (7), each its own PR.
+**Landed.** On the cold compile of the 29 font programs, callgrind Ir, with
+gates 1, 1b, 2 and (from group B) 2x identical at every step:
+
+| group | CLs | Ir | saturate | extraction | cache-sim sum | RSS |
+|---|---|--:|--:|--:|--:|--:|
+| A (#1416) | 0, 3a, 2 | 7,520 M → 6,122 M (−18.6%) | 3,817 M → 2,432 M | ~1,648 M | 6,361 M → 4,672 M | 133.3 → 137.5 MB |
+| B | 5a–d, 6 | 6,096 M → 5,383 M (−11.7%) | 2,408 M → 2,261 M | 1,647 M → 1,074 M (−34.8%) | 4,646 M → 3,889 M | 137.7 → 137.6 MB |
+
+Against the estimates: 5a alone took −470 M of extraction, more than the
+−0.3 to −0.5 G expected of 5a–c; 5b measured zero (one-child rows are 2.9%
+of price calls) and 5d's general path absorbed it; 5d took −68 M, a tenth of
+its estimate, because the largest child's set is dense in only 5.6% of wide
+rows and a sparse one must still be stamped (60% of what pricing now walks;
+answering membership in a sparse set without stamping is a representation
+change, not in this plan). CL 6 took −142 M of the −0.2 G expected.
+
+Next: group C (CLs 1, 3b), then D (3c, 4), E (7), each its own PR.
 
 ## 7. What this does not address
 

@@ -21,7 +21,7 @@ use rustc_hash::FxHashMap as HashMap;
 use std::time::{Duration, Instant};
 
 use super::EGraph;
-use crate::egraph::node::EClassId;
+use crate::egraph::node::{EClassId, ENode};
 use crate::egraph::provenance::ENodeId;
 #[cfg(feature = "provenance-journal")]
 use crate::egraph::provenance::Opening;
@@ -365,6 +365,13 @@ pub struct Saturation {
     /// once" from "the mask matched eleven times", and must never have to
     /// infer that a mask fired at all.
     mask_skips: usize,
+    /// The growth predictor's table of nodes a prediction has minted so far
+    /// ([`EGraph::predicted_growth`] empties it before each use). Kept here so
+    /// its allocation serves every prediction of the run.
+    predictor_pending: HashMap<ENode, EClassId>,
+    /// The actions a scan has accepted and not yet committed. Emptied by
+    /// the commit, so its allocation serves every sweep of the run.
+    updates: Vec<(EClassId, RewriteAction)>,
     /// Per-application growth telemetry (`docs/archive/plans/2026-08-31-guide-design-revision.md`
     /// §4.1): `None` until [`Self::enable_growth_telemetry`] turns it on.
     /// Compiled in only under `saturation-telemetry`, and checked with a bare
@@ -406,6 +413,8 @@ impl Saturation {
             match_counts: HashMap::default(),
             mask: None,
             mask_skips: 0,
+            predictor_pending: HashMap::default(),
+            updates: Vec::new(),
             #[cfg(feature = "saturation-telemetry")]
             growth: None,
         }
@@ -874,7 +883,8 @@ impl Saturation {
 
         let mut unions = 0;
         let mut evals = 0usize;
-        let mut updates: Vec<(EClassId, RewriteAction)> = Vec::new();
+        // Taken, not borrowed: the commit below needs `&mut self`.
+        let mut updates = std::mem::take(&mut self.updates);
         let mut estimated_new_nodes: usize = 0;
         let mut scan = self.scan_entry_stop(ceilings);
 
@@ -974,7 +984,9 @@ impl Saturation {
                     // same scan (still uncommitted, so invisible to this
                     // call) may end up sharing some of the same nodes: real
                     // growth can only come in lower.
-                    let action_cost = self.graph.predicted_growth(&action);
+                    let action_cost = self
+                        .graph
+                        .predicted_growth(&action, &mut self.predictor_pending);
                     estimated_new_nodes += action_cost;
 
                     // If this action would push us over budget, stop scanning
@@ -1018,13 +1030,14 @@ impl Saturation {
         // Commit: all actions in the log are within budget.
         // Do NOT rebuild here — the caller rebuilds after the rule (a partial
         // one) and after the round (the full one).
-        for (class_id, action) in updates {
+        for (class_id, action) in updates.drain(..) {
             if self.allowance_spent(ceilings, 0) {
                 scan = ScanStop::ApplicationBudget;
                 break;
             }
             unions += self.commit(rule_idx, class_id, action);
         }
+        self.updates = updates;
 
         // A deadline that elapsed inside a rule's `apply` or inside the commit
         // above reached none of the checks in the walk. Left as `Completed`,
@@ -1201,7 +1214,9 @@ impl Saturation {
             // — this is a measurement path (telemetry is opt-in), not a hot
             // one, and a divergence here is exactly the "most important
             // finding" a mispredicted budget estimator could produce.
-            let predicted = self.graph.predicted_growth(&action);
+            let predicted = self
+                .graph
+                .predicted_growth(&action, &mut self.predictor_pending);
             let nodes_before = self.graph.next_enode_id;
             let unions = self.graph.apply_action(class_id, action);
             let nodes_added = (self.graph.next_enode_id - nodes_before) as usize;
@@ -1237,7 +1252,6 @@ mod tests {
     use super::*;
     use crate::egraph::cost::CostModel;
     use crate::egraph::extract::extract_dag;
-    use crate::egraph::node::ENode;
     use crate::egraph::optimizer::{Budget, Optimizer};
 
     /// Soundness regression for saturation's dirty-class tracking

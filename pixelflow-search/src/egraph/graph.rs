@@ -862,17 +862,25 @@ impl EGraph {
     /// matters for a budget decided one application at a time — by the
     /// `assert_eq!` in the runner's `apply_measured`, which calls this
     /// immediately before executing the same action for real.
-    pub(crate) fn predicted_growth(&self, action: &RewriteAction) -> usize {
+    ///
+    /// `pending` is the caller's scratch table for the walk: emptied here
+    /// before use, so what a previous prediction left in it is never read, and
+    /// owned by the caller so the table's allocation outlives the prediction.
+    pub(crate) fn predicted_growth(
+        &self,
+        action: &RewriteAction,
+        pending: &mut HashMap<ENode, EClassId>,
+    ) -> usize {
         match action {
             RewriteAction::Union(_) => 0,
-            RewriteAction::Create(node) => self.predict(|s| {
+            RewriteAction::Create(node) => self.predict(pending, |s| {
                 s.make(*node);
             }),
             RewriteAction::Instantiate {
                 template,
                 entry,
                 bindings,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 instantiate_template(s, template.0.entry_at(*entry), bindings);
             }),
             RewriteAction::Distribute {
@@ -881,7 +889,7 @@ impl EGraph {
                 a,
                 b,
                 c,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 distribute_shape(
                     s,
                     Distributive {
@@ -897,7 +905,7 @@ impl EGraph {
                 common,
                 unique_l,
                 unique_r,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 factor_shape(
                     s,
                     Distributive {
@@ -912,16 +920,16 @@ impl EGraph {
                 inverse,
                 a,
                 b,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 canonicalize_shape(s, *target, *inverse, *a, *b);
             }),
-            RewriteAction::Associate { op, a, b, c } => self.predict(|s| {
+            RewriteAction::Associate { op, a, b, c } => self.predict(pending, |s| {
                 associate_shape(s, *op, *a, *b, *c);
             }),
-            RewriteAction::ReverseAssociate { op, a, b, c } => self.predict(|s| {
+            RewriteAction::ReverseAssociate { op, a, b, c } => self.predict(pending, |s| {
                 reverse_associate_shape(s, *op, *a, *b, *c);
             }),
-            RewriteAction::OddParity { func, inner } => self.predict(|s| {
+            RewriteAction::OddParity { func, inner } => self.predict(pending, |s| {
                 odd_parity_shape(s, *func, *inner);
             }),
             RewriteAction::AngleAddition {
@@ -932,7 +940,7 @@ impl EGraph {
                 term2_sign,
                 a,
                 b,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 angle_addition_shape(
                     s,
                     AngleTerms {
@@ -954,56 +962,61 @@ impl EGraph {
                 target_op,
                 a,
                 b,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 homomorphism_shape(s, *func, *target_op, *a, *b);
             }),
-            RewriteAction::PowerCombine { base, exp_a, exp_b } => self.predict(|s| {
+            RewriteAction::PowerCombine { base, exp_a, exp_b } => self.predict(pending, |s| {
                 power_combine_shape(s, *base, *exp_a, *exp_b);
             }),
-            RewriteAction::ReverseAngleAddition { trig_op, a, b } => self.predict(|s| {
+            RewriteAction::ReverseAngleAddition { trig_op, a, b } => self.predict(pending, |s| {
                 reverse_angle_addition_shape(s, *trig_op, *a, *b);
             }),
-            RewriteAction::HalfAngleProduct { x } => self.predict(|s| {
+            RewriteAction::HalfAngleProduct { x } => self.predict(pending, |s| {
                 half_angle_product_shape(s, *x);
             }),
-            RewriteAction::Doubling { a } => self.predict(|s| {
+            RewriteAction::Doubling { a } => self.predict(pending, |s| {
                 doubling_shape(s, *a);
             }),
-            RewriteAction::Halving { a } => self.predict(|s| {
+            RewriteAction::Halving { a } => self.predict(pending, |s| {
                 halving_shape(s, *a);
             }),
-            RewriteAction::PowerRecurrence { base, exponent } => self.predict(|s| {
+            RewriteAction::PowerRecurrence { base, exponent } => self.predict(pending, |s| {
                 power_recurrence_shape(s, *base, *exponent);
             }),
             RewriteAction::LogPower {
                 log_op,
                 base,
                 exponent,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 log_power_shape(s, *log_op, *base, *exponent);
             }),
-            RewriteAction::ExpandSquare { a, b } => self.predict(|s| {
+            RewriteAction::ExpandSquare { a, b } => self.predict(pending, |s| {
                 expand_square_shape(s, *a, *b);
             }),
-            RewriteAction::DiffOfSquares { a, b } => self.predict(|s| {
+            RewriteAction::DiffOfSquares { a, b } => self.predict(pending, |s| {
                 diff_of_squares_shape(s, *a, *b);
             }),
-            RewriteAction::Differentiate { inner, var } => self.predict(|s| {
+            RewriteAction::Differentiate { inner, var } => self.predict(pending, |s| {
                 derivative_shape(s, inner, *var);
             }),
-            RewriteAction::Plan(plan) => self.predict(|s| {
+            RewriteAction::Plan(plan) => self.predict(pending, |s| {
                 plan_shape(s, plan);
             }),
         }
     }
 
-    /// Run `build` against a fresh [`GrowthPredictor`] over this graph and
-    /// report how many e-classes it would have minted. See
-    /// [`EGraph::predicted_growth`].
-    fn predict(&self, build: impl FnOnce(&mut GrowthPredictor<'_>)) -> usize {
+    /// Run `build` against a [`GrowthPredictor`] over this graph, with
+    /// `pending` emptied first, and report how many e-classes it would have
+    /// minted. See [`EGraph::predicted_growth`].
+    fn predict(
+        &self,
+        pending: &mut HashMap<ENode, EClassId>,
+        build: impl FnOnce(&mut GrowthPredictor<'_>),
+    ) -> usize {
+        pending.clear();
         let mut sink = GrowthPredictor {
             egraph: self,
-            pending: HashMap::default(),
+            pending,
         };
         build(&mut sink);
         sink.pending.len()
@@ -1199,7 +1212,7 @@ impl NodeSink for EGraph {
 
 /// A [`NodeSink`] that predicts what [`EGraph::add`] would do without
 /// mutating the graph: canonicalize, then check the graph's real memo first
-/// and a local `pending` table second — the nodes this same prediction has
+/// and a `pending` table second — the nodes this same prediction has
 /// already "created" earlier in the same shape walk, keyed and deduplicated
 /// the identical way the real memo would (e.g. `ExpandSquare`'s `a²` and
 /// `b²` degenerate to one shared node when `a == b`, and this catches that
@@ -1208,10 +1221,12 @@ impl NodeSink for EGraph {
 /// `pending`'s virtual ids are minted the same way [`EGraph::add`] mints
 /// real ones — sequentially from `egraph.num_classes()` — so a shape that
 /// references its own earlier output builds the identical composite node a
-/// real run would look up.
+/// real run would look up. The table is only probed, inserted into and
+/// counted, never iterated, so the capacity it keeps between predictions is
+/// not observable.
 struct GrowthPredictor<'a> {
     egraph: &'a EGraph,
-    pending: HashMap<ENode, EClassId>,
+    pending: &'a mut HashMap<ENode, EClassId>,
 }
 
 impl GrowthPredictor<'_> {
@@ -3057,6 +3072,25 @@ mod tests {
             .candidate_classes(RootShapes::kind(OpKind::Const))
             .collect::<Vec<_>>();
         assert_eq!(candidates, vec![x], "the survivor now holds the constant");
+    }
+
+    /// A prediction does not count what an earlier one left in the scratch
+    /// table the caller keeps: its nodes are not this prediction's to mint.
+    #[test]
+    fn a_prediction_ignores_what_the_scratch_held() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let sum = RewriteAction::Create(ENode::apply(OpKind::Add, &[x, y]));
+        let product = RewriteAction::Create(ENode::apply(OpKind::Mul, &[x, y]));
+
+        let mut scratch = HashMap::default();
+        assert_eq!(eg.predicted_growth(&sum, &mut scratch), 1);
+        assert_eq!(
+            eg.predicted_growth(&product, &mut scratch),
+            1,
+            "the sum the first prediction minted is not the product's growth"
+        );
     }
 }
 

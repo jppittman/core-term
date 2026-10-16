@@ -1037,8 +1037,10 @@ mod tests {
         let fired = factoring(&f).expect("Y is invariant");
         assert_eq!(fired.distributor, OpKind::Mul);
         assert_eq!(Some(fired.fold), f.node.fold(), "the fold is unchanged");
-        let growth =
-            f.eg.predicted_growth(&RewriteAction::Plan(fired.plan.clone()));
+        let growth = f.eg.predicted_growth(
+            &RewriteAction::Plan(fired.plan.clone()),
+            &mut Default::default(),
+        );
         let before = f.eg.num_classes();
         SaturationConfig::compatibility(1).run(&mut f.eg);
         assert_eq!(

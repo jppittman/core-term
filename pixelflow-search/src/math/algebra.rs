@@ -945,6 +945,12 @@ impl Rewrite for Halving {
 // Constant Folding
 // ============================================================================
 
+/// The most arguments any operation takes: the widest [`OpKind::arity`]
+/// (`MulAdd`, `If`, `Gather`), and the length of the buffer [`ConstantFold`]
+/// gathers them into. `every_operation_fits_the_folders_argument_buffer`
+/// holds it to that.
+const MAX_FOLD_ARGUMENTS: usize = 3;
+
 /// Constant folding: op(const, ...) → const
 ///
 /// Evaluates operations on constant arguments at compile time.
@@ -971,25 +977,30 @@ impl Rewrite for ConstantFold {
         // The operation and its arguments, each a constant. A shift's count
         // is read off the node, where it is already a valid count, and is
         // an argument all the same: the folder asks the one question of
-        // `[x, count]` that it asks of every operation.
-        let (op, args) = match node {
+        // `[x, count]` that it asks of every operation. The arguments are a
+        // prefix of an inline array, as a node's operands are: no operation
+        // takes more than `MAX_FOLD_ARGUMENTS`, so the prefix always fits.
+        let mut buffer = [0.0f32; MAX_FOLD_ARGUMENTS];
+        let (op, arity) = match node {
             ENode::Op { op, children } => {
-                let mut args = Vec::with_capacity(children.len());
-                for &child_id in children.iter() {
-                    args.push(constant_of(egraph, child_id)?);
+                for (slot, &child_id) in buffer.iter_mut().zip(children.iter()) {
+                    *slot = constant_of(egraph, child_id)?;
                 }
-                (*op, args)
+                (*op, children.len())
             }
             ENode::Shift {
                 direction,
                 count,
                 operand,
-            } => (
-                direction.op(),
-                vec![constant_of(egraph, *operand)?, count.literal()],
-            ),
+            } => {
+                buffer[0] = constant_of(egraph, *operand)?;
+                buffer[1] = count.literal();
+                let op = direction.op();
+                (op, op.arity())
+            }
             _ => return None,
         };
+        let args = &buffer[..arity];
 
         // Refuse to fold anything whose answer is platform-specific. This
         // matters more than a same-machine consistency nicety: the folder runs
@@ -1008,15 +1019,15 @@ impl Rewrite for ConstantFold {
         // installs commutativity for them, so a commuted form can still be
         // folded. That is permitted, since the result is unspecified, but this
         // removes the direct path.
-        if op.fold_is_platform_specific(&args) {
+        if op.fold_is_platform_specific(args) {
             return None;
         }
 
         // Evaluate based on arity
-        let result = match args.len() {
-            1 => op.eval_unary(args[0])?,
-            2 => op.eval_binary(args[0], args[1])?,
-            3 => op.eval_ternary(args[0], args[1], args[2])?,
+        let result = match *args {
+            [x] => op.eval_unary(x)?,
+            [x, y] => op.eval_binary(x, y)?,
+            [x, y, z] => op.eval_ternary(x, y, z)?,
             _ => return None,
         };
 
@@ -1124,6 +1135,20 @@ mod platform_specific_fold_tests {
         match ConstantFold.apply(&eg, id, &node) {
             Some(RewriteAction::Create(ENode::Const(bits))) => Some(f32::from_bits(bits)),
             _ => None,
+        }
+    }
+
+    /// The folder gathers an operation's arguments into a buffer of
+    /// `MAX_FOLD_ARGUMENTS`; a wider operation would have nowhere to go, so
+    /// the day one exists this fails instead of the folder.
+    #[test]
+    fn every_operation_fits_the_folders_argument_buffer() {
+        for kind in OpKind::all() {
+            assert!(
+                kind.arity() <= MAX_FOLD_ARGUMENTS,
+                "{kind:?} takes {} arguments, past the folder's {MAX_FOLD_ARGUMENTS}",
+                kind.arity()
+            );
         }
     }
 
