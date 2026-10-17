@@ -56,7 +56,7 @@ pub use traffic::{EmitTraffic, ScopeTraffic};
 
 use asm::{Encoding, Label, Labels, Patch};
 use encoded::EncodedInst;
-use regalloc::resource::{FrameSlot, In, InOut, Lease, Lent, Out, SlotName};
+use regalloc::resource::{FrameBytes, FrameSlot, In, InOut, Lease, Lent, Out, SlotName};
 use register_file::RegisterFile;
 
 use crate::pass::Pass;
@@ -351,8 +351,9 @@ impl Stage for Observed {
     type FrameSize = ();
 }
 
-/// The stage allocation builds: borrowed tokens, borrowed slots, block
-/// arguments already placed as moves, and the frame's size.
+/// The stage allocation builds, one instruction at a time as the scan places
+/// it: borrowed tokens, slots as descriptors, block arguments already placed
+/// as moves, and the frame's size as a handle the scan fills when it ends.
 struct Bound<'m, B>(core::convert::Infallible, PhantomData<&'m fn() -> B>);
 
 impl<'m, B: IsaBackend> Stage for Bound<'m, B> {
@@ -360,19 +361,19 @@ impl<'m, B: IsaBackend> Stage for Bound<'m, B> {
     type Early<C: Class> = Out<'m, B, C>;
     type Read<C: Class> = In<'m, B, C>;
     type Tie<C: Class> = InOut<'m, B, C>;
-    type Slot = &'m FrameSlot;
+    type Slot = FrameSlot;
     type Target = Label;
-    type FrameSize = u64;
+    type FrameSize = &'m FrameBytes;
 }
 
 /// Bytes from the stack pointer: a `disp32`.
-fn slot_disp(slot: &FrameSlot) -> i32 {
+fn slot_disp(slot: FrameSlot) -> i32 {
     i32::try_from(slot.offset()).expect("MAX_FRAME bounds every slot offset")
 }
 
 /// The frame's size, as the encoding's immediate.
-fn frame_bytes(size: u64) -> u32 {
-    u32::try_from(size).expect("MAX_FRAME bounds the frame")
+fn frame_bytes(size: &FrameBytes) -> u32 {
+    u32::try_from(size.get()).expect("MAX_FRAME bounds the frame")
 }
 
 /// How an instruction is rebuilt at stage `T`, one operand at a time. Each
@@ -624,9 +625,9 @@ trait IsaBackend: Sized + 'static {
     fn copy(b: &mut build::Spiller<'_, Self>, src: ValueName) -> ValueName;
     /// Store `src` to `slot`. When `slot.offset()` does not encode: the slot's
     /// address into a fresh `Pointer`, then the store through it.
-    fn spill(b: &mut build::Spiller<'_, Self>, src: ValueName, slot: &FrameSlot);
+    fn spill(b: &mut build::Spiller<'_, Self>, src: ValueName, slot: FrameSlot);
     /// A fresh value of `class`, loaded from `slot`.
-    fn reload(b: &mut build::Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName;
+    fn reload(b: &mut build::Spiller<'_, Self>, class: ClassId, slot: FrameSlot) -> ValueName;
 
     /// Whether the allocator may place this instruction again where a read
     /// needs its definition, instead of storing it. It must have no effect,
@@ -799,11 +800,13 @@ where
 {
     let pool = regalloc::resource::Pool::<B>::mint();
     let mut frame = regalloc::resource::Frame::empty(B::FILE.vector_bytes());
+    let frame_bytes = FrameBytes::pending();
     front(lanes_of::<B>())
         .then(select::Select::<B>(PhantomData))
         .then(regalloc::local::Allocate {
             pool: &pool,
             frame: &mut frame,
+            frame_bytes: &frame_bytes,
         })
         .then(Assemble::<B>(PhantomData))
         .run(input)

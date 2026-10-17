@@ -13,12 +13,12 @@
 
 use super::asm::Encoding;
 use super::build::{Builder, Def, Spiller};
-use super::regalloc::resource::{FrameSlot, RegNo};
+use super::regalloc::resource::{FrameSlot, In, InOut, Out};
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
-    Bound, Class, ClassId, Edges, EncodedInst, File, Flags, FrameSize, GeneralFile, Integer,
-    IsaBackend, Label, LaneOp, OpmaskFile, Pointer, Rebind, STACK_PAGE, Selected, Stage, Store,
-    Target, Test, Value, ValueName, Vector, VectorFile, frame_bytes, slot_disp,
+    Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
+    LaneOp, Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName,
+    Vector, frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
 use crate::program::{BinaryOp, CompareOp, ShiftOp, UnaryOp};
@@ -34,25 +34,6 @@ pub(super) const PTR_BYTES: i32 = 8;
 // =============================================================================
 // General-purpose registers
 // =============================================================================
-
-/// The registers the ABI fixes, by hardware number: the collapse kernel's
-/// three arguments, and the stack pointer. Every other register is the
-/// allocator's choice.
-pub(super) mod gpr {
-    use crate::emit::GeneralFile;
-    use crate::emit::regalloc::resource::RegNo;
-
-    /// 3rd integer argument: the pitch.
-    pub(in crate::emit) const RDX: RegNo<GeneralFile> = RegNo::architectural(2);
-    /// The stack pointer.
-    pub(in crate::emit) const RSP: RegNo<GeneralFile> = RegNo::architectural(4);
-    /// 2nd integer argument: the output plane.
-    pub(in crate::emit) const RSI: RegNo<GeneralFile> = RegNo::architectural(6);
-    /// 1st integer argument: the context pointer — the array of buffer base
-    /// pointers, then the uniform and origin blocks. Read-only for the whole
-    /// kernel.
-    pub(in crate::emit) const RDI: RegNo<GeneralFile> = RegNo::architectural(7);
-}
 
 /// An x86-64 general-register instruction.
 ///
@@ -272,13 +253,12 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
         let mut inst = EncodedInst::new();
         match self {
             Gp::Mov { dst, src } => {
-                inst.extend(&rr(0x89, dst.number(), src.number()));
+                inst.extend(&rr(0x89, dst, src));
             }
             Gp::MovInt { dst, src } => {
-                inst.extend(&rr(0x89, dst.number(), src.number()));
+                inst.extend(&rr(0x89, dst, src));
             }
             Gp::MovImm32 { dst, imm } => {
-                let dst = dst.number();
                 if bit(dst, 3) == 1 {
                     inst.push(0x41);
                 }
@@ -286,45 +266,40 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Movabs { dst, imm } => {
-                let dst = dst.number();
                 inst.push(0x48 | bit(dst, 3));
                 inst.push(0xB8 | low3(dst));
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Imul { dst, src, .. } => {
-                let (dst, src) = (dst.number(), src.number());
                 inst.extend(&[rex_w(dst, src), 0x0F, 0xAF, modrm_rr(dst, src)]);
             }
             Gp::Add { dst, src, .. } => {
-                inst.extend(&rr(0x01, dst.number(), src.number()));
+                inst.extend(&rr(0x01, dst, src));
             }
             Gp::Lea4 { dst, base, index } => {
-                let (dst, base, index) = (dst.number(), base.number(), index.number());
                 debug_assert!(low3(index) != RM_SIB, "rsp/r12 cannot index a SIB");
                 inst.push(0x48 | (bit(dst, 3) << 2) | (bit(index, 3) << 1) | bit(base, 3));
                 inst.push(0x8D);
                 scaled4_operand_into(&mut inst, dst, base, index);
             }
             Gp::MovLoad { dst, src } => {
-                let (dst, base) = (dst.number(), src.base.number());
-                inst.push(rex_w(dst, base));
+                inst.push(rex_w(dst, &src.base));
                 inst.push(0x8B);
-                mem_operand_into(&mut inst, dst, base, src.disp);
+                mem_operand_into(&mut inst, dst, &src.base, src.disp);
             }
             Gp::SpillPtr { src, slot } => {
-                spill_into(&mut inst, src.number(), slot);
+                spill_into(&mut inst, src, *slot);
             }
             Gp::SpillInt { src, slot } => {
-                spill_into(&mut inst, src.number(), slot);
+                spill_into(&mut inst, src, *slot);
             }
             Gp::ReloadPtr { dst, slot } => {
-                reload_into(&mut inst, dst.number(), slot);
+                reload_into(&mut inst, dst, *slot);
             }
             Gp::ReloadInt { dst, slot } => {
-                reload_into(&mut inst, dst.number(), slot);
+                reload_into(&mut inst, dst, *slot);
             }
             Gp::Test { src, .. } => {
-                let src = src.number();
                 if bit(src, 3) == 1 {
                     inst.push(0x45);
                 }
@@ -332,7 +307,6 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
                 inst.push(modrm_rr(src, src));
             }
             Gp::CmpByte { src, imm, .. } => {
-                let src = src.number();
                 match (bit(src, 3), low3(src)) {
                     // The accumulator has a short form.
                     (0, 0) => inst.push(0x3C),
@@ -350,9 +324,9 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
             Gp::Jcc { cond, .. } => inst.extend(&[0x0F, 0x80 | *cond as u8, 0, 0, 0, 0]),
             Gp::Jmp { .. } => inst.extend(&[0xE9, 0, 0, 0, 0]),
             Gp::Fallthrough { .. } => {}
-            Gp::Enter { size, .. } => inst = sub_rsp(frame_bytes(*size)),
+            Gp::Enter { size, .. } => inst = sub_rsp(frame_bytes(size)),
             Gp::Ret { size, .. } => {
-                inst = add_rsp(frame_bytes(*size));
+                inst = add_rsp(frame_bytes(size));
                 // `vzeroupper`: `VEX.128.0F.WIG 77`, zeroing bits 128 and up of
                 // vector registers 0–15, the sixteen a legacy-SSE instruction
                 // can name. VEX on every tier.
@@ -376,7 +350,7 @@ impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
     /// The instruction's bytes, and the label fields in them.
     pub(super) fn assemble(&self, out: &mut Encoding<'_>) {
         if let Gp::Enter { size, .. } = self {
-            return enter_probing(frame_bytes(*size), out);
+            return enter_probing(frame_bytes(size), out);
         }
         out.bytes(self.encode().as_bytes());
         if let Some((at, to)) = self.label_field() {
@@ -424,7 +398,7 @@ pub(super) trait X86: Sized + 'static {
     const VECTOR_BYTES: u64;
 
     /// All-ones in register `dst`, whatever it held.
-    fn ones(dst: RegNo<VectorFile>) -> EncodedInst;
+    fn ones(dst: impl RegField) -> EncodedInst;
     /// The mask `Neg` xors and `Abs` ands: the sign bit, or all that is below
     /// it.
     fn sign_mask(b: &mut Builder<Self>, sign: Sign) -> Result<Value<Vector>, CompileError>;
@@ -457,11 +431,11 @@ pub(super) trait X86: Sized + 'static {
         unreachable!("this tier has no {:?} to copy", src.class)
     }
     /// [`IsaBackend::spill`] of such a class.
-    fn spill_other(_b: &mut Spiller<'_, Self>, src: ValueName, _slot: &FrameSlot) {
+    fn spill_other(_b: &mut Spiller<'_, Self>, src: ValueName, _slot: FrameSlot) {
         unreachable!("this tier has no {:?} to spill", src.class)
     }
     /// [`IsaBackend::reload`] of such a class.
-    fn reload_other(_b: &mut Spiller<'_, Self>, class: ClassId, _slot: &FrameSlot) -> ValueName {
+    fn reload_other(_b: &mut Spiller<'_, Self>, class: ClassId, _slot: FrameSlot) -> ValueName {
         unreachable!("this tier has no {class:?} to reload")
     }
 }
@@ -475,7 +449,8 @@ impl<B: X86> IsaBackend for B {
     type Lane = B::Held;
 
     // SysV has no callee-saved vector registers and the collapse ABI passes
-    // no vector, so every vector register is the allocator's.
+    // no vector, so every vector register is the allocator's. The arguments
+    // arrive in `rdi`, `rsi` and `rdx`.
     const FILE: RegisterFile = RegisterFile::new(
         Members {
             vector: B::VECTORS,
@@ -484,9 +459,9 @@ impl<B: X86> IsaBackend for B {
             flags: &[0],
         },
         EntryRegisters {
-            ctx: gpr::RDI,
-            out: gpr::RSI,
-            pitch: gpr::RDX,
+            ctx: 7,
+            out: 6,
+            pitch: 2,
         },
         B::VECTOR_BYTES,
     );
@@ -565,7 +540,7 @@ impl<B: X86> IsaBackend for B {
         }
     }
 
-    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: FrameSlot) {
         match src.class {
             ClassId::Vector => b.push(Op::Vector(Inst::SpillVector {
                 src: src.typed(),
@@ -576,7 +551,7 @@ impl<B: X86> IsaBackend for B {
         }
     }
 
-    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: FrameSlot) -> ValueName {
         match class {
             ClassId::Vector => b.define::<Vector>(|dst| {
                 Op::Vector(Inst::ReloadVector {
@@ -887,7 +862,7 @@ pub(super) fn copy_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName) -> Va
 }
 
 /// `mov [rsp + slot], src` of an address or an integer.
-pub(super) fn spill_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName, slot: &FrameSlot) {
+pub(super) fn spill_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName, slot: FrameSlot) {
     let slot = slot.name();
     b.push(Op::General(match src.class {
         ClassId::Pointer => Gp::SpillPtr {
@@ -906,7 +881,7 @@ pub(super) fn spill_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName, slot
 pub(super) fn reload_general<B: X86>(
     b: &mut Spiller<'_, B>,
     class: ClassId,
-    slot: &FrameSlot,
+    slot: FrameSlot,
 ) -> ValueName {
     let slot = slot.name();
     match class {
@@ -925,9 +900,8 @@ pub(super) struct Imm8(pub(super) i8);
 pub(super) struct Imm32(pub(super) i32);
 
 /// An opcode extension: the `/digit` an instruction carries in ModRM.reg where
-/// another form of it names a register. A different type from [`RegNo`], so
-/// `modrm_rr(5, rsp)` is not a thing and neither is a digit where a register
-/// belongs.
+/// another form of it names a register. Not a register's token, so
+/// `modrm_rr(5, rsp)` is not a thing.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Digit(u8);
 
@@ -940,16 +914,29 @@ impl Digit {
     const CMP: Self = Self(7);
 }
 
-/// What the ModRM.reg field holds: a register, or the opcode's [`Digit`]. The
-/// one place a backend turns a [`RegNo`] into the bits it assembles, so the
-/// helpers below (`bit`, `low3`, `nibble`) are the only readers of a number.
+/// What a register field holds: a register, as the token an operand borrows
+/// from the allocator's lease, or in ModRM.reg the opcode's [`Digit`]. The one
+/// place a backend turns a token into the bits it assembles, so the helpers
+/// below (`bit`, `low3`, `nibble`) are the only readers of a number.
 pub(super) trait RegField: Copy {
     fn field(self) -> u8;
 }
 
-impl<F: File> RegField for RegNo<F> {
+impl<B: IsaBackend, C: Class> RegField for &In<'_, B, C> {
     fn field(self) -> u8 {
-        self.bits()
+        self.number()
+    }
+}
+
+impl<B: IsaBackend, C: Class> RegField for &Out<'_, B, C> {
+    fn field(self) -> u8 {
+        self.number()
+    }
+}
+
+impl<B: IsaBackend, C: Class> RegField for &InOut<'_, B, C> {
+    fn field(self) -> u8 {
+        self.number()
     }
 }
 
@@ -974,19 +961,34 @@ fn nibble(register: impl RegField) -> u8 {
     register.field() & 0xF
 }
 
+/// `REX.W` with no extension bit set.
+const REX_W: u8 = 0x48;
+
 /// `REX.W` plus the extension bits for a two-register form.
 ///
 /// `R` extends the ModRM.reg field (the source here), `B` extends ModRM.rm
 /// (the destination).
 #[inline(always)]
 fn rex_w(reg: impl RegField, rm: impl RegField) -> u8 {
-    0x48 | (bit(reg, 3) << 2) | bit(rm, 3)
+    REX_W | (bit(reg, 3) << 2) | bit(rm, 3)
 }
+
+/// `REX.W` plus `R` for the frame form, whose base needs no `B`: `rsp` is
+/// below 8.
+#[inline(always)]
+fn rex_w_frame(reg: impl RegField) -> u8 {
+    REX_W | (bit(reg, 3) << 2)
+}
+
+/// `rsp` in a register-direct ModRM: `mod = 11`, `rm = 100`. The stack pointer
+/// is the frame's, in no file, and this is the one word that names it as a
+/// register operand, `add`/`sub rsp, imm32`.
+const MODRM_RSP: u8 = 0xC0 | RM_SIB;
 
 /// `rsp` moved by `bytes`: `81 /digit id`, whose `/digit` says add or sub.
 fn rsp_imm32(digit: Digit, bytes: u32) -> EncodedInst {
     let mut inst = EncodedInst::new();
-    inst.extend(&[rex_w(digit, gpr::RSP), 0x81, modrm_rr(digit, gpr::RSP)]);
+    inst.extend(&[REX_W, 0x81, MODRM_RSP | (low3(digit) << 3)]);
     inst.extend(&bytes.to_le_bytes());
     inst
 }
@@ -1033,26 +1035,18 @@ fn rr(opcode: u8, dst: impl RegField, src: impl RegField) -> [u8; 3] {
     [rex_w(src, dst), opcode, modrm_rr(src, dst)]
 }
 
-/// A frame slot as a memory operand: the base and displacement of `[rsp + slot]`.
-/// The one place the stack pointer addresses a slot.
-pub(super) fn frame(slot: &FrameSlot) -> (RegNo<GeneralFile>, Imm32) {
-    (gpr::RSP, Imm32(slot_disp(slot)))
-}
-
 /// `mov [rsp + slot], src`.
-fn spill_into(inst: &mut EncodedInst, src: RegNo<GeneralFile>, slot: &FrameSlot) {
-    let (base, disp) = frame(slot);
-    inst.push(rex_w(src, base));
+fn spill_into(inst: &mut EncodedInst, src: impl RegField, slot: FrameSlot) {
+    inst.push(rex_w_frame(src));
     inst.push(0x89);
-    mem_operand_into(inst, src, base, disp);
+    frame_operand_into(inst, src, slot);
 }
 
 /// `mov dst, [rsp + slot]`.
-fn reload_into(inst: &mut EncodedInst, dst: RegNo<GeneralFile>, slot: &FrameSlot) {
-    let (base, disp) = frame(slot);
-    inst.push(rex_w(dst, base));
+fn reload_into(inst: &mut EncodedInst, dst: impl RegField, slot: FrameSlot) {
+    inst.push(rex_w_frame(dst));
     inst.push(0x8B);
-    mem_operand_into(inst, dst, base, disp);
+    frame_operand_into(inst, dst, slot);
 }
 
 /// The 4-bit condition an x86 `jcc` tests: the conditions the emitter
@@ -1298,10 +1292,11 @@ impl Scheme for VexPrefix {
 pub(super) struct EvexPrefix {
     /// `EVEX.L'L`: `10` for the `zmm` form, `00` for `xmm`.
     ll: u8,
-    /// `EVEX.aaa`: the writemask register, or none (`aaa = 0`). Merge-masking
-    /// (`z = 0`), which for a store means the masked-off lanes are left in
-    /// memory untouched.
-    aaa: Option<RegNo<OpmaskFile>>,
+    /// `EVEX.aaa`: the writemask register's number, or none (`aaa = 0`, a
+    /// field the encoding fixes: `k0` is in no file). Merge-masking (`z = 0`),
+    /// which for a store means the masked-off lanes are left in memory
+    /// untouched.
+    aaa: Option<u8>,
 }
 
 impl Scheme for EvexPrefix {
@@ -1318,7 +1313,7 @@ impl Scheme for EvexPrefix {
 
     fn write(op: &Opcode<Self>, e: Ext, inst: &mut EncodedInst) {
         let vvvv = !e.vvvv.unwrap_or(0) & 0xF;
-        let aaa = op.scheme.aaa.map_or(0, RegField::field);
+        let aaa = op.scheme.aaa.unwrap_or(0);
         inst.extend(&[
             0x62,
             (inverted(e.r) << 7)
@@ -1462,21 +1457,21 @@ impl<S: Scheme> Opcode<S> {
     }
 
     /// `op reg, vvvv, rm` with `rm` a register: the three-operand form.
-    pub(super) fn rrr<V: File, M: File>(
+    pub(super) fn rrr(
         self,
         reg: impl RegField,
-        vvvv: RegNo<V>,
-        rm: RegNo<M>,
+        vvvv: impl RegField,
+        rm: impl RegField,
     ) -> EncodedInst {
         self.registers(Ext::reg(reg).vvvv(vvvv), reg, rm)
     }
 
     /// `op reg, rm` with no `vvvv` source.
-    pub(super) fn rr<M: File>(self, reg: impl RegField, rm: RegNo<M>) -> EncodedInst {
+    pub(super) fn rr(self, reg: impl RegField, rm: impl RegField) -> EncodedInst {
         self.registers(Ext::reg(reg), reg, rm)
     }
 
-    fn registers<M: File>(self, ext: Ext, reg: impl RegField, rm: RegNo<M>) -> EncodedInst {
+    fn registers(self, ext: Ext, reg: impl RegField, rm: impl RegField) -> EncodedInst {
         let ext = Ext {
             x: bit(rm, 4),
             b: bit(rm, 3),
@@ -1495,7 +1490,7 @@ impl<S: Scheme> Opcode<S> {
     pub(super) fn rm<D: DispIn<S>>(
         self,
         reg: impl RegField,
-        base: RegNo<GeneralFile>,
+        base: impl RegField,
         disp: D,
     ) -> EncodedInst {
         let ext = Ext {
@@ -1503,6 +1498,12 @@ impl<S: Scheme> Opcode<S> {
             ..Ext::reg(reg)
         };
         self.encode(ext, |inst| mem_operand_into(inst, reg, base, disp))
+    }
+
+    /// `op reg, [rsp + slot]`: the frame form ([`frame_operand_into`]). The
+    /// stack pointer is no operand, so there is no `B` to extend.
+    pub(super) fn frame(self, reg: impl RegField, slot: FrameSlot) -> EncodedInst {
+        self.encode(Ext::reg(reg), |inst| frame_operand_into(inst, reg, slot))
     }
 
     /// `op reg, [rip + disp32]`: the displacement is the last four bytes, a
@@ -1517,8 +1518,8 @@ impl<S: Scheme> Opcode<S> {
     pub(super) fn rm_scaled4(
         self,
         reg: impl RegField,
-        base: RegNo<GeneralFile>,
-        index: RegNo<GeneralFile>,
+        base: impl RegField,
+        index: impl RegField,
     ) -> EncodedInst {
         debug_assert!(low3(index) != RM_SIB, "rsp/r12 cannot index a SIB");
         let ext = Ext {
@@ -1529,24 +1530,43 @@ impl<S: Scheme> Opcode<S> {
         self.encode(ext, |inst| scaled4_operand_into(inst, reg, base, index))
     }
 
-    /// `op reg, [base + vecINDEX*4], vvvv` — the VSIB form, whose index is a
+    /// `op reg, [base + vecINDEX*4]` — the VSIB form, whose index is a
     /// *vector* register: one address per lane, scale 4, no displacement. The
     /// SIB bytes are a GPR index's, but as a vector number `100` is
-    /// `ymm4`/`ymm12`, which a gather may perfectly well be indexed by. VEX's
-    /// `vvvv` is the gather's mask; EVEX has the mask in `aaa` and none here.
+    /// `ymm4`/`ymm12`, which a gather may perfectly well be indexed by. The
+    /// EVEX gather's mask is in `aaa`, and `vvvv` reads `1111`.
     pub(super) fn vsib_scaled4(
         self,
         reg: impl RegField,
-        vvvv: Option<RegNo<VectorFile>>,
-        base: RegNo<GeneralFile>,
-        index: RegNo<VectorFile>,
+        base: impl RegField,
+        index: impl RegField,
+    ) -> EncodedInst {
+        self.vsib(Ext::reg(reg), reg, base, index)
+    }
+
+    /// [`Opcode::vsib_scaled4`] with `vvvv`, which is the VEX gather's mask.
+    pub(super) fn vsib_scaled4_masked(
+        self,
+        reg: impl RegField,
+        mask: impl RegField,
+        base: impl RegField,
+        index: impl RegField,
+    ) -> EncodedInst {
+        self.vsib(Ext::reg(reg).vvvv(mask), reg, base, index)
+    }
+
+    fn vsib(
+        self,
+        ext: Ext,
+        reg: impl RegField,
+        base: impl RegField,
+        index: impl RegField,
     ) -> EncodedInst {
         let ext = Ext {
             x: bit(index, 3),
             b: bit(base, 3),
-            vvvv: vvvv.map(nibble),
             v: bit(index, 4),
-            ..Ext::reg(reg)
+            ..ext
         };
         self.encode(ext, |inst| scaled4_operand_into(inst, reg, base, index))
     }
@@ -1554,10 +1574,10 @@ impl<S: Scheme> Opcode<S> {
 
 impl Evex {
     /// This instruction under the writemask register `k`.
-    pub(super) const fn masked(self, k: RegNo<OpmaskFile>) -> Self {
+    pub(super) fn masked(self, k: impl RegField) -> Self {
         Self {
             scheme: EvexPrefix {
-                aaa: Some(k),
+                aaa: Some(k.field()),
                 ..self.scheme
             },
             ..self
@@ -1755,55 +1775,33 @@ impl<T: X86> Inst<Selected, T> {
 impl<'m, T: X86> Inst<Bound<'m, T>, T> {
     fn encode(&self) -> EncodedInst {
         match self {
-            Inst::Alu { op, dst, a, b } => {
-                Code::<T>::alu(*op).rrr(dst.number(), a.number(), b.number())
+            Inst::Alu { op, dst, a, b } => Code::<T>::alu(*op).rrr(dst, a, b),
+            Inst::Unary { op, dst, src } => Code::<T>::lanewise(*op).rr(dst, src),
+            Inst::Round { mode, dst, src } => {
+                Code::<T>::m0f3a_66(0x08).imm(*mode as u8).rr(dst, src)
             }
-            Inst::Unary { op, dst, src } => Code::<T>::lanewise(*op).rr(dst.number(), src.number()),
-            Inst::Round { mode, dst, src } => Code::<T>::m0f3a_66(0x08)
-                .imm(*mode as u8)
-                .rr(dst.number(), src.number()),
             // The destination is `vvvv` and the `/digit` is `reg`.
             Inst::Shift {
                 direction,
                 dst,
                 src,
                 amount,
-            } => Code::<T>::m0f_66(0x72).imm(*amount).rrr(
-                direction.digit(),
-                dst.number(),
-                src.number(),
-            ),
-            Inst::Fma231 { acc, a, b } => {
-                Code::<T>::m0f38_66(0xB8).rrr(acc.number(), a.number(), b.number())
-            }
-            Inst::Ones { dst } => T::ones(dst.number()),
-            Inst::Zero { dst } => {
-                let dst = dst.number();
-                Code::<T>::alu(Alu::Xor).rrr(dst, dst, dst)
-            }
-            Inst::Mov { dst, src } => Code::<T>::m0f(0x28).rr(dst.number(), src.number()),
-            Inst::LoadConst { dst, .. } => Code::<T>::m0f38_66(0x18).rip(dst.number()),
-            Inst::SpillVector { src, slot } => {
-                let (base, disp) = frame(slot);
-                Code::<T>::m0f(0x11).rm(src.number(), base, disp)
-            }
-            Inst::ReloadVector { dst, slot } => {
-                let (base, disp) = frame(slot);
-                Code::<T>::m0f(0x10).rm(dst.number(), base, disp)
-            }
-            Inst::Cvtt { dst, src } => Code::<T>::m0f_f3(0x2C).w1().rr(dst.number(), src.number()),
-            Inst::Movq { dst, src } => Code::<T>::m0f_66(0x6E)
-                .w1()
-                .xmm()
-                .rr(dst.number(), src.number()),
-            Inst::StoreBatch { dst, src } => {
-                Code::<T>::m0f(0x11).rm(src.number(), dst.base.number(), dst.disp)
-            }
-            Inst::Broadcast { dst, src } => {
-                Code::<T>::m0f38_66(0x18).rm(dst.number(), src.base.number(), src.disp)
-            }
+            } => Code::<T>::m0f_66(0x72)
+                .imm(*amount)
+                .rrr(direction.digit(), dst, src),
+            Inst::Fma231 { acc, a, b } => Code::<T>::m0f38_66(0xB8).rrr(acc, a, b),
+            Inst::Ones { dst } => T::ones(dst),
+            Inst::Zero { dst } => Code::<T>::alu(Alu::Xor).rrr(dst, dst, dst),
+            Inst::Mov { dst, src } => Code::<T>::m0f(0x28).rr(dst, src),
+            Inst::LoadConst { dst, .. } => Code::<T>::m0f38_66(0x18).rip(dst),
+            Inst::SpillVector { src, slot } => Code::<T>::m0f(0x11).frame(src, *slot),
+            Inst::ReloadVector { dst, slot } => Code::<T>::m0f(0x10).frame(dst, *slot),
+            Inst::Cvtt { dst, src } => Code::<T>::m0f_f3(0x2C).w1().rr(dst, src),
+            Inst::Movq { dst, src } => Code::<T>::m0f_66(0x6E).w1().xmm().rr(dst, src),
+            Inst::StoreBatch { dst, src } => Code::<T>::m0f(0x11).rm(src, &dst.base, dst.disp),
+            Inst::Broadcast { dst, src } => Code::<T>::m0f38_66(0x18).rm(dst, &src.base, src.disp),
             Inst::BroadcastIndexed { dst, base, index } => {
-                Code::<T>::m0f38_66(0x18).rm_scaled4(dst.number(), base.number(), index.number())
+                Code::<T>::m0f38_66(0x18).rm_scaled4(dst, base, index)
             }
             Inst::Extra(extra) => T::encode_extra(extra),
         }
@@ -1928,8 +1926,8 @@ impl Disp for Imm32 {
 ///
 /// The base being a `Pointer` is the point: an address is a value, so one
 /// encoder serves every base. `rsp` is in no class (the frame's, see
-/// `regalloc::resource::Frame`), so a frame slot is not a `Mem`: it is
-/// [`frame`].
+/// `regalloc::resource::Frame`), so a frame slot is not a `Mem`: it is the
+/// frame form, [`frame_operand_into`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Mem<S: Stage, D> {
     /// The register the displacement is measured from.
@@ -1963,16 +1961,16 @@ const SIB_BASE_ONLY: u8 = 0x24;
 /// `mod = 00`, a SIB with scale 4 and no displacement — the element of a plane
 /// of `f32`s, addressed in one instruction, or a gather's VSIB. The tail is the
 /// architecture's, not the prefix's, so VEX and EVEX share it the way they
-/// share [`mem_operand_into`]. Registers are hardware numbers.
-fn scaled4_operand_into<I: File>(
+/// share [`mem_operand_into`].
+fn scaled4_operand_into(
     inst: &mut EncodedInst,
     reg: impl RegField,
-    base: RegNo<GeneralFile>,
-    index: RegNo<I>,
+    base: impl RegField,
+    index: impl RegField,
 ) {
     assert!(
         low3(base) != RM_RIP_AT_MOD0,
-        "[r{base:?} + index*4] has no mod=00 form: rbp/r13 as a SIB base means no base"
+        "[base + index*4] has no mod=00 form: rbp/r13 as a SIB base means no base"
     );
     inst.push((low3(reg) << 3) | RM_SIB);
     inst.push((0b10 << 6) | (low3(index) << 3) | low3(base));
@@ -1982,7 +1980,7 @@ fn scaled4_operand_into<I: File>(
 fn mem_operand_into<D: Disp>(
     inst: &mut EncodedInst,
     reg: impl RegField,
-    base: RegNo<GeneralFile>,
+    base: impl RegField,
     disp: D,
 ) {
     let rm = low3(base);
@@ -1995,6 +1993,17 @@ fn mem_operand_into<D: Disp>(
         inst.push(SIB_BASE_ONLY);
     }
     disp.emit_inst(inst);
+}
+
+/// Write the ModRM/SIB/disp32 tail of `[rsp + slot]` into an `EncodedInst`:
+/// the frame form. The stack pointer is the frame's and in no file, so it is
+/// not an operand here but the bits the SIB form spells it with: `rm = 100`
+/// ([`RM_SIB`], which is also its low three bits) and a SIB whose base field
+/// is those bits again ([`SIB_BASE_ONLY`]), under a full `disp32`.
+fn frame_operand_into(inst: &mut EncodedInst, reg: impl RegField, slot: FrameSlot) {
+    inst.push(Imm32::MOD | (low3(reg) << 3) | RM_SIB);
+    inst.push(SIB_BASE_ONLY);
+    Imm32(slot_disp(slot)).emit_inst(inst);
 }
 
 /// The ModRM and `disp32` of `[rip + label]`: the displacement is a label

@@ -26,12 +26,13 @@
 //! AVX-512 tier resets `k1`.
 
 use super::build::Builder;
-use super::regalloc::resource::RegNo;
 use super::x86_64;
-use super::x86_64::{Alu, Imm8, Lanewise, Mem, NoDisp, Pred, Sign, Vex, VexPrefix, X86, emit};
+use super::x86_64::{
+    Alu, Imm8, Lanewise, Mem, NoDisp, Pred, RegField, Sign, Vex, VexPrefix, X86, emit,
+};
 use super::{
     Bound, Edges, EncodedInst, Integer, LaneOp, Pointer, Rebind, Selected, Stage, Store, Test,
-    Value, ValueName, Vector, VectorFile,
+    Value, ValueName, Vector,
 };
 use crate::error::CompileError;
 use crate::program::IfArm;
@@ -99,7 +100,7 @@ impl X86 for Avx2 {
     const VECTOR_BYTES: u64 = 32;
 
     /// `vpcmpeqd dst, dst, dst`
-    fn ones(dst: RegNo<VectorFile>) -> EncodedInst {
+    fn ones(dst: impl RegField) -> EncodedInst {
         Vex::m0f_66(0x76).rrr(dst, dst, dst)
     }
 
@@ -151,38 +152,33 @@ impl X86 for Avx2 {
 
     fn encode_extra(extra: &Extra<Bound<'_, Self>>) -> EncodedInst {
         match extra {
-            Extra::Cmp { pred, dst, a, b } => {
-                Vex::m0f(0xC2)
-                    .imm(*pred as u8)
-                    .rrr(dst.number(), a.number(), b.number())
-            }
+            Extra::Cmp { pred, dst, a, b } => Vex::m0f(0xC2).imm(*pred as u8).rrr(dst, a, b),
             Extra::Gather {
                 dst,
                 base,
                 index,
                 mask,
             } => {
-                let (dst, index, mask) = (dst.number(), index.number(), mask.number());
                 debug_assert!(
-                    dst != index && dst != mask && index != mask,
+                    dst.number() != index.number()
+                        && dst.number() != mask.number()
+                        && index.number() != mask.number(),
                     "vgatherdps: dst, index and mask must be three registers"
                 );
                 // `base` is never `rbp`/`r13` (`GENERAL` excludes them), so
                 // the SIB's no-base encoding is unreachable.
-                Vex::m0f38_66(0x92).vsib_scaled4(dst, Some(mask), base.number(), index)
+                Vex::m0f38_66(0x92).vsib_scaled4_masked(dst, mask, base, index)
             }
-            Extra::MoveMask { dst, src } => Vex::m0f(0x50).rr(dst.number(), src.number()),
+            Extra::MoveMask { dst, src } => Vex::m0f(0x50).rr(dst, src),
             // The destination is the `rm` operand here, the reverse of the
             // usual direction.
-            Extra::ExtractHigh { dst, src } => {
-                Vex::m0f3a_66(0x19).imm(1).rr(src.number(), dst.number())
-            }
+            Extra::ExtractHigh { dst, src } => Vex::m0f3a_66(0x19).imm(1).rr(src, dst),
             Extra::ExtractLane { dst, src, lane } => {
                 debug_assert!(*lane < 4, "vextractps reads the low 128 bits");
                 Vex::m0f3a_66(0x17)
                     .xmm()
                     .imm(*lane)
-                    .rm(src.number(), dst.base.number(), dst.disp)
+                    .rm(src, &dst.base, dst.disp)
             }
         }
     }
