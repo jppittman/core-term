@@ -305,7 +305,7 @@ const HOLE_STRIDE: u32 = 2;
 /// id because lowering splices a fold's arena into its enclosing one, which
 /// renumbers every id.
 #[derive(Debug, Default)]
-pub struct Holes {
+pub(crate) struct Holes {
     ranges: Vec<StructuralRange>,
 }
 
@@ -340,7 +340,7 @@ impl Holes {
     /// On a placeholder stride no hole names — one from another template.
     /// Emitted as it stands it would be an empty fold, its monoid's
     /// identity, with plausible pixels.
-    pub fn range_of(&self, range: Fold) -> Option<&StructuralRange> {
+    pub(crate) fn range_of(&self, range: Fold) -> Option<&StructuralRange> {
         if range.range() != OPEN_RANGE {
             return None;
         }
@@ -360,7 +360,7 @@ impl Holes {
 
 /// An entry lowered at expansion: its arena and root, and what the arena
 /// leaves open if it is a template.
-pub struct Lowered {
+pub(crate) struct Lowered {
     pub arena: ExprArena,
     pub root: ExprId,
     pub holes: Holes,
@@ -369,7 +369,7 @@ pub struct Lowered {
 /// The site an entry that takes no kernel is lowered at: an [`ExprArena`],
 /// at macro expansion, with the folds open in it and the template's holes.
 #[derive(Default)]
-pub struct Expansion {
+pub(crate) struct Expansion {
     arena: ExprArena,
     holes: Holes,
     /// The folds whose bodies are being built, innermost last, each with
@@ -397,7 +397,7 @@ impl Expansion {
     /// When the body has a construct lowering cannot express, or `entry`
     /// takes a kernel — an argument that exists only when its host function
     /// is called.
-    pub fn lower(entry: &FnItem, analyzed: &AnalyzedKernel) -> Result<Lowered, String> {
+    pub(crate) fn lower(entry: &FnItem, analyzed: &AnalyzedKernel) -> Result<Lowered, String> {
         let mut site = Expansion::default();
         let root = lower_entry(entry, analyzed, &mut site)?;
         Ok(Lowered {

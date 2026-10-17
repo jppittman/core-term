@@ -84,7 +84,7 @@ use pixelflow_ir::{Binder, Monoid};
 /// that is the entire difference between the two macros.
 ///
 /// Returns `Err` if a body contains an operation lowering cannot express.
-pub fn emit_kernel(
+pub(crate) fn emit_kernel(
     analyzed: &AnalyzedKernel,
     optimizer: &mut dyn Optimize,
 ) -> Result<TokenStream, String> {
@@ -184,7 +184,7 @@ fn argument(scalar: Scalar<'_>) -> TokenStream {
 /// What an entry's arena is emitted against: the argument each declared
 /// uniform defaults to, in declaration order, and — for a template — the
 /// structural parameters and open ranges its holes are filled from.
-pub struct EntryContext<'a> {
+pub(crate) struct EntryContext<'a> {
     arguments: Vec<TokenStream>,
     structural: &'a [Ident],
     holes: &'a Holes,
@@ -437,7 +437,7 @@ fn instantiated_range(range: &crate::sema::StructuralRange) -> TokenStream {
 /// lowering declares one uniform per argument, and a relink restores the
 /// table after optimization, so a mismatch is a front-end bug, not a
 /// kernel's.
-pub fn arena_to_tokens(arena: &ExprArena, root: ExprId, context: &EntryContext) -> TokenStream {
+fn arena_to_tokens(arena: &ExprArena, root: ExprId, context: &EntryContext) -> TokenStream {
     assert_eq!(
         arena.uniforms().len(),
         context.arguments.len(),
@@ -637,7 +637,7 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
 /// [`ExprArena::apply`]: pixelflow_ir::arena::ExprArena::apply
 /// [`ExprArena::compact`]: pixelflow_ir::arena::ExprArena::compact
 #[derive(Default)]
-pub struct Staged {
+struct Staged {
     statements: Vec<TokenStream>,
     /// How many variables have been named: every one is fresh.
     named: u64,
@@ -653,7 +653,7 @@ impl Staged {
     /// # Errors
     ///
     /// When the body has a construct lowering cannot express.
-    pub fn lower(entry: &FnItem, analyzed: &AnalyzedKernel) -> Result<TokenStream, String> {
+    fn lower(entry: &FnItem, analyzed: &AnalyzedKernel) -> Result<TokenStream, String> {
         let mut site = Staged::default();
         let root = lower_entry(entry, analyzed, &mut site)?;
         let statements = site.statements;

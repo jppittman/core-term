@@ -108,7 +108,7 @@ use syn::{Ident, Type};
 /// the argument evaluated at `(x, y)`, an `f32` — or passes it by name to a
 /// helper's kernel-typed parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ty {
+pub(crate) enum Ty {
     /// A value.
     F32,
     /// A mask: a comparison produces it, `&` and `|` combine it, an `if`
@@ -126,7 +126,7 @@ pub enum Ty {
 impl Ty {
     /// The type a declaration names, or `None` for one the language does not
     /// have.
-    pub fn from_syn(ty: &Type) -> Option<Ty> {
+    pub(crate) fn from_syn(ty: &Type) -> Option<Ty> {
         let Type::Path(path) = ty else {
             return None;
         };
@@ -173,7 +173,7 @@ impl Ty {
 
     /// The type's name, as written; a record's is its own
     /// ([`Items::name_of`]), and here it is only `record`.
-    pub fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Ty::F32 => "f32",
             Ty::Bool => "bool",
@@ -225,7 +225,7 @@ pub(crate) fn method_typing(op: OpKind) -> MethodTyping {
 
 /// A `const`'s value, evaluated at expansion.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ConstValue {
+pub(crate) enum ConstValue {
     /// `const NAME: f32`: a value, folded into every body that names it.
     F32(f32),
     /// `const NAME: usize`: a count, for a range's bounds or `NAME as f32`.
@@ -234,7 +234,7 @@ pub enum ConstValue {
 
 /// The result of semantic analysis.
 #[derive(Debug)]
-pub struct AnalyzedKernel {
+pub(crate) struct AnalyzedKernel {
     /// The original kernel definition.
     pub def: KernelDef,
     /// Every `const`'s value, evaluated at expansion.
@@ -262,7 +262,7 @@ pub(crate) struct Scalar<'a> {
 impl<'a> Parameter<'a> {
     /// Its uniform scalars, in the order its program declares them: the
     /// parameter itself, or its record's fields in field order.
-    pub fn scalars(self) -> impl Iterator<Item = Scalar<'a>> {
+    pub(crate) fn scalars(self) -> impl Iterator<Item = Scalar<'a>> {
         let param = self.name;
         let (whole, fields): (Option<Scalar<'a>>, &'a [RecordField]) = match self.record {
             None => (Some(Scalar { param, field: None }), &[]),
@@ -317,7 +317,7 @@ impl AnalyzedKernel {
 }
 
 /// Perform semantic analysis on a parsed kernel.
-pub fn analyze(def: KernelDef) -> syn::Result<AnalyzedKernel> {
+pub(crate) fn analyze(def: KernelDef) -> syn::Result<AnalyzedKernel> {
     let items = Items::collect(&def)?;
     let consts = evaluate_consts(&def.consts, &items.consts)?;
     for f in &def.fns {
@@ -1659,7 +1659,7 @@ fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
 /// structural parameters and so has a value only once the host function is
 /// instantiated with them (plan §1.4).
 #[derive(Debug, Clone)]
-pub(crate) enum Count {
+enum Count {
     /// Evaluated here, each operation checked.
     Known(u64),
     /// A Rust `usize` expression over literals and structural parameters:
@@ -1785,7 +1785,7 @@ pub(crate) struct StructuralRange {
 impl StructuralRange {
     /// The range as its source reads, for a diagnostic, and as the key two
     /// folds over one range share.
-    pub fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         format!("{}..{}", self.lo, self.hi)
     }
 }

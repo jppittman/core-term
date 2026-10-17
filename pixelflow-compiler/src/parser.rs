@@ -206,7 +206,7 @@ use syn::{Pat, Token, Type};
 const SUGAR_ENTRY: &str = "__kernel";
 
 /// Parse kernel input from token stream.
-pub fn parse(input: TokenStream) -> syn::Result<KernelDef> {
+pub(crate) fn parse(input: TokenStream) -> syn::Result<KernelDef> {
     syn::parse2(input)
 }
 
