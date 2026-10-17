@@ -147,12 +147,6 @@ impl<V> Scopes<V> {
     pub(crate) fn lookup(&self, name: &str) -> Option<&V> {
         self.frames.iter().rev().find_map(|frame| frame.get(name))
     }
-
-    /// Every name bound in any scope, shadowed ones included.
-    #[cfg(test)]
-    fn names(&self) -> impl Iterator<Item = String> + '_ {
-        self.frames.iter().flat_map(|frame| frame.keys().cloned())
-    }
 }
 
 /// The symbol table for one function's analysis.
@@ -224,19 +218,6 @@ impl SymbolTable {
             .is_some_and(|s| s.kind == SymbolKind::Intrinsic)
     }
 
-    /// Check if a name is a declared parameter.
-    #[cfg(test)]
-    pub fn is_parameter(&self, name: &str) -> bool {
-        self.lookup(name)
-            .is_some_and(|s| s.kind == SymbolKind::Parameter)
-    }
-
-    /// Get all symbol names.
-    #[cfg(test)]
-    pub fn all_names(&self) -> impl Iterator<Item = String> + '_ {
-        self.symbols.names()
-    }
-
     /// Open a block's scope.
     pub(crate) fn push_scope(&mut self) {
         self.symbols.push_scope();
@@ -245,12 +226,6 @@ impl SymbolTable {
     /// Close the innermost block's scope, and with it every local bound in it.
     pub(crate) fn pop_scope(&mut self) {
         self.symbols.pop_scope();
-    }
-}
-
-impl Default for SymbolTable {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -273,20 +248,12 @@ mod tests {
         let mut table = SymbolTable::new();
         table.register_parameter("radius", Ty::F32);
 
-        assert!(table.is_parameter("radius"));
+        assert_eq!(
+            table.lookup("radius").map(|s| s.kind),
+            Some(SymbolKind::Parameter)
+        );
         assert!(!table.is_intrinsic("radius"));
         assert_eq!(table.lookup("radius").map(|s| s.ty), Some(Ty::F32));
-    }
-
-    #[test]
-    fn all_names_lists_intrinsics_and_every_registered_parameter() {
-        let mut table = SymbolTable::new();
-        table.register_parameter("radius", Ty::F32);
-
-        let names: std::collections::HashSet<String> = table.all_names().collect();
-        let expected: std::collections::HashSet<String> =
-            ["X", "Y", "radius"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(names, expected);
     }
 
     #[test]
@@ -318,7 +285,10 @@ mod tests {
 
         table.pop_scope();
 
-        assert!(table.is_parameter("r"));
+        assert_eq!(
+            table.lookup("r").map(|s| s.kind),
+            Some(SymbolKind::Parameter)
+        );
         assert_eq!(table.lookup("r").map(|s| s.ty), Some(Ty::F32));
     }
 

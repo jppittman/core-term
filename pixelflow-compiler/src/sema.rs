@@ -2301,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn error_on_shadowing_intrinsic() {
+    fn a_parameter_named_after_a_coordinate_is_refused() {
         let err = refusal(quote! { |X: f32| X * X }); // X shadows the intrinsic
         assert!(err.contains("shadows the intrinsic"), "got: {err}");
     }
@@ -2317,15 +2317,8 @@ mod tests {
     }
 
     #[test]
-    fn error_on_unknown_method() {
+    fn an_unknown_method_is_refused_by_name() {
         let err = refusal(quote! { |r: f32| X.unknownmethod() });
-        assert!(err.contains("unknown method"));
-    }
-
-    #[test]
-    fn typo_suggestion_for_method() {
-        // "sqrtt" should suggest "sqrt"
-        let err = refusal(quote! { || X.sqrtt() });
         assert!(err.contains("unknown method"));
     }
 
@@ -2338,22 +2331,26 @@ mod tests {
     }
 
     #[test]
-    fn typo_suggestion_for_method_names_the_exact_match_at_the_two_char_diff_boundary() {
-        // "bba" differs from "abs" in exactly 2 chars (position 0: b vs a,
-        // position 2: a vs s; position 1 matches) and differs by 3 from
-        // every other same-length method name (add, sub, mul, div, neg,
-        // min, max, sin, cos, tan, exp, pow, shl, shr) — an unambiguous
-        // 2-char-diff match.
-        let err = refusal(quote! { || X.bba() });
-        assert!(err.contains("did you mean 'abs'"), "{err}");
+    fn a_method_name_near_a_method_gets_a_suggestion() {
+        // One character from `sqrt`; only that a suggestion is offered is
+        // asserted, so the vocabulary may grow another near name.
+        let err = refusal(quote! { || X.sqrx() });
+        assert!(err.contains("did you mean"), "{err}");
     }
 
     #[test]
-    fn typo_suggestion_for_method_is_absent_when_no_same_length_method_is_close() {
-        // "qqq" shares a length with several 3-letter methods (sin, cos,
-        // tan, abs, neg) but differs from every one of them in all 3 chars —
-        // matching length alone must not be enough to suggest one.
-        let err = refusal(quote! { || X.qqq() });
+    fn a_method_name_of_a_methods_length_but_far_from_it_gets_no_suggestion() {
+        // `qqqq` is the length of `sqrt` and differs from it in three
+        // characters, past MAX_TYPO_CHAR_DIFF: matching length alone must not
+        // be enough to suggest one.
+        let err = refusal(quote! { || X.qqqq() });
+        assert!(!err.contains("did you mean"), "{err}");
+    }
+
+    #[test]
+    fn a_method_name_far_from_every_length_gets_no_suggestion() {
+        // Far from every method however the vocabulary grows.
+        let err = refusal(quote! { || X.qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq() });
         assert!(!err.contains("did you mean"), "{err}");
     }
 
@@ -2363,7 +2360,7 @@ mod tests {
     }
 
     #[test]
-    fn error_on_duplicate_parameter() {
+    fn a_parameter_declared_twice_is_refused() {
         let err = refusal(quote! { |r: f32, r: f32| X - r });
         assert!(err.contains("duplicate parameter"));
     }
@@ -2455,64 +2452,6 @@ mod tests {
     }
 
     // ───────────────────────── items and helpers ─────────────────────────
-
-    /// A block's `const`s are evaluated at expansion, per operation in `f32`,
-    /// in whatever order they name each other.
-    #[test]
-    fn consts_are_evaluated_at_expansion() {
-        let analyzed = accepted(quote! {
-            const NEARLY_ONE: f32 = 1.0 - SNAP;
-            const SNAP: f32 = 1.0 / 1024.0;
-            pub const NEG: f32 = -(SNAP * 2.0);
-            pub fn f() -> f32 { X * NEARLY_ONE + NEG }
-        });
-        assert_eq!(analyzed.consts["SNAP"], ConstValue::F32(1.0 / 1024.0));
-        assert_eq!(
-            analyzed.consts["NEARLY_ONE"],
-            ConstValue::F32(1.0 - 1.0 / 1024.0)
-        );
-        assert_eq!(analyzed.consts["NEG"], ConstValue::F32(-(2.0 / 1024.0)));
-    }
-
-    /// Each operation of a `const` is an `f32` operation, as rustc's is.
-    /// The first `+ 1.0` ties to even in `f32` and stays at `2²⁴`, and the
-    /// second must too; an evaluator carrying the exact sum in `f64` and
-    /// rounding once at the end reaches `2²⁴ + 2`. One operation could not
-    /// tell them apart: a single `f64` operation cast once is correctly
-    /// rounded, so the witness is two.
-    #[test]
-    fn a_const_is_evaluated_in_f32_per_operation() {
-        const RUSTC: f32 = 16777216.0 + 1.0 + 1.0;
-        let analyzed = accepted(quote! {
-            const A: f32 = 16777216.0 + 1.0 + 1.0;
-            pub fn f() -> f32 { X + A }
-        });
-        assert_eq!(analyzed.consts["A"], ConstValue::F32(RUSTC));
-        assert_eq!(analyzed.consts["A"], ConstValue::F32(16_777_216.0));
-        assert_eq!((16777216.0_f64 + 1.0 + 1.0) as f32, 16_777_218.0);
-    }
-
-    /// A product and a sum are two roundings, never one, as rustc's const
-    /// evaluator never contracts them. `B * C` is exactly `1 + 2⁻¹¹ + 2⁻²⁴`,
-    /// a tie that rounds to even, `1 + 2⁻¹¹`, so `+ D` gives `0`; an FMA keeps
-    /// the `2⁻²⁴` and gives that instead.
-    #[test]
-    fn a_const_never_contracts_a_product_and_a_sum() {
-        const B: f32 = 1.0 + 1.0 / 4096.0;
-        const C: f32 = 1.0 + 1.0 / 4096.0;
-        const D: f32 = -(1.0 + 1.0 / 2048.0);
-        const RUSTC: f32 = B * C + D;
-        let analyzed = accepted(quote! {
-            const B: f32 = 1.0 + 1.0 / 4096.0;
-            const C: f32 = 1.0 + 1.0 / 4096.0;
-            const D: f32 = -(1.0 + 1.0 / 2048.0);
-            const A: f32 = B * C + D;
-            pub fn f() -> f32 { X + A }
-        });
-        assert_eq!(analyzed.consts["A"], ConstValue::F32(RUSTC));
-        assert_eq!(analyzed.consts["A"], ConstValue::F32(0.0));
-        assert_eq!(B.mul_add(C, D), 1.0 / 16_777_216.0, "one rounding: 2^-24");
-    }
 
     /// What a `const` cannot be: a coordinate, a comparison, a call, a cycle,
     /// a `bool`.
@@ -2781,39 +2720,16 @@ mod tests {
         accepted(quote! { || (3..3).map(|i| i as f32).sum() });
     }
 
-    /// A range's bounds are evaluated in `usize`, from `usize` consts, each
-    /// operation checked as rustc checks it.
+    /// A range's bounds are built from `usize` consts, at the largest value a
+    /// `usize` holds too.
     #[test]
-    fn a_range_from_usize_consts_is_evaluated_at_expansion() {
-        let analyzed = accepted(quote! {
+    fn a_range_from_usize_consts_is_accepted() {
+        accepted(quote! {
             const LO: usize = 7 / 2;
             const N: usize = LO * 4 - 1;
             pub const MAX: usize = 18446744073709551615;
             pub fn f() -> f32 { (LO..LO + N).map(|i| i as f32).sum() + (N as f32) }
         });
-        assert_eq!(analyzed.consts["LO"], ConstValue::Usize(3));
-        assert_eq!(analyzed.consts["N"], ConstValue::Usize(11));
-        assert_eq!(analyzed.consts["MAX"], ConstValue::Usize(u64::MAX));
-        let Expr::Block(body) = &analyzed.def.fns[0].body else {
-            panic!("a fn's body is a block");
-        };
-        let Some(Expr::Binary(sum)) = body.expr.as_deref() else {
-            panic!("the body is a sum");
-        };
-        let Expr::Fold(fold) = &*sum.lhs else {
-            panic!("its left operand is the fold");
-        };
-        let scope = RangeScope {
-            consts: &analyzed.consts,
-            structural: &[],
-        };
-        assert!(
-            matches!(
-                range_bounds(&fold.range, scope).expect("constant"),
-                Bounds::Known(3, 14)
-            ),
-            "`LO..LO + N` is `3..14`"
-        );
     }
 
     /// A `usize` const is checked as rustc checks one: an overflow, a
@@ -2857,19 +2773,9 @@ mod tests {
         assert!(err.contains("out of range for `usize`"), "got: {err}");
     }
 
-    /// An `f32` const names a `usize` const only through `as f32`, which
-    /// rounds as Rust's `as` rounds.
+    /// An `f32` const names a `usize` const only through `as f32`.
     #[test]
-    fn an_f32_const_converts_a_usize_const_by_as() {
-        let analyzed = accepted(quote! {
-            const N: usize = 16777217;
-            const HALF: f32 = 1.0 / (N as f32);
-            pub fn f() -> f32 { X * HALF }
-        });
-        assert_eq!(
-            analyzed.consts["HALF"],
-            ConstValue::F32(1.0 / (16_777_217_usize as f32))
-        );
+    fn an_f32_const_cannot_name_a_usize_const_without_as() {
         let err = refusal(quote! {
             const N: usize = 4;
             const A: f32 = N;
@@ -3162,36 +3068,6 @@ mod tests {
     }
 
     // ───────────────────────── structural parameters ─────────────────────────
-
-    /// A structural parameter is a count: a range's bound, alone or in
-    /// const arithmetic, and a value as `N as f32`.
-    #[test]
-    fn a_structural_parameter_is_a_count() {
-        let analyzed = accepted(quote! {
-            const LO: usize = 2;
-            pub fn f<const N: usize>() -> f32 {
-                (LO..LO + N * 2).map(|i| X * (i as f32)).sum::<f32>() / (N as f32)
-            }
-        });
-        let Expr::Block(body) = &analyzed.def.fns[0].body else {
-            panic!("a fn's body is a block");
-        };
-        let Some(Expr::Binary(mean)) = body.expr.as_deref() else {
-            panic!("the body is a quotient");
-        };
-        let Expr::Fold(fold) = &*mean.lhs else {
-            panic!("its numerator is the fold");
-        };
-        let structural = &analyzed.def.fns[0].structural;
-        let scope = RangeScope {
-            consts: &analyzed.consts,
-            structural,
-        };
-        let Ok(Bounds::Structural(range)) = range_bounds(&fold.range, scope) else {
-            panic!("`LO..LO + N * 2` names `N`");
-        };
-        assert_eq!(range.text(), "2..(2 + (N * 2))");
-    }
 
     /// A structural parameter is no value, shadows nothing and is shadowed
     /// by nothing, and a helper does not see its entry's.

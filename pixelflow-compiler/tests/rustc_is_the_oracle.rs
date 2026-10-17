@@ -223,8 +223,10 @@ fn an_else_if_chain_chooses_as_rustcs_does() {
 // The block below is the host `fn`, `const` and `if` of a glyph's coverage
 // clamp (plan §1.7), written once in `kernel!` and once in Rust.
 kernel! {
-    const SNAP: f32 = 1.0 / 1024.0;
+    // Declared before the const it names: a const resolves by name, not by
+    // position.
     pub const NEARLY_ONE: f32 = 1.0 - SNAP;
+    const SNAP: f32 = 1.0 / 1024.0;
 
     /// A helper: a function of its argument, inlined at each call.
     fn coverage(f: f32) -> f32 {
@@ -267,6 +269,31 @@ fn a_helper_and_a_const_mean_what_rusts_do() {
                 "at ({x}, {y}) × {scale}"
             );
         }
+    }
+}
+
+kernel! {
+    fn sq(x: f32) -> f32 { x * x }
+
+    /// The helper's parameter and the caller's local share a name and not a
+    /// value.
+    pub fn square_beside_a_local() -> f32 {
+        let x = X;
+        sq(Y) + x
+    }
+}
+
+fn rust_sq(x: f32) -> f32 {
+    x * x
+}
+
+/// A helper's parameter is the argument it is called with, not a binding of
+/// the same name in the caller: `sq`'s `x` is `Y` where `f`'s is `X`.
+#[test]
+fn a_helpers_parameter_is_not_the_callers_local_of_the_same_name() {
+    let k = square_beside_a_local();
+    for (x, y) in FOLD_SAMPLES {
+        assert_eq!(Lattice::eval_at(&k, x, y), rust_sq(y) + x, "at ({x}, {y})");
     }
 }
 
@@ -319,6 +346,30 @@ fn a_const_never_contracts_as_rustc_never_does() {
         "one rounding: 2^-24"
     );
     assert_eq!(Lattice::eval_at(&contracted(), 0.0, 0.0), RUST_CONTRACTION);
+}
+
+kernel! {
+    const LARGE_COUNT: usize = 16777217;
+    pub const HALF: f32 = 1.0 / (LARGE_COUNT as f32);
+    pub const INF: f32 = 1.0 / 0.0;
+    pub fn scaled() -> f32 { X * HALF }
+}
+
+/// A `usize` const `as f32` rounds as Rust's `as` does: `2²⁴ + 1` is not an
+/// `f32`, and its nearest is `2²⁴`.
+#[test]
+fn a_usize_const_as_f32_rounds_as_rusts_as_does() {
+    assert_eq!(HALF, 1.0 / (16_777_217_usize as f32));
+    assert_eq!(
+        Lattice::eval_at(&scaled(), AT.0, AT.1),
+        AT.0 * (1.0 / (16_777_217_usize as f32))
+    );
+}
+
+/// A `const` that is not finite survives the expansion as it is.
+#[test]
+fn a_non_finite_const_is_the_host_const() {
+    assert_eq!(INF, f32::INFINITY);
 }
 
 // ───────────────────── B2: folds over constant ranges ─────────────────────
@@ -559,13 +610,15 @@ fn a_fold_over_an_empty_range_is_the_identity_as_in_rustc() {
 
 // A range from `usize` consts, evaluated at expansion as rustc evaluates the
 // same `const`s, and a `usize` const converted by `as f32` in the body: the
-// mean of `X·i` over `i ∈ [LO, HI)`.
-const RUST_LO: usize = 2;
-const RUST_TERMS: usize = 3;
+// mean of `X·i` over `i ∈ [LO, HI)`. The consts use integer division,
+// multiplication and subtraction: `LO = 7 / 2` is 3, not 3.5, and the range
+// is `3..14`.
+const RUST_LO: usize = 7 / 2;
+const RUST_TERMS: usize = RUST_LO * 4 - 1;
 const RUST_HI: usize = RUST_LO + RUST_TERMS;
 kernel! {
-    const LO: usize = 2;
-    const TERMS: usize = 3;
+    const LO: usize = 7 / 2;
+    const TERMS: usize = LO * 4 - 1;
     pub const HI: usize = LO + TERMS;
     pub fn mean_over_consts() -> f32 {
         (LO..HI).map(|i| X * (i as f32)).sum::<f32>() / (TERMS as f32)
@@ -577,6 +630,7 @@ kernel! {
 #[test]
 fn a_range_from_consts_folds_as_rustcs_does() {
     assert_eq!(HI, RUST_HI);
+    assert_eq!((RUST_LO, RUST_HI), (3, 14));
     let k = mean_over_consts();
     let rust = |x: f32, _y: f32| {
         (RUST_LO..RUST_HI).map(|i| x * (i as f32)).sum::<f32>() / (RUST_TERMS as f32)
@@ -584,7 +638,7 @@ fn a_range_from_consts_folds_as_rustcs_does() {
     for (x, y) in FOLD_SAMPLES {
         assert_eq!(Lattice::eval_at(&k, x, y), rust(x, y), "at ({x}, {y})");
     }
-    assert_eq!(bake(&k), 9.0, "3 · (2 + 3 + 4) / 3");
+    assert_eq!(bake(&k), 24.0, "3 · (3 + 4 + … + 13) / 11");
 }
 
 // ─────────────── B3: records, and structural counts ───────────────
@@ -690,6 +744,87 @@ fn a_structural_count_folds_as_rustcs_const_generic_does() {
     }
     // X = 3: (1 + 2 + 3 + 4) · 3 / 4.
     assert_eq!(bake(&mean_index::<4>()), 7.5);
+}
+
+kernel! {
+    /// Two ranges over structural parameters, one inside the other: `M` rows
+    /// of `N` terms, and `N` as a value.
+    pub fn grid<const M: usize, const N: usize>() -> f32 {
+        (0..M)
+            .map(|i| (0..N).map(|j| X * (i as f32) + Y * (j as f32)).sum::<f32>())
+            .sum::<f32>()
+            + (N as f32)
+    }
+}
+
+fn rust_grid<const M: usize, const N: usize>(x: f32, y: f32) -> f32 {
+    (0..M)
+        .map(|i| (0..N).map(|j| x * (i as f32) + y * (j as f32)).sum::<f32>())
+        .sum::<f32>()
+        + (N as f32)
+}
+
+/// Two structural ranges are two holes: the rows and the terms are not
+/// interchangeable, and the instantiations (2, 5), (5, 2) and (3, 3) are
+/// three programs that each mean the host `fn` generic over the same pair.
+#[test]
+fn two_structural_ranges_fold_as_rustcs_const_generics_do() {
+    for (x, y) in FOLD_SAMPLES {
+        assert_eq!(
+            Lattice::eval_at(&grid::<2, 5>(), x, y),
+            rust_grid::<2, 5>(x, y),
+            "(2, 5) at ({x}, {y})"
+        );
+        assert_eq!(
+            Lattice::eval_at(&grid::<5, 2>(), x, y),
+            rust_grid::<5, 2>(x, y),
+            "(5, 2) at ({x}, {y})"
+        );
+        assert_eq!(
+            Lattice::eval_at(&grid::<3, 3>(), x, y),
+            rust_grid::<3, 3>(x, y),
+            "(3, 3) at ({x}, {y})"
+        );
+    }
+}
+
+kernel! {
+    /// A known fold beside an open one: `0..3` and the empty `2..2` are
+    /// fixed in the template, `0..N` is filled by the instantiation.
+    pub fn mixed<const N: usize>() -> f32 {
+        (0..3).map(|i| X * (i as f32)).sum::<f32>()
+            + (2..2).map(|k| Y * (k as f32)).sum::<f32>()
+            + (0..N).map(|j| Y * (j as f32)).sum::<f32>()
+    }
+}
+
+fn rust_mixed<const N: usize>(x: f32, y: f32) -> f32 {
+    (0..3).map(|i| x * (i as f32)).sum::<f32>()
+        + (2..2).map(|k| y * (k as f32)).sum::<f32>()
+        + (0..N).map(|j| y * (j as f32)).sum::<f32>()
+}
+
+/// A known fold is never read as the template's hole, and an open one is
+/// never read as known: `N` fills only `0..N`, at an empty instantiation too.
+#[test]
+fn a_known_fold_beside_an_open_one_folds_as_rustcs_does() {
+    for (x, y) in FOLD_SAMPLES {
+        assert_eq!(
+            Lattice::eval_at(&mixed::<0>(), x, y),
+            rust_mixed::<0>(x, y),
+            "N = 0 at ({x}, {y})"
+        );
+        assert_eq!(
+            Lattice::eval_at(&mixed::<2>(), x, y),
+            rust_mixed::<2>(x, y),
+            "N = 2 at ({x}, {y})"
+        );
+        assert_eq!(
+            Lattice::eval_at(&mixed::<5>(), x, y),
+            rust_mixed::<5>(x, y),
+            "N = 5 at ({x}, {y})"
+        );
+    }
 }
 
 // ─────────────── B3: tuple lets ───────────────
