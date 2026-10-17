@@ -210,7 +210,7 @@ pub(crate) trait Site {
     /// When its body binds every binder, where that is known.
     fn close_fold(&mut self, body: Self::Term) -> Result<Self::Term, String>;
     /// `kernel` applied at `(x, y)` ([`ExprArena::apply`]).
-    fn apply(&mut self, kernel: &Self::Argument, at: [Self::Term; 2]) -> Self::Term;
+    fn apply(&mut self, kernel: Self::Argument, at: [Self::Term; 2]) -> Self::Term;
 }
 
 /// A name in scope while a body is lowered.
@@ -314,14 +314,9 @@ impl Holes {
     /// [`OPEN_RANGE`].
     fn stride(&mut self, range: StructuralRange) -> Result<u32, String> {
         let text = range.text();
-        let index = match self.ranges.iter().position(|r| r.text() == text) {
-            Some(index) => index,
-            None => {
-                self.ranges.push(range);
-                self.ranges.len() - 1
-            }
-        };
-        u32::try_from(index)
+        let known = self.ranges.iter().position(|r| r.text() == text);
+        let index = known.unwrap_or(self.ranges.len());
+        let stride = u32::try_from(index)
             .ok()
             .and_then(|index| HOLE_STRIDE.checked_add(index))
             .ok_or_else(|| {
@@ -329,7 +324,11 @@ impl Holes {
                     "more distinct ranges over structural parameters than a placeholder can \
                      name ({index})"
                 )
-            })
+            })?;
+        if known.is_none() {
+            self.ranges.push(range);
+        }
+        Ok(stride)
     }
 
     /// The range an open fold of this template is over, or `None` if `fold`
@@ -524,8 +523,8 @@ impl Site for Expansion {
             })
     }
 
-    fn apply(&mut self, kernel: &Infallible, _at: [ExprId; 2]) -> ExprId {
-        match *kernel {}
+    fn apply(&mut self, kernel: Infallible, _at: [ExprId; 2]) -> ExprId {
+        match kernel {}
     }
 }
 
@@ -715,7 +714,7 @@ impl<S: Site> Lowering<'_, S> {
                         ));
                     };
                     let kernel = kernel.clone();
-                    return self.apply(&kernel, &func, &call.args);
+                    return self.apply(kernel, &func, &call.args);
                 }
                 if let Some(helper) = self.program.helpers.get(&func).copied() {
                     return self.inline(helper, &call.args);
@@ -747,12 +746,7 @@ impl<S: Site> Lowering<'_, S> {
 
     /// `k(x, y)`: the kernel `k` applied at the coordinates, which are
     /// lowered first, in order — contramap (§1.2).
-    fn apply(
-        &mut self,
-        kernel: &S::Argument,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<S::Term, String> {
+    fn apply(&mut self, kernel: S::Argument, name: &str, args: &[Expr]) -> Result<S::Term, String> {
         let [x, y] = args else {
             return Err(format!(
                 "the kernel `{name}` is applied at the two coordinates, and {} were supplied",

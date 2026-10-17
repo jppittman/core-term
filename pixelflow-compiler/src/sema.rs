@@ -365,7 +365,7 @@ const CLONE: &str = "clone";
 const MAX_TYPO_CHAR_DIFF: usize = 2;
 
 /// A `fn`'s declared types.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Signature {
     role: Role,
     params: Vec<Ty>,
@@ -536,10 +536,10 @@ impl<'a> Items<'a> {
 
     /// The type a declaration names in this block: a scalar, or a record.
     fn declared(&self, ty: &Type) -> Option<Ty> {
-        match self.def.record_named(ty) {
-            Some(record) => Some(Ty::Record(record)),
-            None => Ty::from_syn(ty),
-        }
+        self.def
+            .record_named(ty)
+            .map(Ty::Record)
+            .or_else(|| Ty::from_syn(ty))
     }
 
     /// A type's name as a diagnostic writes it: a record's is its own.
@@ -1189,15 +1189,7 @@ impl<'a> FnAnalyzer<'a> {
         // the very name it had just declared unknown. Answer the question
         // the caller actually got wrong.
         if let Some(want) = Self::expected_arg_count(&method_name) {
-            return syn::Error::new(
-                call.method.span(),
-                format!(
-                    "`{method_name}` takes {want} argument{}, but {arg_count} \
-                     {} supplied",
-                    if want == 1 { "" } else { "s" },
-                    if arg_count == 1 { "was" } else { "were" },
-                ),
-            );
+            return arity_mismatch(call.method.span(), &method_name, want, arg_count);
         }
 
         // Find similar method for suggestion - collect all known methods
@@ -1285,8 +1277,9 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        if let Some(signature) = self.items.fns.get(&name) {
-            return self.type_of_helper_call(call, signature.clone());
+        let items = self.items;
+        if let Some(signature) = items.fns.get(&name) {
+            return self.type_of_helper_call(call, signature);
         }
         if name == RETIRED_PROJECTION {
             return Err(syn::Error::new(
@@ -1296,13 +1289,7 @@ impl<'a> FnAnalyzer<'a> {
         }
         if Projection::from_name(&name).is_some() {
             let [arg] = call.args.as_slice() else {
-                return Err(syn::Error::new(
-                    call.func.span(),
-                    format!(
-                        "`{name}` takes 1 argument, but {} were supplied",
-                        call.args.len()
-                    ),
-                ));
+                return Err(arity_mismatch(call.func.span(), &name, 1, call.args.len()));
             };
             return self.expect(arg, Ty::F32, "a projection takes an `f32`");
         }
@@ -1416,7 +1403,7 @@ impl<'a> FnAnalyzer<'a> {
 
     /// A call to one of the block's `fn`s: a helper, at its arity, with
     /// arguments of its parameters' types.
-    fn type_of_helper_call(&mut self, call: &CallExpr, signature: Signature) -> syn::Result<Ty> {
+    fn type_of_helper_call(&mut self, call: &CallExpr, signature: &Signature) -> syn::Result<Ty> {
         let name = call.func.to_string();
         if signature.role == Role::Entry {
             return Err(syn::Error::new(
@@ -1432,15 +1419,11 @@ impl<'a> FnAnalyzer<'a> {
             ));
         }
         if call.args.len() != signature.params.len() {
-            return Err(syn::Error::new(
+            return Err(arity_mismatch(
                 call.func.span(),
-                format!(
-                    "`{name}` takes {} argument{}, but {} {} supplied",
-                    signature.params.len(),
-                    if signature.params.len() == 1 { "" } else { "s" },
-                    call.args.len(),
-                    if call.args.len() == 1 { "was" } else { "were" },
-                ),
+                &name,
+                signature.params.len(),
+                call.args.len(),
             ));
         }
         for (position, (arg, &want)) in call.args.iter().zip(&signature.params).enumerate() {
@@ -1638,6 +1621,23 @@ impl<'a> FnAnalyzer<'a> {
 /// `usize` const or a structural parameter — is a value only as `i as f32`:
 /// nothing in the language computes with one, because there is nothing to
 /// index (plan §1.6).
+/// The refusal of a call that supplies `got` arguments to a callee that takes
+/// `want`.
+fn arity_mismatch(span: Span, callee: &str, want: usize, got: usize) -> syn::Error {
+    let plural = |count: usize, one: &'static str, many: &'static str| match count {
+        1 => one,
+        _ => many,
+    };
+    syn::Error::new(
+        span,
+        format!(
+            "`{callee}` takes {want} argument{}, but {got} {} supplied",
+            plural(want, "", "s"),
+            plural(got, "was", "were"),
+        ),
+    )
+}
+
 fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
     syn::Error::new(
         name.span(),
@@ -1995,7 +1995,6 @@ impl ConstEvaluator<'_> {
         }
     }
 
-    /// The value of the const `name`, evaluating it on first demand.impl ConstEvaluator<'_> {
     /// The value of the const `name`, evaluating it on first demand.
     fn value_of(&mut self, name: &Ident) -> syn::Result<ConstValue> {
         let key = name.to_string();

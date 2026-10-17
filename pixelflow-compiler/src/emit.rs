@@ -817,7 +817,7 @@ impl Site for Staged {
         }))
     }
 
-    fn apply(&mut self, kernel: &Ident, [x, y]: [Ident; 2]) -> Ident {
+    fn apply(&mut self, kernel: Ident, [x, y]: [Ident; 2]) -> Ident {
         self.step(quote!(__arena.apply(&#kernel, [#x, #y])))
     }
 }

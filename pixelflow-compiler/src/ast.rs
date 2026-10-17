@@ -209,8 +209,10 @@ impl FnItem {
 
     /// The name of an entry's `Args` record: the entry's name in
     /// UpperCamelCase, then `Args` — `shifted_radius` has
-    /// `ShiftedRadiusArgs` (plan §1.4). `sema` refuses one that collides,
-    /// and emission names the record by it.
+    /// `ShiftedRadiusArgs` (plan §1.4). Dropping the underscores can leave a
+    /// digit first, which no identifier starts with, so the name then gains
+    /// one leading underscore: `_2d` has `_2dArgs`, `__3` has `_3Args`.
+    /// `sema` refuses one that collides, and emission names the record by it.
     pub(crate) fn args_record(&self) -> Ident {
         let camel: String = self
             .name
@@ -226,7 +228,12 @@ impl FnItem {
                     .flatten()
             })
             .collect();
-        Ident::new(&format!("{camel}Args"), self.name.span())
+        let lead = if camel.starts_with(char::is_numeric) {
+            "_"
+        } else {
+            ""
+        };
+        Ident::new(&format!("{lead}{camel}Args"), self.name.span())
     }
 }
 
@@ -813,6 +820,8 @@ mod tests {
             ("shifted_radius2", "ShiftedRadius2Args"),
             ("a__b_", "ABArgs"),
             ("r#type", "TypeArgs"),
+            ("_1", "_1Args"),
+            ("__3", "_3Args"),
         ] {
             let item: FnItem = FnItem {
                 attrs: Vec::new(),

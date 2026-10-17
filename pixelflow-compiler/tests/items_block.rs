@@ -168,3 +168,31 @@ fn a_block_expands_where_no_prelude_is_in_scope() {
     let applied = without_a_prelude::applied::<3>(&k, m);
     assert_eq!(Lattice::eval_at(&applied, x, 1.0), by_rust);
 }
+
+mod digit_named_entries {
+    ::pixelflow_compiler::kernel! {
+        pub fn _1(a: f32) -> f32 { a + X }
+        pub fn _2d(a: f32) -> f32 { a }
+        pub fn __3(a: f32) -> f32 { a }
+    }
+}
+
+/// An entry whose name has no letter before its first digit still has an
+/// `Args` record, spelled with a leading underscore so it is an identifier.
+#[test]
+fn an_entry_named_by_a_digit_has_an_args_record() {
+    use digit_named_entries::{__3, _1, _1Args, _2d, _2dArgs, _3Args};
+
+    assert_eq!(bake(&_1(2.0)), 5.0, "2 + X");
+    assert_eq!(bake(&_2d(2.0)), 2.0);
+    assert_eq!(bake(&__3(2.0)), 2.0);
+
+    let program = Manifold::compile(&_1(2.0), [1, 1]);
+    let mut block = program.block();
+    _1Args { a: 4.0 }
+        .write_into(&mut block)
+        .expect("_1's arguments");
+    let moved = program.bind(&[]).with_uniforms(&block).eval_at(AT.0, AT.1);
+    assert_eq!(moved, 7.0, "4 + X");
+    let _ = (_2dArgs { a: 0.0 }, _3Args { a: 0.0 });
+}
