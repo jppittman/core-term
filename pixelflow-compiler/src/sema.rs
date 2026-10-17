@@ -1617,10 +1617,6 @@ impl<'a> FnAnalyzer<'a> {
     }
 }
 
-/// A `usize` where a value is expected. A `usize` — a fold's index, a
-/// `usize` const or a structural parameter — is a value only as `i as f32`:
-/// nothing in the language computes with one, because there is nothing to
-/// index (plan §1.6).
 /// The refusal of a call that supplies `got` arguments to a callee that takes
 /// `want`.
 fn arity_mismatch(span: Span, callee: &str, want: usize, got: usize) -> syn::Error {
@@ -1638,6 +1634,10 @@ fn arity_mismatch(span: Span, callee: &str, want: usize, got: usize) -> syn::Err
     )
 }
 
+/// A `usize` where a value is expected. A `usize` — a fold's index, a
+/// `usize` const or a structural parameter — is a value only as `i as f32`:
+/// nothing in the language computes with one, because there is nothing to
+/// index (plan §1.6).
 fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
     syn::Error::new(
         name.span(),
