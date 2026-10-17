@@ -369,7 +369,7 @@ fn is_f32(ty: &Type) -> bool {
 #[derive(Debug, Clone)]
 pub(crate) enum Expr {
     /// A variable reference (X, Y, cx, etc.).
-    Ident(IdentExpr),
+    Ident(Ident),
 
     /// A numeric literal (1.0, 2.5f32, etc.).
     Literal(LiteralExpr),
@@ -410,16 +410,16 @@ impl Expr {
     /// token, a name, a block's braces.
     pub(crate) fn span(&self) -> Span {
         match self {
-            Expr::Ident(e) => e.span,
+            Expr::Ident(name) => name.span(),
             Expr::Literal(e) => e.span,
             Expr::Binary(e) => e.span,
             Expr::Unary(e) => e.span,
-            Expr::MethodCall(e) => e.span,
-            Expr::Call(e) => e.span,
+            Expr::MethodCall(e) => e.method.span(),
+            Expr::Call(e) => e.func.span(),
             Expr::If(e) => e.span,
             Expr::Fold(e) => e.span,
             Expr::Cast(e) => e.span,
-            Expr::Field(e) => e.span,
+            Expr::Field(e) => e.member.span(),
             Expr::Block(e) => e.span,
             Expr::Paren(inner) => inner.span(),
         }
@@ -432,7 +432,7 @@ impl Expr {
     pub(crate) fn named(&self) -> Option<&Ident> {
         match self {
             Expr::Paren(inner) => inner.named(),
-            Expr::Ident(ident) => Some(&ident.name),
+            Expr::Ident(name) => Some(name),
             _ => None,
         }
     }
@@ -445,16 +445,6 @@ impl Expr {
 pub(crate) struct FieldExpr {
     pub base: Box<Expr>,
     pub member: Ident,
-    /// The member's span.
-    pub span: Span,
-}
-
-/// An identifier expression.
-#[derive(Debug, Clone)]
-pub(crate) struct IdentExpr {
-    pub name: Ident,
-    /// The name's span.
-    pub span: Span,
 }
 
 /// A numeric literal: the number it denotes, decided by the parser.
@@ -602,8 +592,6 @@ pub(crate) struct MethodCallExpr {
     pub method: Ident,
     /// Method arguments (empty for sqrt, one arg for max, etc.).
     pub args: Vec<Expr>,
-    /// The method name's span.
-    pub span: Span,
 }
 
 /// A free function call expression (DX(expr), a helper, etc.).
@@ -613,8 +601,6 @@ pub(crate) struct CallExpr {
     pub func: Ident,
     /// Function arguments.
     pub args: Vec<Expr>,
-    /// The function name's span.
-    pub span: Span,
 }
 
 /// `if cond { then } else { otherwise }`. The `else` is required: a body is
@@ -699,14 +685,13 @@ impl CastExpr {
 /// A statement in a block.
 #[derive(Debug, Clone)]
 pub(crate) enum Stmt {
-    /// A let binding: `let dx = X - cx;`
-    Let(Box<LetStmt>),
-    /// `let (a, b) = (e1, e2);`, flattened: each name bound to its
-    /// expression, and all at once — every expression is evaluated where the
-    /// statement stands, before any of its names binds, as Rust evaluates the
-    /// tuple before taking it apart (D7's front half). There is no tuple
-    /// left behind to be a value.
-    LetTuple(Vec<LetStmt>),
+    /// `let dx = X - cx;`, or `let (a, b) = (e1, e2);` flattened: each name
+    /// bound to its expression, and all at once — every expression is
+    /// evaluated where the statement stands, before any of its names binds,
+    /// as Rust evaluates the tuple before taking it apart (D7's front half).
+    /// There is no tuple left behind to be a value, and the one-name `let`
+    /// is the list of one.
+    Let(Vec<LetStmt>),
     /// An expression statement: `foo();`
     Expr(Expr),
 }
@@ -717,9 +702,6 @@ pub(crate) struct LetStmt {
     pub name: Ident,
     pub ty: Option<Type>,
     pub init: Expr,
-    // Kept for AST-node uniformity; the name carries its own span.
-    #[allow(dead_code)]
-    pub span: Span,
 }
 
 /// A block expression.
@@ -830,10 +812,7 @@ mod tests {
                 structural: Vec::new(),
                 params: Vec::new(),
                 ret: None,
-                body: Expr::Paren(Box::new(Expr::Ident(IdentExpr {
-                    name: syn::parse_quote!(X),
-                    span: Span::call_site(),
-                }))),
+                body: Expr::Paren(Box::new(Expr::Ident(syn::parse_quote!(X)))),
             };
             assert_eq!(item.args_record().to_string(), args, "{entry}");
         }

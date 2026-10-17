@@ -613,7 +613,7 @@ impl<S: Site> Lowering<'_, S> {
     /// duplicated subtrees.
     fn lower(&mut self, expr: &Expr) -> Result<S::Term, String> {
         match expr {
-            Expr::Ident(ident) => self.resolve(&ident.name.to_string()),
+            Expr::Ident(name) => self.resolve(&name.to_string()),
 
             Expr::Literal(lit) => {
                 let value = lit.f32_value().map_err(|e| e.to_string())?;
@@ -1016,15 +1016,10 @@ impl<S: Site> Lowering<'_, S> {
     fn lower_block_contents(&mut self, block: &BlockExpr) -> Result<S::Term, String> {
         for stmt in &block.stmts {
             match stmt {
-                // The initializer is lowered before the binding exists, so it
-                // sees whatever the name meant before: `let a = a + 1.0;`.
-                Stmt::Let(let_stmt) => {
-                    let binding = self.let_binding(let_stmt)?;
-                    self.frame.locals.bind(let_stmt.name.to_string(), binding);
-                }
                 // Every initializer before any name: `let (a, b) = (b, a);`
-                // swaps, as Rust's does.
-                Stmt::LetTuple(lets) => {
+                // swaps, as Rust's does, and `let a = a + 1.0;` sees whatever
+                // the name meant before.
+                Stmt::Let(lets) => {
                     let mut bindings = Vec::with_capacity(lets.len());
                     for let_stmt in lets {
                         bindings.push(self.let_binding(let_stmt)?);

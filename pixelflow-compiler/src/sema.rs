@@ -812,7 +812,7 @@ impl<'a> FnAnalyzer<'a> {
     /// [`Self::type_of_cast`] is converting it.
     fn type_of(&mut self, expr: &Expr) -> syn::Result<Ty> {
         match expr {
-            Expr::Ident(ident_expr) => self.resolve_ident(&ident_expr.name),
+            Expr::Ident(name) => self.resolve_ident(name),
 
             Expr::Literal(literal) => {
                 literal.f32_value()?;
@@ -866,7 +866,7 @@ impl<'a> FnAnalyzer<'a> {
         }
         let fields: Vec<String> = def.fields.iter().map(|f| format!("`{}`", f.name)).collect();
         Err(syn::Error::new(
-            field.span,
+            field.member.span(),
             format!(
                 "no field `{}` on the record `{}`\n\
                  \n\
@@ -1456,8 +1456,7 @@ impl<'a> FnAnalyzer<'a> {
     fn type_of_block_contents(&mut self, block: &BlockExpr) -> syn::Result<Ty> {
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let(let_stmt) => self.analyze_let(let_stmt)?,
-                Stmt::LetTuple(lets) => self.analyze_let_tuple(lets)?,
+                Stmt::Let(lets) => self.analyze_let(lets)?,
                 // A record as a statement is a value lowering has no lane
                 // for, so it is refused here rather than there.
                 Stmt::Expr(expr) => match self.type_of(expr)? {
@@ -1481,20 +1480,11 @@ impl<'a> FnAnalyzer<'a> {
         }
     }
 
-    /// Analyze a let statement: the initializer is typed, checked against an
-    /// annotation if there is one, and the name is bound to that type.
-    fn analyze_let(&mut self, let_stmt: &LetStmt) -> syn::Result<()> {
-        let found = self.let_type(let_stmt)?;
-        self.symbols
-            .register_local(&let_stmt.name.to_string(), found);
-        Ok(())
-    }
-
-    /// `let (a, b) = (e1, e2);`: every expression is typed where the
-    /// statement stands, before any of its names binds — `let (a, b) = (b,
-    /// a);` swaps, as it does in Rust — and then each name is bound to its
-    /// expression's type.
-    fn analyze_let_tuple(&mut self, lets: &[LetStmt]) -> syn::Result<()> {
+    /// `let a = e;` or `let (a, b) = (e1, e2);`: every expression is typed
+    /// where the statement stands, before any of its names binds — `let (a,
+    /// b) = (b, a);` swaps, as it does in Rust, and `let a = a + 1.0;` sees
+    /// the old `a` — and then each name is bound to its expression's type.
+    fn analyze_let(&mut self, lets: &[LetStmt]) -> syn::Result<()> {
         let mut found = Vec::with_capacity(lets.len());
         for let_stmt in lets {
             found.push(self.let_type(let_stmt)?);
@@ -1707,7 +1697,7 @@ trait UsizeScope {
     fn eval_usize(&mut self, expr: &Expr) -> syn::Result<Count> {
         let binary = match expr {
             Expr::Literal(literal) => return literal.usize_value().map(Count::Known),
-            Expr::Ident(ident) => return self.usize_named(&ident.name),
+            Expr::Ident(name) => return self.usize_named(name),
             Expr::Paren(inner) => return self.eval_usize(inner),
             // Constant, but no count: rustc's refusal of the same tokens.
             Expr::Unary(unary) => match unary.op {
@@ -1946,7 +1936,7 @@ impl ConstEvaluator<'_> {
     fn eval_f32(&mut self, expr: &Expr) -> syn::Result<f32> {
         match expr {
             Expr::Literal(literal) => literal.f32_value(),
-            Expr::Ident(ident) => self.f32_named(&ident.name),
+            Expr::Ident(name) => self.f32_named(name),
             Expr::Paren(inner) => self.eval_f32(inner),
             // Rust's own `as`, which rounds to the nearest `f32` as rustc's
             // does: exact up to 2²⁴. A `const` cannot name a structural
@@ -2167,8 +2157,7 @@ fn collect_calls(expr: &Expr, fns: &[String], out: &mut Vec<(String, Span)>) {
 fn collect_block_calls(block: &BlockExpr, fns: &[String], out: &mut Vec<(String, Span)>) {
     for stmt in &block.stmts {
         match stmt {
-            Stmt::Let(let_stmt) => collect_calls(&let_stmt.init, fns, out),
-            Stmt::LetTuple(lets) => {
+            Stmt::Let(lets) => {
                 for let_stmt in lets {
                     collect_calls(&let_stmt.init, fns, out);
                 }

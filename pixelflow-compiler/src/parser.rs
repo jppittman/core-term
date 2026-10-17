@@ -192,9 +192,8 @@
 use crate::PLAN;
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ConstItem, Expr, FieldExpr, FnItem,
-    FoldExpr, FunctionType, IdentExpr, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr,
-    MethodCallExpr, Param, RangeExpr, RecordField, RecordItem, Reduction, Spelling, Stmt,
-    UnaryExpr, UnaryOp,
+    FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr, MethodCallExpr,
+    Param, RangeExpr, RecordField, RecordItem, Reduction, Spelling, Stmt, UnaryExpr, UnaryOp,
 };
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
@@ -726,10 +725,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             if expr_path.path.segments.len() == 1 && expr_path.qself.is_none() {
                 let segment = &expr_path.path.segments[0];
                 if segment.arguments.is_empty() {
-                    return Ok(Expr::Ident(IdentExpr {
-                        name: segment.ident.clone(),
-                        span: segment.ident.span(),
-                    }));
+                    return Ok(Expr::Ident(segment.ident.clone()));
                 }
             }
             // A qualified path names something outside the block.
@@ -808,7 +804,6 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                 .collect::<syn::Result<Vec<_>>>()?;
             Ok(Expr::MethodCall(MethodCallExpr {
                 receiver: Box::new(receiver),
-                span: expr_method.method.span(),
                 method: expr_method.method,
                 args,
             }))
@@ -825,11 +820,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                         .into_iter()
                         .map(convert_expr)
                         .collect::<syn::Result<Vec<_>>>()?;
-                    return Ok(Expr::Call(CallExpr {
-                        span: func.span(),
-                        func,
-                        args,
-                    }));
+                    return Ok(Expr::Call(CallExpr { func, args }));
                 }
             }
             // A qualified callee names something outside the block.
@@ -986,7 +977,6 @@ fn convert_field(expr_field: syn::ExprField) -> syn::Result<Expr> {
     };
     Ok(Expr::Field(FieldExpr {
         base: Box::new(convert_expr(*expr_field.base)?),
-        span: member.span(),
         member,
     }))
 }
@@ -1529,12 +1519,11 @@ fn convert_let(local: &syn::Local) -> syn::Result<Stmt> {
     match pattern {
         Pat::Ident(pat_ident) => {
             let name = plain_name(pat_ident, &local.pat)?;
-            Ok(Stmt::Let(Box::new(LetStmt {
-                span: name.span(),
+            Ok(Stmt::Let(vec![LetStmt {
                 name,
                 ty: annotation.cloned(),
                 init: convert_expr((*init.expr).clone())?,
-            })))
+            }]))
         }
         Pat::Tuple(names) => convert_let_tuple(names, annotation, &init.expr),
         pattern => Err(refuse_let_pattern(pattern)),
@@ -1635,13 +1624,12 @@ fn convert_let_tuple(
     let mut lets = Vec::with_capacity(names.len());
     for ((name, value), ty) in names.into_iter().zip(values).zip(types) {
         lets.push(LetStmt {
-            span: name.span(),
             name,
             ty,
             init: convert_expr(value.clone())?,
         });
     }
-    Ok(Stmt::LetTuple(lets))
+    Ok(Stmt::Let(lets))
 }
 
 /// The expressions of a tuple, through parentheses, or `None` for anything
@@ -1981,7 +1969,8 @@ mod tests {
             Expr::Block(block) => {
                 assert_eq!(block.stmts.len(), 1);
                 match &block.stmts[0] {
-                    Stmt::Let(let_stmt) => {
+                    Stmt::Let(lets) => {
+                        let let_stmt = &lets[0];
                         assert_eq!(let_stmt.name.to_string(), "dx");
                         let ty = let_stmt.ty.as_ref().expect("expected a type annotation");
                         if let Type::Path(type_path) = ty {
@@ -2550,7 +2539,7 @@ mod tests {
         let Expr::Block(block) = &entry(&def).body else {
             panic!("a block");
         };
-        let [Stmt::LetTuple(lets)] = block.stmts.as_slice() else {
+        let [Stmt::Let(lets)] = block.stmts.as_slice() else {
             panic!("one tuple `let`, got {:?}", block.stmts);
         };
         lets.clone()
