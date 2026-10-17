@@ -9,7 +9,7 @@
 
 use super::asm::Encoding;
 use super::build::{Builder, Def, Spiller};
-use super::regalloc::resource::{FrameSlot, RegNo};
+use super::regalloc::resource::{FrameSlot, Reg};
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
     Bound, Class, ClassId, Edges, File, FrameSize, GeneralFile, IfArm, Integer, IsaBackend, Label,
@@ -31,26 +31,42 @@ use table::*;
 /// them.
 const WORD_BYTES: usize = 4;
 
-/// `Rd`: the destination field, at bit 0. This and the three below are where
-/// a register number becomes bits: the only readers of one in this file.
-const fn rd<F: File>(reg: RegNo<F>) -> u32 {
-    reg.bits() as u32 & 0x1F
+/// `Rd`: the destination field, at bit 0. This and the three below take the
+/// token an operand borrows from the allocator's lease (an `In`, `Out` or
+/// `InOut`, which is the register it derefs to), and are where a register
+/// number becomes bits: the only readers of one in this file.
+fn rd<B: IsaBackend, F: File>(reg: &Reg<B, F>) -> u32 {
+    u32::from(reg.number()) & 0x1F
 }
 
 /// `Rn`: the first source or base field, at bit 5.
-const fn rn<F: File>(reg: RegNo<F>) -> u32 {
-    (reg.bits() as u32 & 0x1F) << 5
+fn rn<B: IsaBackend, F: File>(reg: &Reg<B, F>) -> u32 {
+    rd(reg) << 5
 }
 
 /// `Rm`: the second source field, at bit 16.
-const fn rm<F: File>(reg: RegNo<F>) -> u32 {
-    (reg.bits() as u32 & 0x1F) << 16
+fn rm<B: IsaBackend, F: File>(reg: &Reg<B, F>) -> u32 {
+    rd(reg) << 16
 }
 
 /// `Ra`: the addend field of a multiply-add, at bit 10.
-const fn ra<F: File>(reg: RegNo<F>) -> u32 {
-    (reg.bits() as u32 & 0x1F) << 10
+fn ra<B: IsaBackend, F: File>(reg: &Reg<B, F>) -> u32 {
+    rd(reg) << 10
 }
+
+/// Register 31 in `Rn`, as `sp`: the stack pointer is the frame's and in no
+/// file, and it reaches a word as this field alone, in the frame transfers
+/// (`SpillQ`, `ReloadQ`, `SpillPtr`, ...), [`Inst::AddSpHi`], the probe's store
+/// and the entry's and exit's `sub`/`add`.
+const SP_RN: u32 = 31 << 5;
+/// Register 31 in `Rd`, as `sp`: the destination of `add`/`sub sp, sp, #imm`.
+const SP_RD: u32 = 31;
+/// Register 31 in `Rn`, as `xzr`: the zero register that makes `orr` a `mov`
+/// and `orn` a `mvn`. It shares its number with `sp`; which one a field means
+/// is the instruction's.
+const XZR_RN: u32 = 31 << 5;
+/// Register 31 in `Rt`, as `xzr`: the zero the probe stores.
+const XZR_RT: u32 = 31;
 
 /// The `imm5` of a 32-bit lane: the lane number above a `100` size marker.
 ///
@@ -546,31 +562,27 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                 "offset {} exceeds the 12-bit scaled immediate",
                 addr.offset
             );
-            opcode | (imm12 << 10) | rn(addr.base.number()) | rt
+            opcode | (imm12 << 10) | rn(&addr.base) | rt
         };
         // The same, from the stack pointer, at the slot's offset.
-        let frame = |opcode: u32, rt: u32, slot: &FrameSlot, access: u32| {
+        let frame = |opcode: u32, rt: u32, slot: FrameSlot, access: u32| {
             let offset = u32::try_from(slot_disp(slot)).expect("a slot is above the stack pointer");
             let imm12 = scaled(offset, access);
             assert!(
                 imm12 <= MAX_IMM12,
                 "slot {offset} exceeds the 12-bit scaled immediate"
             );
-            opcode | (imm12 << 10) | rn(abi::SP) | rt
+            opcode | (imm12 << 10) | SP_RN | rt
         };
         match self {
-            Inst::Alu { op, dst, a, b } => {
-                *op as u32 | rd(dst.number()) | rn(a.number()) | rm(b.number())
-            }
-            Inst::Fmla { acc, a, b } => {
-                0x4E20_CC00 | rd(acc.number()) | rn(a.number()) | rm(b.number())
-            }
-            Inst::Unary { op, dst, src } => *op as u32 | rd(dst.number()) | rn(src.number()),
+            Inst::Alu { op, dst, a, b } => *op as u32 | rd(dst) | rn(a) | rm(b),
+            Inst::Fmla { acc, a, b } => 0x4E20_CC00 | rd(acc) | rn(a) | rm(b),
+            Inst::Unary { op, dst, src } => *op as u32 | rd(dst) | rn(src),
             Inst::Bsl {
                 mask,
                 if_true,
                 if_false,
-            } => 0x6E60_1C00 | rd(mask.number()) | rn(if_true.number()) | rm(if_false.number()),
+            } => 0x6E60_1C00 | rd(mask) | rn(if_true) | rm(if_false),
             // `immh:immb` is `32 + amount` for `.4S`. At amount >= 32 that
             // carries into `immh`, making it 1xxx, which the ARM ARM decodes
             // as `.2D`: a 64-bit element shift that leaks bits across the
@@ -582,10 +594,7 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                     "aarch64 SHL .4S: shift {amount} is out of range for a 32-bit lane — \
                      the immediate would encode .2D and cross lane boundaries"
                 );
-                0x4F00_5400
-                    | rd(dst.number())
-                    | rn(src.number())
-                    | ((u32::from(*amount) + 32) << 16)
+                0x4F00_5400 | rd(dst) | rn(src) | ((u32::from(*amount) + 32) << 16)
             }
             // `immh:immb` is `64 - amount`. Only counts in 1..=32 keep it
             // inside 01xx, so anything else silently encodes a DIFFERENT
@@ -596,42 +605,26 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                     "aarch64 USHR .4S: shift {amount} is outside 1..=32 — the immediate would \
                      encode a different element size, not a 32-bit lane shift"
                 );
-                0x6F20_0400
-                    | rd(dst.number())
-                    | rn(src.number())
-                    | ((64 - u32::from(*amount)) << 16)
+                0x6F20_0400 | rd(dst) | rn(src) | ((64 - u32::from(*amount)) << 16)
             }
-            Inst::Mov { dst, src } => {
-                Alu::Orr as u32 | rd(dst.number()) | rn(src.number()) | rm(src.number())
-            }
-            Inst::DupLane0 { dst, src } => 0x4E04_0400 | rd(dst.number()) | rn(src.number()),
+            Inst::Mov { dst, src } => Alu::Orr as u32 | rd(dst) | rn(src) | rm(src),
+            Inst::DupLane0 { dst, src } => 0x4E04_0400 | rd(dst) | rn(src),
             Inst::UmovW { dst, src, lane } => {
-                0x0E00_3C00 | (imm5_lane(*lane) << 16) | rn(src.number()) | rd(dst.number())
+                0x0E00_3C00 | (imm5_lane(*lane) << 16) | rn(src) | rd(dst)
             }
-            Inst::InsFirst { dst, src } => {
-                0x4E00_1C00 | (imm5_lane(0) << 16) | rn(src.number()) | rd(dst.number())
-            }
+            Inst::InsFirst { dst, src } => 0x4E00_1C00 | (imm5_lane(0) << 16) | rn(src) | rd(dst),
             Inst::InsLane { v, lane, src } => {
-                0x4E00_1C00 | (imm5_lane(*lane) << 16) | rn(src.number()) | rd(v.number())
+                0x4E00_1C00 | (imm5_lane(*lane) << 16) | rn(src) | rd(v)
             }
-            Inst::MvnW { dst } => {
-                let dst = dst.number();
-                MVN_W | rn(abi::XZR) | rm(dst) | rd(dst)
-            }
-            Inst::Zero { dst } => 0x4F00_0400 | rd(dst.number()),
+            Inst::MvnW { dst } => MVN_W | XZR_RN | rm(dst) | rd(dst),
+            Inst::Zero { dst } => 0x4F00_0400 | rd(dst),
             Inst::FmovImm { dst, imm8 } => {
                 let (abc, defgh) = (u32::from(*imm8 >> 5), u32::from(*imm8 & 0x1F));
-                0x4F00_F400 | (abc << 16) | (defgh << 5) | rd(dst.number())
+                0x4F00_F400 | (abc << 16) | (defgh << 5) | rd(dst)
             }
-            Inst::Madd { dst, a, b, addend } => {
-                0x9B00_0000
-                    | rm(b.number())
-                    | ra(addend.number())
-                    | rn(a.number())
-                    | rd(dst.number())
-            }
+            Inst::Madd { dst, a, b, addend } => 0x9B00_0000 | rm(b) | ra(addend) | rn(a) | rd(dst),
             Inst::AddLsl2 { dst, base, index } => {
-                0x8B00_0000 | rm(index.number()) | (2 << 10) | rn(base.number()) | rd(dst.number())
+                0x8B00_0000 | rm(index) | (2 << 10) | rn(base) | rd(dst)
             }
             // The lane is `Q:S`, the high bit in the instruction's `Q` and the
             // low bit in `S`.
@@ -641,44 +634,37 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                     "ST1 {{Vt.S}}[{lane}]: a 128-bit register has four 32-bit lanes"
                 );
                 let (q, s) = (u32::from(lane >> 1), u32::from(lane & 1));
-                0x0D9F_8000 | (q << 30) | (s << 12) | rn(base.number()) | rd(src.number())
+                0x0D9F_8000 | (q << 30) | (s << 12) | rn(base) | rd(src)
             }
-            Inst::FcvtzsX { dst, src } => 0x9E38_0000 | rn(src.number()) | rd(dst.number()),
-            Inst::FmovToGp { dst, src } => 0x1E26_0000 | rn(src.number()) | rd(dst.number()),
-            Inst::MovX { dst, src } => mov_x(dst.number(), src.number()),
-            Inst::MovInt { dst, src } => mov_x(dst.number(), src.number()),
+            Inst::FcvtzsX { dst, src } => 0x9E38_0000 | rn(src) | rd(dst),
+            Inst::FmovToGp { dst, src } => 0x1E26_0000 | rn(src) | rd(dst),
+            Inst::MovX { dst, src } => mov_x(dst, src),
+            Inst::MovInt { dst, src } => mov_x(dst, src),
             Inst::AddImmHi { dst, src, imm } => {
-                0x9140_0000 | (imm.bits() << 10) | rn(src.number()) | rd(dst.number())
+                0x9140_0000 | (imm.bits() << 10) | rn(src) | rd(dst)
             }
-            Inst::AddSpHi { dst, imm } => {
-                0x9140_0000 | (imm.bits() << 10) | rn(abi::SP) | rd(dst.number())
-            }
+            Inst::AddSpHi { dst, imm } => 0x9140_0000 | (imm.bits() << 10) | SP_RN | rd(dst),
             Inst::LdrQ { dst, addr } | Inst::LoadConst { dst, addr } => {
-                transfer(0x3DC0_0000, rd(dst.number()), addr, Q_BYTES)
+                transfer(0x3DC0_0000, rd(dst), addr, Q_BYTES)
             }
-            Inst::StrQ { src, addr } => transfer(0x3D80_0000, rd(src.number()), addr, Q_BYTES),
-            Inst::SpillQ { src, slot } => frame(0x3D80_0000, rd(src.number()), slot, Q_BYTES),
-            Inst::ReloadQ { dst, slot } => frame(0x3DC0_0000, rd(dst.number()), slot, Q_BYTES),
-            Inst::SpillPtr { src, slot } => frame(0xF900_0000, rd(src.number()), slot, X_BYTES),
-            Inst::ReloadPtr { dst, slot } => frame(0xF940_0000, rd(dst.number()), slot, X_BYTES),
-            Inst::SpillInt { src, slot } => frame(0xF900_0000, rd(src.number()), slot, X_BYTES),
-            Inst::ReloadInt { dst, slot } => frame(0xF940_0000, rd(dst.number()), slot, X_BYTES),
-            Inst::LdrX { dst, addr } => transfer(0xF940_0000, rd(dst.number()), addr, X_BYTES),
-            Inst::LdrS { dst, addr } => transfer(0xBD40_0000, rd(dst.number()), addr, S_BYTES),
-            Inst::LdrW { dst, addr } => {
-                0xB860_5800 | rm(addr.index.number()) | rn(addr.base.number()) | rd(dst.number())
-            }
+            Inst::StrQ { src, addr } => transfer(0x3D80_0000, rd(src), addr, Q_BYTES),
+            Inst::SpillQ { src, slot } => frame(0x3D80_0000, rd(src), *slot, Q_BYTES),
+            Inst::ReloadQ { dst, slot } => frame(0x3DC0_0000, rd(dst), *slot, Q_BYTES),
+            Inst::SpillPtr { src, slot } => frame(0xF900_0000, rd(src), *slot, X_BYTES),
+            Inst::ReloadPtr { dst, slot } => frame(0xF940_0000, rd(dst), *slot, X_BYTES),
+            Inst::SpillInt { src, slot } => frame(0xF900_0000, rd(src), *slot, X_BYTES),
+            Inst::ReloadInt { dst, slot } => frame(0xF940_0000, rd(dst), *slot, X_BYTES),
+            Inst::LdrX { dst, addr } => transfer(0xF940_0000, rd(dst), addr, X_BYTES),
+            Inst::LdrS { dst, addr } => transfer(0xBD40_0000, rd(dst), addr, S_BYTES),
+            Inst::LdrW { dst, addr } => 0xB860_5800 | rm(&addr.index) | rn(&addr.base) | rd(dst),
             Inst::LdrSIndexed { dst, addr } => {
-                0xBC60_5800 | rm(addr.index.number()) | rn(addr.base.number()) | rd(dst.number())
+                0xBC60_5800 | rm(&addr.index) | rn(&addr.base) | rd(dst)
             }
             Inst::B { .. } => B_OPCODE,
             Inst::CbzFar { test, .. } => {
-                CBZ_W_OPCODE
-                    | CB_OP_NONZERO
-                    | (CBNZ_SKIPS_B << DispField::IMM19.shift)
-                    | rd(test.number())
+                CBZ_W_OPCODE | CB_OP_NONZERO | (CBNZ_SKIPS_B << DispField::IMM19.shift) | rd(test)
             }
-            Inst::AdrpAdd { dst, .. } => 0x9000_0000 | rd(dst.number()),
+            Inst::AdrpAdd { dst, .. } => 0x9000_0000 | rd(dst),
             Inst::ProbePage => SUB_SP_PAGE,
             Inst::Enter { .. } | Inst::Ret { .. } | Inst::Fallthrough { .. } => {
                 unreachable!("this instruction is a run of words, not a word")
@@ -697,7 +683,6 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
             }
             // `add dst, dst, #0`, whose immediate `patch_adrp_add` fills in.
             Inst::AdrpAdd { dst, .. } => {
-                let dst = dst.number();
                 put(self.encode());
                 put(0x9100_0000 | rn(dst) | rd(dst));
             }
@@ -706,7 +691,7 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                 put(STR_XZR_SP);
             }
             Inst::Enter { size } => {
-                let mut left = frame_bytes(*size);
+                let mut left = frame_bytes(size);
                 while left > STACK_PAGE {
                     Self::ProbePage.words(put);
                     left -= STACK_PAGE;
@@ -714,8 +699,8 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
                 step_sp(SUB_SP, left, put);
             }
             Inst::Ret { size } => {
-                step_sp(ADD_SP, frame_bytes(*size), put);
-                put(RET | rn(abi::LR));
+                step_sp(ADD_SP, frame_bytes(size), put);
+                put(RET);
             }
             _ => put(self.encode()),
         }
@@ -752,20 +737,21 @@ impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
 /// `b`'s word with the displacement clear.
 const B_OPCODE: u32 = 0x1400_0000;
 /// `sub sp, sp, #bytes`'s word with the immediate clear.
-const SUB_SP: u32 = 0xD100_0000 | rn(abi::SP) | rd(abi::SP);
+const SUB_SP: u32 = 0xD100_0000 | SP_RN | SP_RD;
 /// `add sp, sp, #bytes`'s word with the immediate clear.
-const ADD_SP: u32 = 0x9100_0000 | rn(abi::SP) | rd(abi::SP);
-/// `ret`'s word with the register clear: it returns through the register in
-/// `Rn`, which the caller's link register is.
-const RET: u32 = 0xD65F_0000;
+const ADD_SP: u32 = 0x9100_0000 | SP_RN | SP_RD;
+/// `ret`: `RET {Xn}` with `Rn = x30`, the link register the caller's `bl`
+/// filled. The register is the word's: a kernel returns through `x30` and
+/// nothing else.
+const RET: u32 = 0xD65F_0000 | (30 << 5);
 /// `mov xd, xm`, which is `orr xd, xzr, xm`: the word with the registers clear.
 const ORR_X: u32 = 0xAA00_0000;
 /// `mvn wd, wm`, which is `orn wd, wzr, wm`: the word with the registers clear.
 const MVN_W: u32 = 0x2A20_0000;
 
 /// `mov dst, src` between 64-bit registers.
-const fn mov_x(dst: RegNo<GeneralFile>, src: RegNo<GeneralFile>) -> u32 {
-    ORR_X | rn(abi::XZR) | rm(src) | rd(dst)
+fn mov_x<B: IsaBackend>(dst: &Reg<B, GeneralFile>, src: &Reg<B, GeneralFile>) -> u32 {
+    ORR_X | XZR_RN | rm(src) | rd(dst)
 }
 
 /// The `sh` bit of `add`/`sub` (immediate): the immediate is shifted left 12.
@@ -1090,10 +1076,11 @@ impl IsaBackend for Neon {
             opmask: &[],
             flags: &[],
         },
+        // AAPCS64: the arguments arrive in `x0`, `x1` and `x2`.
         EntryRegisters {
-            ctx: abi::X0,
-            out: abi::X1,
-            pitch: abi::X2,
+            ctx: 0,
+            out: 1,
+            pitch: 2,
         },
         16,
     );
@@ -1328,7 +1315,7 @@ impl IsaBackend for Neon {
         }
     }
 
-    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: FrameSlot) {
         let name = slot.name();
         match src.class {
             ClassId::Vector if reaches(slot.offset()) => b.push(Inst::SpillQ {
@@ -1356,7 +1343,7 @@ impl IsaBackend for Neon {
         }
     }
 
-    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: FrameSlot) -> ValueName {
         let name = slot.name();
         match class {
             ClassId::Vector if reaches(slot.offset()) => {
@@ -1463,34 +1450,6 @@ mod tests {
 }
 
 // =============================================================================
-// The registers the ABI fixes
-// =============================================================================
-
-/// AAPCS64's argument registers, the stack pointer, the link register and the
-/// zero register, by hardware number. Every other register is the allocator's
-/// choice.
-mod abi {
-    use crate::emit::GeneralFile;
-    use crate::emit::regalloc::resource::RegNo;
-
-    /// 1st argument: context pointer — array of buffer base pointers, then
-    /// the uniform and origin blocks.
-    pub(super) const X0: RegNo<GeneralFile> = RegNo::architectural(0);
-    /// 2nd argument: the output plane.
-    pub(super) const X1: RegNo<GeneralFile> = RegNo::architectural(1);
-    /// 3rd argument: the pitch.
-    pub(super) const X2: RegNo<GeneralFile> = RegNo::architectural(2);
-    /// The link register: `ret` returns through it.
-    pub(super) const LR: RegNo<GeneralFile> = RegNo::architectural(30);
-    /// The stack pointer — spill slots are addressed from it.
-    pub(super) const SP: RegNo<GeneralFile> = RegNo::architectural(31);
-    /// The zero register, `xzr` (`wzr` at 32 bits): reads as zero, discards
-    /// writes. It shares number 31 with `sp`; which one a field means is the
-    /// instruction's.
-    pub(super) const XZR: RegNo<GeneralFile> = RegNo::architectural(31);
-}
-
-// =============================================================================
 // Branches as program items
 // =============================================================================
 
@@ -1549,7 +1508,7 @@ impl DispField {
 const SUB_SP_PAGE: u32 = SUB_SP | SHIFT_12 | (1 << 10);
 
 /// `str xzr, [sp]`: `STR Xt, [Xn]` with `Rt = xzr` and `Rn = sp`.
-const STR_XZR_SP: u32 = 0xF900_0000 | rn(abi::SP) | rd(abi::XZR);
+const STR_XZR_SP: u32 = 0xF900_0000 | SP_RN | XZR_RT;
 
 /// `CBZ Wt`'s opcode with the register and displacement fields clear:
 /// `sf = 0` (a W register) and `011010`, then `op` in bit 24.
