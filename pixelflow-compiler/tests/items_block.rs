@@ -9,14 +9,9 @@
 
 use pixelflow_compiler::{kernel, kernel_raw};
 use pixelflow_core::{Kernel, Lattice, Manifold};
-use pixelflow_ir::key::canonical;
 
-/// The sample every entry is read at: `X = 3`, `Y = 5`.
-const AT: (f32, f32) = (3.0, 5.0);
-
-fn bake(k: &Kernel) -> f32 {
-    Lattice::eval_at(k, AT.0, AT.1)
-}
+mod common;
+use common::{AT, assert_same_program, bake};
 
 kernel! {
     /// Shared by every entry; inlined at each call.
@@ -62,10 +57,7 @@ fn applying_a_helper_to_a_shifted_coordinate_warps_it() {
 
 /// An entry's parameters are its uniforms (plan §1.4): the kernel declares
 /// one per parameter, the call's values its defaults, and a program compiled
-/// once is rebound per call from the entry's `Args` record. This used to
-/// pin the call-site-type rule — an `f32` folded, a `Uniform` handle bound
-/// — and moved its argument through the handle; the handle is gone, and the
-/// assertion is kept, through `Args`.
+/// once is rebound per call from the entry's `Args` record.
 #[test]
 fn an_entrys_parameters_are_uniforms_rebound_through_args() {
     let k = radius2(1.0, 2.0);
@@ -97,12 +89,7 @@ fn an_entry_may_return_a_mask() {
 fn if_and_select_lower_to_the_same_arena() {
     let spelled_if = kernel_raw!(|| if X < Y { X * 2.0 } else { Y });
     let spelled_select = kernel_raw!(|| (X.lt(Y)).select(X * 2.0, Y));
-    let (arena_if, root_if) = spelled_if.parts();
-    let (arena_select, root_select) = spelled_select.parts();
-    assert_eq!(
-        canonical(arena_if, root_if),
-        canonical(arena_select, root_select)
-    );
+    assert_same_program(&spelled_if, &spelled_select);
     assert_eq!(bake(&spelled_if), 6.0);
     assert_eq!(bake(&spelled_select), 6.0);
 }

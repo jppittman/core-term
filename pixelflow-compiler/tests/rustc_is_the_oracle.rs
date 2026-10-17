@@ -6,16 +6,11 @@
 //! Each test writes the body twice, once in `kernel!` and once as an ordinary
 //! Rust closure over `(x, y)`, and compares the baked value to the closure's.
 //!
-//! The failing cases were measured defects (Phase A1 of
-//! docs/language/2026-09-25-the-language-is-kernel.md; probe p6 is the first
-//! test): lowering's `locals` was one flat map that no block ever popped, so
-//! an inner `let` overwrote an outer one for the rest of the kernel; `sema`'s
-//! table deleted a shadowed parameter outright; and a literal was parsed as
-//! `f64` and then cast, rounding twice where rustc rounds once. Each test's
-//! doc gives the value it used to produce. The bodies that must not compile at
-//! all — an out-of-scope local (p15), `let X` (p5) — are refused by `sema`,
-//! and pinned by its unit tests, as the literals the parser refuses are by
-//! the parser's.
+//! Each test pins a law rustc states: a `let` is scoped to its block, a
+//! shadowed parameter is visible again after the block, a literal rounds once.
+//! The bodies that must not compile at all — an out-of-scope local, `let X` —
+//! are refused by `sema` and pinned by its unit tests, as the literals the
+//! parser refuses are by the parser's.
 //
 // The oracle closures are the kernel bodies' own text, so clippy's style
 // advice about them (`let_and_return`) would change the thing being compared.
@@ -24,17 +19,11 @@
 use pixelflow_compiler::kernel;
 use pixelflow_core::{Kernel, Lattice};
 
-/// The sample the defects were measured at: `X = 3`, `Y = 5`, so every
-/// binding in the bodies below has a distinct value.
-const AT: (f32, f32) = (3.0, 5.0);
+mod common;
+use common::{AT, bake};
 
-fn bake(k: &Kernel) -> f32 {
-    Lattice::eval_at(k, AT.0, AT.1)
-}
-
-/// p6. An inner `let` shadows only inside its own block. Before the fix the
-/// inner `a` replaced the outer one for the rest of the kernel, and this gave
-/// `Y + Y = 10`.
+/// An inner `let` shadows only inside its own block: `({ let a = Y; a }) + a`
+/// is `Y + X`, not `Y + Y`.
 #[test]
 fn an_inner_let_shadows_only_inside_its_block() {
     let k = kernel!(|| {
@@ -55,11 +44,8 @@ fn an_inner_let_shadows_only_inside_its_block() {
     assert_eq!(bake(&k), 8.0);
 }
 
-/// The same leak, through a parameter. A `let` that shadows a parameter in an
-/// inner block must leave the parameter visible after that block. Before the
-/// fix `sema` dropped the name `r` altogether when the inner block ended, and
-/// lowering then found the leaked local: `X + X = 6`, where rustc says
-/// `X + r = 13`.
+/// A `let` that shadows a parameter in an inner block leaves the parameter
+/// visible after that block: rustc says `X + r = 13`.
 #[test]
 fn a_parameter_is_visible_again_after_the_block_that_shadowed_it() {
     let k = kernel!(|r: f32| ({
@@ -96,8 +82,7 @@ fn a_let_in_the_same_block_sees_the_binding_it_shadows() {
 }
 
 /// A block nested two deep binds the same name at every level; each use sees
-/// the innermost binding in scope at that point, and nothing else. Before the
-/// fix every use after the innermost `let` read it, and this gave 190.
+/// the innermost binding in scope at that point, and nothing else.
 #[test]
 fn each_use_sees_the_innermost_binding_in_scope() {
     let k = kernel!(|| {
@@ -133,8 +118,7 @@ fn each_use_sees_the_innermost_binding_in_scope() {
 ///
 /// The literal is `1 + 2⁻²⁴ + 10⁻²⁹`: just above the midpoint between `1.0`
 /// and the next `f32`, `1 + 2⁻²³`. Parsed straight to `f32` it rounds up. Parsed
-/// to `f64` first — which the front end used to do — the `10⁻²⁹` is far below
-/// an `f64` ulp, so it lands *exactly on* the midpoint, and the cast to `f32`
+/// to `f64` first, the `10⁻²⁹` is far below an `f64` ulp, so it lands *exactly on* the midpoint, and the cast to `f32`
 /// then breaks the tie to even: `1.0`, a value one `f32` ulp from what was
 /// written.
 #[test]
@@ -547,8 +531,8 @@ fn a_helpers_fold_inside_a_fold_captures_nothing_as_in_rustc() {
 /// A fold's index is scoped to the fold's body, as a closure's parameter is:
 /// it shadows a `let` and a parameter of its name inside the body, and past
 /// the fold the name means them again. Were the index's scope left open past
-/// the body — the p6 leak, through a fold — `a` and `r` after the fold would
-/// name the index, and the kernel would not compile.
+/// the body, `a` and `r` after the fold would name the index, and the kernel
+/// would not compile.
 #[test]
 fn a_fold_index_shadows_only_inside_its_body() {
     let k = kernel!(|r: f32| {
