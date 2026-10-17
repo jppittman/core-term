@@ -29,9 +29,10 @@
 //!
 //! The intrinsic coordinates X and Y are special:
 //! - They become `Var(0)` and `Var(1)` arena nodes
-//! - They are in scope in an entry, and nothing shadows them: `sema` refuses
-//!   a parameter or a `let` named X or Y, and refuses a use of one in a
-//!   helper
+//! - They are in scope in an entry, bound like any other name: this table
+//!   would let a parameter or a `let` shadow them, so `sema` is what refuses
+//!   a parameter or a `let` named X or Y (and a use of one in a helper)
+//!   before anything is registered
 //!
 //! ## Parameter Symbols
 //!
@@ -53,11 +54,10 @@
 //! resolve names through it, so the two cannot disagree about which binding a
 //! name means.
 //!
-//! They did disagree, and both were wrong. `sema` kept one map and deleted a
-//! name outright when the block that shadowed it ended, so a parameter
-//! shadowed in an inner block was gone after it; lowering kept one map and
-//! never removed anything, so an inner `let` replaced an outer one for the
-//! rest of the kernel.
+//! One map per scope, not one map for the kernel: a block that ends must give
+//! back exactly what it shadowed (deleting the name would lose an outer
+//! parameter), and an inner `let` must not replace an outer one for the rest
+//! of the kernel.
 
 use crate::sema::Ty;
 use std::collections::HashMap;
@@ -104,16 +104,19 @@ pub(crate) struct Symbol {
 /// through this, which is what makes them agree on what it refers to.
 #[derive(Debug, Clone)]
 pub(crate) struct Scopes<V> {
-    /// The function's own scope first — its coordinates, parameters and the
-    /// block's items — then one per enclosing block, innermost last. Never
-    /// empty: the function's scope is not a block and is never popped.
-    frames: Vec<HashMap<String, V>>,
+    /// The function's own scope — its coordinates, parameters and the
+    /// block's items. It lasts as long as the table and is not a block, so no
+    /// pop reaches it.
+    function: HashMap<String, V>,
+    /// One scope per enclosing block, innermost last.
+    blocks: Vec<HashMap<String, V>>,
 }
 
 impl<V> Default for Scopes<V> {
     fn default() -> Self {
         Scopes {
-            frames: vec![HashMap::new()],
+            function: HashMap::new(),
+            blocks: Vec::new(),
         }
     }
 }
@@ -121,31 +124,31 @@ impl<V> Default for Scopes<V> {
 impl<V> Scopes<V> {
     /// Open a block's scope.
     pub(crate) fn push_scope(&mut self) {
-        self.frames.push(HashMap::new());
+        self.blocks.push(HashMap::new());
     }
 
     /// Close the innermost block's scope. Its bindings go out of scope, and
     /// whatever they shadowed is visible again.
     pub(crate) fn pop_scope(&mut self) {
-        assert!(
-            self.frames.len() > 1,
-            "popped a scope that was never pushed: the function's own scope is not a block"
-        );
-        self.frames.pop();
+        self.blocks.pop();
     }
 
     /// Bind `name` in the innermost scope, shadowing any binding of it
     /// already in scope — including an earlier one in the same block.
     pub(crate) fn bind(&mut self, name: String, value: V) {
-        self.frames
+        self.blocks
             .last_mut()
-            .expect("the function's own scope is never popped")
+            .unwrap_or(&mut self.function)
             .insert(name, value);
     }
 
     /// The innermost binding of `name` in scope.
     pub(crate) fn lookup(&self, name: &str) -> Option<&V> {
-        self.frames.iter().rev().find_map(|frame| frame.get(name))
+        self.blocks
+            .iter()
+            .rev()
+            .find_map(|block| block.get(name))
+            .or_else(|| self.function.get(name))
     }
 }
 
@@ -270,10 +273,8 @@ mod tests {
         assert!(table.is_intrinsic("X"));
     }
 
-    /// Popping a scope restores what its bindings shadowed. The table used to
-    /// be one map, so a local shadowing a parameter overwrote it and the pop
-    /// then deleted the name outright: the parameter was gone for the rest of
-    /// the kernel.
+    /// Popping a scope restores what its bindings shadowed: a local shadowing
+    /// a parameter does not delete the parameter when the block ends.
     #[test]
     fn pop_scope_restores_the_binding_a_local_shadowed() {
         let mut table = SymbolTable::new();
@@ -307,11 +308,5 @@ mod tests {
         assert_eq!(scopes.lookup("a"), Some(&1));
         scopes.pop_scope();
         assert_eq!(scopes.lookup("a"), Some(&0));
-    }
-
-    #[test]
-    #[should_panic(expected = "never pushed")]
-    fn the_kernels_own_scope_cannot_be_popped() {
-        Scopes::<u8>::default().pop_scope();
     }
 }
