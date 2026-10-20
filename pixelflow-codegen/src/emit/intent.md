@@ -8,7 +8,7 @@ Values are names, registers are resources, `encode` makes no choice; a lane is
 
 ## Owns
 - The backend: `IsaBackend` (instructions, `RegisterFile`, constant pool,
-  `Lane`), impls `Avx2`, `Avx512`, `Neon`, and the `Select`, `Allocate`,
+  `Lane`), impls `Avx2`, `Avx512`, `Neon`, and the `Select`, `LinearScan`,
   `Assemble` chain `native` runs on the host's tier.
 - Selection: what a `ScheduledOp` becomes on a tier, every opcode and encoding
   field, as `Inst<Stage>` enums; the vector width (`RegisterFile::vector_bytes`,
