@@ -54,7 +54,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use crate::ast::{Callable, ClosureEntry, ConstItem, FnItem, KernelDef, RecordItem, Role};
+use crate::ast::{Callable, ClosureEntry, ConstItem, FnItem, KernelDef, Name, RecordItem, Role};
 use crate::lower::{Expansion, FoldRange, Holes, Lowered, Site, lower_entry};
 use crate::sema::{AnalyzedKernel, ConstValue, Parameter, Scalar};
 use pixelflow_ir::arena::Axis;
@@ -103,7 +103,7 @@ pub(crate) fn emit_kernel(
                 items.extend(emit_record(record));
             }
             for c in consts.iter().filter(|c| is_pub(&c.vis)) {
-                items.extend(emit_const(c, analyzed.consts[&c.name.to_string()]));
+                items.extend(emit_const(c, analyzed.consts[&Name::of(&c.name)]));
             }
             for entry in fns.iter().filter(|f| f.role() == Role::Entry) {
                 let body = match entry.takes_a_kernel() {

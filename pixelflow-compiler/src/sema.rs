@@ -71,9 +71,9 @@
 use crate::PLAN;
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Callable, CastExpr, ConstItem, Expr, FieldExpr,
-    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Method, MethodCallExpr, Param,
-    ProjectExpr, Projection, RangeExpr, RecordField, RecordId, Reduction, Role, Stmt, UnaryOp,
-    arity_mismatch, bare_name,
+    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Method, MethodCallExpr, Name,
+    Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordId, Reduction, Role, Stmt,
+    UnaryOp, arity_mismatch, bare_name, same_name,
 };
 use crate::symbol::{SymbolKind, SymbolTable};
 use pixelflow_ir::OpKind;
@@ -234,7 +234,7 @@ pub(crate) struct AnalyzedKernel {
     /// The original kernel definition.
     pub def: KernelDef,
     /// Every `const`'s value, evaluated at expansion.
-    pub consts: HashMap<String, ConstValue>,
+    pub consts: HashMap<Name, ConstValue>,
 }
 
 /// An entry's parameter as its program sees it (plan §1.4): a uniform
@@ -370,10 +370,10 @@ struct Items<'a> {
     /// The block, whose records a type names ([`KernelDef::record_named`]).
     def: &'a KernelDef,
     /// Every record's name, which no other item may take.
-    records: HashSet<String>,
+    records: HashSet<Name>,
     /// Every `const`'s declared type: `f32` or `usize`.
-    consts: HashMap<String, Ty>,
-    fns: HashMap<String, Signature>,
+    consts: HashMap<Name, Ty>,
+    fns: HashMap<Name, Signature>,
 }
 
 impl<'a> Items<'a> {
@@ -389,7 +389,7 @@ impl<'a> Items<'a> {
         };
         for record in def.records() {
             items.refuse_a_taken_name(&record.name)?;
-            items.records.insert(record.name.to_string());
+            items.records.insert(Name::of(&record.name));
         }
         for record in def.records() {
             items.check_fields(&record.fields)?;
@@ -409,12 +409,12 @@ impl<'a> Items<'a> {
                     ));
                 }
             };
-            items.consts.insert(c.name.to_string(), ty);
+            items.consts.insert(Name::of(&c.name), ty);
         }
         for f in def.fns() {
             items.refuse_a_taken_name(&f.name)?;
             let signature = items.signature(f)?;
-            items.fns.insert(f.name.to_string(), signature);
+            items.fns.insert(Name::of(&f.name), signature);
         }
         items.refuse_a_taken_args_record()?;
         Ok(items)
@@ -424,21 +424,22 @@ impl<'a> Items<'a> {
     /// projection or a function of the language.
     fn refuse_a_taken_name(&self, name: &Ident) -> syn::Result<()> {
         let text = name.to_string();
-        if SymbolTable::COORDINATES.contains(&text.as_str()) {
+        let key = Name::of(name);
+        if SymbolTable::coordinate(&key).is_some() {
             return Err(syn::Error::new(
                 name.span(),
                 format!("`{text}` is the intrinsic coordinate; an item cannot be named after it"),
             ));
         }
-        if Projection::from_name(&text).is_some() {
+        if Projection::from_name(&key).is_some() {
             return Err(syn::Error::new(
                 name.span(),
                 format!("`{text}` is a projection; an item cannot be named after it"),
             ));
         }
-        let taken = self.consts.contains_key(&text)
-            || self.fns.contains_key(&text)
-            || self.records.contains(&text);
+        let taken = self.consts.contains_key(&key)
+            || self.fns.contains_key(&key)
+            || self.records.contains(&key);
         if taken {
             return Err(syn::Error::new(
                 name.span(),
@@ -452,10 +453,10 @@ impl<'a> Items<'a> {
     /// struct beside the block's records, so its name is one no record and
     /// no other entry's `Args` takes.
     fn refuse_a_taken_args_record(&self) -> syn::Result<()> {
-        let mut taken: HashMap<String, &Ident> = HashMap::with_capacity(self.def.fns().len());
+        let mut taken: HashMap<Name, &Ident> = HashMap::with_capacity(self.def.fns().len());
         let entries = self.def.fns().iter().filter(|f| f.role() == Role::Entry);
         for entry in entries.filter(|f| f.has_args_record()) {
-            let args = entry.args_record().to_string();
+            let args = Name::of(&entry.args_record());
             let clash = match taken.get(&args) {
                 Some(other) => Some(format!("the `Args` record of `{other}`")),
                 None => self
@@ -485,7 +486,7 @@ impl<'a> Items<'a> {
     fn check_fields(&self, fields: &[RecordField]) -> syn::Result<()> {
         let mut seen: Vec<&Ident> = Vec::with_capacity(fields.len());
         for field in fields {
-            if seen.contains(&&field.name) {
+            if seen.iter().any(|&seen| same_name(seen, &field.name)) {
                 return Err(syn::Error::new(
                     field.name.span(),
                     format!("field `{}` is declared twice", field.name),
@@ -634,7 +635,7 @@ impl<'a> Items<'a> {
 struct FnAnalyzer<'a> {
     items: &'a Items<'a>,
     /// The `const`s' values, which a fold's bounds are evaluated over.
-    consts: &'a HashMap<String, ConstValue>,
+    consts: &'a HashMap<Name, ConstValue>,
     /// The `fn`'s structural parameters, which a fold's bounds may name.
     structural: &'a [Ident],
     role: Role,
@@ -648,7 +649,7 @@ struct FnAnalyzer<'a> {
     /// nothing after it on that path uses it (E0382). Per path, as rustc's
     /// check is: an `if`'s arms are two paths, and after the `if` a kernel
     /// either one moved is moved ([`FnAnalyzer::type_of_if`]).
-    moved: HashMap<String, Span>,
+    moved: HashMap<Name, Span>,
 }
 
 impl<'a> FnAnalyzer<'a> {
@@ -657,7 +658,7 @@ impl<'a> FnAnalyzer<'a> {
     fn new(
         f: Callable<'a>,
         items: &'a Items<'a>,
-        consts: &'a HashMap<String, ConstValue>,
+        consts: &'a HashMap<Name, ConstValue>,
     ) -> syn::Result<Self> {
         let mut analyzer = FnAnalyzer {
             items,
@@ -669,7 +670,7 @@ impl<'a> FnAnalyzer<'a> {
             moved: HashMap::new(),
         };
         for (name, &ty) in &items.consts {
-            analyzer.symbols.register_const(name, ty);
+            analyzer.symbols.register_const(name.clone(), ty);
         }
         for count in f.structural {
             analyzer.register_structural(count)?;
@@ -683,7 +684,7 @@ impl<'a> FnAnalyzer<'a> {
 
     /// Type the body, and check it against the declared return type.
     fn check(mut self, f: &FnItem) -> syn::Result<()> {
-        let want = self.items.fns[&f.name.to_string()].ret;
+        let want = self.items.fns[&Name::of(&f.name)].ret;
         self.expect(
             &f.body,
             want,
@@ -700,7 +701,7 @@ impl<'a> FnAnalyzer<'a> {
 
     /// Register a parameter in the symbol table.
     fn register_parameter(&mut self, param: &Param, ty: Ty) -> syn::Result<()> {
-        let name = param.name.to_string();
+        let name = Name::of(&param.name);
         self.refuse_shadowing_an_item(&param.name, "parameter")?;
         if self.symbols.lookup(&name).is_some() {
             return Err(syn::Error::new(
@@ -712,14 +713,14 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        self.symbols.register_parameter(&name, ty);
+        self.symbols.register_parameter(name, ty);
         Ok(())
     }
 
     /// Register one of an entry's structural parameters: a count, which a
     /// range's bounds may name and a body converts by `N as f32`.
     fn register_structural(&mut self, count: &Ident) -> syn::Result<()> {
-        let name = count.to_string();
+        let name = Name::of(count);
         let declared = self.symbols.lookup(&name).map(|symbol| symbol.kind);
         if declared == Some(SymbolKind::Structural) {
             return Err(syn::Error::new(
@@ -728,7 +729,7 @@ impl<'a> FnAnalyzer<'a> {
             ));
         }
         self.refuse_shadowing_an_item(count, "a structural parameter")?;
-        self.symbols.register_structural(&name);
+        self.symbols.register_structural(name);
         Ok(())
     }
 
@@ -742,7 +743,8 @@ impl<'a> FnAnalyzer<'a> {
     /// stage that looked the projection up first.
     fn refuse_shadowing_an_item(&self, name: &Ident, binder: &str) -> syn::Result<()> {
         let text = name.to_string();
-        if Projection::from_name(&text).is_some() {
+        let key = Name::of(name);
+        if Projection::from_name(&key).is_some() {
             return Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -754,7 +756,7 @@ impl<'a> FnAnalyzer<'a> {
         // A `let X` would make `X` mean the local below it — and lowering
         // used to match the coordinate names before locals, so the kernel
         // silently read the coordinate instead (`{ let X = Y; X }` gave X).
-        if self.symbols.is_intrinsic(&text) {
+        if self.symbols.is_intrinsic(&key) {
             return Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -765,7 +767,7 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        let shadowed = match self.symbols.lookup(&text).map(|s| s.kind) {
+        let shadowed = match self.symbols.lookup(&key).map(|s| s.kind) {
             Some(SymbolKind::Const) => Some(format!("the `const {text}` of this block")),
             Some(SymbolKind::Structural) => Some(format!("the structural parameter `{text}`")),
             _ => None,
@@ -779,7 +781,7 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        if self.items.fns.contains_key(&text) {
+        if self.items.fns.contains_key(&key) {
             return Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -847,7 +849,7 @@ impl<'a> FnAnalyzer<'a> {
         };
         self.named_record(&field.base, record)?;
         let def = self.items.def.record(record);
-        if def.fields.iter().any(|f| f.name == field.member) {
+        if def.fields.iter().any(|f| same_name(&f.name, &field.member)) {
             return Ok(Ty::F32);
         }
         let fields: Vec<String> = def.fields.iter().map(|f| format!("`{}`", f.name)).collect();
@@ -903,7 +905,7 @@ impl<'a> FnAnalyzer<'a> {
         self.refuse_shadowing_an_item(&fold.binder, "a fold's index")?;
         let (term, what) = term_type(fold.reduction);
         self.symbols.push_scope();
-        self.symbols.register_index(&fold.binder.to_string());
+        self.symbols.register_index(Name::of(&fold.binder));
         self.folds_open += 1;
         let typed = self.expect(&fold.body, term, what);
         self.folds_open -= 1;
@@ -918,7 +920,7 @@ impl<'a> FnAnalyzer<'a> {
     fn type_of_cast(&mut self, cast: &CastExpr) -> syn::Result<Ty> {
         let names_a_count = cast.named().is_some_and(|name| {
             self.symbols
-                .lookup(&name.to_string())
+                .lookup(&Name::of(name))
                 .is_some_and(|symbol| symbol.ty == Ty::Usize)
         });
         if names_a_count {
@@ -1030,7 +1032,7 @@ impl<'a> FnAnalyzer<'a> {
     /// binding lowering never popped was still there to be found, so
     /// `{ { let a = X; a }; a }` compiled.
     fn resolve_ident(&self, ident: &Ident) -> syn::Result<Ty> {
-        let name = ident.to_string();
+        let name = Name::of(ident);
         if let Some(symbol) = self.symbols.lookup(&name) {
             if symbol.kind == SymbolKind::Intrinsic && self.role == Role::Helper {
                 return Err(syn::Error::new(
@@ -1061,7 +1063,7 @@ impl<'a> FnAnalyzer<'a> {
         }
         // `Z` and `W` were coordinate intrinsics until a lattice became two
         // axes; say so, rather than that the name is missing.
-        if let Some(axis) = RETIRED_COORDINATES.iter().find(|a| **a == name) {
+        if let Some(axis) = RETIRED_COORDINATES.into_iter().find(|axis| name == **axis) {
             return Err(syn::Error::new(
                 ident.span(),
                 format!(
@@ -1148,7 +1150,7 @@ impl<'a> FnAnalyzer<'a> {
     /// lowering resolves it: a kernel-typed parameter is applied, and any
     /// other binding is not a function.
     fn type_of_call(&mut self, call: &CallExpr) -> syn::Result<Ty> {
-        let name = call.func.to_string();
+        let name = Name::of(&call.func);
         if let Some(symbol) = self.symbols.lookup(&name).copied() {
             if symbol.ty == Ty::Kernel {
                 return self.type_of_application(call);
@@ -1168,7 +1170,7 @@ impl<'a> FnAnalyzer<'a> {
         if let Some(signature) = items.fns.get(&name) {
             return self.type_of_helper_call(call, signature);
         }
-        if name == RETIRED_PROJECTION {
+        if name == *RETIRED_PROJECTION {
             return Err(syn::Error::new(
                 call.func.span(),
                 "`DZ` is no longer a coordinate: a lattice has two axes, X and Y",
@@ -1193,7 +1195,7 @@ impl<'a> FnAnalyzer<'a> {
     /// which moved it (E0382), nor while an argument passes it on, which
     /// rustc refuses as a move out of the borrowed callee.
     fn type_of_application(&mut self, call: &CallExpr) -> syn::Result<Ty> {
-        let name = call.func.to_string();
+        let name = Name::of(&call.func);
         self.refuse_a_moved_kernel(&call.func, "applied")?;
         let [x, y] = call.args.as_slice() else {
             return Err(syn::Error::new(
@@ -1255,14 +1257,14 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        self.moved.insert(name.to_string(), name.span());
+        self.moved.insert(Name::of(name), name.span());
         Ok(())
     }
 
     /// Refuse a use of the kernel `name` after it was passed on: rustc's
     /// E0382, which a block of the language is held to because it is Rust.
     fn refuse_a_moved_kernel(&self, name: &Ident, use_: &str) -> syn::Result<()> {
-        let Some(moved) = self.moved.get(&name.to_string()) else {
+        let Some(moved) = self.moved.get(&Name::of(name)) else {
             return Ok(());
         };
         let mut err = syn::Error::new(
@@ -1285,7 +1287,7 @@ impl<'a> FnAnalyzer<'a> {
     /// A call to one of the block's `fn`s: a helper, at its arity, with
     /// arguments of its parameters' types.
     fn type_of_helper_call(&mut self, call: &CallExpr, signature: &Signature) -> syn::Result<Ty> {
-        let name = call.func.to_string();
+        let name = Name::of(&call.func);
         if signature.role == Role::Entry {
             return Err(syn::Error::new(
                 call.func.span(),
@@ -1369,7 +1371,7 @@ impl<'a> FnAnalyzer<'a> {
             found.push(self.let_type(let_stmt)?);
         }
         for (let_stmt, ty) in lets.iter().zip(found) {
-            self.symbols.register_local(&let_stmt.name.to_string(), ty);
+            self.symbols.register_local(Name::of(&let_stmt.name), ty);
         }
         Ok(())
     }
@@ -1684,13 +1686,13 @@ pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Res
 /// of the entry's structural parameters.
 #[derive(Clone, Copy)]
 pub(crate) struct RangeScope<'a> {
-    pub consts: &'a HashMap<String, ConstValue>,
+    pub consts: &'a HashMap<Name, ConstValue>,
     pub structural: &'a [Ident],
 }
 
 impl UsizeScope for RangeScope<'_> {
     fn usize_named(&mut self, name: &Ident) -> syn::Result<Count> {
-        match self.consts.get(&name.to_string()) {
+        match self.consts.get(&Name::of(name)) {
             Some(ConstValue::Usize(value)) => Ok(Count::Known(*value)),
             Some(ConstValue::F32(_)) => Err(syn::Error::new(
                 name.span(),
@@ -1700,7 +1702,9 @@ impl UsizeScope for RangeScope<'_> {
                      help: declare the count as `const {name}: usize`"
                 ),
             )),
-            None if self.structural.contains(name) => Ok(Count::Structural(quote!(#name))),
+            None if self.structural.iter().any(|s| same_name(s, name)) => {
+                Ok(Count::Structural(quote!(#name)))
+            }
             None => Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -1746,10 +1750,10 @@ impl UsizeScope for RangeScope<'_> {
 /// another declared anywhere in the block; a cycle is refused.
 fn evaluate_consts(
     consts: &[ConstItem],
-    types: &HashMap<String, Ty>,
-) -> syn::Result<HashMap<String, ConstValue>> {
+    types: &HashMap<Name, Ty>,
+) -> syn::Result<HashMap<Name, ConstValue>> {
     let mut evaluator = ConstEvaluator {
-        items: consts.iter().map(|c| (c.name.to_string(), c)).collect(),
+        items: consts.iter().map(|c| (Name::of(&c.name), c)).collect(),
         types,
         values: HashMap::with_capacity(consts.len()),
         in_progress: Vec::new(),
@@ -1761,13 +1765,13 @@ fn evaluate_consts(
 }
 
 struct ConstEvaluator<'a> {
-    items: HashMap<String, &'a ConstItem>,
+    items: HashMap<Name, &'a ConstItem>,
     /// Each const's declared type, which decides how it is evaluated.
-    types: &'a HashMap<String, Ty>,
-    values: HashMap<String, ConstValue>,
+    types: &'a HashMap<Name, Ty>,
+    values: HashMap<Name, ConstValue>,
     /// The consts whose initializers are being evaluated, outermost first:
     /// naming one of them again is a cycle.
-    in_progress: Vec<String>,
+    in_progress: Vec<Name>,
 }
 
 impl UsizeScope for ConstEvaluator<'_> {
@@ -1849,7 +1853,7 @@ impl ConstEvaluator<'_> {
 
     /// The value of the const `name`, evaluating it on first demand.
     fn value_of(&mut self, name: &Ident) -> syn::Result<ConstValue> {
-        let key = name.to_string();
+        let key = Name::of(name);
         if let Some(&value) = self.values.get(&key) {
             return Ok(value);
         }
@@ -1865,7 +1869,12 @@ impl ConstEvaluator<'_> {
             ));
         };
         if self.in_progress.contains(&key) {
-            let cycle = self.in_progress.join("` → `");
+            let cycle = self
+                .in_progress
+                .iter()
+                .map(Name::to_string)
+                .collect::<Vec<_>>()
+                .join("` → `");
             return Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -1920,13 +1929,13 @@ impl ConstEvaluator<'_> {
 /// The call graph over the block's `fn`s is a DAG: a helper is inlined at
 /// each call, and a cycle would inline forever.
 fn refuse_recursion(fns: &[FnItem]) -> syn::Result<()> {
-    let names: Vec<String> = fns.iter().map(|f| f.name.to_string()).collect();
-    let calls: HashMap<String, Vec<(String, Span)>> = fns
+    let names: Vec<Name> = fns.iter().map(|f| Name::of(&f.name)).collect();
+    let calls: HashMap<Name, Vec<(Name, Span)>> = fns
         .iter()
         .map(|f| {
             let mut out = Vec::new();
             collect_calls(&f.body, &names, &mut out);
-            (f.name.to_string(), out)
+            (Name::of(&f.name), out)
         })
         .collect();
     let mut walk = CallGraphWalk {
@@ -1943,22 +1952,26 @@ fn refuse_recursion(fns: &[FnItem]) -> syn::Result<()> {
 /// A depth-first walk of the call graph, refusing the first edge that
 /// closes a cycle.
 struct CallGraphWalk<'a> {
-    calls: &'a HashMap<String, Vec<(String, Span)>>,
+    calls: &'a HashMap<Name, Vec<(Name, Span)>>,
     /// Every `fn` whose reachable calls are known to be acyclic.
-    finished: Vec<String>,
+    finished: Vec<Name>,
     /// The `fn`s whose bodies the walk is inside, outermost first.
-    path: Vec<String>,
+    path: Vec<Name>,
 }
 
 impl CallGraphWalk<'_> {
-    fn visit(&mut self, name: &str) -> syn::Result<()> {
-        if self.finished.iter().any(|f| f == name) {
+    fn visit(&mut self, name: &Name) -> syn::Result<()> {
+        if self.finished.contains(name) {
             return Ok(());
         }
-        self.path.push(name.to_string());
+        self.path.push(name.clone());
         for (callee, span) in &self.calls[name] {
             if let Some(start) = self.path.iter().position(|f| f == callee) {
-                let cycle = self.path[start..].join("` calls `");
+                let cycle = self.path[start..]
+                    .iter()
+                    .map(Name::to_string)
+                    .collect::<Vec<_>>()
+                    .join("` calls `");
                 return Err(syn::Error::new(
                     *span,
                     format!(
@@ -1973,13 +1986,13 @@ impl CallGraphWalk<'_> {
             self.visit(callee)?;
         }
         self.path.pop();
-        self.finished.push(name.to_string());
+        self.finished.push(name.clone());
         Ok(())
     }
 }
 
 /// Every call in `expr` to one of the block's `fn`s, with its span.
-fn collect_calls(expr: &Expr, fns: &[String], out: &mut Vec<(String, Span)>) {
+fn collect_calls(expr: &Expr, fns: &[Name], out: &mut Vec<(Name, Span)>) {
     match expr {
         Expr::Ident(_) | Expr::Literal(_) => {}
         Expr::Binary(binary) => {
@@ -1995,7 +2008,7 @@ fn collect_calls(expr: &Expr, fns: &[String], out: &mut Vec<(String, Span)>) {
         }
         Expr::Project(project) => collect_calls(&project.arg, fns, out),
         Expr::Call(call) => {
-            let name = call.func.to_string();
+            let name = Name::of(&call.func);
             if fns.contains(&name) {
                 out.push((name, call.func.span()));
             }
@@ -2017,7 +2030,7 @@ fn collect_calls(expr: &Expr, fns: &[String], out: &mut Vec<(String, Span)>) {
     }
 }
 
-fn collect_block_calls(block: &BlockExpr, fns: &[String], out: &mut Vec<(String, Span)>) {
+fn collect_block_calls(block: &BlockExpr, fns: &[Name], out: &mut Vec<(Name, Span)>) {
     for stmt in &block.stmts {
         match stmt {
             Stmt::Let(lets) => {
@@ -2155,6 +2168,42 @@ mod tests {
     fn a_parameter_named_after_a_coordinate_is_refused() {
         let err = refusal(quote! { |X: f32| X * X }); // X shadows the intrinsic
         assert!(err.contains("shadows the intrinsic"), "got: {err}");
+    }
+
+    /// rustc reads `r#a` and `a` as one name, and so does the language: a
+    /// raw spelling finds what the plain one bound, and the other way round.
+    #[test]
+    fn a_raw_spelling_is_the_name_it_spells() {
+        accepted(quote! { fn r#half(x: f32) -> f32 { x } pub fn f() -> f32 { half(X) } });
+        accepted(quote! { fn half(x: f32) -> f32 { x } pub fn f() -> f32 { r#half(X) } });
+        accepted(quote! { |r#a: f32| a + X });
+        accepted(quote! { || { let r#a = X; a } });
+        accepted(quote! { const r#k: f32 = 2.0; pub fn f() -> f32 { X * k } });
+    }
+
+    /// Nor does a raw spelling make a second name to walk around a refusal
+    /// of the first: rustc would refuse the host item the macro emits for it.
+    #[test]
+    fn a_raw_spelling_is_not_another_name() {
+        let cases: [(TokenStream, &str); 4] = [
+            (
+                quote! { pub fn f() -> f32 { X } pub fn r#f() -> f32 { Y } },
+                "is defined twice in this `kernel!` block",
+            ),
+            (quote! { |a: f32, r#a: f32| a }, "duplicate parameter"),
+            (
+                quote! { const N: usize = 2; pub fn f(r#N: f32) -> f32 { X } },
+                "shadows the `const",
+            ),
+            (
+                quote! { fn h(x: f32) -> f32 { x } pub fn f(r#h: f32) -> f32 { X } },
+                "shadows the `fn",
+            ),
+        ];
+        for (input, expected) in cases {
+            let err = refusal(input);
+            assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+        }
     }
 
     #[test]

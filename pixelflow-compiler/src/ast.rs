@@ -113,7 +113,7 @@ impl KernelDef {
         let name = bare_name(ty)?;
         self.records()
             .iter()
-            .position(|record| record.name == *name)
+            .position(|record| same_name(&record.name, name))
             .map(RecordId)
     }
 
@@ -157,6 +157,46 @@ pub(crate) struct Callable<'a> {
     pub structural: &'a [Ident],
     pub params: &'a [Param],
     pub body: &'a Expr,
+}
+
+/// A name as the language compares it: an identifier without its `r#`.
+///
+/// rustc reads `r#a` and `a` as one name, so a stage that keys a map by the
+/// written spelling would let a raw one walk around a refusal of the other
+/// (a second `fn r#f` beside `f`), or miss what the other bound. Every map
+/// keyed by a name, and every comparison of two, is by this, built only from
+/// an identifier ([`Name::of`]) or, for the two the language spells itself,
+/// from its text ([`Name::spelled`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Name(Ident);
+
+impl Name {
+    /// The name an identifier spells, whichever way it is spelled.
+    pub(crate) fn of(ident: &Ident) -> Self {
+        Name(ident.unraw())
+    }
+
+    /// A name the language spells itself, as plain text: `X` and `Y`.
+    pub(crate) fn spelled(text: &str) -> Self {
+        Name(Ident::new(text, Span::call_site()))
+    }
+}
+
+impl std::fmt::Display for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq<str> for Name {
+    fn eq(&self, text: &str) -> bool {
+        self.0 == text
+    }
+}
+
+/// Whether two identifiers spell one name.
+pub(crate) fn same_name(a: &Ident, b: &Ident) -> bool {
+    Name::of(a) == Name::of(b)
 }
 
 /// Which of the block's records a type is: an index into
@@ -780,8 +820,8 @@ pub(crate) enum Projection {
 
 impl Projection {
     /// The projection a name denotes, if any.
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
-        match name {
+    pub(crate) fn from_name(name: &Name) -> Option<Self> {
+        match name.to_string().as_str() {
             "V" => Some(Self::Value),
             "DX" => Some(Self::Dx),
             "DY" => Some(Self::Dy),
@@ -814,7 +854,12 @@ pub(crate) struct CallExpr {
 
 /// The refusal of a call that supplies `got` arguments to a callee that takes
 /// `want`.
-pub(crate) fn arity_mismatch(span: Span, callee: &str, want: usize, got: usize) -> syn::Error {
+pub(crate) fn arity_mismatch(
+    span: Span,
+    callee: impl std::fmt::Display,
+    want: usize,
+    got: usize,
+) -> syn::Error {
     let plural = |count: usize, one: &'static str, many: &'static str| match count {
         1 => one,
         _ => many,

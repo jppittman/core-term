@@ -193,8 +193,8 @@ use crate::PLAN;
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ClosureEntry, ConstItem, Expr, FieldExpr,
     FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr, Method,
-    MethodCallExpr, Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordItem, Reduction,
-    Stmt, UnaryExpr, UnaryOp, arity_mismatch, is_f32, is_usize,
+    MethodCallExpr, Name, Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordItem,
+    Reduction, Stmt, UnaryExpr, UnaryOp, arity_mismatch, is_f32, is_usize, same_name,
 };
 use proc_macro2::TokenStream;
 use syn::parse::{Parse, ParseStream};
@@ -988,7 +988,7 @@ const MAX_TYPO_CHAR_DIFF: usize = 2;
 /// What `name` denotes called with `arity` arguments, or the refusal of it:
 /// the one place a method's spelling is read.
 fn resolve_method(name: &syn::Ident, arity: usize) -> syn::Result<Method> {
-    let text = name.to_string();
+    let text = Name::of(name).to_string();
     if RETIRED_METHODS.contains(&text.as_str()) {
         return Err(syn::Error::new(
             name.span(),
@@ -1005,7 +1005,7 @@ fn resolve_method(name: &syn::Ident, arity: usize) -> syn::Result<Method> {
 /// The refusal of a method name nothing advertises, or of a known one at
 /// the wrong arity.
 fn unknown_method(name: &syn::Ident, arity: usize) -> syn::Error {
-    let text = name.to_string();
+    let text = Name::of(name).to_string();
 
     // A recognized name at the wrong arity is not an unknown name, and
     // sending it into the typo search below produced the useless
@@ -1057,18 +1057,14 @@ fn convert_call(expr_call: syn::ExprCall) -> syn::Result<Expr> {
         .into_iter()
         .map(convert_expr)
         .collect::<syn::Result<Vec<_>>>()?;
-    let Some(projection) = Projection::from_name(&func.to_string()) else {
+    let name = Name::of(&func);
+    let Some(projection) = Projection::from_name(&name) else {
         return Ok(Expr::Call(CallExpr { func, args }));
     };
     let arg = match <[Expr; 1]>::try_from(args) {
         Ok([arg]) => arg,
         Err(args) => {
-            return Err(arity_mismatch(
-                func.span(),
-                &func.to_string(),
-                1,
-                args.len(),
-            ));
+            return Err(arity_mismatch(func.span(), name, 1, args.len()));
         }
     };
     Ok(Expr::Project(ProjectExpr {
@@ -1144,7 +1140,7 @@ enum RangeMethod {
 impl RangeMethod {
     /// The one reading of an iterating method's name.
     fn of(method: &syn::Ident) -> Option<Self> {
-        match method.to_string().as_str() {
+        match Name::of(method).to_string().as_str() {
             "map" => Some(Self::Map),
             "any" => Some(Self::Any),
             "all" => Some(Self::All),
@@ -1164,7 +1160,7 @@ enum FoldTerminal {
 impl FoldTerminal {
     /// The one reading of a terminal method's name.
     fn of(method: &syn::Ident) -> Option<Self> {
-        match method.to_string().as_str() {
+        match Name::of(method).to_string().as_str() {
             "sum" => Some(Self::Sum),
             "product" => Some(Self::Product),
             "fold" => Some(Self::Fold),
@@ -1675,7 +1671,7 @@ fn convert_let_tuple(
             }
             other => return Err(refuse_let_pattern(other)),
         };
-        if names.contains(&name) {
+        if names.iter().any(|bound| same_name(bound, &name)) {
             return Err(syn::Error::new(
                 name.span(),
                 format!(

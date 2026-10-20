@@ -238,3 +238,16 @@ mod typed_by_a_fragment {
         assert_eq!(bake(&closure(4.0)), 8.0 + 3.0);
     }
 }
+
+kernel! {
+    fn r#half(x: f32) -> f32 { x * 0.5 }
+
+    pub fn halved() -> f32 { half(X) }
+}
+
+/// rustc reads `r#half` and `half` as one name, and so does the macro: the
+/// helper spelled raw is the helper called plain.
+#[test]
+fn a_raw_spelling_is_the_name_it_spells() {
+    assert_eq!(bake(&halved()), 1.5);
+}

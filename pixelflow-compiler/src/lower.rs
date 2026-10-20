@@ -61,14 +61,14 @@
 use crate::PLAN;
 use crate::ast::{
     BinaryOp, BlockExpr, Callable, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt,
-    LibraryMethod, Method, MethodCallExpr, ProjectExpr, Projection, RecordId, Reduction, Role,
-    Stmt, UnaryOp,
+    LibraryMethod, Method, MethodCallExpr, Name, ProjectExpr, Projection, RecordId, Reduction,
+    Role, Stmt, UnaryOp, same_name,
 };
 use crate::sema::{
     AnalyzedKernel, Bounds, ConstValue, Parameter, RangeScope, Scalar, StructuralRange,
     range_bounds,
 };
-use crate::symbol::Scopes;
+use crate::symbol::{Scopes, SymbolTable};
 use pixelflow_ir::arena::{
     Axis, ExprArena, ExprId, IndexSpaceFull, OpenFold, UniformDecl, UniformIdentity,
 };
@@ -512,7 +512,7 @@ pub(crate) fn lower_entry<S: Site>(
         .fns()
         .iter()
         .filter(|f| f.role() == Role::Helper)
-        .map(|f| (f.name.to_string(), f))
+        .map(|f| (Name::of(&f.name), f))
         .collect();
     let mut locals = Scopes::default();
     for parameter in analyzed.parameters(entry.params) {
@@ -526,11 +526,11 @@ pub(crate) fn lower_entry<S: Site>(
                 (name, Binding::Record(id, uniforms))
             }
         };
-        locals.bind(name.to_string(), binding);
+        locals.bind(Name::of(name), binding);
     }
     for name in analyzed.kernel_parameters(entry.params) {
         let argument = site.kernel_parameter(name)?;
-        locals.bind(name.to_string(), Binding::Kernel(argument));
+        locals.bind(Name::of(name), Binding::Kernel(argument));
     }
     let mut lowering = Lowering {
         program: Program { analyzed, helpers },
@@ -549,7 +549,7 @@ pub(crate) fn lower_entry<S: Site>(
 struct Program<'a> {
     /// The block, analyzed: its records and its `const`s' values.
     analyzed: &'a AnalyzedKernel,
-    helpers: HashMap<String, &'a FnItem>,
+    helpers: HashMap<Name, &'a FnItem>,
 }
 
 /// The function being lowered: its structural parameters, and the bindings
@@ -582,7 +582,7 @@ impl<S: Site> Lowering<'_, S> {
     /// duplicated subtrees.
     fn lower(&mut self, expr: &Expr) -> Result<S::Term, String> {
         match expr {
-            Expr::Ident(name) => self.resolve(&name.to_string()),
+            Expr::Ident(name) => self.resolve(&Name::of(name)),
 
             Expr::Literal(lit) => {
                 let value = lit.f32_value().map_err(|e| e.to_string())?;
@@ -630,7 +630,7 @@ impl<S: Site> Lowering<'_, S> {
             // kernel is applied, and any other binding is not a function.
             // Then a helper is inlined.
             Expr::Call(call) => {
-                let func = call.func.to_string();
+                let func = Name::of(&call.func);
                 if let Some(binding) = self.frame.locals.lookup(&func) {
                     let Binding::Kernel(kernel) = binding else {
                         return Err(format!(
@@ -670,7 +670,12 @@ impl<S: Site> Lowering<'_, S> {
 
     /// `k(x, y)`: the kernel `k` applied at the coordinates, which are
     /// lowered first, in order — contramap (§1.2).
-    fn apply(&mut self, kernel: S::Argument, name: &str, args: &[Expr]) -> Result<S::Term, String> {
+    fn apply(
+        &mut self,
+        kernel: S::Argument,
+        name: &Name,
+        args: &[Expr],
+    ) -> Result<S::Term, String> {
         let [x, y] = args else {
             return Err(format!(
                 "the kernel `{name}` is applied at the two coordinates, and {} were supplied",
@@ -717,7 +722,7 @@ impl<S: Site> Lowering<'_, S> {
         self.frame.locals.push_scope();
         self.frame
             .locals
-            .bind(fold.binder.to_string(), Binding::Index(index));
+            .bind(Name::of(&fold.binder), Binding::Index(index));
         self.open_folds += 1;
         let body = self.lower(&fold.body);
         self.open_folds -= 1;
@@ -733,7 +738,7 @@ impl<S: Site> Lowering<'_, S> {
         let Some(name) = cast.named() else {
             return Err("`as f32` converts a `usize`, which is a name".to_string());
         };
-        if let Some(binding) = self.frame.locals.lookup(&name.to_string()) {
+        if let Some(binding) = self.frame.locals.lookup(&Name::of(name)) {
             return match binding {
                 Binding::Index(index) => Ok(index.clone()),
                 Binding::Value(_) | Binding::Record(..) => Err(format!(
@@ -744,10 +749,15 @@ impl<S: Site> Lowering<'_, S> {
                 )),
             };
         }
-        if let Some(position) = self.frame.structural.iter().position(|n| n == name) {
+        if let Some(position) = self
+            .frame
+            .structural
+            .iter()
+            .position(|n| same_name(n, name))
+        {
             return self.site.count(position, name);
         }
-        match self.program.analyzed.consts.get(&name.to_string()) {
+        match self.program.analyzed.consts.get(&Name::of(name)) {
             Some(&ConstValue::Usize(count)) => Ok(self.site.constant(count as f32)),
             _ => Err(format!("`{name} as f32`: `{name}` is not a `usize`")),
         }
@@ -759,7 +769,7 @@ impl<S: Site> Lowering<'_, S> {
         let def = self.program.analyzed.def.record(record);
         def.fields
             .iter()
-            .position(|f| f.name == field.member)
+            .position(|f| same_name(&f.name, &field.member))
             .map(|index| fields[index].clone())
             .ok_or_else(|| format!("no field `{}` on the record `{}`", field.member, def.name))
     }
@@ -779,7 +789,7 @@ impl<S: Site> Lowering<'_, S> {
 
     /// The record binding `expr` names, if it names one.
     fn record_named(&self, expr: &Expr) -> Option<RecordFields<S::Term>> {
-        match self.frame.locals.lookup(&expr.named()?.to_string())? {
+        match self.frame.locals.lookup(&Name::of(expr.named()?))? {
             Binding::Record(record, fields) => Some((*record, Rc::clone(fields))),
             Binding::Value(_) | Binding::Index(_) | Binding::Kernel(_) => None,
         }
@@ -788,7 +798,7 @@ impl<S: Site> Lowering<'_, S> {
     /// The kernel binding `expr` names, if it names one: a kernel is only
     /// ever passed by name (`sema` refuses anything else).
     fn kernel_named(&self, expr: &Expr) -> Option<S::Argument> {
-        match self.frame.locals.lookup(&expr.named()?.to_string())? {
+        match self.frame.locals.lookup(&Name::of(expr.named()?))? {
             Binding::Kernel(kernel) => Some(kernel.clone()),
             Binding::Value(_) | Binding::Index(_) | Binding::Record(..) => None,
         }
@@ -863,7 +873,7 @@ impl<S: Site> Lowering<'_, S> {
                 (None, Some(kernel)) => Binding::Kernel(kernel),
                 (None, None) => Binding::Value(self.lower(arg)?),
             };
-            locals.bind(param.name.to_string(), binding);
+            locals.bind(Name::of(&param.name), binding);
         }
         let callee = Frame {
             role: Role::Helper,
@@ -891,7 +901,7 @@ impl<S: Site> Lowering<'_, S> {
     /// lowering that is right only because an earlier stage refused its
     /// input is one refactor away from that bug again. For the same reason a
     /// coordinate in a helper is refused here too, not only in `sema`.
-    fn resolve(&mut self, name: &str) -> Result<S::Term, String> {
+    fn resolve(&mut self, name: &Name) -> Result<S::Term, String> {
         if let Some(binding) = self.frame.locals.lookup(name) {
             return match binding {
                 Binding::Value(id) => Ok(id.clone()),
@@ -922,16 +932,14 @@ impl<S: Site> Lowering<'_, S> {
             }
             None => {}
         }
-        if self.frame.structural.iter().any(|n| n == name) {
+        if self.frame.structural.iter().any(|n| Name::of(n) == *name) {
             return Err(format!(
                 "`{name}` is a structural parameter, a `usize`, where a value is expected: \
                  `{name} as f32`"
             ));
         }
-        let axis = match name {
-            "X" => Axis::X,
-            "Y" => Axis::Y,
-            _ => return Err(format!("Unknown identifier: {name}")),
+        let Some(axis) = SymbolTable::coordinate(name) else {
+            return Err(format!("Unknown identifier: {name}"));
         };
         match self.frame.role {
             Role::Entry => Ok(self.site.coordinate(axis)),
@@ -972,7 +980,7 @@ impl<S: Site> Lowering<'_, S> {
                         bindings.push(self.let_binding(let_stmt)?);
                     }
                     for (let_stmt, binding) in lets.iter().zip(bindings) {
-                        self.frame.locals.bind(let_stmt.name.to_string(), binding);
+                        self.frame.locals.bind(Name::of(&let_stmt.name), binding);
                     }
                 }
                 // A non-binding statement has no value to thread; lower it so
@@ -1016,7 +1024,7 @@ mod tests {
                     Some(Ty::Usize) => ConstValue::Usize(lit.usize_value().expect("a count")),
                     _ => ConstValue::F32(lit.f32_value().expect("a value")),
                 };
-                (c.name.to_string(), value)
+                (Name::of(&c.name), value)
             })
             .collect();
         let unanalyzed = AnalyzedKernel { def, consts };

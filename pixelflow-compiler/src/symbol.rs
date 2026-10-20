@@ -59,7 +59,9 @@
 //! parameter), and an inner `let` must not replace an outer one for the rest
 //! of the kernel.
 
+use crate::ast::Name;
 use crate::sema::Ty;
+use pixelflow_ir::arena::Axis;
 use std::collections::HashMap;
 
 /// The binding class of a symbol.
@@ -107,9 +109,9 @@ pub(crate) struct Scopes<V> {
     /// The function's own scope — its coordinates, parameters and the
     /// block's items. It lasts as long as the table and is not a block, so no
     /// pop reaches it.
-    function: HashMap<String, V>,
+    function: HashMap<Name, V>,
     /// One scope per enclosing block, innermost last.
-    blocks: Vec<HashMap<String, V>>,
+    blocks: Vec<HashMap<Name, V>>,
 }
 
 impl<V> Default for Scopes<V> {
@@ -135,7 +137,7 @@ impl<V> Scopes<V> {
 
     /// Bind `name` in the innermost scope, shadowing any binding of it
     /// already in scope — including an earlier one in the same block.
-    pub(crate) fn bind(&mut self, name: String, value: V) {
+    pub(crate) fn bind(&mut self, name: Name, value: V) {
         self.blocks
             .last_mut()
             .unwrap_or(&mut self.function)
@@ -143,7 +145,7 @@ impl<V> Scopes<V> {
     }
 
     /// The innermost binding of `name` in scope.
-    pub(crate) fn lookup(&self, name: &str) -> Option<&V> {
+    pub(crate) fn lookup(&self, name: &Name) -> Option<&V> {
         self.blocks
             .iter()
             .rev()
@@ -159,18 +161,27 @@ pub(crate) struct SymbolTable {
 }
 
 impl SymbolTable {
-    /// The coordinate intrinsics. A lattice has two axes; `Z` and `W` are
-    /// refused by name in sema, with the message that points at uniforms.
-    pub(crate) const COORDINATES: [&'static str; 2] = ["X", "Y"];
+    /// The coordinate intrinsics, by spelling. A lattice has two axes; `Z`
+    /// and `W` are refused by name in sema, with the message that points at
+    /// uniforms.
+    const COORDINATES: [(&'static str, Axis); 2] = [("X", Axis::X), ("Y", Axis::Y)];
+
+    /// The axis a name is the coordinate of, if it is one.
+    pub(crate) fn coordinate(name: &Name) -> Option<Axis> {
+        Self::COORDINATES
+            .into_iter()
+            .find(|&(spelling, _)| name == spelling)
+            .map(|(_, axis)| axis)
+    }
 
     /// Create a new symbol table with intrinsic coordinates pre-populated.
     pub(crate) fn new() -> Self {
         let mut table = SymbolTable {
             symbols: Scopes::default(),
         };
-        for name in Self::COORDINATES {
+        for (spelling, _) in Self::COORDINATES {
             table.symbols.bind(
-                name.to_string(),
+                Name::spelled(spelling),
                 Symbol {
                     kind: SymbolKind::Intrinsic,
                     ty: Ty::F32,
@@ -181,42 +192,42 @@ impl SymbolTable {
     }
 
     /// Register a parameter symbol (e.g., `r: f32`).
-    pub(crate) fn register_parameter(&mut self, name: &str, ty: Ty) {
+    pub(crate) fn register_parameter(&mut self, name: Name, ty: Ty) {
         self.bind(name, SymbolKind::Parameter, ty);
     }
 
     /// Register a `const` item: an `f32`, or a `usize` count.
-    pub(crate) fn register_const(&mut self, name: &str, ty: Ty) {
+    pub(crate) fn register_const(&mut self, name: Name, ty: Ty) {
         self.bind(name, SymbolKind::Const, ty);
     }
 
     /// Register an entry's structural parameter, a `usize` count.
-    pub(crate) fn register_structural(&mut self, name: &str) {
+    pub(crate) fn register_structural(&mut self, name: Name) {
         self.bind(name, SymbolKind::Structural, Ty::Usize);
     }
 
     /// Register a local variable in the innermost scope.
-    pub(crate) fn register_local(&mut self, name: &str, ty: Ty) {
+    pub(crate) fn register_local(&mut self, name: Name, ty: Ty) {
         self.bind(name, SymbolKind::Local, ty);
     }
 
     /// Register a fold's index, a `usize`, in the innermost scope: the
     /// scope the fold's body is typed in.
-    pub(crate) fn register_index(&mut self, name: &str) {
+    pub(crate) fn register_index(&mut self, name: Name) {
         self.bind(name, SymbolKind::Index, Ty::Usize);
     }
 
-    fn bind(&mut self, name: &str, kind: SymbolKind, ty: Ty) {
-        self.symbols.bind(name.to_string(), Symbol { kind, ty });
+    fn bind(&mut self, name: Name, kind: SymbolKind, ty: Ty) {
+        self.symbols.bind(name, Symbol { kind, ty });
     }
 
     /// Look up the innermost binding of a name in scope.
-    pub(crate) fn lookup(&self, name: &str) -> Option<&Symbol> {
+    pub(crate) fn lookup(&self, name: &Name) -> Option<&Symbol> {
         self.symbols.lookup(name)
     }
 
     /// Check if a name is an intrinsic coordinate.
-    pub(crate) fn is_intrinsic(&self, name: &str) -> bool {
+    pub(crate) fn is_intrinsic(&self, name: &Name) -> bool {
         self.lookup(name)
             .is_some_and(|s| s.kind == SymbolKind::Intrinsic)
     }
@@ -236,41 +247,45 @@ impl SymbolTable {
 mod tests {
     use super::*;
 
+    fn name(text: &str) -> Name {
+        Name::spelled(text)
+    }
+
     #[test]
     fn intrinsics_are_predefined() {
         let table = SymbolTable::new();
-        assert!(table.is_intrinsic("X"));
-        assert!(table.is_intrinsic("Y"));
-        assert!(!table.is_intrinsic("Z"));
-        assert!(!table.is_intrinsic("W"));
-        assert!(!table.is_intrinsic("cx"));
+        assert!(table.is_intrinsic(&name("X")));
+        assert!(table.is_intrinsic(&name("Y")));
+        assert!(!table.is_intrinsic(&name("Z")));
+        assert!(!table.is_intrinsic(&name("W")));
+        assert!(!table.is_intrinsic(&name("cx")));
     }
 
     #[test]
     fn register_parameter_marks_name_as_parameter_and_not_intrinsic() {
         let mut table = SymbolTable::new();
-        table.register_parameter("radius", Ty::F32);
+        table.register_parameter(name("radius"), Ty::F32);
 
         assert_eq!(
-            table.lookup("radius").map(|s| s.kind),
+            table.lookup(&name("radius")).map(|s| s.kind),
             Some(SymbolKind::Parameter)
         );
-        assert!(!table.is_intrinsic("radius"));
-        assert_eq!(table.lookup("radius").map(|s| s.ty), Some(Ty::F32));
+        assert!(!table.is_intrinsic(&name("radius")));
+        assert_eq!(table.lookup(&name("radius")).map(|s| s.ty), Some(Ty::F32));
     }
 
     #[test]
     fn pop_scope_removes_locals_registered_since_the_matching_push_scope() {
         let mut table = SymbolTable::new();
         table.push_scope();
-        table.register_local("dx", Ty::F32);
-        assert!(table.lookup("dx").is_some());
+        table.register_local(name("dx"), Ty::F32);
+        assert!(table.lookup(&name("dx")).is_some());
 
         table.pop_scope();
 
-        assert!(table.lookup("dx").is_none());
+        assert!(table.lookup(&name("dx")).is_none());
         // The outer scope (and its intrinsics) must be untouched.
-        assert!(table.is_intrinsic("X"));
+        assert!(table.is_intrinsic(&name("X")));
     }
 
     /// Popping a scope restores what its bindings shadowed: a local shadowing
@@ -278,35 +293,38 @@ mod tests {
     #[test]
     fn pop_scope_restores_the_binding_a_local_shadowed() {
         let mut table = SymbolTable::new();
-        table.register_parameter("r", Ty::F32);
+        table.register_parameter(name("r"), Ty::F32);
         table.push_scope();
-        table.register_local("r", Ty::Bool);
-        assert_eq!(table.lookup("r").map(|s| s.kind), Some(SymbolKind::Local));
-        assert_eq!(table.lookup("r").map(|s| s.ty), Some(Ty::Bool));
+        table.register_local(name("r"), Ty::Bool);
+        assert_eq!(
+            table.lookup(&name("r")).map(|s| s.kind),
+            Some(SymbolKind::Local)
+        );
+        assert_eq!(table.lookup(&name("r")).map(|s| s.ty), Some(Ty::Bool));
 
         table.pop_scope();
 
         assert_eq!(
-            table.lookup("r").map(|s| s.kind),
+            table.lookup(&name("r")).map(|s| s.kind),
             Some(SymbolKind::Parameter)
         );
-        assert_eq!(table.lookup("r").map(|s| s.ty), Some(Ty::F32));
+        assert_eq!(table.lookup(&name("r")).map(|s| s.ty), Some(Ty::F32));
     }
 
     #[test]
     fn a_lookup_sees_the_innermost_binding_in_scope() {
         let mut scopes = Scopes::default();
-        scopes.bind("a".to_string(), 0);
+        scopes.bind(name("a"), 0);
         scopes.push_scope();
-        scopes.bind("a".to_string(), 1);
+        scopes.bind(name("a"), 1);
         scopes.push_scope();
-        assert_eq!(scopes.lookup("a"), Some(&1));
-        scopes.bind("a".to_string(), 2);
-        scopes.bind("a".to_string(), 3);
-        assert_eq!(scopes.lookup("a"), Some(&3));
+        assert_eq!(scopes.lookup(&name("a")), Some(&1));
+        scopes.bind(name("a"), 2);
+        scopes.bind(name("a"), 3);
+        assert_eq!(scopes.lookup(&name("a")), Some(&3));
         scopes.pop_scope();
-        assert_eq!(scopes.lookup("a"), Some(&1));
+        assert_eq!(scopes.lookup(&name("a")), Some(&1));
         scopes.pop_scope();
-        assert_eq!(scopes.lookup("a"), Some(&0));
+        assert_eq!(scopes.lookup(&name("a")), Some(&0));
     }
 }
