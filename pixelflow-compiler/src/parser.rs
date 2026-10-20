@@ -327,12 +327,7 @@ fn convert_record(item: syn::ItemStruct) -> syn::Result<RecordItem> {
             ),
         ));
     }
-    if let Some(where_clause) = &item.generics.where_clause {
-        return Err(syn::Error::new_spanned(
-            where_clause,
-            "a `where` clause on a record: there are no generics to bound",
-        ));
-    }
+    refuse_where_clause(&item.generics, "a record")?;
     let named = match item.fields {
         syn::Fields::Named(named) => named,
         syn::Fields::Unnamed(unnamed) => {
@@ -476,13 +471,10 @@ fn convert_fn(item: syn::ItemFn) -> syn::Result<FnItem> {
 /// default and a `where` clause are refused: the language's one value bound
 /// when its program is compiled is a count.
 fn structural_parameters(generics: &syn::Generics) -> syn::Result<Vec<syn::Ident>> {
-    if let Some(where_clause) = &generics.where_clause {
-        return Err(syn::Error::new_spanned(
-            where_clause,
-            "a `where` clause in a `kernel!` block: a structural parameter is a `usize`, and \
-             there is nothing to bound",
-        ));
-    }
+    refuse_where_clause(
+        generics,
+        "an entry (its structural parameters are `usize`s)",
+    )?;
     let mut structural = Vec::with_capacity(generics.params.len());
     for param in &generics.params {
         let syn::GenericParam::Const(count) = param else {
@@ -691,87 +683,116 @@ fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
             ),
         ));
     }
-    if let Some(where_clause) = &generics.where_clause {
-        return Err(syn::Error::new_spanned(
+    refuse_where_clause(generics, "a `const` or a helper")
+}
+
+/// The one refusal of a `where` clause, on whatever `what` is: with no
+/// generics to bound, a clause has nothing to say.
+fn refuse_where_clause(generics: &syn::Generics, what: &str) -> syn::Result<()> {
+    match &generics.where_clause {
+        Some(where_clause) => Err(syn::Error::new_spanned(
             where_clause,
-            "a `where` clause in a `kernel!` block: there are no generics to bound",
-        ));
+            format!("a `where` clause on {what}: there are no generics to bound"),
+        )),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// Convert syn::Expr to our AST Expr.
+///
+/// Only a dispatcher: this is the function every nesting level of a body
+/// recurses through, so what a level costs is this frame plus its arm's, and
+/// each arm is a function of its own with its own temporaries. A refusal's
+/// text is built in [`refuse_expression`], off the recursive path.
 fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
     match expr {
-        syn::Expr::Path(expr_path) => {
-            // Simple identifier: X, cx, etc.
-            if expr_path.path.segments.len() == 1 && expr_path.qself.is_none() {
-                let segment = &expr_path.path.segments[0];
-                if segment.arguments.is_empty() {
-                    return Ok(Expr::Ident(segment.ident.clone()));
-                }
-            }
-            // A qualified path names something outside the block.
-            Err(syn::Error::new_spanned(
-                &expr_path,
-                format!(
-                    "a path in a kernel body: `{}`\n\
-                     \n\
-                     note: a kernel body sees X, Y (in an entry), its parameters, the block's \
-                     `const`s, and the `let` bindings in scope; a name from the enclosing Rust \
-                     scope is not captured\n\
-                     help: declare the value as a `const` of this block, or as a parameter of \
-                     this kernel",
-                    quote::quote!(#expr_path)
-                ),
-            ))
-        }
-
-        syn::Expr::Lit(expr_lit) => Ok(Expr::Literal(LiteralExpr {
-            value: literal_value(&expr_lit.lit)?,
-            span: expr_lit.lit.span(),
-        })),
-
-        syn::Expr::Binary(expr_binary) => {
-            let op = binary_op(&expr_binary.op)?;
-            let span = expr_binary.op.span();
-            let lhs = convert_expr(*expr_binary.left)?;
-            let rhs = convert_expr(*expr_binary.right)?;
-            Ok(Expr::Binary(BinaryExpr {
-                op,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-                span,
-            }))
-        }
-
-        syn::Expr::Unary(expr_unary) => {
-            let op = unary_op(&expr_unary.op)?;
-            let span = expr_unary.op.span();
-            let operand = convert_expr(*expr_unary.expr)?;
-            Ok(Expr::Unary(UnaryExpr {
-                op,
-                operand: Box::new(operand),
-                span,
-            }))
-        }
-
+        syn::Expr::Path(expr_path) => convert_path(expr_path),
+        syn::Expr::Lit(expr_lit) => convert_lit(expr_lit),
+        syn::Expr::Binary(expr_binary) => convert_binary(expr_binary),
+        syn::Expr::Unary(expr_unary) => convert_unary(expr_unary),
         syn::Expr::MethodCall(expr_method) => convert_method_call(expr_method),
-
         syn::Expr::Call(expr_call) => convert_call(expr_call),
-
         syn::Expr::If(expr_if) => convert_if(expr_if),
+        syn::Expr::Paren(expr_paren) => convert_paren(expr_paren),
+        syn::Expr::Field(expr_field) => convert_field(expr_field),
+        syn::Expr::Cast(expr_cast) => convert_cast(expr_cast),
+        syn::Expr::Block(expr_block) => convert_block(expr_block.block).map(Expr::Block),
+        refused => Err(refuse_expression(&refused)),
+    }
+}
 
-        syn::Expr::Paren(expr_paren) => {
-            let inner = convert_expr(*expr_paren.expr)?;
-            Ok(Expr::Paren(Box::new(inner)))
+/// A name: `X`, `cx`. A path of any other shape names something outside the
+/// block.
+fn convert_path(expr_path: syn::ExprPath) -> syn::Result<Expr> {
+    if expr_path.path.segments.len() == 1 && expr_path.qself.is_none() {
+        let segment = &expr_path.path.segments[0];
+        if segment.arguments.is_empty() {
+            return Ok(Expr::Ident(segment.ident.clone()));
         }
+    }
+    Err(syn::Error::new_spanned(
+        &expr_path,
+        format!(
+            "a path in a kernel body: `{}`\n\
+             \n\
+             note: a kernel body sees X, Y (in an entry), its parameters, the block's \
+             `const`s, and the `let` bindings in scope; a name from the enclosing Rust \
+             scope is not captured\n\
+             help: declare the value as a `const` of this block, or as a parameter of \
+             this kernel",
+            quote::quote!(#expr_path)
+        ),
+    ))
+}
 
+fn convert_lit(expr_lit: syn::ExprLit) -> syn::Result<Expr> {
+    Ok(Expr::Literal(LiteralExpr {
+        value: literal_value(&expr_lit.lit)?,
+        span: expr_lit.lit.span(),
+    }))
+}
+
+fn convert_binary(expr_binary: syn::ExprBinary) -> syn::Result<Expr> {
+    let op = binary_op(&expr_binary.op)?;
+    let span = expr_binary.op.span();
+    let lhs = convert_expr(*expr_binary.left)?;
+    let rhs = convert_expr(*expr_binary.right)?;
+    Ok(Expr::Binary(BinaryExpr {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span,
+    }))
+}
+
+fn convert_unary(expr_unary: syn::ExprUnary) -> syn::Result<Expr> {
+    let op = unary_op(&expr_unary.op)?;
+    let span = expr_unary.op.span();
+    let operand = convert_expr(*expr_unary.expr)?;
+    Ok(Expr::Unary(UnaryExpr {
+        op,
+        operand: Box::new(operand),
+        span,
+    }))
+}
+
+fn convert_paren(expr_paren: syn::ExprParen) -> syn::Result<Expr> {
+    let inner = convert_expr(*expr_paren.expr)?;
+    Ok(Expr::Paren(Box::new(inner)))
+}
+
+/// The refusal of an expression the language has no form for, naming what it
+/// found. Cold and never inlined: a `format!` in [`convert_expr`] would put
+/// its temporaries in the frame of every level of every body.
+#[cold]
+#[inline(never)]
+fn refuse_expression(expr: &syn::Expr) -> syn::Error {
+    match expr {
         // A value with parts, built in a body. A record enters a kernel as a
         // parameter and is read by field; a tuple is taken apart where it is
         // written, by a `let` (D7's front half), and a tuple or a record
         // built as a value — passed, returned, chosen — is Phase D (D7).
-        syn::Expr::Tuple(expr_tuple) => Err(syn::Error::new(
+        syn::Expr::Tuple(expr_tuple) => syn::Error::new(
             expr_tuple.paren_token.span.join(),
             format!(
                 "a tuple in a kernel body\n\
@@ -781,23 +802,23 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                  note: a tuple as a value — passed, returned or chosen — is Phase D (D7 of \
                  {PLAN})"
             ),
-        )),
+        ),
 
         // There are no collection types (§1.3, §1.6): nothing is read by
         // index, a slice is a range of indices, and nothing builds an array.
-        syn::Expr::Index(expr_index) => Err(no_collection_types(
-            &expr_index,
+        syn::Expr::Index(expr_index) => no_collection_types(
+            expr_index,
             "indexing",
             "a value is an `f32` or a `bool` and a record is read by field, `p.x0`; nothing \
              is read by index, and a slice is a range of indices",
-        )),
-        syn::Expr::Array(_) | syn::Expr::Repeat(_) => Err(no_collection_types(
-            &expr,
+        ),
+        syn::Expr::Array(_) | syn::Expr::Repeat(_) => no_collection_types(
+            expr,
             "an array",
             "several values are several parameters, or several `let`s",
-        )),
+        ),
 
-        syn::Expr::Struct(expr_struct) => Err(syn::Error::new_spanned(
+        syn::Expr::Struct(expr_struct) => syn::Error::new_spanned(
             &expr_struct.path,
             format!(
                 "a record literal in a kernel body\n\
@@ -806,30 +827,21 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                  body reads its fields, `p.x0`\n\
                  note: building a record, and returning one, are Phase D (D7 of {PLAN})"
             ),
-        )),
+        ),
 
-        syn::Expr::Field(expr_field) => convert_field(expr_field),
-
-        syn::Expr::Range(expr_range) => Err(syn::Error::new_spanned(
+        syn::Expr::Range(expr_range) => syn::Error::new_spanned(
             expr_range,
             format!(
                 "a range in a kernel body\n\
                  \n\
                  note: a range is the domain of a fold: {FOLD_SPELLINGS}"
             ),
-        )),
-
-        syn::Expr::Cast(expr_cast) => convert_cast(expr_cast),
-
-        syn::Expr::Block(expr_block) => {
-            let block = convert_block(expr_block.block)?;
-            Ok(Expr::Block(block))
-        }
+        ),
 
         // Iteration with state has no denotation in a DAG. A bounded
         // reduction is a fold over a constant range.
         syn::Expr::Loop(_) | syn::Expr::While(_) | syn::Expr::ForLoop(_) => {
-            Err(syn::Error::new_spanned(
+            syn::Error::new_spanned(
                 expr,
                 format!(
                     "a loop in a kernel body\n\
@@ -837,24 +849,24 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                      note: the language is a DAG: nothing iterates with state\n\
                      note: a bounded reduction over a constant range is a fold: {FOLD_SPELLINGS}"
                 ),
-            ))
+            )
         }
 
-        syn::Expr::Assign(_) => Err(syn::Error::new_spanned(
+        syn::Expr::Assign(_) => syn::Error::new_spanned(
             expr,
             "assignment in a kernel body\n\
              \n\
              note: a kernel body binds a name once, with `let`; nothing is mutable",
-        )),
+        ),
 
-        syn::Expr::Return(_) => Err(syn::Error::new_spanned(
+        syn::Expr::Return(_) => syn::Error::new_spanned(
             expr,
             "`return` in a kernel body\n\
              \n\
              note: a body is an expression; its value is its final expression",
-        )),
+        ),
 
-        syn::Expr::Closure(_) => Err(syn::Error::new_spanned(
+        syn::Expr::Closure(_) => syn::Error::new_spanned(
             expr,
             format!(
                 "a closure in a kernel body\n\
@@ -865,17 +877,17 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                  `k(x, y)` (Phase D-a of {PLAN}); a private `fn` in the block is a helper, \
                  called by name"
             ),
-        )),
+        ),
 
         // `syn::Expr` is `#[non_exhaustive]`, so the arm stays; it refuses at
         // the token, naming the syntax, and nothing is passed through.
-        other => Err(syn::Error::new_spanned(
-            &other,
+        other => syn::Error::new_spanned(
+            other,
             format!(
                 "unsupported expression in a kernel body: `{}`",
                 quote::quote!(#other)
             ),
-        )),
+        ),
     }
 }
 
@@ -939,12 +951,12 @@ fn convert_if(expr_if: syn::ExprIf) -> syn::Result<Expr> {
 
 /// `receiver.method(args)`: a fold's terminal, a method of the language, or
 /// a refusal of any other name.
-fn convert_method_call(expr_method: syn::ExprMethodCall) -> syn::Result<Expr> {
-    if let Some(range) = a_range(&expr_method.receiver) {
-        return convert_range_method(range, &expr_method);
+fn convert_method_call(mut expr_method: syn::ExprMethodCall) -> syn::Result<Expr> {
+    if let Some(range) = take_range(&mut expr_method.receiver) {
+        return convert_range_method(range, MethodTail::take(&mut expr_method));
     }
-    if let Some((range, map)) = a_mapped_range(&expr_method.receiver) {
-        return convert_fold_terminal(range, map, &expr_method);
+    if let Some((range, map)) = take_mapped_range(&mut expr_method.receiver) {
+        return convert_fold_terminal(range, map, MethodTail::take(&mut expr_method));
     }
     // Built before the receiver is converted, returned after it: the
     // receiver's own refusal, the innermost, comes first, as rustc's
@@ -1105,26 +1117,53 @@ const FOLD_MONOIDS: [(Reduction, [&str; 2], [&str; 2]); 2] = [
     (Reduction::Max, ["f32", "NEG_INFINITY"], ["f32", "max"]),
 ];
 
+/// A method call apart from its receiver: all a fold reads of the call
+/// itself, owned so the closure that is its body moves rather than copies.
+struct MethodTail {
+    method: syn::Ident,
+    turbofish: Option<syn::AngleBracketedGenericArguments>,
+    args: syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
+}
+
+impl MethodTail {
+    /// The call's method, type arguments and arguments, moved out of it; the
+    /// call is read no further, since a fold's receiver is a range.
+    fn take(call: &mut syn::ExprMethodCall) -> Self {
+        Self {
+            method: call.method.clone(),
+            turbofish: call.turbofish.take(),
+            args: std::mem::take(&mut call.args),
+        }
+    }
+}
+
 /// The range a method is called on, through its parentheses: the `(a..b)`
-/// of `(a..b).any(…)`.
-fn a_range(receiver: &syn::Expr) -> Option<&syn::ExprRange> {
+/// of `(a..b).any(…)`. Taken out of the receiver, which is left without it;
+/// any other receiver is untouched.
+fn take_range(receiver: &mut syn::Expr) -> Option<syn::ExprRange> {
     match receiver {
-        syn::Expr::Paren(paren) => a_range(&paren.expr),
-        syn::Expr::Range(range) => Some(range),
+        syn::Expr::Paren(paren) => take_range(&mut paren.expr),
+        syn::Expr::Range(range) => Some(syn::ExprRange {
+            attrs: std::mem::take(&mut range.attrs),
+            start: range.start.take(),
+            limits: range.limits,
+            end: range.end.take(),
+        }),
         _ => None,
     }
 }
 
 /// `(a..b).map(f)`: the range and the `map` call a fold's terminal method is
-/// called on.
-fn a_mapped_range(receiver: &syn::Expr) -> Option<(&syn::ExprRange, &syn::ExprMethodCall)> {
+/// called on, taken out of the receiver as [`take_range`] does.
+fn take_mapped_range(receiver: &mut syn::Expr) -> Option<(syn::ExprRange, MethodTail)> {
     let syn::Expr::MethodCall(map) = receiver else {
         return None;
     };
     if RangeMethod::of(&map.method) != Some(RangeMethod::Map) {
         return None;
     }
-    Some((a_range(&map.receiver)?, map))
+    let range = take_range(&mut map.receiver)?;
+    Some((range, MethodTail::take(map)))
 }
 
 /// The methods that iterate, by name: a fold's `.map`, `.any` and `.all`.
@@ -1211,13 +1250,13 @@ const TUPLE_LET: &str = "`let (a, b) = (e1, e2);` binds each name to its express
 
 /// A method called on a range itself: `.any(|i| m)` and `.all(|i| m)` are
 /// folds, and nothing else is a value.
-fn convert_range_method(range: &syn::ExprRange, call: &syn::ExprMethodCall) -> syn::Result<Expr> {
+fn convert_range_method(range: syn::ExprRange, call: MethodTail) -> syn::Result<Expr> {
     let reduction = match RangeMethod::of(&call.method) {
         Some(RangeMethod::Any) => Reduction::Any,
         Some(RangeMethod::All) => Reduction::All,
         Some(RangeMethod::Map) => {
             return Err(syn::Error::new_spanned(
-                call,
+                &call.method,
                 format!(
                     "a mapped range is an iterator, not a value\n\
                      \n\
@@ -1237,28 +1276,29 @@ fn convert_range_method(range: &syn::ExprRange, call: &syn::ExprMethodCall) -> s
             ));
         }
     };
-    refuse_turbofish(call)?;
+    refuse_turbofish(&call)?;
+    let span = call.method.span();
     let (binder, body) = the_closure(call)?;
     Ok(Expr::Fold(FoldExpr {
         reduction,
         range: convert_range(range)?,
         binder,
         body: Box::new(body),
-        span: call.method.span(),
+        span,
     }))
 }
 
 /// The method that ends `(a..b).map(|i| e)`: the reduction the fold combines
 /// its terms under.
 fn convert_fold_terminal(
-    range: &syn::ExprRange,
-    map: &syn::ExprMethodCall,
-    call: &syn::ExprMethodCall,
+    range: syn::ExprRange,
+    map: MethodTail,
+    call: MethodTail,
 ) -> syn::Result<Expr> {
     let reduction = match FoldTerminal::of(&call.method) {
-        Some(FoldTerminal::Sum) => sum_or_product(call, Reduction::Sum)?,
-        Some(FoldTerminal::Product) => sum_or_product(call, Reduction::Product)?,
-        Some(FoldTerminal::Fold) => fold_monoid(call)?,
+        Some(FoldTerminal::Sum) => sum_or_product(&call, Reduction::Sum)?,
+        Some(FoldTerminal::Product) => sum_or_product(&call, Reduction::Product)?,
+        Some(FoldTerminal::Fold) => fold_monoid(&call)?,
         None => {
             return Err(syn::Error::new(
                 call.method.span(),
@@ -1271,7 +1311,7 @@ fn convert_fold_terminal(
             ));
         }
     };
-    refuse_turbofish(map)?;
+    refuse_turbofish(&map)?;
     let (binder, body) = the_closure(map)?;
     Ok(Expr::Fold(FoldExpr {
         reduction,
@@ -1285,7 +1325,7 @@ fn convert_fold_terminal(
 /// `.sum()` and `.product()` take no arguments, and a type argument only if
 /// it is the one type the terms have: `.sum::<f32>()`, which rustc needs
 /// wherever nothing else says what the sum is.
-fn sum_or_product(call: &syn::ExprMethodCall, reduction: Reduction) -> syn::Result<Reduction> {
+fn sum_or_product(call: &MethodTail, reduction: Reduction) -> syn::Result<Reduction> {
     if let Some(arguments) = &call.turbofish {
         let names_f32 = match arguments.args.iter().collect::<Vec<_>>().as_slice() {
             [syn::GenericArgument::Type(ty)] => is_f32(ty),
@@ -1335,7 +1375,7 @@ fn convert_cast(expr_cast: syn::ExprCast) -> syn::Result<Expr> {
 
 /// `.fold(identity, operation)` names a monoid only as one of
 /// [`FOLD_MONOIDS`]; any other `.fold` is refused, naming them.
-fn fold_monoid(call: &syn::ExprMethodCall) -> syn::Result<Reduction> {
+fn fold_monoid(call: &MethodTail) -> syn::Result<Reduction> {
     refuse_turbofish(call)?;
     let refusal = || {
         syn::Error::new(
@@ -1376,7 +1416,7 @@ fn is_path(expr: &syn::Expr, segments: &[&str; 2]) -> bool {
 }
 
 /// A method of a fold that takes no type argument.
-fn refuse_turbofish(call: &syn::ExprMethodCall) -> syn::Result<()> {
+fn refuse_turbofish(call: &MethodTail) -> syn::Result<()> {
     match &call.turbofish {
         Some(arguments) => Err(syn::Error::new_spanned(
             arguments,
@@ -1391,8 +1431,9 @@ fn refuse_turbofish(call: &syn::ExprMethodCall) -> syn::Result<()> {
 
 /// The one argument of a fold's `.map`, `.any` or `.all`: a closure whose
 /// parameter is the fold's index and whose body is the fold's body.
-fn the_closure(call: &syn::ExprMethodCall) -> syn::Result<(syn::Ident, Expr)> {
-    let [syn::Expr::Closure(closure)] = call.args.iter().collect::<Vec<_>>()[..] else {
+fn the_closure(call: MethodTail) -> syn::Result<(syn::Ident, Expr)> {
+    let args = call.args.into_iter().collect::<Vec<_>>();
+    let Ok([syn::Expr::Closure(closure)]) = <[syn::Expr; 1]>::try_from(args) else {
         return Err(syn::Error::new(
             call.method.span(),
             format!(
@@ -1446,12 +1487,12 @@ fn the_closure(call: &syn::ExprMethodCall) -> syn::Result<(syn::Ident, Expr)> {
             ));
         }
     };
-    Ok((binder, convert_expr((*closure.body).clone())?))
+    Ok((binder, convert_expr(*closure.body)?))
 }
 
 /// `a..b`: both bounds, half-open. Whether they are constant, and run
 /// forwards, is `sema`'s question: it evaluates them.
-fn convert_range(range: &syn::ExprRange) -> syn::Result<RangeExpr> {
+fn convert_range(range: syn::ExprRange) -> syn::Result<RangeExpr> {
     if let syn::RangeLimits::Closed(dots) = &range.limits {
         return Err(syn::Error::new_spanned(
             dots,
@@ -1460,17 +1501,23 @@ fn convert_range(range: &syn::ExprRange) -> syn::Result<RangeExpr> {
              help: write the end one past the last index",
         ));
     }
-    let (Some(lo), Some(hi)) = (&range.start, &range.end) else {
-        return Err(syn::Error::new_spanned(
-            range,
+    let span = range.limits.span();
+    match (range.start, range.end) {
+        (Some(lo), Some(hi)) => Ok(RangeExpr {
+            lo: Box::new(convert_expr(*lo)?),
+            hi: Box::new(convert_expr(*hi)?),
+            span,
+        }),
+        (start, end) => Err(syn::Error::new_spanned(
+            syn::ExprRange {
+                attrs: range.attrs,
+                start,
+                limits: range.limits,
+                end,
+            },
             "a fold's range names both of its bounds: `a..b`",
-        ));
-    };
-    Ok(RangeExpr {
-        lo: Box::new(convert_expr((**lo).clone())?),
-        hi: Box::new(convert_expr((**hi).clone())?),
-        span: range.limits.span(),
-    })
+        )),
+    }
 }
 
 /// A binary operator, or the refusal that names it. `%` has no IR op, and a
@@ -1535,17 +1582,18 @@ fn unary_op(op: &syn::UnOp) -> syn::Result<UnaryOp> {
 /// Convert a syn::Block to our BlockExpr.
 fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
     let span = block.brace_token.span.join();
-    let mut stmts = Vec::with_capacity(block.stmts.len());
+    let count = block.stmts.len();
+    let mut stmts = Vec::with_capacity(count);
     let mut final_expr = None;
 
-    for (i, stmt) in block.stmts.iter().enumerate() {
-        let is_last = i == block.stmts.len() - 1;
+    for (i, stmt) in block.stmts.into_iter().enumerate() {
+        let is_last = i + 1 == count;
 
         match stmt {
             syn::Stmt::Local(local) => stmts.push(convert_let(local)?),
 
             syn::Stmt::Expr(expr, semi) => {
-                let converted = convert_expr(expr.clone())?;
+                let converted = convert_expr(expr)?;
                 if is_last && semi.is_none() {
                     // Final expression without semicolon - this is the block's value
                     final_expr = Some(Box::new(converted));
@@ -1593,12 +1641,12 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
 
 /// A `let`: a plain name bound to its expression, or `let (a, b) = (e1,
 /// e2);`, each name bound to its own expression (D7's front half).
-fn convert_let(local: &syn::Local) -> syn::Result<Stmt> {
+fn convert_let(local: syn::Local) -> syn::Result<Stmt> {
     let (pattern, annotation) = match &local.pat {
         Pat::Type(pat_type) => (&*pat_type.pat, Some(&*pat_type.ty)),
         pattern => (pattern, None),
     };
-    let init = local.init.as_ref().ok_or_else(|| {
+    let init = local.init.ok_or_else(|| {
         syn::Error::new_spanned(
             &local.pat,
             "let binding must have an initializer\n\
@@ -1627,10 +1675,10 @@ fn convert_let(local: &syn::Local) -> syn::Result<Stmt> {
             Ok(Stmt::Let(vec![LetStmt {
                 name,
                 ty: annotation.cloned(),
-                init: convert_expr((*init.expr).clone())?,
+                init: convert_expr(*init.expr)?,
             }]))
         }
-        Pat::Tuple(names) => convert_let_tuple(names, annotation, &init.expr),
+        Pat::Tuple(names) => convert_let_tuple(names, annotation, *init.expr),
         pattern => Err(refuse_let_pattern(pattern)),
     }
 }
@@ -1643,7 +1691,7 @@ fn convert_let(local: &syn::Local) -> syn::Result<Stmt> {
 fn convert_let_tuple(
     pattern: &syn::PatTuple,
     annotation: Option<&Type>,
-    init: &syn::Expr,
+    mut init: syn::Expr,
 ) -> syn::Result<Stmt> {
     let mut names: Vec<syn::Ident> = Vec::with_capacity(pattern.elems.len());
     for element in &pattern.elems {
@@ -1692,31 +1740,29 @@ fn convert_let_tuple(
              note: a kernel body has no unit value to take apart",
         ));
     }
-    let values = match tuple_expression(init) {
-        Some(values) => values,
-        None => {
-            return Err(syn::Error::new_spanned(
-                init,
-                format!(
-                    "the value of a tuple `let` is a tuple of expressions, `(e1, e2)`\n\
-                     \n\
-                     note: a tuple is taken apart where it is written; a tuple computed — \
-                     returned, passed or chosen — is a tuple value, which is Phase D (D7 of \
-                     {PLAN})"
-                ),
-            ));
-        }
-    };
-    if values.len() != names.len() {
+    let Some(tuple) = tuple_expression(&mut init) else {
         return Err(syn::Error::new_spanned(
-            init,
+            &init,
+            format!(
+                "the value of a tuple `let` is a tuple of expressions, `(e1, e2)`\n\
+                 \n\
+                 note: a tuple is taken apart where it is written; a tuple computed — \
+                 returned, passed or chosen — is a tuple value, which is Phase D (D7 of \
+                 {PLAN})"
+            ),
+        ));
+    };
+    if tuple.elems.len() != names.len() {
+        let found = tuple.elems.len();
+        return Err(syn::Error::new_spanned(
+            &init,
             format!(
                 "mismatched types: expected a tuple with {} elements, found one with {} \
                  elements\n\
                  \n\
                  note: `let ({}) = …` binds each name to one expression of the tuple",
                 names.len(),
-                values.len(),
+                found,
                 names
                     .iter()
                     .map(ToString::to_string)
@@ -1725,24 +1771,25 @@ fn convert_let_tuple(
             ),
         ));
     }
+    let values = std::mem::take(&mut tuple.elems);
     let types = element_types(annotation, names.len())?;
     let mut lets = Vec::with_capacity(names.len());
     for ((name, value), ty) in names.into_iter().zip(values).zip(types) {
         lets.push(LetStmt {
             name,
             ty,
-            init: convert_expr(value.clone())?,
+            init: convert_expr(value)?,
         });
     }
     Ok(Stmt::Let(lets))
 }
 
-/// The expressions of a tuple, through parentheses, or `None` for anything
+/// The tuple an expression is, through parentheses, or `None` for anything
 /// else.
-fn tuple_expression(expr: &syn::Expr) -> Option<Vec<&syn::Expr>> {
+fn tuple_expression(expr: &mut syn::Expr) -> Option<&mut syn::ExprTuple> {
     match expr {
-        syn::Expr::Paren(paren) => tuple_expression(&paren.expr),
-        syn::Expr::Tuple(tuple) => Some(tuple.elems.iter().collect()),
+        syn::Expr::Paren(paren) => tuple_expression(&mut paren.expr),
+        syn::Expr::Tuple(tuple) => Some(tuple),
         _ => None,
     }
 }
@@ -2238,6 +2285,31 @@ mod tests {
             let err = literal(foreign).expect_err("a kernel value is an f32");
             assert!(err.contains("literal in a kernel body"), "got: {err}");
         }
+    }
+
+    /// A macro that generates a body writes a long left-leaning sum, and
+    /// the parser recurses once per term, so what a term costs in stack is
+    /// how long a body can be. On rustc's own 8 MiB thread stack a dev
+    /// build parses about 2,000 terms (under 4 KiB each); a frame holding
+    /// every arm's refusal text costs about 8 KiB and stops at about 1,000.
+    /// 1,300 terms is past the second and well short of the first, so a
+    /// platform that sizes its frames differently neither flakes a pass nor
+    /// overflows by accident.
+    #[test]
+    fn a_long_chain_of_terms_parses_within_a_compiler_threads_stack() {
+        const RUSTC_THREAD_STACK: usize = 8 * 1024 * 1024;
+        const TERMS: usize = 1_300;
+        let chain = vec!["X"; TERMS].join(" + ");
+        let parsed = std::thread::Builder::new()
+            .stack_size(RUSTC_THREAD_STACK)
+            .spawn(move || {
+                let input: TokenStream = format!("|| {chain}").parse().unwrap();
+                parse(input).map(|_| ()).map_err(|e| e.to_string())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(parsed, Ok(()));
     }
 
     #[test]
