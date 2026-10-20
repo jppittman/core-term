@@ -4,14 +4,14 @@
 //!
 //! ## Grammar
 //!
-//! A `kernel!` is a block of items, parsed by syn as a `File`; the closure
-//! form is sugar for a block with one entry. A body is parsed by syn as a Rust
+//! A `kernel!` is a block of items, parsed by syn as a `File`, or one closure
+//! entry. A body is parsed by syn as a Rust
 //! expression, so precedence and associativity are Rust's. Of that syntax,
 //! this is the kernel language — what every stage accepts:
 //!
 //! ```text
 //! kernel  ::= item*                          -- the items form
-//!           | '|' params '|' expr            -- sugar: one entry, its type inferred
+//!           | '|' params '|' expr            -- the closure form: one entry, its type inferred
 //! item    ::= VIS? 'struct' RECORD '{' (field (',' field)* ','?)? '}'
 //!                                            -- a record of `f32` fields
 //!           | VIS? 'const' IDENT ':' 'f32' '=' cexpr ';'
@@ -191,19 +191,15 @@
 
 use crate::PLAN;
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ConstItem, Expr, FieldExpr, FnItem,
-    FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr, MethodCallExpr,
-    Param, RangeExpr, RecordField, RecordItem, Reduction, Spelling, Stmt, UnaryExpr, UnaryOp,
+    BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ClosureEntry, ConstItem, Expr, FieldExpr,
+    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr,
+    MethodCallExpr, Param, RangeExpr, RecordField, RecordItem, Reduction, Stmt, UnaryExpr, UnaryOp,
     is_f32, is_usize,
 };
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{Pat, Token, Type};
-
-/// The name of the closure sugar's one entry. It is never emitted: the
-/// closure form expands to an expression, not to a named function.
-const SUGAR_ENTRY: &str = "__kernel";
 
 /// Parse kernel input from token stream.
 pub(crate) fn parse(input: TokenStream) -> syn::Result<KernelDef> {
@@ -219,8 +215,7 @@ impl Parse for KernelDef {
     }
 }
 
-/// `|param: Type, ...| body`: sugar for a block with one entry, its return
-/// type inferred.
+/// `|param: Type, ...| body`: one entry, its return type inferred.
 fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
     input.parse::<Token![|]>()?;
 
@@ -263,21 +258,7 @@ fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
     let syn_expr: syn::Expr = input.parse()?;
     let body = convert_expr(syn_expr)?;
 
-    let entry = FnItem {
-        attrs: Vec::new(),
-        vis: syn::Visibility::Public(Default::default()),
-        name: syn::Ident::new(SUGAR_ENTRY, Span::call_site()),
-        structural: Vec::new(),
-        params,
-        ret: None,
-        body,
-    };
-    Ok(KernelDef {
-        spelling: Spelling::Closure,
-        records: Vec::new(),
-        consts: Vec::new(),
-        fns: vec![entry],
-    })
+    Ok(KernelDef::Closure(ClosureEntry { params, body }))
 }
 
 /// The items form: records, `const`s and `fn`s, as a `syn::File`.
@@ -289,21 +270,20 @@ fn parse_items(input: ParseStream) -> syn::Result<KernelDef> {
             "an inner attribute has no meaning in a `kernel!` block",
         ));
     }
-    let mut def = KernelDef {
-        spelling: Spelling::Items,
-        records: Vec::new(),
-        consts: Vec::new(),
-        fns: Vec::new(),
-    };
+    let (mut records, mut consts, mut fns) = (Vec::new(), Vec::new(), Vec::new());
     for item in file.items {
         match item {
-            syn::Item::Struct(item) => def.records.push(convert_record(item)?),
-            syn::Item::Const(item) => def.consts.push(convert_const(item)?),
-            syn::Item::Fn(item) => def.fns.push(convert_fn(item)?),
+            syn::Item::Struct(item) => records.push(convert_record(item)?),
+            syn::Item::Const(item) => consts.push(convert_const(item)?),
+            syn::Item::Fn(item) => fns.push(convert_fn(item)?),
             other => return Err(refuse_item(&other)),
         }
     }
-    Ok(def)
+    Ok(KernelDef::Items {
+        records,
+        consts,
+        fns,
+    })
 }
 
 /// An item that is not a record, a `const` or a `fn`, named by its kind.
@@ -485,7 +465,7 @@ fn convert_fn(item: syn::ItemFn) -> syn::Result<FnItem> {
         name: sig.ident,
         structural,
         params,
-        ret: Some(ret),
+        ret,
         body: Expr::Block(convert_block(*item.block)?),
     })
 }
@@ -1798,10 +1778,11 @@ mod tests {
     use quote::quote;
 
     /// The closure sugar's one entry.
-    fn entry(def: &KernelDef) -> &FnItem {
-        assert_eq!(def.spelling, Spelling::Closure);
-        assert_eq!(def.fns.len(), 1);
-        &def.fns[0]
+    fn entry(def: &KernelDef) -> &ClosureEntry {
+        let KernelDef::Closure(entry) = def else {
+            panic!("the closure form parses to a closure entry");
+        };
+        entry
     }
 
     #[test]
@@ -1811,8 +1792,6 @@ mod tests {
         let entry = entry(&kernel);
         assert_eq!(entry.params.len(), 1);
         assert_eq!(entry.params[0].name.to_string(), "r");
-        assert_eq!(entry.role(), Role::Entry);
-        assert!(entry.ret.is_none(), "the sugar's type is inferred");
     }
 
     #[test]
@@ -2148,16 +2127,15 @@ mod tests {
             pub fn circle(cx: f32) -> f32 { sq(X - cx) - R }
         };
         let def = parse(input).unwrap();
-        assert_eq!(def.spelling, Spelling::Items);
-        assert_eq!(def.consts.len(), 2);
-        assert!(matches!(def.consts[0].vis, syn::Visibility::Inherited));
-        assert!(matches!(def.consts[1].vis, syn::Visibility::Public(_)));
-        assert_eq!(def.fns.len(), 2);
-        assert_eq!(def.fns[0].role(), Role::Helper);
-        assert_eq!(def.fns[0].attrs.len(), 1, "the doc comment is kept");
-        assert_eq!(def.fns[1].role(), Role::Entry);
-        assert_eq!(def.fns[1].params.len(), 1);
-        assert!(def.fns[1].ret.is_some(), "the return type is declared");
+        assert!(matches!(def, KernelDef::Items { .. }));
+        assert_eq!(def.consts().len(), 2);
+        assert!(matches!(def.consts()[0].vis, syn::Visibility::Inherited));
+        assert!(matches!(def.consts()[1].vis, syn::Visibility::Public(_)));
+        assert_eq!(def.fns().len(), 2);
+        assert_eq!(def.fns()[0].role(), Role::Helper);
+        assert_eq!(def.fns()[0].attrs.len(), 1, "the doc comment is kept");
+        assert_eq!(def.fns()[1].role(), Role::Entry);
+        assert_eq!(def.fns()[1].params.len(), 1);
     }
 
     /// `if c { a } else { b }` and an `else if` chain parse as the choice.
@@ -2227,8 +2205,8 @@ mod tests {
             pub fn f(p: Row) -> f32 { p.x0 }
         })
         .expect("parses");
-        let [row] = def.records.as_slice() else {
-            panic!("one record, got {:?}", def.records);
+        let [row] = def.records() else {
+            panic!("one record, got {:?}", def.records());
         };
         assert_eq!(row.name.to_string(), "Row");
         assert!(matches!(row.vis, syn::Visibility::Public(_)));
@@ -2301,8 +2279,8 @@ mod tests {
             pub fn f() -> f32 { X }
         })
         .expect("parses");
-        let [row] = def.records.as_slice() else {
-            panic!("one record, got {}", def.records.len());
+        let [row] = def.records() else {
+            panic!("one record, got {}", def.records().len());
         };
         let paths: Vec<String> = row
             .attrs
@@ -2322,13 +2300,13 @@ mod tests {
             pub fn f<const N: usize, const M: usize>(r: f32) -> f32 { h(r) }
         })
         .expect("parses");
-        let names: Vec<String> = def.fns[1]
+        let names: Vec<String> = def.fns()[1]
             .structural
             .iter()
             .map(ToString::to_string)
             .collect();
         assert_eq!(names, ["N", "M"]);
-        assert!(def.fns[0].structural.is_empty());
+        assert!(def.fns()[0].structural.is_empty());
     }
 
     // ───────────────────────────── folds ─────────────────────────────
@@ -2747,8 +2725,8 @@ mod tests {
             pub fn f(k: impl Fn(f32, f32) -> f32, r: f32) -> f32 { k(X, Y) * r }
         })
         .expect("an entry's kernel-typed parameter parses");
-        assert!(def.fns[0].params[0].is_kernel());
-        assert!(!def.fns[0].params[1].is_kernel());
+        assert!(def.fns()[0].params[0].is_kernel());
+        assert!(!def.fns()[0].params[1].is_kernel());
         // However it is spelled: bare, in parentheses, through a macro's
         // `$t:ty` (an invisible group), or as some other function.
         let grouped = proc_macro2::Group::new(

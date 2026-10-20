@@ -15,16 +15,19 @@
 //!
 //! ```text
 //! KernelDef
-//!   ├── spelling: Closure | Items     // how the macro's value is spelled
-//!   ├── records: [RecordItem, ...]    // `struct R { a: f32, b: f32 }`
-//!   ├── consts: [ConstItem, ...]      // `const NAME: f32 = expr;`
-//!   └── fns: [FnItem, ...]            // `pub fn` entries and private helpers
+//!   ├── Closure(ClosureEntry)         // `|a: f32, …| e`: one entry, its type inferred
+//!   │     ├── params: [(name, type), ...]
+//!   │     └── body: Expr
+//!   └── Items                         // `kernel! { … }`
+//!         ├── records: [RecordItem, ...]  // `struct R { a: f32, b: f32 }`
+//!         ├── consts: [ConstItem, ...]    // `const NAME: f32 = expr;`
+//!         └── fns: [FnItem, ...]          // `pub fn` entries and private helpers
 //!
 //! FnItem
 //!   ├── vis                           // `pub` makes an entry; private is a helper
 //!   ├── structural: [name, ...]       // an entry's `const N: usize` parameters
 //!   ├── params: [(name, type), ...]   // scalar and record parameters
-//!   ├── ret: type                     // declared; absent only for the closure sugar
+//!   ├── ret: type                     // declared
 //!   └── body: Expr
 //!
 //! Expr
@@ -46,24 +49,59 @@ use proc_macro2::Span;
 use syn::ext::IdentExt;
 use syn::{Ident, Type};
 
-/// A complete kernel definition: the items of a `kernel!` block.
+/// A complete kernel definition: what a `kernel!` invocation spells.
 ///
-/// The closure form `|a: f32, …| e` is sugar for a block with one entry, so
-/// every stage after the parser sees one shape; only emission asks how the
-/// result is spelled.
+/// A sum of the two spellings. The closure form is one entry — parameters and
+/// a body, its type inferred — and its expansion is an expression; the items
+/// form is a block of records, `const`s and `fn`s, and its expansion is
+/// items. The stages that treat both alike read [`Self::records`],
+/// [`Self::consts`] and [`Self::fns`], which a closure has none of.
 #[derive(Debug, Clone)]
-pub(crate) struct KernelDef {
-    /// How the macro's value is spelled.
-    pub spelling: Spelling,
-    /// The block's records, in declaration order: [`RecordId`] indexes this.
-    pub records: Vec<RecordItem>,
-    /// The block's `const` items, in declaration order.
-    pub consts: Vec<ConstItem>,
-    /// The block's `fn` items — entries and helpers — in declaration order.
-    pub fns: Vec<FnItem>,
+pub(crate) enum KernelDef {
+    /// `kernel!(|a: f32, …| e)`: the expansion is an expression — a `Kernel`
+    /// with no parameters, a closure over their `f32`s with some, each one a
+    /// uniform.
+    Closure(ClosureEntry),
+    /// `kernel! { struct …; const …; fn …; pub fn … }`: the expansion is
+    /// items — a host struct per record, a host `const` per `pub const`, and
+    /// per entry a host `fn` and, when it has parameters, its `Args` record.
+    Items {
+        /// The block's records, in declaration order: [`RecordId`] indexes
+        /// this.
+        records: Vec<RecordItem>,
+        /// The block's `const` items, in declaration order.
+        consts: Vec<ConstItem>,
+        /// The block's `fn` items — entries and helpers — in declaration
+        /// order.
+        fns: Vec<FnItem>,
+    },
 }
 
 impl KernelDef {
+    /// The block's records, in declaration order.
+    pub(crate) fn records(&self) -> &[RecordItem] {
+        match self {
+            KernelDef::Closure(_) => &[],
+            KernelDef::Items { records, .. } => records,
+        }
+    }
+
+    /// The block's `const` items, in declaration order.
+    pub(crate) fn consts(&self) -> &[ConstItem] {
+        match self {
+            KernelDef::Closure(_) => &[],
+            KernelDef::Items { consts, .. } => consts,
+        }
+    }
+
+    /// The block's `fn` items, in declaration order.
+    pub(crate) fn fns(&self) -> &[FnItem] {
+        match self {
+            KernelDef::Closure(_) => &[],
+            KernelDef::Items { fns, .. } => fns,
+        }
+    }
+
     /// The record a declared type names, if it names one of the block's.
     ///
     /// The one resolution of a record's name: `sema` types a parameter by
@@ -71,7 +109,7 @@ impl KernelDef {
     /// two stages can disagree about which record a type is.
     pub(crate) fn record_named(&self, ty: &Type) -> Option<RecordId> {
         let name = bare_name(ty)?;
-        self.records
+        self.records()
             .iter()
             .position(|record| record.name == *name)
             .map(RecordId)
@@ -79,8 +117,44 @@ impl KernelDef {
 
     /// The record `id` names.
     pub(crate) fn record(&self, id: RecordId) -> &RecordItem {
-        &self.records[id.0]
+        &self.records()[id.0]
     }
+}
+
+/// The closure form's one entry: `|a: f32, …| e`.
+///
+/// It has no name, no visibility and no declared return type, because it
+/// is never a host function: its type is inferred, and it has no
+/// structural parameters, records or helpers to be generic over.
+#[derive(Debug, Clone)]
+pub(crate) struct ClosureEntry {
+    pub params: Vec<Param>,
+    /// The kernel body expression.
+    pub body: Expr,
+}
+
+impl ClosureEntry {
+    pub(crate) fn callable(&self) -> Callable<'_> {
+        Callable {
+            role: Role::Entry,
+            structural: &[],
+            params: &self.params,
+            body: &self.body,
+        }
+    }
+}
+
+/// What `sema` and lowering read of a function: its role, its structural
+/// and ordinary parameters, and its body. An item's [`FnItem::callable`] and
+/// the closure's [`ClosureEntry::callable`] are the two ways to have one, so
+/// a stage that handles an entry handles either spelling of it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Callable<'a> {
+    pub role: Role,
+    /// An entry's structural parameters; a helper has none.
+    pub structural: &'a [Ident],
+    pub params: &'a [Param],
+    pub body: &'a Expr,
 }
 
 /// Which of the block's records a type is: an index into
@@ -118,19 +192,6 @@ pub(crate) struct RecordField {
     pub ty: Type,
 }
 
-/// How a `kernel!` invocation spells its value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Spelling {
-    /// `kernel!(|a: f32, …| e)`: one entry, and the expansion is an
-    /// expression — a `Kernel` with no parameters, a closure over their
-    /// `f32`s with some, each one a uniform.
-    Closure,
-    /// `kernel! { struct …; const …; fn …; pub fn … }`: the expansion is
-    /// items — a host struct per record, a host `const` per `pub const`, and
-    /// per entry a host `fn` and, when it has parameters, its `Args` record.
-    Items,
-}
-
 /// A `const NAME: f32 = expr;` or `const NAME: usize = expr;` item,
 /// evaluated at expansion.
 #[derive(Debug, Clone)]
@@ -160,9 +221,8 @@ pub(crate) struct FnItem {
     /// in a range's bounds or as `N as f32`. A helper has none.
     pub structural: Vec<Ident>,
     pub params: Vec<Param>,
-    /// The declared return type. `None` only for the closure sugar, whose
-    /// type is inferred.
-    pub ret: Option<Type>,
+    /// The declared return type.
+    pub ret: Type,
     /// The kernel body expression.
     pub body: Expr,
 }
@@ -178,6 +238,15 @@ pub(crate) enum Role {
 }
 
 impl FnItem {
+    pub(crate) fn callable(&self) -> Callable<'_> {
+        Callable {
+            role: self.role(),
+            structural: &self.structural,
+            params: &self.params,
+            body: &self.body,
+        }
+    }
+
     /// An entry is any `fn` with a visibility; a helper has none.
     pub(crate) fn role(&self) -> Role {
         match self.vis {
@@ -844,7 +913,7 @@ mod tests {
                 name: syn::parse_str(entry).expect("an identifier"),
                 structural: Vec::new(),
                 params: Vec::new(),
-                ret: None,
+                ret: syn::parse_quote!(f32),
                 body: Expr::Paren(Box::new(Expr::Ident(syn::parse_quote!(X)))),
             };
             assert_eq!(item.args_record().to_string(), args, "{entry}");

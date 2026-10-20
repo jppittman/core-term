@@ -70,9 +70,9 @@
 
 use crate::PLAN;
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ConstItem, Expr, FieldExpr, FnItem,
-    FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, MethodCallExpr, Param, RangeExpr,
-    RecordField, RecordId, Reduction, Role, Spelling, Stmt, UnaryOp, bare_name,
+    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Callable, CastExpr, ConstItem, Expr, FieldExpr,
+    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, MethodCallExpr, Param, RangeExpr,
+    RecordField, RecordId, Reduction, Role, Stmt, UnaryOp, bare_name,
 };
 use crate::lower::{LIBRARY_METHODS, Projection};
 use crate::symbol::{SymbolKind, SymbolTable};
@@ -232,36 +232,39 @@ pub(crate) struct AnalyzedKernel {
 /// An entry's parameter as its program sees it (plan §1.4): a uniform
 /// scalar, or a record of them.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Parameter<'a> {
-    pub name: &'a Ident,
-    /// The record it is, with that record's fields, or `None` for an `f32`.
-    pub record: Option<(RecordId, &'a [RecordField])>,
+pub(crate) enum Parameter<'a> {
+    /// An `f32`: one uniform.
+    Scalar(&'a Ident),
+    /// One of the block's records, with that record's fields: one uniform per
+    /// field.
+    Record {
+        name: &'a Ident,
+        id: RecordId,
+        fields: &'a [RecordField],
+    },
 }
 
-/// One uniform scalar of an entry: a parameter, or one field of a record
-/// parameter — what the host function's argument `param` or `param.field`
-/// is, for this call.
+/// One uniform scalar of an entry — what the host function's argument is,
+/// for this call.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Scalar<'a> {
-    pub param: &'a Ident,
-    pub field: Option<&'a Ident>,
+pub(crate) enum Scalar<'a> {
+    /// A parameter: `param`.
+    Param(&'a Ident),
+    /// One field of a record parameter: `param.field`.
+    Field(&'a Ident, &'a Ident),
 }
 
 impl<'a> Parameter<'a> {
     /// Its uniform scalars, in the order its program declares them: the
     /// parameter itself, or its record's fields in field order.
-    pub(crate) fn scalars(self) -> impl Iterator<Item = Scalar<'a>> {
-        let param = self.name;
-        let (whole, fields): (Option<Scalar<'a>>, &'a [RecordField]) = match self.record {
-            None => (Some(Scalar { param, field: None }), &[]),
-            Some((_, fields)) => (None, fields),
-        };
-        whole
-            .into_iter()
-            .chain(fields.iter().map(move |field| Scalar {
-                param,
-                field: Some(&field.name),
-            }))
+    pub(crate) fn scalars(self) -> Vec<Scalar<'a>> {
+        match self {
+            Parameter::Scalar(name) => vec![Scalar::Param(name)],
+            Parameter::Record { name, fields, .. } => fields
+                .iter()
+                .map(|field| Scalar::Field(name, &field.name))
+                .collect(),
+        }
     }
 }
 
@@ -273,17 +276,17 @@ impl AnalyzedKernel {
     /// by it — so a positional binding cannot disagree with the program it
     /// binds. A kernel-typed parameter is not among them: its uniforms are
     /// the argument's, declared after these ([`Self::kernel_parameters`]).
-    pub(crate) fn parameters<'a>(&'a self, entry: &'a FnItem) -> Vec<Parameter<'a>> {
-        entry
-            .params
+    pub(crate) fn parameters<'a>(&'a self, params: &'a [Param]) -> Vec<Parameter<'a>> {
+        params
             .iter()
             .filter(|param| !param.is_kernel())
-            .map(|param| Parameter {
-                name: &param.name,
-                record: self
-                    .def
-                    .record_named(&param.ty)
-                    .map(|id| (id, self.def.record(id).fields.as_slice())),
+            .map(|param| match self.def.record_named(&param.ty) {
+                None => Parameter::Scalar(&param.name),
+                Some(id) => Parameter::Record {
+                    name: &param.name,
+                    id,
+                    fields: self.def.record(id).fields.as_slice(),
+                },
             })
             .collect()
     }
@@ -294,9 +297,8 @@ impl AnalyzedKernel {
     /// ([`Self::parameters`]) — `Kernel`'s rule for a composition's
     /// operands, which a positional binding of the composed program reads
     /// (O3 of the plan).
-    pub(crate) fn kernel_parameters<'a>(&self, entry: &'a FnItem) -> Vec<&'a Ident> {
-        entry
-            .params
+    pub(crate) fn kernel_parameters<'a>(&self, params: &'a [Param]) -> Vec<&'a Ident> {
+        params
             .iter()
             .filter(|param| param.is_kernel())
             .map(|param| &param.name)
@@ -307,20 +309,27 @@ impl AnalyzedKernel {
 /// Perform semantic analysis on a parsed kernel.
 pub(crate) fn analyze(def: KernelDef) -> syn::Result<AnalyzedKernel> {
     let items = Items::collect(&def)?;
-    let consts = evaluate_consts(&def.consts, &items.consts)?;
-    for f in &def.fns {
-        FnAnalyzer::new(f, &items, &consts)?.check(f)?;
+    let consts = evaluate_consts(def.consts(), &items.consts)?;
+    match &def {
+        KernelDef::Closure(entry) => {
+            FnAnalyzer::new(entry.callable(), &items, &consts)?.check_inferred(&entry.body)?;
+        }
+        KernelDef::Items { fns, .. } => {
+            for f in fns {
+                FnAnalyzer::new(f.callable(), &items, &consts)?.check(f)?;
+            }
+            require_an_entry(fns)?;
+        }
     }
-    refuse_recursion(&def.fns)?;
-    require_an_entry(&def)?;
+    refuse_recursion(def.fns())?;
     Ok(AnalyzedKernel { def, consts })
 }
 
 /// A block whose expansion would be empty is refused rather than expanded
 /// to nothing.
-fn require_an_entry(def: &KernelDef) -> syn::Result<()> {
-    let has_entry = def.fns.iter().any(|f| f.role() == Role::Entry);
-    if def.spelling == Spelling::Items && !has_entry {
+fn require_an_entry(fns: &[FnItem]) -> syn::Result<()> {
+    let has_entry = fns.iter().any(|f| f.role() == Role::Entry);
+    if !has_entry {
         return Err(syn::Error::new(
             Span::call_site(),
             "a `kernel!` block with no entry emits nothing\n\
@@ -357,9 +366,7 @@ const MAX_TYPO_CHAR_DIFF: usize = 2;
 struct Signature {
     role: Role,
     params: Vec<Ty>,
-    /// `None` only for the closure sugar's entry, whose type is inferred; an
-    /// entry is never called, so it is never consulted.
-    ret: Option<Ty>,
+    ret: Ty,
 }
 
 /// The block's items by name: what every body can see besides its own
@@ -381,18 +388,18 @@ impl<'a> Items<'a> {
     fn collect(def: &'a KernelDef) -> syn::Result<Self> {
         let mut items = Items {
             def,
-            records: HashSet::with_capacity(def.records.len()),
-            consts: HashMap::with_capacity(def.consts.len()),
-            fns: HashMap::with_capacity(def.fns.len()),
+            records: HashSet::with_capacity(def.records().len()),
+            consts: HashMap::with_capacity(def.consts().len()),
+            fns: HashMap::with_capacity(def.fns().len()),
         };
-        for record in &def.records {
+        for record in def.records() {
             items.refuse_a_taken_name(&record.name)?;
             items.records.insert(record.name.to_string());
         }
-        for record in &def.records {
+        for record in def.records() {
             items.check_fields(&record.fields)?;
         }
-        for c in &def.consts {
+        for c in def.consts() {
             items.refuse_a_taken_name(&c.name)?;
             let ty = match Ty::from_syn(&c.ty) {
                 Some(ty @ (Ty::F32 | Ty::Usize)) => ty,
@@ -409,7 +416,7 @@ impl<'a> Items<'a> {
             };
             items.consts.insert(c.name.to_string(), ty);
         }
-        for f in &def.fns {
+        for f in def.fns() {
             items.refuse_a_taken_name(&f.name)?;
             let signature = items.signature(f)?;
             items.fns.insert(f.name.to_string(), signature);
@@ -450,8 +457,8 @@ impl<'a> Items<'a> {
     /// struct beside the block's records, so its name is one no record and
     /// no other entry's `Args` takes.
     fn refuse_a_taken_args_record(&self) -> syn::Result<()> {
-        let mut taken: HashMap<String, &Ident> = HashMap::with_capacity(self.def.fns.len());
-        let entries = self.def.fns.iter().filter(|f| f.role() == Role::Entry);
+        let mut taken: HashMap<String, &Ident> = HashMap::with_capacity(self.def.fns().len());
+        let entries = self.def.fns().iter().filter(|f| f.role() == Role::Entry);
         for entry in entries.filter(|f| f.has_args_record()) {
             let args = entry.args_record().to_string();
             let clash = match taken.get(&args) {
@@ -545,10 +552,7 @@ impl<'a> Items<'a> {
         for param in &f.params {
             params.push(self.param_type(param, role)?);
         }
-        let ret = match &f.ret {
-            None => None,
-            Some(ty) => Some(self.return_type(ty)?),
-        };
+        let ret = self.return_type(&f.ret)?;
         Ok(Signature { role, params, ret })
     }
 
@@ -656,15 +660,15 @@ impl<'a> FnAnalyzer<'a> {
     /// The scope a body opens in: the coordinates, the block's `const`s, and
     /// the `fn`'s own structural and scalar parameters.
     fn new(
-        f: &'a FnItem,
+        f: Callable<'a>,
         items: &'a Items<'a>,
         consts: &'a HashMap<String, ConstValue>,
     ) -> syn::Result<Self> {
         let mut analyzer = FnAnalyzer {
             items,
             consts,
-            structural: &f.structural,
-            role: f.role(),
+            structural: f.structural,
+            role: f.role,
             symbols: SymbolTable::new(),
             folds_open: 0,
             moved: HashMap::new(),
@@ -672,11 +676,11 @@ impl<'a> FnAnalyzer<'a> {
         for (name, &ty) in &items.consts {
             analyzer.symbols.register_const(name, ty);
         }
-        for count in &f.structural {
+        for count in f.structural {
             analyzer.register_structural(count)?;
         }
-        let signature = &items.fns[&f.name.to_string()];
-        for (param, &ty) in f.params.iter().zip(&signature.params) {
+        for param in f.params {
+            let ty = items.param_type(param, f.role)?;
             analyzer.register_parameter(param, ty)?;
         }
         Ok(analyzer)
@@ -684,15 +688,18 @@ impl<'a> FnAnalyzer<'a> {
 
     /// Type the body, and check it against the declared return type.
     fn check(mut self, f: &FnItem) -> syn::Result<()> {
-        let Some(want) = self.items.fns[&f.name.to_string()].ret else {
-            self.type_of(&f.body)?;
-            return Ok(());
-        };
+        let want = self.items.fns[&f.name.to_string()].ret;
         self.expect(
             &f.body,
             want,
             &format!("`{}` declares that it returns `{}`", f.name, want.name()),
         )?;
+        Ok(())
+    }
+
+    /// Type a body whose type is inferred: the closure form's.
+    fn check_inferred(mut self, body: &Expr) -> syn::Result<()> {
+        self.type_of(body)?;
         Ok(())
     }
 
@@ -1420,9 +1427,7 @@ impl<'a> FnAnalyzer<'a> {
             }
             self.expect(arg, want, &what)?;
         }
-        Ok(signature
-            .ret
-            .expect("a helper declares its return type: the parser requires one"))
+        Ok(signature.ret)
     }
 
     /// Analyze a block expression in a scope of its own.

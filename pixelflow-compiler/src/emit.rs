@@ -14,7 +14,7 @@
 //! has somewhere to stand.
 //!
 //! What is emitted depends on how the block was spelled
-//! ([`Spelling`](crate::ast::Spelling)). The closure form is an expression:
+//! ([`KernelDef`]). The closure form is an expression:
 //! a `Kernel`, or a closure over its parameters' `f32`s returning one. The
 //! items form is items: a host `#[repr(C)]` struct per record, a host `const`
 //! per `pub const`, and per entry a host `fn` returning a `Kernel` and, when
@@ -54,9 +54,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use crate::ast::{ConstItem, FnItem, RecordItem, Role, Spelling};
+use crate::ast::{Callable, ClosureEntry, ConstItem, FnItem, KernelDef, RecordItem, Role};
 use crate::lower::{Expansion, FoldRange, Holes, Lowered, Site, lower_entry};
-use crate::sema::{AnalyzedKernel, ConstValue, Scalar};
+use crate::sema::{AnalyzedKernel, ConstValue, Parameter, Scalar};
 use pixelflow_ir::arena::Axis;
 use pixelflow_ir::{Binder, Monoid};
 
@@ -88,27 +88,28 @@ pub(crate) fn emit_kernel(
     analyzed: &AnalyzedKernel,
     optimizer: &mut dyn Optimize,
 ) -> Result<TokenStream, String> {
-    match analyzed.def.spelling {
-        Spelling::Closure => {
-            let [entry] = analyzed.def.fns.as_slice() else {
-                unreachable!("the closure form parses to exactly one entry");
-            };
-            let arena_code = entry_arena(entry, analyzed, optimizer)?;
+    match &analyzed.def {
+        KernelDef::Closure(entry) => {
+            let arena_code = entry_arena(entry.callable(), analyzed, optimizer)?;
             Ok(emit_closure(entry, &arena_code))
         }
-        Spelling::Items => {
+        KernelDef::Items {
+            records,
+            consts,
+            fns,
+        } => {
             let mut items = TokenStream::new();
-            for record in &analyzed.def.records {
+            for record in records {
                 items.extend(emit_record(record));
             }
-            for c in analyzed.def.consts.iter().filter(|c| is_pub(&c.vis)) {
+            for c in consts.iter().filter(|c| is_pub(&c.vis)) {
                 items.extend(emit_const(c, analyzed.consts[&c.name.to_string()]));
             }
-            for entry in analyzed.def.fns.iter().filter(|f| f.role() == Role::Entry) {
+            for entry in fns.iter().filter(|f| f.role() == Role::Entry) {
                 let body = match entry.takes_a_kernel() {
-                    true => Staged::lower(entry, analyzed)?,
+                    true => Staged::lower(entry.callable(), analyzed)?,
                     false => {
-                        let arena_code = entry_arena(entry, analyzed, optimizer)?;
+                        let arena_code = entry_arena(entry.callable(), analyzed, optimizer)?;
                         quote! {
                             let (__arena, __root) = #arena_code;
                             ::pixelflow_core::Kernel::from_parts(__arena, __root)
@@ -136,19 +137,19 @@ fn is_pub(vis: &syn::Visibility) -> bool {
 /// instantiation is baked — "no optimization runs at expansion unless the
 /// instance is declared" (plan §1.8, Phase E).
 fn entry_arena(
-    entry: &FnItem,
+    entry: Callable<'_>,
     analyzed: &AnalyzedKernel,
     optimizer: &mut dyn Optimize,
 ) -> Result<TokenStream, String> {
     let Lowered { arena, root, holes } = Expansion::lower(entry, analyzed)?;
     let context = EntryContext {
         arguments: analyzed
-            .parameters(entry)
+            .parameters(entry.params)
             .into_iter()
-            .flat_map(|parameter| parameter.scalars())
+            .flat_map(Parameter::scalars)
             .map(argument)
             .collect(),
-        structural: &entry.structural,
+        structural: entry.structural,
         holes: &holes,
     };
     if !entry.structural.is_empty() {
@@ -174,10 +175,9 @@ fn entry_arena(
 /// What a scalar argument is in the host function: `param`, or
 /// `param.field` for a record parameter's field.
 fn argument(scalar: Scalar<'_>) -> TokenStream {
-    let param = scalar.param;
-    match scalar.field {
-        None => quote!(#param),
-        Some(field) => quote!(#param.#field),
+    match scalar {
+        Scalar::Param(param) => quote!(#param),
+        Scalar::Field(param, field) => quote!(#param.#field),
     }
 }
 
@@ -191,7 +191,7 @@ pub(crate) struct EntryContext<'a> {
 }
 
 /// The closure form's expansion: a `Kernel`, or a closure over `f32`s.
-fn emit_closure(entry: &FnItem, arena_code: &TokenStream) -> TokenStream {
+fn emit_closure(entry: &ClosureEntry, arena_code: &TokenStream) -> TokenStream {
     let body = quote! {
         let (__arena, __root) = #arena_code;
         ::pixelflow_core::Kernel::from_parts(__arena, __root)
@@ -199,11 +199,12 @@ fn emit_closure(entry: &FnItem, arena_code: &TokenStream) -> TokenStream {
     if entry.params.is_empty() {
         return quote! {{ #body }};
     }
-    // Every parameter is an `f32`: the closure sugar has no records, and
-    // `sema` refuses a `bool` parameter of an entry.
-    let names = entry.params.iter().map(|p| &p.name);
+    let params = entry.params.iter().map(|p| {
+        let (name, ty) = (&p.name, &p.ty);
+        quote!(#name: #ty)
+    });
     quote! {
-        move | #( #names: f32 ),* | -> ::pixelflow_core::Kernel { #body }
+        move | #( #params ),* | -> ::pixelflow_core::Kernel { #body }
     }
 }
 
@@ -268,9 +269,9 @@ fn emit_args(entry: &FnItem, analyzed: &AnalyzedKernel) -> TokenStream {
         }
     });
     let values = analyzed
-        .parameters(entry)
+        .parameters(&entry.params)
         .into_iter()
-        .flat_map(|parameter| parameter.scalars())
+        .flat_map(Parameter::scalars)
         .map(|scalar| {
             let value = argument(scalar);
             quote!(self.#value)
@@ -653,7 +654,7 @@ impl Staged {
     /// # Errors
     ///
     /// When the body has a construct lowering cannot express.
-    fn lower(entry: &FnItem, analyzed: &AnalyzedKernel) -> Result<TokenStream, String> {
+    fn lower(entry: Callable<'_>, analyzed: &AnalyzedKernel) -> Result<TokenStream, String> {
         let mut site = Staged::default();
         let root = lower_entry(entry, analyzed, &mut site)?;
         let statements = site.statements;

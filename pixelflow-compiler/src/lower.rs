@@ -60,11 +60,12 @@
 
 use crate::PLAN;
 use crate::ast::{
-    BinaryOp, BlockExpr, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt, RecordId, Reduction,
-    Role, Stmt, UnaryOp,
+    BinaryOp, BlockExpr, Callable, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt, RecordId,
+    Reduction, Role, Stmt, UnaryOp,
 };
 use crate::sema::{
-    AnalyzedKernel, Bounds, ConstValue, RangeScope, Scalar, StructuralRange, range_bounds,
+    AnalyzedKernel, Bounds, ConstValue, Parameter, RangeScope, Scalar, StructuralRange,
+    range_bounds,
 };
 use crate::symbol::Scopes;
 use pixelflow_ir::arena::{
@@ -396,7 +397,7 @@ impl Expansion {
     /// When the body has a construct lowering cannot express, or `entry`
     /// takes a kernel — an argument that exists only when its host function
     /// is called.
-    pub(crate) fn lower(entry: &FnItem, analyzed: &AnalyzedKernel) -> Result<Lowered, String> {
+    pub(crate) fn lower(entry: Callable<'_>, analyzed: &AnalyzedKernel) -> Result<Lowered, String> {
         let mut site = Expansion::default();
         let root = lower_entry(entry, analyzed, &mut site)?;
         Ok(Lowered {
@@ -539,41 +540,46 @@ impl Site for Expansion {
 ///
 /// When the body has a construct lowering cannot express there.
 pub(crate) fn lower_entry<S: Site>(
-    entry: &FnItem,
+    entry: Callable<'_>,
     analyzed: &AnalyzedKernel,
     site: &mut S,
 ) -> Result<S::Term, String> {
     let helpers = analyzed
         .def
-        .fns
+        .fns()
         .iter()
         .filter(|f| f.role() == Role::Helper)
         .map(|f| (f.name.to_string(), f))
         .collect();
     let mut locals = Scopes::default();
-    for parameter in analyzed.parameters(entry) {
-        let mut uniforms = parameter.scalars().map(|scalar| site.uniform(scalar));
-        let binding = match parameter.record {
-            Some((record, _)) => Binding::Record(record, uniforms.collect()),
-            None => Binding::Value(uniforms.next().expect("a scalar parameter is one uniform")),
+    for parameter in analyzed.parameters(entry.params) {
+        let (name, binding) = match parameter {
+            Parameter::Scalar(name) => (name, Binding::Value(site.uniform(Scalar::Param(name)))),
+            Parameter::Record { name, id, fields } => {
+                let uniforms = fields
+                    .iter()
+                    .map(|field| site.uniform(Scalar::Field(name, &field.name)))
+                    .collect();
+                (name, Binding::Record(id, uniforms))
+            }
         };
-        locals.bind(parameter.name.to_string(), binding);
+        locals.bind(name.to_string(), binding);
     }
-    for name in analyzed.kernel_parameters(entry) {
+    for name in analyzed.kernel_parameters(entry.params) {
         let argument = site.kernel_parameter(name)?;
         locals.bind(name.to_string(), Binding::Kernel(argument));
     }
     let mut lowering = Lowering {
         program: Program { analyzed, helpers },
         frame: Frame {
-            role: entry.role(),
-            structural: &entry.structural,
+            role: entry.role,
+            structural: entry.structural,
             locals,
         },
         site,
         open_folds: 0,
     };
-    lowering.lower(&entry.body)
+    lowering.lower(entry.body)
 }
 
 /// The block's items: what every body can name besides its own scope.
@@ -1045,6 +1051,7 @@ impl<S: Site> Lowering<'_, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::KernelDef;
     use crate::parser::parse;
     use crate::sema::Ty;
     use pixelflow_ir::arena::ExprNode;
@@ -1058,7 +1065,7 @@ mod tests {
     fn lower_unanalyzed(input: proc_macro2::TokenStream) -> Result<(ExprArena, ExprId), String> {
         let def = parse(input).expect("the body parses");
         let consts = def
-            .consts
+            .consts()
             .iter()
             .map(|c| {
                 let Expr::Literal(lit) = &c.init else {
@@ -1072,12 +1079,14 @@ mod tests {
             })
             .collect();
         let unanalyzed = AnalyzedKernel { def, consts };
-        let entry = unanalyzed
-            .def
-            .fns
-            .iter()
-            .find(|f| f.role() == Role::Entry)
-            .expect("one entry");
+        let entry = match &unanalyzed.def {
+            KernelDef::Closure(entry) => entry.callable(),
+            KernelDef::Items { fns, .. } => fns
+                .iter()
+                .find(|f| f.role() == Role::Entry)
+                .expect("one entry")
+                .callable(),
+        };
         let Lowered { arena, root, .. } = Expansion::lower(entry, &unanalyzed)?;
         Ok((arena, root))
     }
