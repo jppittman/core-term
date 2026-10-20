@@ -59,11 +59,12 @@ use super::policy::{
     self, Budget, CARRY_RESERVE, Candidate, EvictionRank, GENERAL_CARRY_RESERVE, Store,
 };
 use super::resource::{Frame, FrameBytes, In, InOut, Leases, Lent, Out, Pool, SlotLease, SlotName};
-use crate::emit::asm::{AsmProgram, Item, Label, Labels};
+use super::{Allocated, Emitted, Origin, RegisterAllocator};
+use crate::emit::asm::Label;
 use crate::emit::build::{self, Spiller};
 use crate::emit::{
-    Access, Block, Bound, CONST_POOL_ALIGN, Class, ClassId, Constants, File, FileId, FrameSlot,
-    Function, IsaBackend, Loop, Operand, Pushed, Rebind, Selected, Target, Value, ValueName,
+    Access, Block, Bound, Class, ClassId, File, FileId, FrameSlot, Function, IsaBackend, Operand,
+    Pushed, Rebind, Selected, Target, Value, ValueName,
 };
 use crate::error::CompileError;
 use crate::pass::Pass;
@@ -71,80 +72,6 @@ use alloc::collections::{BTreeMap, BinaryHeap};
 use alloc::vec::Vec;
 use core::cmp::Reverse;
 use core::ops::Range;
-
-/// Why an instruction is there. `EmitTraffic` counts them per scope.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(in crate::emit) enum Origin {
-    Selected,
-    /// A definition the backend can recompute, placed again where a read needs
-    /// its value in a register ([`IsaBackend::rematerializable`]):
-    /// `EmitTraffic`'s remats when it reads the constant pool
-    /// ([`IsaBackend::reads_pool`]).
-    Remat,
-    Spill,
-    Reload,
-    /// A register copy ([`IsaBackend::copy`]): an operand the instruction
-    /// overwrites in place, which is read again later.
-    Copy,
-}
-
-/// An allocated instruction, and why it is there.
-pub(in crate::emit) struct Emitted<'m, B: IsaBackend> {
-    pub(in crate::emit) inst: B::Inst<Bound<'m, B>>,
-    pub(in crate::emit) origin: Origin,
-}
-
-/// An allocated kernel: every register a borrowed token, every slot a
-/// borrowed slot, every block argument a placed move. A block has no
-/// parameters: they are slots.
-pub(in crate::emit) struct Allocated<'m, B: IsaBackend> {
-    pub(in crate::emit) blocks: Vec<Block<Emitted<'m, B>>>,
-    pub(in crate::emit) loops: Vec<Loop>,
-    constants: Constants<B::Constant>,
-    labels: Labels,
-    /// The position after the last instruction, where the data section's
-    /// padding begins.
-    pub(in crate::emit) text_end: Label,
-    pub(in crate::emit) frame_bytes: u64,
-    /// Frame slots minted.
-    pub(in crate::emit) slots: u64,
-    /// Values read inside a loop that does not contain their definition.
-    pub(in crate::emit) hoisted: u64,
-    pub(in crate::emit) scheduled: Vec<u64>,
-}
-
-impl<'m, B: IsaBackend> Allocated<'m, B> {
-    /// The kernel as a program for the assembler: its code, then its pool.
-    /// The program owns the label mint from here on.
-    pub(in crate::emit) fn program(&mut self) -> AsmProgram<&Emitted<'m, B>> {
-        let mut text = Vec::new();
-        for block in &self.blocks {
-            text.push(Item::Bind(block.label));
-            text.extend(block.insts.iter().map(Item::Inst));
-        }
-        text.push(Item::Bind(self.text_end));
-        let mut data = Vec::new();
-        if !self.constants.entries.is_empty() {
-            data.push(Item::Align(CONST_POOL_ALIGN as u64));
-        }
-        data.push(Item::Bind(self.constants.label));
-        for &(label, constant) in &self.constants.entries {
-            let bytes = B::constant_bytes(constant);
-            assert_eq!(
-                bytes.len(),
-                size_of::<B::Constant>(),
-                "pool entries sit back to back, so `Constant::offset` is the entry's size times its index"
-            );
-            data.push(Item::Bind(label));
-            data.push(Item::Bytes(bytes));
-        }
-        AsmProgram {
-            text,
-            data,
-            labels: core::mem::take(&mut self.labels),
-        }
-    }
-}
 
 /// What the allocator knows of one value before it places anything.
 struct Life {
@@ -521,9 +448,9 @@ fn plan_carries(live: &Liveness, reads: &[usize], budget: Budget) -> Vec<Vec<u64
     plan
 }
 
-/// The allocator: binds every value to leases of `pool` and slots of `frame`,
-/// inserting the stores, reloads and copies that make the binding hold.
-pub(in crate::emit) struct Allocate<'m, B: IsaBackend> {
+/// The allocator: one scan in layout order, binding every value to leases of
+/// `pool` and slots of `frame`.
+pub(in crate::emit) struct LinearScan<'m, B: IsaBackend> {
     pub(in crate::emit) pool: &'m Pool<B>,
     pub(in crate::emit) frame: &'m mut Frame,
     /// Where the frame's size goes when the scan ends: what the `Enter` and
@@ -531,10 +458,16 @@ pub(in crate::emit) struct Allocate<'m, B: IsaBackend> {
     pub(in crate::emit) frame_bytes: &'m FrameBytes,
 }
 
-impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
+impl<'m, B: IsaBackend> Pass for LinearScan<'m, B> {
     type Input = Function<B>;
     type Output = Allocated<'m, B>;
 
+    fn run(self, function: Function<B>) -> Result<Allocated<'m, B>, CompileError> {
+        self.allocate(function)
+    }
+}
+
+impl<'m, B: IsaBackend> RegisterAllocator<'m, B> for LinearScan<'m, B> {
     /// # Errors
     /// [`CompileError::BudgetExceeded`] when the narrow region passes 4,096 slots
     /// or the frame passes `MAX_FRAME`.
@@ -549,7 +482,7 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
     /// slot, a block no scanned branch reaches, a loop's exit reached by anything
     /// but its latch, or an entry block whose first instruction does not make the
     /// frame.
-    fn run(self, function: Function<B>) -> Result<Allocated<'m, B>, CompileError> {
+    fn allocate(self, function: Function<B>) -> Result<Allocated<'m, B>, CompileError> {
         let Self {
             pool,
             frame,

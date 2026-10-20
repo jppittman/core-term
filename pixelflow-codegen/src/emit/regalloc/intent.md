@@ -42,8 +42,9 @@ preserves a value from its definition to every read.
   leases.
 
 ## Contract
-`mod.rs`: `local` is the allocator (`Allocate`, the `Pass` from a selected
-`Function` to an allocated one), `policy` is what it prefers
+`mod.rs`: `RegisterAllocator` is the allocator, one method from a selected
+`Function` to an `Allocated` one; `local` is its one implementation
+(`LinearScan`, also the `Pass` the chain runs), `policy` is what it prefers
 (`EvictionRank`, `carried`), `resource` is what it allocates from (`Reg`,
 `Pool`, `Lease`, `Frame`, `FrameBytes`, the `In`/`Out`/`InOut` borrows).
 Everything is `pub(super)` or `pub(in crate::emit)`; nothing escapes `emit/`.
