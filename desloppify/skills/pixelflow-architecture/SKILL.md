@@ -34,8 +34,8 @@ description: Crate boundaries and design constraints of the pixelflow workspace 
   type's own doc. The data plane is narrow on purpose: `f32` lanes, `u32`
   pixels, ISA encoding fields (`imm12`, `rel32`, register numbers).
 - **Masks are bit patterns, not numbers.** A comparison yields all-ones/all-zero
-  lanes; `OpKind::mask(bool)` is the only constructor. Spelling a true mask
-  `1.0` corrupts bitwise blends.
+  lanes; a constant one is `Lit::Mask(bool)`, never a float. Spelling a true
+  mask `1.0` corrupts bitwise blends.
 - **Take what the hardware gives.** Don't spend hot-path instructions matching
   scalar IEEE edge cases, and never hand-roll a worse form of an instruction
   that exists (`(x + 0.5).floor()` for `round`). Precision is tunable; range is

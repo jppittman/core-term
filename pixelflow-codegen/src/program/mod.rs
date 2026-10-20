@@ -19,9 +19,18 @@ pub(crate) use scopes::Nest;
 
 use alloc::vec::Vec;
 
+use pixelflow_ir::Lit;
 use pixelflow_ir::fold::{Binder, Fold};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::variance::Variance;
+
+/// The lane a literal tabulates to, as the `f32` a [`ScheduledOp::Const`]
+/// carries: a real is itself, a true mask is the all-ones lane and a false
+/// mask is zero. The backends key a constant by its bits, so the `f32` here
+/// is the data plane's 32-bit pattern and nothing is read as a number.
+pub(crate) fn lane_pattern(lit: Lit) -> f32 {
+    f32::from_bits(lit.bits())
+}
 
 /// A value in the program (SSA-style).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

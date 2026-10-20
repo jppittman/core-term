@@ -66,7 +66,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::{Binder, Fold, Monoid, OpKind, ShiftCount};
+use pixelflow_ir::{Binder, Fold, Lit, Monoid, OpKind, ShiftCount};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -90,8 +90,8 @@ pub enum HeadRef {
 /// op the graph holds (`Gather`, the masks), not only those a template may name.
 #[derive(Clone, Debug)]
 pub enum HeadNode {
-    /// A literal, by bit pattern.
-    Const(u32),
+    /// A literal.
+    Const(Lit),
     Op {
         op: OpKind,
         children: Vec<HeadRef>,
@@ -143,7 +143,7 @@ impl PlanBuilder {
 
     /// A literal.
     fn constant(&mut self, value: f32) -> HeadRef {
-        self.push(HeadNode::Const(value.to_bits()))
+        self.push(HeadNode::Const(Lit::Real(value)))
     }
 
     /// An operation over earlier entries or existing classes.
@@ -467,7 +467,7 @@ impl Rewrite for EmptyFold {
             return None;
         };
         fold.is_empty()
-            .then(|| RewriteAction::Create(ENode::constant(fold.monoid().identity())))
+            .then(|| RewriteAction::Create(ENode::Const(fold.monoid().identity())))
     }
 }
 

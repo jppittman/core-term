@@ -26,6 +26,7 @@ use core::ops::Range;
 
 use crate::arena::{REDUCE_BINDER_BASE, REDUCE_BINDERS};
 use crate::kind::{OpCode, OpKind};
+use crate::lit::Lit;
 
 /// The algebra a reduction folds under: an associative combining operation
 /// together with the identity an empty domain folds to.
@@ -84,9 +85,10 @@ impl Monoid {
         op.is_monoid().then_some(Self(op))
     }
 
-    /// What an empty domain folds to.
+    /// What an empty domain folds to: a real for the arithmetic monoids, a
+    /// mask for the quantifiers.
     #[must_use]
-    pub fn identity(self) -> f32 {
+    pub fn identity(self) -> Lit {
         self.op()
             .monoid_identity()
             .expect("a Monoid's operator has an identity")
@@ -155,7 +157,7 @@ impl<R> Chain<R> {
     /// The fold of every term pushed, or — when none was — what `identity`
     /// builds from the monoid's identity.
     #[must_use]
-    pub(crate) fn finish(self, identity: impl FnOnce(f32) -> R) -> R {
+    pub(crate) fn finish(self, identity: impl FnOnce(Lit) -> R) -> R {
         let monoid = self.monoid;
         self.folded.unwrap_or_else(|| identity(monoid.identity()))
     }
@@ -701,9 +703,11 @@ mod tests {
         let empty = Fold::new(Monoid::SUM, b, 5..5);
         assert!(empty.is_empty());
         assert_eq!(empty.peel(), None);
-        assert_eq!(empty.monoid().identity(), 0.0);
-        assert_eq!(Monoid::PRODUCT.identity(), 1.0);
-        assert_eq!(Monoid::MIN.identity(), f32::INFINITY);
+        assert_eq!(empty.monoid().identity(), Lit::Real(0.0));
+        assert_eq!(Monoid::PRODUCT.identity(), Lit::Real(1.0));
+        assert_eq!(Monoid::MIN.identity(), Lit::Real(f32::INFINITY));
+        assert_eq!(Monoid::ALL.identity(), Lit::Mask(true));
+        assert_eq!(Monoid::ANY.identity(), Lit::Mask(false));
     }
 
     #[test]
@@ -795,7 +799,7 @@ mod tests {
         assert_eq!(fold.combine_op(), OpKind::Seq);
         assert_eq!(fold.monoid(), Monoid::SEQ);
         // The seed of an accumulator no combine ever reads.
-        assert_eq!(Monoid::SEQ.identity(), 0.0);
+        assert_eq!(Monoid::SEQ.identity(), Lit::Real(0.0));
         assert_eq!(Monoid::of(OpKind::Seq), Some(Monoid::SEQ));
         let back = Fold::from_bits(fold.to_bits()).expect("a SEQ fold round-trips");
         assert_eq!(back, fold);

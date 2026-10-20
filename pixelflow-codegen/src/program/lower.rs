@@ -8,13 +8,13 @@
 
 use alloc::vec::Vec;
 
-use pixelflow_ir::ShiftCount;
 use pixelflow_ir::arena::UniformId;
 use pixelflow_ir::fold::Binder;
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::variance::{Variance, compute_arena_variance};
+use pixelflow_ir::{Lit, ShiftCount};
 
-use super::{CompareOp, Def, Legal, ScheduledOp, ValueId, legal, not_legal};
+use super::{CompareOp, Def, Legal, ScheduledOp, ValueId, lane_pattern, legal, not_legal};
 
 /// Mark nodes reachable from `root` via DFS.
 ///
@@ -180,7 +180,7 @@ pub(crate) fn arena_to_schedule(
                 Some(b) if lane == Some(b) => ScheduledOp::Lanes,
                 Some(b) => ScheduledOp::Var(b),
             },
-            ExprNode::Const(v) => ScheduledOp::Const(v),
+            ExprNode::Const(lit) => ScheduledOp::Const(lane_pattern(lit)),
             ExprNode::Param(i) => panic!(
                 "ExprNode::Param({}) reached the JIT emitter -- a template's slot (a `kernel!` \
                  template's structural hole, a rewrite rule's metavariable) is filled before \
@@ -223,9 +223,9 @@ pub(crate) fn arena_to_schedule(
             // own schedule entry (harmless/unused) if shared.
             ExprNode::Binary(op @ (OpKind::Shl | OpKind::Shr), a, b) => {
                 let amount = match arena.node(b) {
-                    ExprNode::Const(v) => shift_immediate(op, v),
+                    ExprNode::Const(Lit::Real(v)) => shift_immediate(op, v),
                     _ => panic!(
-                        "{:?} shift count must be a Const (lowering guarantees this)",
+                        "{:?} shift count must be a real Const (lowering guarantees this)",
                         op
                     ),
                 };
@@ -288,7 +288,7 @@ pub(crate) fn arena_to_schedule(
             // Its body was not reached (`mark_reachable`), and the arena's
             // variance for it is `CONST` already: the identity's.
             ExprNode::Reduce { fold, .. } if fold.is_empty() => {
-                ScheduledOp::Const(fold.monoid().identity())
+                ScheduledOp::Const(lane_pattern(fold.monoid().identity()))
             }
             // The lane fold, executed by lanes: its body is the store, and
             // the store is this def, with the fold's trip count as its width.

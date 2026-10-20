@@ -1147,7 +1147,7 @@ mod tests {
             let id = pixelflow_ir::ExprId(idx as u32);
             match arena.node(id) {
                 ExprNode::Var(i) => writeln!(out, "V {i}"),
-                ExprNode::Const(v) => writeln!(out, "C {}", v.to_bits()),
+                ExprNode::Const(v) => writeln!(out, "C {}", v.bits()),
                 ExprNode::Buffer(b) => writeln!(out, "B {}", b.0),
                 ExprNode::Uniform(u) => writeln!(out, "Un {}", u.0),
                 ExprNode::Unary(k, a) => writeln!(out, "U {k:?} {}", d(&dense, a)),

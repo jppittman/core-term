@@ -62,11 +62,16 @@ A mask is a bit pattern, not a number, and that is a load-bearing distinction:
 literal bitwise ops. (The blend is the last step of `If`, after both guarded arms, not a
 path of its own — see "`If` guards its arms" below.) Spell a
 true mask `1.0` and `mask & 1.0` is `0x3f800000`, which blends `7.0` against
-`9.0` into `4.5` — a value neither branch held. `OpKind::mask(bool)` is the only
-constructor, `OpKind::is_bitwise_domain()` marks the ops whose results are
-patterns, and the folder's "refuse non-finite results" guard exempts them —
-otherwise an all-ones mask reads as NaN and comparison folding switches itself
-off while looking like a safety check.
+`9.0` into `4.5` — a value neither branch held. So a constant mask is its own
+literal: `Lit::Mask(bool)` (`pixelflow-ir/src/lit.rs`), beside `Lit::Real(f32)`,
+and the folder's comparison arms yield one. A mask is never spelled as a float,
+the e-graph keys a constant by its typed value, so a true mask and the NaN that
+shares its lane are two e-classes, and the backend is the one place a mask
+becomes bits (`Lit::bits`). What still rides in a real lane by convention is
+the integer domain — `TruncToInt`, `IAdd`, the shifts, and `BitAnd`/`BitOr` on
+two reals in the exp/log lowering — and `OpKind::is_bitwise_domain()` marks
+those so the folder's "refuse non-finite results" guard exempts them; it lasts
+until those results have a type of their own.
 
 Behavior that differs by target, because the instructions do:
 

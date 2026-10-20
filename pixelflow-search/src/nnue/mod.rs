@@ -24,6 +24,7 @@ pub mod guide;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use libm::fabsf;
+use pixelflow_ir::Lit;
 use pixelflow_ir::kind::OpMap;
 use pixelflow_ir::term::{Children, Ir, Shape};
 
@@ -90,13 +91,14 @@ pub fn pattern_match_arena(
                     bindings.insert(n, e_id);
                 }
             }
-            // Const must match exactly (within epsilon).
-            ExprNode::Const(c) => match arena.node(e_id) {
-                ExprNode::Const(e) => {
+            // A real must match within epsilon; a mask must match exactly.
+            ExprNode::Const(c) => match (c, arena.node(e_id)) {
+                (Lit::Real(c), ExprNode::Const(Lit::Real(e))) => {
                     if fabsf(e - c) >= 1e-6 {
                         return None;
                     }
                 }
+                (Lit::Mask(_), ExprNode::Const(e)) if e == c => {}
                 _ => return None,
             },
             // Param must match the same index.
@@ -221,7 +223,7 @@ pub fn substitute_template_arena(
                 // Fail if the variable has no binding.
                 *bindings.get(&n)?
             }
-            ExprNode::Const(c) => target_arena.push_const(c),
+            ExprNode::Const(c) => target_arena.push_lit(c),
             ExprNode::Param(i) => target_arena.push_param(i),
             ExprNode::Buffer(b) => panic!(
                 "ExprNode::Buffer({}) in a rewrite template — memory ops are not rewritable yet",
@@ -875,7 +877,7 @@ impl BwdGenerator {
             // if junkification succeeds below we'll overwrite the remap entry.
             let base_id = match self.arena.project(id) {
                 Shape::Var(v) => self.arena.push_var(v),
-                Shape::Const(c) => self.arena.push_const(c),
+                Shape::Const(c) => self.arena.push_lit(c),
                 Shape::Param(p) => self.arena.push_param(p),
                 Shape::Buffer(decl) => self.arena.embed(Shape::Buffer(decl)),
                 Shape::Uniform(decl) => self.arena.embed(Shape::Uniform(decl)),

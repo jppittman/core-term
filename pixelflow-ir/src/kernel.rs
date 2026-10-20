@@ -30,6 +30,7 @@ use crate::expr::{
 use crate::fold::{Binder, Chain, Fold, Monoid, Placeholder};
 use crate::kind::OpKind;
 use crate::library::{self, Terms};
+use crate::lit::Lit;
 use crate::shift::ShiftCount;
 
 /// One bit per placeholder index, set while that index is claimed by a binder
@@ -306,8 +307,12 @@ impl Kernel {
     /// A constant.
     #[must_use]
     pub fn constant(v: f32) -> Self {
+        Self::literal(Lit::Real(v))
+    }
+
+    fn literal(lit: Lit) -> Self {
         let mut b = Builder::new();
-        let r = b.push_const(v);
+        let r = b.push_lit(lit);
         Self::wrap(b.finish(&[r]), Environment::new(), BTreeMap::new())
     }
 
@@ -677,7 +682,7 @@ impl Kernel {
     #[must_use]
     pub fn fold(monoid: Monoid, kernels: &[Kernel]) -> Self {
         let Some((head, tail)) = kernels.split_first() else {
-            return Self::constant(monoid.identity());
+            return Self::literal(monoid.identity());
         };
         let mut b = Builder::new();
         let mut env = head.inner.env.clone();
@@ -692,7 +697,7 @@ impl Kernel {
             chain.push(term, |op, folded, term| b.push_binary(op, folded, term));
             merge_buffer_data(&mut buffers, &k.inner.buffers);
         }
-        let root = chain.finish(|identity| b.push_const(identity));
+        let root = chain.finish(|identity| b.push_lit(identity));
         Self::wrap(b.finish(&[root]), env, buffers)
     }
 

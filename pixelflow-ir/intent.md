@@ -10,9 +10,10 @@ except for the process-global store a `Ref` names into.
 - The representation of a term: `ExprArena` over `Dag`, interning, the
   dense `ExprId`, the identity tables, and what reachability means. Nothing
   else may depend on how a node is stored.
-- The meaning of a fold (`Fold`: monoid, binder, range), of a mask
-  (`OpKind::mask`, `is_bitwise_domain`), of a constant's bit pattern, and of
-  a name (`KernelKey`, `Ref`).
+- The meaning of a fold (`Fold`: monoid, binder, range), of a constant
+  (`Lit`: a real by its bits or a mask by its truth, never a lane whose bits
+  mean one or the other by convention), of the bitwise domain
+  (`is_bitwise_domain`), and of a name (`KernelKey`, `Ref`).
 - Composition: `Kernel::at` as substitution into `Var` leaves, `by_ref` and
   the linker. Composition substitutes and links; it never evaluates or
   optimizes.
@@ -53,15 +54,20 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   real, integer and mask), `mask-is-not-a-number`, `control-plane-64-bit`.
 - The `ExprNode` size assertion is a tripwire against an accident, not a
   width to design against (CLAUDE.md).
+- `pixelflow-ir/src/lit.rs`'s tests, and `pixelflow-search/tests/fold_exactness.rs`
+  (`a_mask_and_the_nan_sharing_its_lane_are_two_classes`): a true mask and
+  the NaN that shares its lane are two literals, two arena nodes and two
+  e-classes.
 
 ## Behind
 - `ExprId(pub u32)` is public and forgeable, and `ExprArena`/`ExprNode` are
   re-exported, so the arena is visible to consumers; `pixelflow-graphics`
   uses `pixelflow_ir` directly in `fonts/loop_blinn.rs` (`ExprArena`) and
   `render/packed.rs` (exprarena-on-dag Stage D, not started; D16).
-- One `f32` lane is a real, an integer and a mask by convention;
-  `Real`/`Int`/`Mask` sorts on nodes are proposed, not ruled
-  (kernels-evaluate-kernels §2, item 1).
+- A constant is typed (`Lit`), but a node is not: one `f32` lane is a real
+  and an integer by convention, and a computed mask is a lane like any other.
+  `Real`/`Int`/`Mask` sorts on nodes, and `Lit::Int`, wait on the
+  reinterpretation being an op (kernels-evaluate-kernels §2, item 1).
 - `Var(u8)` means an axis or a binder by range; `Fold`'s ends are `u32`,
   `Binder` a `u8`, against the 64-bit control-plane rule.
 - `Buffer`, `BoundManifold`'s link tables and `passes::lattice` are in the

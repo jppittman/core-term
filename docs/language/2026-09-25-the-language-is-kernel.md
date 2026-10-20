@@ -175,7 +175,7 @@ sugar for a block with one entry.
 | type | meaning | IR |
 |---|---|---|
 | `f32` | a value | an `f32` lane |
-| `bool` | a mask; comparisons produce it; `&` and `\|` combine it | an all-ones or all-zero lane, `OpKind::mask(bool)` |
+| `bool` | a mask; comparisons produce it; `&` and `\|` combine it | an all-ones or all-zero lane; a constant one is `Lit::Mask(bool)` |
 | `usize` | a fold binder or a structural count | `Var(REDUCE_BINDER_BASE + slot)`; converted by an explicit `i as f32` |
 | records | named `f32` fields | flattened at lowering |
 | `impl Fn(f32, f32) -> f32` | a kernel-typed parameter: a kernel the host passes at run time, applied `k(x, y)` (Phase D-a, done) | none of its own: each application splices the argument's term, `k[X := x, Y := y]` (`ExprArena::apply`) |

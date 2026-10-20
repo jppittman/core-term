@@ -1058,8 +1058,8 @@ mod tests {
     use super::*;
     use crate::parser::parse;
     use crate::sema::Ty;
-    use pixelflow_ir::Placeholder;
     use pixelflow_ir::arena::{ExprNode, UniformId};
+    use pixelflow_ir::{Lit, Placeholder};
     use quote::quote;
 
     /// Lower a block straight from the parser, with no `sema` in front: what
@@ -1227,7 +1227,7 @@ mod tests {
     #[test]
     fn a_literal_lowers_to_the_value_the_parser_rounded_once() {
         let (arena, root) = lowered(quote! { || 1.00000005960464477539062500001 });
-        let ExprNode::Const(value) = arena.node(root) else {
+        let ExprNode::Const(Lit::Real(value)) = arena.node(root) else {
             panic!("expected a constant, got {:?}", arena.node(root));
         };
         assert_eq!(value.to_bits(), 0x3f80_0001);
@@ -1258,7 +1258,7 @@ mod tests {
         let ExprNode::Binary(OpKind::Mul, _, r) = arena.node(root) else {
             panic!("expected the product, got {:?}", arena.node(root));
         };
-        assert!(matches!(arena.node(r), ExprNode::Const(v) if v == 2.5));
+        assert!(matches!(arena.node(r), ExprNode::Const(Lit::Real(v)) if v == 2.5));
     }
 
     /// A helper's body is lowered in a frame of its own: its parameter
@@ -1397,7 +1397,7 @@ mod tests {
             const N: usize = 4;
             pub fn f() -> f32 { N as f32 }
         });
-        assert!(matches!(arena.node(root), ExprNode::Const(v) if v == 4.0));
+        assert!(matches!(arena.node(root), ExprNode::Const(Lit::Real(v)) if v == 4.0));
     }
 
     /// `sema` holds a bound in 64 bits; the IR's index is an `f32` lane,

@@ -29,6 +29,7 @@ use crate::dag::{Builder, Id, Memo, Node};
 use crate::fold::{Binder, Fold, Placeholder};
 use crate::key::KernelKey;
 use crate::kind::OpKind;
+use crate::lit::Lit;
 
 /// This arena's node payload: everything about a node except its edges,
 /// which the underlying [`Dag`](crate::dag::Dag) owns. Distinct from
@@ -45,15 +46,16 @@ use crate::kind::OpKind;
 /// One extra tag per arity is the price of keeping that impossible instead
 /// of merely unlikely.
 ///
-/// `Const` keys on the bit pattern, not the `f32`: `f32` is neither `Eq`
-/// nor `Ord`, which the DAG's interning requires, and bits are what
-/// [`ExprArena::subtree_eq`], the JIT cache key and the corpus format
-/// already compare by — `-0.0` and `0.0` are different constants, and a NaN
-/// payload is equal to itself.
+/// `Const` keys on the literal's typed value ([`Lit`]'s `Eq`/`Ord`): a real
+/// by its bits, which the DAG's interning requires and which
+/// [`ExprArena::subtree_eq`], the JIT cache key and the corpus format already
+/// compare by — `-0.0` and `0.0` are different constants, and a NaN payload
+/// is equal to itself — and a mask by its truth, so a true mask and the NaN
+/// that shares its lane are two nodes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 enum NodeData {
     Var(u8),
-    Const(u32),
+    Const(Lit),
     Param(u8),
     Buffer(BufferId),
     Uniform(UniformId),
@@ -378,7 +380,8 @@ pub enum ExprNode {
     /// between the coordinates and the binders are not a hole to grow into,
     /// they are where Z and W used to be and nothing may claim them.
     Var(u8),
-    Const(f32),
+    /// A literal: a number or a mask. See [`Lit`].
+    Const(Lit),
     Param(u8),
     /// Bound-memory leaf: references a [`BufferDecl`] in the arena's buffer
     /// table. Read through `Ternary(OpKind::Gather, buffer, x, y)`.
@@ -773,9 +776,14 @@ impl ExprArena {
         }
     }
 
-    /// Push a `Const(v)` node.
+    /// Push a real constant, `Const(Lit::Real(v))`.
     pub fn push_const(&mut self, v: f32) -> ExprId {
-        self.intern(NodeData::Const(v.to_bits()), &[])
+        self.push_lit(Lit::Real(v))
+    }
+
+    /// Push a literal of any type.
+    pub fn push_lit(&mut self, lit: Lit) -> ExprId {
+        self.intern(NodeData::Const(lit), &[])
     }
 
     /// Push a `Param(i)` node.
@@ -1042,7 +1050,7 @@ impl ExprArena {
         let n = self.builder.dag().get(id.0);
         match *n {
             NodeData::Var(i) => ExprNode::Var(i),
-            NodeData::Const(bits) => ExprNode::Const(f32::from_bits(bits)),
+            NodeData::Const(lit) => ExprNode::Const(lit),
             NodeData::Param(i) => ExprNode::Param(i),
             NodeData::Buffer(b) => ExprNode::Buffer(b),
             NodeData::Uniform(u) => ExprNode::Uniform(u),
@@ -1274,15 +1282,15 @@ impl ExprArena {
 
         while let Some(id) = stack.pop() {
             match &self.node(id) {
-                ExprNode::Const(v) if !v.is_finite() => return true,
+                ExprNode::Const(Lit::Real(v)) if !v.is_finite() => return true,
                 ExprNode::Unary(OpKind::Recip, a) => {
-                    if matches!(self.node(*a), ExprNode::Const(v) if v == 0.0) {
+                    if matches!(self.node(*a), ExprNode::Const(Lit::Real(v)) if v == 0.0) {
                         return true;
                     }
                     stack.push(*a);
                 }
                 ExprNode::Binary(OpKind::Div, a, b) => {
-                    if matches!(self.node(*b), ExprNode::Const(v) if v == 0.0) {
+                    if matches!(self.node(*b), ExprNode::Const(Lit::Real(v)) if v == 0.0) {
                         return true;
                     }
                     stack.push(*a);
@@ -1425,7 +1433,7 @@ impl ExprArena {
                     };
                     let new_id = match other.node(id) {
                         ExprNode::Var(i) => self.push_var(i),
-                        ExprNode::Const(v) => self.push_const(v),
+                        ExprNode::Const(v) => self.push_lit(v),
                         ExprNode::Param(i) => self.push_param(i),
                         // Content-addressed, so a reference means the same
                         // kernel in every arena and needs no remapping.
@@ -1693,7 +1701,7 @@ impl ExprArena {
                             Some(replacement) => replacement,
                             None => self.push_var(i),
                         },
-                        ExprNode::Const(v) => self.push_const(v),
+                        ExprNode::Const(v) => self.push_lit(v),
                         ExprNode::Param(i) => self.push_param(i),
                         ExprNode::Buffer(b) => self.push_buffer(b),
                         ExprNode::Uniform(u) => self.push_uniform(u),
@@ -1858,7 +1866,7 @@ impl ExprArena {
                 |old: ExprId| dense[old.0 as usize].expect("relink: child densified before parent");
             let new_id = match &node {
                 ExprNode::Var(i) => out.push_var(*i),
-                ExprNode::Const(v) => out.push_const(*v),
+                ExprNode::Const(v) => out.push_lit(*v),
                 ExprNode::Param(i) => out.push_param(*i),
                 ExprNode::Buffer(b) => out.push_buffer(buffer_slot(*b)),
                 ExprNode::Uniform(u) => out.push_uniform(uniform_slot(*u)),
@@ -1990,8 +1998,8 @@ impl ExprArena {
     /// iterative work stack. Both subtrees may live in the same arena (pass `self`
     /// for both `self` and `other`) or in different arenas.
     ///
-    /// Constant nodes are compared by exact bit equality (same behaviour as
-    /// [`Expr`]'s `PartialEq`). Var and Param indices are compared by value.
+    /// Constant nodes are compared as [`Lit`]s: a real by exact bit equality,
+    /// a mask by its truth. Var and Param indices are compared by value.
     #[must_use]
     pub fn subtree_eq(&self, a: ExprId, other: &ExprArena, b: ExprId) -> bool {
         // Stack of (self-id, other-id) pairs still to be compared.
@@ -2009,8 +2017,8 @@ impl ExprArena {
                     }
                 }
                 (ExprNode::Const(sv), ExprNode::Const(ov)) => {
-                    // Bit-exact comparison matches Expr's PartialEq behaviour.
-                    if sv.to_bits() != ov.to_bits() {
+                    // By typed value: a real bit-exactly, a mask by its truth.
+                    if sv != ov {
                         return false;
                     }
                 }
