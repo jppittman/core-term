@@ -7,7 +7,7 @@
 //! - **Selection** (`Select`) walks the scoped schedule and builds a
 //!   `Function`: blocks of instructions over values, which no register has
 //!   been chosen for.
-//! - **Allocation** (`Allocate`, in `regalloc`) chooses every register and
+//! - **Allocation** (a `RegisterAllocator`, `LinearScan`, in `regalloc`) chooses every register and
 //!   frame slot, and inserts the copies, spills and reloads its choices need.
 //! - **Assembly** (`Assemble`, over `asm`) lays the blocks out and encodes
 //!   them.
@@ -803,7 +803,7 @@ where
     let frame_bytes = FrameBytes::pending();
     front(lanes_of::<B>())
         .then(select::Select::<B>(PhantomData))
-        .then(regalloc::local::Allocate {
+        .then(regalloc::LinearScan {
             pool: &pool,
             frame: &mut frame,
             frame_bytes: &frame_bytes,
@@ -816,7 +816,7 @@ where
 struct Assemble<'m, B: IsaBackend>(PhantomData<&'m fn() -> B>);
 
 impl<'m, B: IsaBackend> Pass for Assemble<'m, B> {
-    type Input = regalloc::local::Allocated<'m, B>;
+    type Input = regalloc::Allocated<'m, B>;
     type Output = CompileResult;
 
     fn run(self, mut allocated: Self::Input) -> Result<CompileResult, CompileError> {
