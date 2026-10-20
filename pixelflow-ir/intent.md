@@ -59,9 +59,9 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   re-exported, so the arena is visible to consumers; `pixelflow-graphics`
   uses `pixelflow_ir` directly in `fonts/loop_blinn.rs` (`ExprArena`) and
   `render/packed.rs` (exprarena-on-dag Stage D, not started; D16).
-- One `f32` lane is a real, an integer and a mask by convention;
-  `Real`/`Int`/`Mask` sorts on nodes are proposed, not ruled
-  (kernels-evaluate-kernels §2, item 1).
+- One `f32` lane is a real, an integer and a mask by convention; the types
+  `Real`/`Int`/`Mask` are ruled (kernels-evaluate-kernels §2) and the arena
+  does not carry them yet (docs/language/2026-10-17-the-arena-is-typed.md).
 - `Var(u8)` means an axis or a binder by range; `Fold`'s ends are `u32`,
   `Binder` a `u8`, against the 64-bit control-plane rule.
 - `Buffer`, `BoundManifold`'s link tables and `passes::lattice` are in the
