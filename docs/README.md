@@ -21,6 +21,7 @@ A live document is one that still decides something or owns open work. Its statu
 - [`language/2026-09-24-one-pipeline.md`](language/2026-09-24-one-pipeline.md) — `Proposed`. Proposed one-pipeline denotation P(k,s,t) with a lattice folded before extraction; replaced in part by the 2026-10-15 kernels ruling and the-language-is-kernel, with its glyph and CL stages still unbuilt.
 - [`language/2026-09-25-the-language-is-kernel.md`](language/2026-09-25-the-language-is-kernel.md) — `Plan of record`. Agreed front-end direction (one kernel! syntax, no tables or arrays, If, kernel-typed args) with C2-E1 still open; partly superseded on If, D1 and P by kernels-evaluate-kernels.
 - [`language/2026-10-15-kernels-evaluate-kernels.md`](language/2026-10-15-kernels-evaluate-kernels.md) — `Accepted`. the binding rulings: If has one shape, kernels evaluate kernels, the schedule is per backend; everything is a kernel
+- [`language/2026-10-17-the-arena-is-typed.md`](language/2026-10-17-the-arena-is-typed.md) — `Proposed`. Implements §2's types in the IR: a signature per op, a type column and typed handles on the arena, typed constants, explicit reinterpretation; deletes the mask and bitwise-domain conventions. Six CLs, byte-identical but the fold binder's.
 
 ### The compiler and the search
 
