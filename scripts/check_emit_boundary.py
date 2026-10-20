@@ -23,13 +23,7 @@ The rules, over the non-test, non-comment, non-string text of each file:
       (`pub use crate::pipeline::compile;`): it keeps a
       public path where it was and is not a use. `pub(crate) use` and `use`
       are not re-exports and are not exempt, and nothing else is exempt from
-      anything else,
-    - `RegNo::architectural` anywhere but the right-hand side of a `const`
-      declaration of a literal, `const NAME: RegNo<File> = RegNo::architectural(4);`:
-      a hardware register number is read off a `Reg` the allocator lent, or
-      it is one the ISA or the ABI fixes, declared once and named after. A
-      call with anything else as its argument, or anywhere else, is a
-      register chosen outside the allocator (JP, 2026-10-16: never).
+      anything else.
 
   Rule A (`pixelflow-codegen/src/emit/asm.rs`, the assembler, which is also
   scanned by rule E) may not name anything of the crate or its siblings: no
@@ -89,10 +83,6 @@ CFG_TEST = re.compile(
 # A re-export is `pub use` exactly: `pub(crate) use` is a use with a narrower
 # audience, not a public path kept in place.
 PUB_USE = re.compile(r"\bpub\s+use\b[^;]*;")
-# A fixed register's declaration, the one place `RegNo::architectural` may be.
-ARCHITECTURAL_CONST = re.compile(
-    r"\bconst\s+\w+\s*:\s*RegNo\s*<\s*\w+\s*>\s*=\s*RegNo\s*::\s*architectural\s*\(\s*\d+\s*\)\s*;"
-)
 
 
 def blank(text, a, b):
@@ -307,11 +297,6 @@ def cleaned(src):
     return blank_cfg_test(strip_comments_and_strings(src))
 
 
-def blank_architectural_consts(t):
-    """`t` with every `const X: RegNo<F> = RegNo::architectural(N);` blanked."""
-    return ARCHITECTURAL_CONST.sub(lambda m: " " * len(m.group(0)), t)
-
-
 def blank_reexports(t):
     """Every plain `pub use ..;` statement, blanked."""
     return PUB_USE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), t)
@@ -335,7 +320,6 @@ def rules(program_submodules):
         (r"\b(?:crate|super)\s*::\s*\{[^;]*?\bjit_cache\b", False),
         (r"\b(?:crate|super)\s*::\s*pipeline\b", True),
         (r"\b(?:crate|super)\s*::\s*\{[^;]*?\bpipeline\b", True),
-        (r"\bRegNo\s*::\s*architectural\b", False),
     ]
     program = [
         (r"\b(?:crate|super)\s*::\s*(?:emit|isa|pipeline|jit_cache)\b", False),
@@ -353,7 +337,7 @@ def rules(program_submodules):
 
 def scan(src, scope, program_submodules):
     """`[(line, token)]` for every boundary violation in `src`."""
-    text = blank_architectural_consts(cleaned(src))
+    text = cleaned(src)
     without_reexports = blank_reexports(text)
     hits = set()
     for pattern, exempt_reexports in rules(program_submodules)[scope]:
@@ -443,15 +427,6 @@ def self_test():
         "#[cfg(all(test, unix))]\nmod m {\n use pixelflow_search::x;\n}\n",
         0,
     )
-    reg = "RegNo::architectural"
-    case("a fixed register's const", f"pub(super) const SP: RegNo<GeneralFile> = {reg}(31);\n", 0)
-    case("a fixed register's const, spaced", f"const K0 : RegNo < OpmaskFile > = RegNo :: architectural ( 0 ) ;\n", 0)
-    case("a register made in a function", f"fn f() {{ let r = {reg}(3); }}\n", 1)
-    case("a register made from a variable", f"const fn g(n: u8) -> RegNo<GeneralFile> {{ {reg}(n) }}\n", 1)
-    case("a register made inline in an encoder (one line, one hit)", f"fn f() {{ rrr(dst, {reg}(0), {reg}(0)) }}\n", 1)
-    case("a const of something else", f"const N: RegNo<GeneralFile> = other({reg}(3));\n", 1)
-    case("cfg(test) helper", f"#[cfg(test)]\nconst fn g(n: u8) -> RegNo<GeneralFile> {{ {reg}(n) }}\n", 0)
-    case("the constructor's own definition", "impl<F: File> RegNo<F> { pub(in crate::emit) const fn architectural(number: u8) -> Self { Self { bits: number } } }\n", 0)
     case(
         "cfg(not(test)) is production",
         "#[cfg(not(test))]\nfn f() { let _ = pixelflow_search::x; }\n",

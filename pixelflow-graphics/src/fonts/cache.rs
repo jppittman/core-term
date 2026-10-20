@@ -424,7 +424,7 @@ pub struct CachedText {
 /// One laid-out glyph: a baked sampler plus its pen translation and the
 /// bucket→request scale. The samplers enter the language as bound buffers
 /// rather than as expressions, so placing one is a contramap of its kernel
-/// and a run is their sum.
+/// and a run is their sum saturated at full coverage.
 #[derive(Clone)]
 struct PlacedGlyph {
     glyph: CachedGlyph,
@@ -481,7 +481,8 @@ impl CachedText {
 
 impl CachedText {
     /// The whole run's coverage as one [`Kernel`]: every glyph's kernel read
-    /// at its own pen position, summed.
+    /// at its own pen position, summed and saturated at 1. Overlapping glyphs
+    /// cannot produce more than full coverage.
     ///
     /// Composition is `Kernel::at` and `Kernel::sum` — the same two moves the
     /// layout above already makes, now in the language rather than in a Rust
@@ -505,7 +506,7 @@ impl CachedText {
                 )
             })
             .collect();
-        Kernel::sum(&placed)
+        Kernel::sum(&placed).min(&Kernel::constant(1.0))
     }
 }
 
@@ -777,6 +778,37 @@ mod tests {
             line.iter().sum::<f32>() > 10.0,
             "the run collapsed to no ink at all"
         );
+    }
+
+    #[test]
+    fn saturate_overlapping_cached_glyphs_at_full_coverage() {
+        let font = Font::parse(FONT_DATA).unwrap();
+        let mut cache = GlyphCache::new();
+        let glyph = cache.get(&font, 'A', 16.0, 1.0).unwrap();
+        let lattice = Lattice::frame(16, 16);
+        let single = glyph_grid(&glyph, lattice);
+        assert!(single.iter().any(|&coverage| coverage > 0.5));
+
+        for count in 0..=3 {
+            let text = CachedText {
+                glyphs: (0..count)
+                    .map(|_| PlacedGlyph {
+                        glyph: glyph.clone(),
+                        dx: 0.0,
+                        inv_scale: 1.0,
+                    })
+                    .collect(),
+            };
+            let actual = collapse(&text.kernel(), lattice);
+            for (&coverage, &one) in actual.iter().zip(&single) {
+                let expected = (one * count as f32).min(1.0);
+                assert!((0.0..=1.0).contains(&coverage));
+                assert!(
+                    (coverage - expected).abs() < 1e-5,
+                    "{count} overlapping glyphs: expected {expected}, got {coverage}"
+                );
+            }
+        }
     }
 
     #[test]

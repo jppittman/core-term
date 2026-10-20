@@ -11,8 +11,8 @@ preserves a value from its definition to every read.
   only by `Leases::new`, and reaches an encoder only as an `In`, `Out` or
   `InOut` borrowed from a lease. Whoever owns a resource makes every choice
   about it.
-- Every frame slot (`Frame`, `SlotLease`), the frame's size (`MAX_FRAME`),
-  and the stack pointer.
+- Every frame slot (`Frame`, `SlotLease`), the frame's size (`MAX_FRAME`,
+  `FrameBytes`), and the stack pointer.
 - Eviction, rematerialization, spill placement (right after the definition,
   never at the eviction point a guard could skip), carries across a loop,
   and the join at a forward branch.
@@ -30,11 +30,12 @@ preserves a value from its definition to every read.
 - No knowledge of what a value means. It sees classes, lives and
   constraints, never an `OpKind`, a mask's domain or a lattice.
 - No register is guessed behind the scan. A store placed after a definition
-  names the stored value's register and, for a slot past the store's reach,
-  one the allocator's own record of that point says was lent to nothing
-  (`Life::free_general`, `Scan::free_general_at_entry`) — never one picked
-  for having gone unused so far (JP, 2026-10-15: "ask the allocator for a
-  register, or don't have one").
+  reads the stored value from the lease it still holds and, for a slot past
+  the store's reach, an address register the allocator's own record of that
+  point says was lent to nothing (`Life::free_general`,
+  `Scan::free_general_at_entry`), lent again as the pool's one past-tense
+  lease (`Pool::past`) — never one picked for having gone unused so far (JP,
+  2026-10-15: "ask the allocator for a register, or don't have one").
 - Never silent: running out of frame is `Err(BudgetExceeded)`; failing to
   find a register for a value is a panic naming the instruction, a selection
   bug, never a fact about a kernel. It never picks a register outside its
@@ -44,18 +45,18 @@ preserves a value from its definition to every read.
 `mod.rs`: `local` is the allocator (`Allocate`, the `Pass` from a selected
 `Function` to an allocated one), `policy` is what it prefers
 (`EvictionRank`, `carried`), `resource` is what it allocates from (`Reg`,
-`RegNo`, `Pool`, `Lease`, `Frame`, the `In`/`Out`/`InOut` borrows). Everything
-is `pub(super)` or `pub(in crate::emit)`; nothing escapes `emit/`.
+`Pool`, `Lease`, `Frame`, `FrameBytes`, the `In`/`Out`/`InOut` borrows).
+Everything is `pub(super)` or `pub(in crate::emit)`; nothing escapes `emit/`.
 
 ## Enforced by
 - Types: `Reg` is not `Copy`, has one constructor, and is branded by backend,
   so a register chosen elsewhere, two holders of one register, or an AVX-512
   token in an AVX2 encoder does not compile (`resource.rs`). A register
-  field takes a `RegNo<F>`, read off a `Reg` or one of the ISA's own
-  constants, and never a bare `u8`; an opcode's `/digit` is another type.
+  reaches an encoder only as an `In`, `Out` or `InOut` borrowed from a lease;
+  the scan binds each instruction as it places it (`Scan::place`, `Binder`),
+  and there is no register-number table. A field the ISA fixes is the word's.
 - `scripts/check-emit-boundary.sh` (CI job "Emit boundary"): `program/`
-  names no allocator and no register, and `RegNo::architectural` appears
-  only as a `const` declaration of a literal.
+  names no allocator and no register.
 - desloppify `registers-come-from-the-allocator`, `phases-in-order`,
   `invariant-in-comment` (`copyable_resource`).
 - The as-if contract: tests observe values, refusals and no-crash through

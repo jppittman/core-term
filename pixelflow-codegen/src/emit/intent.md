@@ -19,10 +19,11 @@ Values are names, registers are resources, `encode` makes no choice; a lane is
 - No name from upstream: `pixelflow_search`, `pixelflow_ir::{passes,variance,store}`,
   a `program/` submodule, `crate::pipeline`, `crate::jit_cache` (bar the
   `pub use crate::pipeline::compile`).
-- No register chosen outside `regalloc/`. An encoder names only the ABI's
-  fixed registers (`gpr::RDI/RSI/RDX/RSP`, `abi::X0/X1/X2/SP/LR/XZR`) and the
-  ISA's `k0`, each a `RegNo` constant; any other arrives as an `In`, `Out` or
-  `InOut` borrow.
+- No register chosen outside `regalloc/`, and an encoder names no register:
+  every one arrives as an `In`, `Out` or `InOut` borrow. The frame is
+  addressed as the frame (x86's frame form, NEON's `[sp, #slot]` words), and
+  a field an encoding fixes (`rsp` in the frame adjust, `sp`, `xzr`, `x30`,
+  `k0`) is the word, not an operand.
 - `select.rs` names no register or opcode; `asm.rs` imports nothing from the crate.
 - No vector crosses the ABI, `fn(ctx, out, pitch)`; the lane count leaves only
   as the `u32` `native` hands the front. No `dyn`, no `Box`: `native` picks the

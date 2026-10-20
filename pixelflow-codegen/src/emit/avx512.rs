@@ -24,14 +24,14 @@
 //! red zone).
 
 use super::build::{Builder, Spiller};
-use super::regalloc::resource::{FrameSlot, RegNo};
+use super::regalloc::resource::FrameSlot;
 use super::x86_64;
 use super::x86_64::{
-    Direction, Evex, EvexPrefix, Lanewise, Mem, NoDisp, Pred, Sign, Vex, X86, emit,
+    Direction, Evex, EvexPrefix, Lanewise, Mem, NoDisp, Pred, RegField, Sign, Vex, X86, emit,
 };
 use super::{
-    Bound, ClassId, Edges, EncodedInst, Flags, Integer, LaneOp, Opmask, OpmaskFile, Pointer,
-    Rebind, Selected, Stage, Store, Test, Value, ValueName, Vector, VectorFile,
+    Bound, ClassId, Edges, EncodedInst, Flags, Integer, LaneOp, Opmask, Pointer, Rebind, Selected,
+    Stage, Store, Test, Value, ValueName, Vector,
 };
 use crate::error::CompileError;
 use crate::program::BinaryOp;
@@ -161,9 +161,17 @@ impl KOp {
 /// `kxnorw`'s opcode.
 const KXNOR: u8 = 0x46;
 
-/// `k0`, which nothing writes: `kxnorw dst, k0, k0` is all-ones however it was
-/// left.
-const K0: RegNo<OpmaskFile> = RegNo::architectural(0);
+/// The two `k0` fields of `kxnorw dst, k0, k0`: all-ones however `k0` was
+/// left, because nothing writes it. A field the encoding fixes, not a
+/// register: `k0` is in no file, and reaches the word as the zero this is.
+#[derive(Copy, Clone)]
+struct K0;
+
+impl RegField for K0 {
+    fn field(self) -> u8 {
+        0
+    }
+}
 
 /// `vpternlogd`'s truth table for all-ones.
 const TERNLOG_ONES: u8 = 0xFF;
@@ -216,7 +224,7 @@ impl X86 for Avx512 {
     const VECTOR_BYTES: u64 = 64;
 
     /// `vpternlogd dst, dst, dst, 0xFF`
-    fn ones(dst: RegNo<VectorFile>) -> EncodedInst {
+    fn ones(dst: impl RegField) -> EncodedInst {
         Evex::m0f3a_66(0x25).imm(TERNLOG_ONES).rrr(dst, dst, dst)
     }
 
@@ -334,52 +342,36 @@ impl X86 for Avx512 {
                 dst,
                 if_true,
                 if_false,
-            } => Evex::m0f3a_66(0x25).imm(TERNLOG_SELECT).rrr(
-                dst.number(),
-                if_true.number(),
-                if_false.number(),
-            ),
+            } => Evex::m0f3a_66(0x25)
+                .imm(TERNLOG_SELECT)
+                .rrr(dst, if_true, if_false),
             Extra::InsertHigh { dst, src } => {
-                let dst = dst.number();
-                Evex::m0f3a_66(0x22)
-                    .w1()
-                    .xmm()
-                    .imm(1)
-                    .rrr(dst, dst, src.number())
+                Evex::m0f3a_66(0x22).w1().xmm().imm(1).rrr(dst, dst, src)
             }
-            Extra::CmpK { pred, dst, a, b } => {
-                Evex::m0f(0xC2)
-                    .imm(*pred as u8)
-                    .rrr(dst.number(), a.number(), b.number())
-            }
-            Extra::Movm2d { dst, k } => Evex::m0f38_f3(0x38).rr(dst.number(), k.number()),
-            Extra::Ptestm { dst, a, b } => {
-                Evex::m0f38_66(0x27).rrr(dst.number(), a.number(), b.number())
-            }
+            Extra::CmpK { pred, dst, a, b } => Evex::m0f(0xC2).imm(*pred as u8).rrr(dst, a, b),
+            Extra::Movm2d { dst, k } => Evex::m0f38_f3(0x38).rr(dst, k),
+            Extra::Ptestm { dst, a, b } => Evex::m0f38_66(0x27).rrr(dst, a, b),
             // Both operands the one mask register.
-            Extra::KorTest { k, .. } => Vex::m0f(0x98).xmm().rr(k.number(), k.number()),
-            Extra::KFromGpr { dst, src } => Vex::m0f(0x92).xmm().rr(dst.number(), src.number()),
+            Extra::KorTest { k, .. } => Vex::m0f(0x98).xmm().rr(k, k),
+            Extra::KFromGpr { dst, src } => Vex::m0f(0x92).xmm().rr(dst, src),
             Extra::Gather {
                 dst,
                 base,
                 index,
                 mask,
             } => {
-                let (dst, index) = (dst.number(), index.number());
-                debug_assert!(dst != index, "vgatherdps: dst and index must differ");
+                debug_assert!(
+                    dst.number() != index.number(),
+                    "vgatherdps: dst and index must differ"
+                );
                 // `base` is never `rbp`/`r13` (`GENERAL` excludes them), so
                 // the SIB's no-base encoding is unreachable.
-                Evex::m0f38_66(0x92).masked(mask.number()).vsib_scaled4(
-                    dst,
-                    None,
-                    base.number(),
-                    index,
-                )
+                Evex::m0f38_66(0x92)
+                    .masked(mask)
+                    .vsib_scaled4(dst, base, index)
             }
             Extra::StoreMasked { dst, src, mask: k } => {
-                Evex::m0f(0x11)
-                    .masked(k.number())
-                    .rm(src.number(), dst.base.number(), dst.disp)
+                Evex::m0f(0x11).masked(k).rm(src, &dst.base, dst.disp)
             }
             // `vvvv` is the lanes the mask leaves, and `rm` the ones it takes.
             Extra::BlendK {
@@ -387,24 +379,12 @@ impl X86 for Avx512 {
                 k,
                 if_true,
                 if_false,
-            } => Evex::m0f38_66(0x65).masked(k.number()).rrr(
-                dst.number(),
-                if_false.number(),
-                if_true.number(),
-            ),
-            Extra::KLogic { op, dst, a, b } => {
-                Vex::m0f(*op as u8).rrr(dst.number(), a.number(), b.number())
-            }
-            Extra::KOnes { dst } => Vex::m0f(KXNOR).rrr(dst.number(), K0, K0),
-            Extra::KMov { dst, src } => Vex::m0f(0x90).xmm().rr(dst.number(), src.number()),
-            Extra::SpillMask { src, slot } => {
-                let (base, disp) = x86_64::frame(slot);
-                Vex::m0f(0x91).xmm().rm(src.number(), base, disp)
-            }
-            Extra::ReloadMask { dst, slot } => {
-                let (base, disp) = x86_64::frame(slot);
-                Vex::m0f(0x90).xmm().rm(dst.number(), base, disp)
-            }
+            } => Evex::m0f38_66(0x65).masked(k).rrr(dst, if_false, if_true),
+            Extra::KLogic { op, dst, a, b } => Vex::m0f(*op as u8).rrr(dst, a, b),
+            Extra::KOnes { dst } => Vex::m0f(KXNOR).rrr(dst, K0, K0),
+            Extra::KMov { dst, src } => Vex::m0f(0x90).xmm().rr(dst, src),
+            Extra::SpillMask { src, slot } => Vex::m0f(0x91).xmm().frame(src, *slot),
+            Extra::ReloadMask { dst, slot } => Vex::m0f(0x90).xmm().frame(dst, *slot),
         }
     }
 
@@ -593,7 +573,7 @@ impl X86 for Avx512 {
         }
     }
 
-    fn spill_other(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
+    fn spill_other(b: &mut Spiller<'_, Self>, src: ValueName, slot: FrameSlot) {
         match src.class {
             ClassId::Opmask => b.push(Op::Vector(Inst::Extra(Extra::SpillMask {
                 src: src.typed(),
@@ -603,7 +583,7 @@ impl X86 for Avx512 {
         }
     }
 
-    fn reload_other(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
+    fn reload_other(b: &mut Spiller<'_, Self>, class: ClassId, slot: FrameSlot) -> ValueName {
         match class {
             ClassId::Opmask => b.define::<Opmask>(|dst| {
                 Op::Vector(Inst::Extra(Extra::ReloadMask {
