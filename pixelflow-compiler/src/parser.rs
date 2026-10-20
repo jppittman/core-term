@@ -689,7 +689,9 @@ fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
 fn refuse_where_clause(generics: &syn::Generics, what: &str) -> syn::Result<()> {
     match &generics.where_clause {
         Some(where_clause) => Err(syn::Error::new_spanned(
-            where_clause,
+            // An empty clause prints no tokens, so spanning the clause would
+            // fall back to the whole invocation; the keyword is always there.
+            where_clause.where_token,
             format!("a `where` clause on {what}: there are no generics to bound"),
         )),
         None => Ok(()),
@@ -714,7 +716,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
         syn::Expr::Paren(expr_paren) => convert_paren(expr_paren),
         syn::Expr::Field(expr_field) => convert_field(expr_field),
         syn::Expr::Cast(expr_cast) => convert_cast(expr_cast),
-        syn::Expr::Block(expr_block) => convert_block(expr_block.block).map(Expr::Block),
+        syn::Expr::Block(expr_block) => convert_labeled_block(expr_block),
         refused => Err(refuse_expression(&refused)),
     }
 }
@@ -1060,7 +1062,11 @@ fn convert_call(expr_call: syn::ExprCall) -> syn::Result<Expr> {
     if path.path.segments.len() != 1 || path.qself.is_some() {
         return Err(refuse_a_qualified_call(&expr_call));
     }
-    let func = path.path.segments[0].ident.clone();
+    let segment = &path.path.segments[0];
+    if !segment.arguments.is_empty() {
+        return Err(refuse_type_arguments_on_a_call(segment));
+    }
+    let func = segment.ident.clone();
     let args = expr_call
         .args
         .into_iter()
@@ -1081,6 +1087,21 @@ fn convert_call(expr_call: syn::ExprCall) -> syn::Result<Expr> {
         }),
         Err(args) => Expr::Call(CallExpr { func, args }),
     })
+}
+
+/// A call names its callee and nothing else: the types of a helper are its
+/// signature's.
+fn refuse_type_arguments_on_a_call(segment: &syn::PathSegment) -> syn::Error {
+    syn::Error::new_spanned(
+        &segment.arguments,
+        format!(
+            "type arguments on a call in a kernel body: `{}`\n\
+             \n\
+             note: a helper's parameter and return types are written once, in its \
+             `fn` signature; a call passes its arguments and names no type",
+            quote::quote!(#segment)
+        ),
+    )
 }
 
 /// A qualified callee names something outside the block.
@@ -1464,7 +1485,9 @@ fn the_closure(call: MethodTail) -> syn::Result<(syn::Ident, Expr)> {
     }
     let [param] = closure.inputs.iter().collect::<Vec<_>>()[..] else {
         return Err(syn::Error::new_spanned(
-            &closure.inputs,
+            // `|| body` has no parameter tokens to span: the opening bar is
+            // the closure's first token that always exists.
+            closure.or1_token,
             "a fold's closure takes one parameter, the index it ranges over",
         ));
     };
@@ -1573,6 +1596,21 @@ fn unary_op(op: &syn::UnOp) -> syn::Result<UnaryOp> {
         ),
     };
     Err(syn::Error::new_spanned(op, message))
+}
+
+/// A `{ .. }` in expression position. A block is a value, so a label has
+/// nothing to jump to.
+fn convert_labeled_block(expr_block: syn::ExprBlock) -> syn::Result<Expr> {
+    match expr_block.label {
+        Some(label) => Err(syn::Error::new_spanned(
+            label,
+            "a block label in a kernel body\n\
+             \n\
+             note: a block is a value, the last expression in it; there is no `break` \
+             to name it, so a label has no use",
+        )),
+        None => convert_block(expr_block.block).map(Expr::Block),
+    }
 }
 
 /// Convert a syn::Block to our BlockExpr.
@@ -2380,6 +2418,61 @@ mod tests {
         for (input, expected) in cases {
             let err = refusal(input);
             assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+        }
+    }
+
+    /// What the parser would otherwise drop is refused: a turbofish on a call
+    /// (`convert_path` refuses one on a name) and a block's label.
+    #[test]
+    fn a_turbofish_on_a_call_and_a_block_label_are_refused_rather_than_dropped() {
+        let cases: [(TokenStream, &str); 2] = [
+            (
+                quote! { fn h(a: f32) -> f32 { a } pub fn f() -> f32 { h::<u8>(X) } },
+                "type arguments on a call",
+            ),
+            (quote! { || 'l: { X } }, "a block label"),
+        ];
+        for (input, expected) in cases {
+            let err = refusal(input);
+            assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+        }
+    }
+
+    /// An empty `where` and a parameterless fold closure print no tokens, so a
+    /// refusal spanned at the clause or at the parameter list would carry the
+    /// whole invocation's span. These are refused at the `where` keyword and
+    /// at the closure's opening bar. The span itself is not observable here:
+    /// proc-macro2 outside a running macro keeps no locations, and the crate
+    /// does not take its `span-locations` feature for one test. It holds by
+    /// construction, `new_spanned` over a token the input always has, and
+    /// this pins that the inputs are refused at the parser with their text.
+    #[test]
+    fn a_refusal_over_nothing_is_spanned_at_a_token_that_exists() {
+        let cases: [(TokenStream, &str); 4] = [
+            (
+                quote! { pub fn e<const N: usize>() -> f32 where { X } },
+                "a `where` clause on",
+            ),
+            (
+                quote! { pub struct R where { x: f32 } pub fn f(r: R) -> f32 { X } },
+                "a `where` clause on",
+            ),
+            (
+                quote! { fn h() -> f32 where { X } pub fn f() -> f32 { h() } },
+                "a `where` clause on",
+            ),
+            (
+                quote! { || (0..3).map(|| X).sum::<f32>() },
+                "a fold's closure takes one parameter",
+            ),
+        ];
+        for (input, expected) in cases {
+            let shown = input.to_string();
+            let err = refusal(input);
+            assert!(
+                err.contains(expected),
+                "expected `{expected}`, got: {err} for {shown}"
+            );
         }
     }
 

@@ -744,7 +744,7 @@ impl<'a> FnAnalyzer<'a> {
             return Err(syn::Error::new(
                 name.span(),
                 format!(
-                    "{binder} `{text}` shadows the intrinsic coordinate variable `{text}`\n\
+                    "{binder} `{text}` shadows the intrinsic coordinate variable `{key}`\n\
                      note: intrinsics are: X, Y (coordinate variables), and every use of one \
                      in a kernel body means the coordinate\n\
                      help: rename this {binder} to something else"
@@ -2212,6 +2212,17 @@ mod tests {
     fn a_parameter_named_after_a_coordinate_is_refused() {
         let err = refusal(quote! { |X: f32| X * X }); // X shadows the intrinsic
         assert!(err.contains("shadows the intrinsic"), "got: {err}");
+    }
+
+    /// The binding is printed as its author spelled it; the intrinsic it
+    /// shadows is printed as the language names it.
+    #[test]
+    fn a_raw_spelled_coordinate_binding_names_the_intrinsic_plainly() {
+        let err = refusal(quote! { || { let r#X = 1.0; X } });
+        assert!(
+            err.contains("`r#X` shadows the intrinsic coordinate variable `X`"),
+            "got: {err}"
+        );
     }
 
     /// rustc reads `r#a` and `a` as one name, and so does the language: a
