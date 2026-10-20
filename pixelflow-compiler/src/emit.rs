@@ -64,7 +64,7 @@ use pixelflow_ir::{Binder, Monoid};
 /// - zero params — a `pixelflow_core::Kernel` value, built at load
 ///   time from the arena this expansion computed.
 /// - N params — a closure `move |p0: f32, ...| -> Kernel` whose kernel
-///   declares one uniform per parameter, its default the call's argument
+///   declares one uniform per parameter, its default the call's argument.
 ///   The closure sugar has no `Args` record: a program compiled from it is
 ///   rebound by position, with `UniformBlock::set_declared`.
 ///
