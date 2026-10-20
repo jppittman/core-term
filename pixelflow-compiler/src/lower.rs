@@ -531,7 +531,9 @@ impl<S: Site> Lowering<'_, S> {
             Expr::Ident(name) => self.resolve(&Name::of(name)),
 
             Expr::Literal(lit) => {
-                let value = lit.f32_value().map_err(|e| e.to_string())?;
+                let value = lit
+                    .f32_value()
+                    .expect("sema refuses a literal that is no `f32`");
                 Ok(self.site.constant(value))
             }
 
@@ -579,12 +581,10 @@ impl<S: Site> Lowering<'_, S> {
                 let func = Name::of(&call.func);
                 if let Some(binding) = self.frame.locals.lookup(&func) {
                     let Binding::Kernel(kernel) = binding else {
-                        return Err(format!(
-                            "`{func}` is not a kernel; only a kernel is applied"
-                        ));
+                        unreachable!("sema refuses applying a name that is not a kernel");
                     };
                     let kernel = kernel.clone();
-                    return self.apply(kernel, &func, &call.args);
+                    return self.apply(kernel, &call.args);
                 }
                 let helper = self.program.helpers.get(&func).copied().expect(
                     "`sema` refuses a call to anything but a kernel, a helper or a projection",
@@ -605,7 +605,7 @@ impl<S: Site> Lowering<'_, S> {
 
             Expr::Cast(cast) => self.lower_cast(cast),
 
-            Expr::Field(field) => self.lower_field(field),
+            Expr::Field(field) => Ok(self.lower_field(field)),
 
             // Parentheses are transparent - just recurse into the inner expression
             Expr::Paren(inner) => self.lower(inner),
@@ -616,17 +616,9 @@ impl<S: Site> Lowering<'_, S> {
 
     /// `k(x, y)`: the kernel `k` applied at the coordinates, which are
     /// lowered first, in order — contramap (§1.2).
-    fn apply(
-        &mut self,
-        kernel: S::Argument,
-        name: &Name,
-        args: &[Expr],
-    ) -> Result<S::Term, String> {
+    fn apply(&mut self, kernel: S::Argument, args: &[Expr]) -> Result<S::Term, String> {
         let [x, y] = args else {
-            return Err(format!(
-                "the kernel `{name}` is applied at the two coordinates, and {} were supplied",
-                args.len()
-            ));
+            unreachable!("sema refuses a kernel applied at other than two coordinates");
         };
         let x = self.lower(x)?;
         let y = self.lower(y)?;
@@ -645,7 +637,8 @@ impl<S: Site> Lowering<'_, S> {
             consts: &self.program.analyzed.consts,
             structural: self.frame.structural,
         };
-        let bounds = range_bounds(&fold.range, scope).map_err(|e| e.to_string())?;
+        let bounds = range_bounds(&fold.range, scope)
+            .expect("sema refuses a range it cannot evaluate, admit or order");
         let range = match bounds {
             Bounds::Known(range) => FoldRange::Known(range),
             Bounds::Structural(range) => FoldRange::Structural(range),
@@ -677,19 +670,14 @@ impl<S: Site> Lowering<'_, S> {
     /// `f32`, rounded as Rust's `as` rounds it; a structural parameter is the
     /// site's [`Site::count`], the same `N as f32` its host function has.
     fn lower_cast(&mut self, cast: &CastExpr) -> Result<S::Term, String> {
-        let Some(name) = cast.named() else {
-            return Err("`as f32` converts a `usize`, which is a name".to_string());
-        };
+        let name = cast
+            .named()
+            .expect("sema refuses an `as f32` of anything but a name");
         if let Some(binding) = self.frame.locals.lookup(&Name::of(name)) {
-            return match binding {
-                Binding::Index(index) => Ok(index.clone()),
-                Binding::Value(_) | Binding::Record(..) => Err(format!(
-                    "`{name} as f32`: `{name}` is a value, and `as f32` converts a `usize`"
-                )),
-                Binding::Kernel(_) => Err(format!(
-                    "`{name} as f32`: `{name}` is a kernel, and `as f32` converts a `usize`"
-                )),
+            let Binding::Index(index) = binding else {
+                unreachable!("sema refuses `{name} as f32` where `{name}` is no `usize`");
             };
+            return Ok(index.clone());
         }
         if let Some(position) = self
             .frame
@@ -699,34 +687,31 @@ impl<S: Site> Lowering<'_, S> {
         {
             return self.site.count(position, name);
         }
-        match self.program.analyzed.consts.get(&Name::of(name)) {
-            Some(&ConstValue::Usize(count)) => Ok(self.site.constant(count as f32)),
-            _ => Err(format!("`{name} as f32`: `{name}` is not a `usize`")),
-        }
+        let Some(&ConstValue::Usize(count)) = self.program.analyzed.consts.get(&Name::of(name))
+        else {
+            unreachable!("sema refuses `{name} as f32` where `{name}` is no `usize`");
+        };
+        Ok(self.site.constant(count as f32))
     }
 
     /// `p.x0`: the node of one field of a record binding.
-    fn lower_field(&mut self, field: &FieldExpr) -> Result<S::Term, String> {
-        let (record, fields) = self.record(&field.base)?;
-        let def = self.program.analyzed.def.record(record);
-        def.fields
+    ///
+    /// A record is only ever written by name, and read at a field it has
+    /// (`sema` refuses anything else).
+    fn lower_field(&mut self, field: &FieldExpr) -> S::Term {
+        let (record, fields) = self
+            .record_named(&field.base)
+            .expect("sema refuses a field read of anything but a record by name");
+        let index = self
+            .program
+            .analyzed
+            .def
+            .record(record)
+            .fields
             .iter()
             .position(|f| same_name(&f.name, &field.member))
-            .map(|index| fields[index].clone())
-            .ok_or_else(|| format!("no field `{}` on the record `{}`", field.member, def.name))
-    }
-
-    /// The record `expr` names, through any parentheses: a record is only
-    /// ever written by name (`sema` refuses anything else).
-    fn record(&self, expr: &Expr) -> Result<RecordFields<S::Term>, String> {
-        match self.record_named(expr) {
-            Some(record) => Ok(record),
-            None => Err(format!(
-                "a record, by name, where the body has `{}`",
-                expr.named()
-                    .map_or_else(|| "an expression".to_string(), ToString::to_string)
-            )),
-        }
+            .expect("sema refuses a field the record does not have");
+        fields[index].clone()
     }
 
     /// The record binding `expr` names, if it names one.
@@ -800,14 +785,12 @@ impl<S: Site> Lowering<'_, S> {
     /// nothing of the caller's — no local, no entry parameter, no structural
     /// parameter — is visible.
     fn inline(&mut self, helper: &FnItem, args: &[Expr]) -> Result<S::Term, String> {
-        if args.len() != helper.params.len() {
-            return Err(format!(
-                "`{}` takes {} arguments, but {} were supplied",
-                helper.name,
-                helper.params.len(),
-                args.len()
-            ));
-        }
+        assert_eq!(
+            args.len(),
+            helper.params.len(),
+            "sema refuses a call to `{}` at another arity",
+            helper.name
+        );
         let mut locals = Scopes::default();
         for (param, arg) in helper.params.iter().zip(args) {
             let binding = match (self.record_named(arg), self.kernel_named(arg)) {
@@ -845,21 +828,10 @@ impl<S: Site> Lowering<'_, S> {
     /// coordinate in a helper is refused here too, not only in `sema`.
     fn resolve(&mut self, name: &Name) -> Result<S::Term, String> {
         if let Some(binding) = self.frame.locals.lookup(name) {
-            return match binding {
-                Binding::Value(id) => Ok(id.clone()),
-                Binding::Index(_) => Err(format!(
-                    "`{name}` is a fold's index, a `usize`, where a value is expected: \
-                     `{name} as f32`"
-                )),
-                Binding::Record(..) => Err(format!(
-                    "`{name}` is a record, where a value is expected: read a field, \
-                     `{name}.x0`"
-                )),
-                Binding::Kernel(_) => Err(format!(
-                    "`{name}` is a kernel, where a value is expected: apply it, \
-                     `{name}(X, Y)`"
-                )),
+            let Binding::Value(id) = binding else {
+                unreachable!("sema refuses `{name}` read as a value: it is no `f32` or `bool`");
             };
+            return Ok(id.clone());
         }
         // The same order sema documents: a binding, then a const, then a
         // structural parameter, then the coordinates. Sema refuses a
@@ -868,21 +840,16 @@ impl<S: Site> Lowering<'_, S> {
         match self.program.analyzed.consts.get(name) {
             Some(&ConstValue::F32(value)) => return Ok(self.site.constant(value)),
             Some(ConstValue::Usize(_)) => {
-                return Err(format!(
-                    "`{name}` is a `usize` const, where a value is expected: `{name} as f32`"
-                ));
+                unreachable!("sema refuses the `usize` const `{name}` read as a value")
             }
             None => {}
         }
-        if self.frame.structural.iter().any(|n| Name::of(n) == *name) {
-            return Err(format!(
-                "`{name}` is a structural parameter, a `usize`, where a value is expected: \
-                 `{name} as f32`"
-            ));
-        }
-        let Some(axis) = SymbolTable::coordinate(name) else {
-            return Err(format!("Unknown identifier: {name}"));
-        };
+        assert!(
+            !self.frame.structural.iter().any(|n| Name::of(n) == *name),
+            "sema refuses the structural parameter `{name}` read as a value"
+        );
+        let axis = SymbolTable::coordinate(name)
+            .unwrap_or_else(|| unreachable!("sema refuses the unknown name `{name}`"));
         match self.frame.role {
             Role::Entry => Ok(self.site.coordinate(axis)),
             Role::Helper => Err(format!(
@@ -932,10 +899,11 @@ impl<S: Site> Lowering<'_, S> {
                 }
             }
         }
-        match &block.expr {
-            Some(final_expr) => self.lower(final_expr),
-            None => Err("Block has no final expression".to_string()),
-        }
+        let value = block
+            .expr
+            .as_ref()
+            .expect("sema refuses a block with no final expression");
+        self.lower(value)
     }
 }
 
@@ -1000,20 +968,6 @@ mod tests {
         );
     }
 
-    /// The caller's locals are not in scope in the helper, at this stage
-    /// too: a helper naming one the caller happens to bind is an error, not
-    /// dynamic scoping.
-    #[test]
-    fn a_helper_does_not_see_the_callers_locals() {
-        let Err(err) = lower_unanalyzed(quote! {
-            fn leak() -> f32 { a }
-            pub fn f() -> f32 { let a = X; leak() }
-        }) else {
-            panic!("`a` is not in the helper's scope");
-        };
-        assert!(err.contains("Unknown identifier: a"), "got: {err}");
-    }
-
     /// A coordinate in a helper is refused by lowering itself, not only by
     /// `sema`.
     #[test]
@@ -1028,26 +982,6 @@ mod tests {
     }
 
     // ───────────────────────────── folds ─────────────────────────────
-
-    /// Lowering refuses a fold's index where a value is expected, as `sema`
-    /// does, without relying on it.
-    #[test]
-    fn an_index_where_a_value_is_expected_is_refused_here_too() {
-        let Err(err) = lower_unanalyzed(quote! { || (0..4).map(|i| X * i).sum() }) else {
-            panic!("`i` is a `usize`");
-        };
-        assert!(
-            err.contains("`i` is a fold's index, a `usize`"),
-            "got: {err}"
-        );
-        let Err(err) = lower_unanalyzed(quote! {
-            const N: usize = 4;
-            pub fn f() -> f32 { X * N }
-        }) else {
-            panic!("`N` is a `usize`");
-        };
-        assert!(err.contains("`N` is a `usize` const"), "got: {err}");
-    }
 
     /// `sema` counts the folds one body nests; a helper's fold inlined into
     /// them nests deeper than any body shows, and lowering refuses that one,
@@ -1081,15 +1015,5 @@ mod tests {
             panic!("one binder deeper than the IR has");
         };
         assert!(err.contains("folds nested more than"), "got: {err}");
-    }
-
-    /// A value is not converted: `h as f32` of a `let` is refused here, as
-    /// in `sema`, without relying on it — `as f32` converts a `usize`.
-    #[test]
-    fn a_value_is_not_converted() {
-        let Err(err) = lower_unanalyzed(quote! { || { let h = X; h as f32 } }) else {
-            panic!("`h` is a value");
-        };
-        assert!(err.contains("`h` is a value"), "got: {err}");
     }
 }

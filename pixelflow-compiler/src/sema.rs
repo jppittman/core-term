@@ -2179,6 +2179,17 @@ mod tests {
         assert!(err.contains("cannot find `a`"), "got: {err}");
     }
 
+    /// The caller's locals are not in scope in the helper: a helper naming
+    /// one the caller happens to bind is an error, not dynamic scoping.
+    #[test]
+    fn a_helper_does_not_see_the_callers_locals() {
+        let err = refusal(quote! {
+            fn leak() -> f32 { a }
+            pub fn f() -> f32 { let a = X; leak() }
+        });
+        assert!(err.contains("cannot find `a`"), "got: {err}");
+    }
+
     /// Probe p5. `let X` and `let Y` are refused, as a parameter named X or Y
     /// is. Before the fix `{ let X = Y; X }` compiled and read the
     /// coordinate X, because lowering matched the coordinate names before
