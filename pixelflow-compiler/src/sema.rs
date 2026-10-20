@@ -1176,6 +1176,10 @@ impl<'a> FnAnalyzer<'a> {
                 "`DZ` is no longer a coordinate: a lattice has two axes, X and Y",
             ));
         }
+        if Projection::from_name(&name).is_some() {
+            // The parser keeps a projection's name a call at any arity but one.
+            return Err(arity_mismatch(call.func.span(), &name, 1, call.args.len()));
+        }
         Err(syn::Error::new(
             call.func.span(),
             format!(
@@ -3250,13 +3254,23 @@ mod tests {
     #[test]
     fn a_binding_named_after_a_projection_is_refused() {
         for input in [
-            quote! { pub fn f(DX: impl Fn(f32, f32) -> f32) -> f32 { DX(X) } },
+            quote! { pub fn f(DX: impl Fn(f32, f32) -> f32) -> f32 { DX(X, Y) } },
             quote! { pub fn f(V: f32) -> f32 { V } },
             quote! { || { let DY = X; DY } },
             quote! { || (0..2).map(|DXX| DXX as f32).sum() },
         ] {
             let err = refusal(input);
             assert!(err.contains("is named after the projection"), "got: {err}");
+        }
+    }
+
+    /// A call to a projection takes the one argument a projection takes:
+    /// `DX(x, y)` is no application of a kernel.
+    #[test]
+    fn a_projection_takes_one_argument() {
+        for input in [quote! { || DX(X, Y) }, quote! { || V() }] {
+            let err = refusal(input);
+            assert!(err.contains("takes 1 argument, but"), "got: {err}");
         }
     }
 }

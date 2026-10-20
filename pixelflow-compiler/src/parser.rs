@@ -1057,21 +1057,21 @@ fn convert_call(expr_call: syn::ExprCall) -> syn::Result<Expr> {
         .into_iter()
         .map(convert_expr)
         .collect::<syn::Result<Vec<_>>>()?;
-    let name = Name::of(&func);
-    let Some(projection) = Projection::from_name(&name) else {
+    // A projection takes one argument. At any other arity the name stays a
+    // call, so `sema` refuses it after the binding checks: a kernel parameter
+    // named `DX` and applied at two coordinates is a binding named after a
+    // projection, and that refusal says what to rename.
+    let Some(projection) = Projection::from_name(&Name::of(&func)) else {
         return Ok(Expr::Call(CallExpr { func, args }));
     };
-    let arg = match <[Expr; 1]>::try_from(args) {
-        Ok([arg]) => arg,
-        Err(args) => {
-            return Err(arity_mismatch(func.span(), name, 1, args.len()));
-        }
-    };
-    Ok(Expr::Project(ProjectExpr {
-        projection,
-        arg: Box::new(arg),
-        span: func.span(),
-    }))
+    Ok(match <[Expr; 1]>::try_from(args) {
+        Ok([arg]) => Expr::Project(ProjectExpr {
+            projection,
+            arg: Box::new(arg),
+            span: func.span(),
+        }),
+        Err(args) => Expr::Call(CallExpr { func, args }),
+    })
 }
 
 /// A qualified callee names something outside the block.
@@ -1174,7 +1174,7 @@ impl FoldTerminal {
 const COLLECTION_METHODS: [&str; 2] = ["into_iter", "iter"];
 
 /// The refusal of a collection iterated: one of [`COLLECTION_METHODS`], or
-/// one of [`ITERATING_METHODS`] with a closure called on anything but a
+/// one of [`RangeMethod`]'s `map`, `any` and `all` with a closure called on anything but a
 /// range — and not a closure out of place, which the closure's own refusal
 /// would say. The one iteration is a fold, and it ranges over integers.
 fn a_collection_iterated(call: &syn::ExprMethodCall) -> Option<syn::Error> {
@@ -2931,16 +2931,6 @@ mod tests {
         ] {
             let err = refusal(input);
             assert!(err.contains("Kernel::at"), "got: {err}");
-        }
-    }
-
-    /// A call to a projection takes the one argument a projection takes, said
-    /// where the call is written: `DX(x, y)` is no application of a kernel.
-    #[test]
-    fn a_projection_takes_one_argument() {
-        for input in [quote! { || DX(X, Y) }, quote! { || V() }] {
-            let err = refusal(input);
-            assert!(err.contains("takes 1 argument, but"), "got: {err}");
         }
     }
 }

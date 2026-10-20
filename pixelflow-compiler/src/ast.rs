@@ -804,8 +804,9 @@ impl Method {
 ///
 /// Resolved from the callee's name by [`Projection::from_name`], once, in
 /// the parser. Nothing can shadow a projection's name — `sema` refuses every
-/// item, parameter, `let` and index named after one — so a call to one is a
-/// projection wherever it stands, and no later stage asks again.
+/// item, parameter, `let` and index named after one — so a call to one with its
+/// one argument is a projection wherever it stands, and no later stage asks
+/// again. At any other arity it stays a [`CallExpr`], which `sema` refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Projection {
     /// `V(e)`: the value itself. Every arena expression is already
