@@ -69,9 +69,7 @@ use crate::sema::{
     folds_nested_too_deep, range_bounds,
 };
 use crate::symbol::{Scopes, SymbolTable};
-use pixelflow_ir::arena::{
-    Axis, ExprArena, ExprId, IndexSpaceFull, OpenFold, UniformDecl, UniformIdentity,
-};
+use pixelflow_ir::arena::{Axis, ExprArena, ExprId, OpenFold, UniformDecl, UniformIdentity};
 use pixelflow_ir::library;
 use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
 use std::collections::HashMap;
@@ -155,24 +153,15 @@ pub(crate) trait Site {
     /// Where the position has no room.
     fn count(&mut self, position: usize, name: &Ident) -> Result<Self::Term, String>;
     /// Open a fold over `range` under `monoid`, `depth` folds being open
-    /// already: its index ([`ExprArena::open_fold`]). Lowering has refused
-    /// a depth past the binders.
+    /// already: its index ([`ExprArena::open_fold`]).
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Where the range has no room.
-    fn open_fold(
-        &mut self,
-        depth: usize,
-        monoid: Monoid,
-        range: FoldRange,
-    ) -> Result<Self::Term, String>;
+    /// At `depth` [`Binder::COUNT`] or more: lowering refuses a fold nested
+    /// that deep before it opens one.
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: FoldRange) -> Self::Term;
     /// Close the innermost open fold over `body` ([`ExprArena::close_fold`]).
-    ///
-    /// # Errors
-    ///
-    /// When its body binds every binder, where that is known.
-    fn close_fold(&mut self, body: Self::Term) -> Result<Self::Term, String>;
+    fn close_fold(&mut self, body: Self::Term) -> Self::Term;
     /// `kernel` applied at `(x, y)` ([`ExprArena::apply`]).
     fn apply(&mut self, kernel: Self::Argument, at: [Self::Term; 2]) -> Self::Term;
 }
@@ -250,23 +239,17 @@ pub(crate) struct Holes {
 impl Holes {
     /// The stride an open fold over `range` is built with, over
     /// [`OPEN_RANGE`].
-    fn stride(&mut self, range: StructuralRange) -> Result<u32, String> {
+    fn stride(&mut self, range: StructuralRange) -> u32 {
         let text = range.text();
         let known = self.ranges.iter().position(|r| r.text() == text);
         let index = known.unwrap_or(self.ranges.len());
-        let stride = u32::try_from(index)
-            .ok()
-            .and_then(|index| HOLE_STRIDE.checked_add(index))
-            .ok_or_else(|| {
-                format!(
-                    "more distinct ranges over structural parameters than a placeholder can \
-                     name ({index})"
-                )
-            })?;
         if known.is_none() {
             self.ranges.push(range);
         }
-        Ok(stride)
+        u32::try_from(index)
+            .ok()
+            .and_then(|index| HOLE_STRIDE.checked_add(index))
+            .expect("an entry names fewer than 2^32 distinct structural ranges")
     }
 
     /// The range an open fold of this template is over, or `None` if `fold`
@@ -420,15 +403,10 @@ impl Site for Expansion {
         Ok(self.arena.push_param(hole))
     }
 
-    fn open_fold(
-        &mut self,
-        depth: usize,
-        monoid: Monoid,
-        range: FoldRange,
-    ) -> Result<ExprId, String> {
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: FoldRange) -> ExprId {
         let fold = match range {
             FoldRange::Known(range) => ExpansionFold::Known(monoid, range),
-            FoldRange::Structural(range) => ExpansionFold::Hole(monoid, self.holes.stride(range)?),
+            FoldRange::Structural(range) => ExpansionFold::Hole(monoid, self.holes.stride(range)),
         };
         let open = self
             .arena
@@ -436,10 +414,10 @@ impl Site for Expansion {
             .expect("lowering refuses a fold nested past the binders before it opens one");
         let index = open.index();
         self.open.push((open, fold));
-        Ok(index)
+        index
     }
 
-    fn close_fold(&mut self, body: ExprId) -> Result<ExprId, String> {
+    fn close_fold(&mut self, body: ExprId) -> ExprId {
         let (open, fold) = self
             .open
             .pop()
@@ -452,13 +430,7 @@ impl Site for Expansion {
         };
         self.arena
             .close_fold(open, body, fold_at)
-            .map_err(|IndexSpaceFull| {
-                format!(
-                    "a fold whose body already binds all {} of the IR's indices \
-                     (`Binder::COUNT`)",
-                    Binder::COUNT
-                )
-            })
+            .expect("lowering refuses a fold nested past the binders, so one is always free")
     }
 
     fn apply(&mut self, kernel: Infallible, _at: [ExprId; 2]) -> ExprId {
@@ -688,7 +660,7 @@ impl<S: Site> Lowering<'_, S> {
         }
         let index = self
             .site
-            .open_fold(self.open_folds, monoid(fold.reduction), range)?;
+            .open_fold(self.open_folds, monoid(fold.reduction), range);
         self.frame.locals.push_scope();
         self.frame
             .locals
@@ -697,7 +669,7 @@ impl<S: Site> Lowering<'_, S> {
         let body = self.lower(&fold.body);
         self.open_folds -= 1;
         self.frame.locals.pop_scope();
-        self.site.close_fold(body?)
+        Ok(self.site.close_fold(body?))
     }
 
     /// `i as f32`. A fold's index is an `f32` lane already, so its

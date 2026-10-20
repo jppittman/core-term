@@ -787,12 +787,7 @@ impl Site for Staged {
         Ok(self.step(quote!(__arena.push_const(#name as f32))))
     }
 
-    fn open_fold(
-        &mut self,
-        depth: usize,
-        monoid: Monoid,
-        range: FoldRange,
-    ) -> Result<Ident, String> {
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: FoldRange) -> Ident {
         let fold = self.fresh("__f");
         let depth = proc_macro2::Literal::usize_unsuffixed(depth);
         self.statements.push(quote! {
@@ -801,21 +796,21 @@ impl Site for Staged {
                 .expect("kernel! refused a fold nested past the binders at expansion");
         });
         self.open.push((fold.clone(), Self::fold_at(monoid, range)));
-        Ok(self.step(quote!(#fold.index())))
+        self.step(quote!(#fold.index()))
     }
 
-    fn close_fold(&mut self, body: Ident) -> Result<Ident, String> {
+    fn close_fold(&mut self, body: Ident) -> Ident {
         let (fold, fold_at) = self
             .open
             .pop()
             .expect("lowering closes only the folds it opened");
-        Ok(self.step(quote! {
+        self.step(quote! {
             __arena.close_fold(#fold, #body, #fold_at).expect(
                 "kernel!: a fold around a kernel's application has no binder left: its body, \
                  the argument's folds among them, binds every one of the IR's indices \
                  (`Binder::COUNT`)"
             )
-        }))
+        })
     }
 
     fn apply(&mut self, kernel: Ident, [x, y]: [Ident; 2]) -> Ident {
