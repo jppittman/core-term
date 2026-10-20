@@ -773,11 +773,14 @@ fn two_structural_ranges_fold_as_rustcs_const_generics_do() {
 }
 
 kernel! {
-    /// A known fold beside an open one: `0..3` and the empty `2..2` are
-    /// fixed in the template, `0..N` is filled by the instantiation.
+    /// A known fold beside an open one: `0..3` and the empty `2..2` and
+    /// `0..0` are fixed in the template, `0..N` is filled by the
+    /// instantiation. The empty `0..0` is the open fold's own placeholder
+    /// range, so only its stride tells the two apart.
     pub fn mixed<const N: usize>() -> f32 {
         (0..3).map(|i| X * (i as f32)).sum::<f32>()
             + (2..2).map(|k| Y * (k as f32)).sum::<f32>()
+            + (0..0).map(|i| X * (i as f32) + 100.0).sum::<f32>()
             + (0..N).map(|j| Y * (j as f32)).sum::<f32>()
     }
 }
@@ -785,6 +788,7 @@ kernel! {
 fn rust_mixed<const N: usize>(x: f32, y: f32) -> f32 {
     (0..3).map(|i| x * (i as f32)).sum::<f32>()
         + (2..2).map(|k| y * (k as f32)).sum::<f32>()
+        + (0..0).map(|i| x * (i as f32) + 100.0).sum::<f32>()
         + (0..N).map(|j| y * (j as f32)).sum::<f32>()
 }
 
