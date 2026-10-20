@@ -21,13 +21,16 @@
 //! - **capture avoidance** — a coordinate reading a fold's index, observed
 //!   through a field holding its own fold, keeps both binders apart;
 //! - **a name is expanded first** — a kernel argument passed `by_ref` and
-//!   observed elsewhere is observed there, not at the sample;
+//!   observed elsewhere is observed there, not at the sample — and **only
+//!   then**: observed at the sample, it stays a name, and so stays its own
+//!   optimization unit;
 //! - **a derivative is of the warped field** — the chain rule, as
 //!   `Kernel::at` has it (`derivative_under_warp.rs`), and pointwise
 //!   wherever the warp is a translation.
 
 use pixelflow_compiler::{kernel, kernel_raw};
 use pixelflow_core::{Kernel, Lattice};
+use pixelflow_ir::ExprNode;
 use pixelflow_ir::key::canonical;
 
 /// The sample every value is read at: `X = 3`, `Y = 5`.
@@ -79,6 +82,20 @@ kernel! {
         let here = k(X, Y);
         here.at(X + 1.0, Y)
     }
+
+    /// The same field observed at the sample: the identity warp.
+    pub fn here_of(k: impl Fn(f32, f32) -> f32) -> f32 {
+        let here = k(X, Y);
+        here.at(X, Y)
+    }
+}
+
+/// Whether `k`'s program still holds a name: a `Ref` reachable from its root.
+fn holds_a_name(k: &Kernel) -> bool {
+    let (arena, _) = k.parts();
+    arena
+        .nodes()
+        .any(|(_, node)| matches!(node, ExprNode::Ref(_)))
 }
 
 // ───────────────────────────────── meaning ─────────────────────────────────
@@ -191,6 +208,31 @@ fn a_named_kernel_is_observed_where_it_is_asked_to_be() {
     let k = x().mul(&constant(10.0));
     assert_eq!(bake(&east_of(&k)), 40.0, "10 · (3 + 1)");
     assert_eq!(bake(&east_of(&k.by_ref())), 40.0, "the name, expanded");
+}
+
+/// A name is expanded only where it must be. At the sample there is nothing
+/// to substitute, so the `Ref` is left as it stands — and a `Ref` is an
+/// optimization unit, saturated and extracted by itself and linked back in
+/// after (the ontology's "Ref, unit and link"). Expanding it there anyway
+/// would be invisible to every value test: the pixels are the same, only
+/// the unit is gone. So this asserts the structure, which hash-consing
+/// cannot hide: the name survives the identity, and is gone under a warp.
+#[test]
+fn a_name_observed_at_the_sample_stays_a_name() {
+    let named = x().mul(&constant(10.0)).by_ref();
+    assert!(
+        holds_a_name(&here_of(&named)),
+        "observed at (X, Y), the name stays a name"
+    );
+    assert!(
+        !holds_a_name(&east_of(&named)),
+        "observed elsewhere, the name is expanded so the warp can reach it"
+    );
+    assert_eq!(
+        bake(&here_of(&named)),
+        30.0,
+        "and it denotes the same field"
+    );
 }
 
 // ─────────────────────────────── derivatives ────────────────────────────────
