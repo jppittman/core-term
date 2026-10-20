@@ -53,7 +53,7 @@
 //!   order.
 //!
 //! A kernel-typed parameter is admitted when the host function is called,
-//! after the entry's own uniforms ([`AnalyzedKernel::kernel_parameters`]),
+//! after the entry's own uniforms ([`Callable::kernel_parameters`]),
 //! and `k(x, y)` is [`Site::apply`]. [`Expansion`] has no argument to apply
 //! — its [`Site::Argument`] is uninhabited — so no entry that takes one can
 //! be lowered there.
@@ -138,7 +138,7 @@ pub(crate) trait Site {
     /// [`library::derivative`].
     fn derivative(&mut self, e: Self::Term, axis: Axis) -> Self::Term;
     /// One of the entry's uniform scalars, declared next, and its leaf.
-    fn uniform(&mut self, scalar: Scalar<'_>) -> Self::Term;
+    fn uniform(&mut self, scalar: Scalar) -> Self::Term;
     /// The entry's kernel-typed parameter `name`, admitted next
     /// ([`ExprArena::admit`]).
     ///
@@ -284,6 +284,9 @@ pub(crate) struct Lowered {
     pub arena: ExprArena,
     pub root: ExprId,
     pub holes: Holes,
+    /// The entry's uniform scalars, in the order the arena's uniform table
+    /// declares them: the host function's argument each defaults to.
+    pub scalars: Vec<Scalar>,
 }
 
 /// The site an entry that takes no kernel is lowered at: an [`ExprArena`],
@@ -292,6 +295,8 @@ pub(crate) struct Lowered {
 pub(crate) struct Expansion {
     arena: ExprArena,
     holes: Holes,
+    /// The scalar behind each uniform declared, in declaration order.
+    scalars: Vec<Scalar>,
     /// The folds whose bodies are being built, innermost last, each with
     /// the fold it closes into.
     open: Vec<(OpenFold, ExpansionFold)>,
@@ -324,6 +329,7 @@ impl Expansion {
             arena: site.arena,
             root,
             holes: site.holes,
+            scalars: site.scalars,
         })
     }
 }
@@ -370,8 +376,9 @@ impl Site for Expansion {
     }
 
     /// A declaration here holds a placeholder default; emission declares
-    /// each with the call's value.
-    fn uniform(&mut self, _scalar: Scalar<'_>) -> ExprId {
+    /// each with the call's value, which the scalar names.
+    fn uniform(&mut self, scalar: Scalar) -> ExprId {
+        self.scalars.push(scalar);
         let slot = self.arena.declare_uniform(UniformDecl {
             id: UniformIdentity::mint(),
             default: UNBOUND,
@@ -447,7 +454,7 @@ impl Site for Expansion {
 /// Lower an entry's body at `site`, inlining the block's helpers and folding
 /// its `const`s. Its uniform parameters are declared first, in
 /// [`AnalyzedKernel::parameters`]' order, then its kernel-typed parameters
-/// are admitted, in [`AnalyzedKernel::kernel_parameters`]' — each
+/// are admitted, in [`Callable::kernel_parameters`]' — each
 /// argument's uniforms after the entry's own, in the argument's order.
 /// Children are lowered first so that a parent's operands always exist.
 ///
@@ -469,18 +476,21 @@ pub(crate) fn lower_entry<S: Site>(
     let mut locals = Scopes::default();
     for parameter in analyzed.parameters(entry.params) {
         let (name, binding) = match parameter {
-            Parameter::Scalar(name) => (name, Binding::Value(site.uniform(Scalar::Param(name)))),
+            Parameter::Scalar(name) => (
+                name,
+                Binding::Value(site.uniform(Scalar::Param(name.clone()))),
+            ),
             Parameter::Record { name, id, fields } => {
                 let uniforms = fields
                     .iter()
-                    .map(|field| site.uniform(Scalar::Field(name, &field.name)))
+                    .map(|field| site.uniform(Scalar::Field(name.clone(), field.name.clone())))
                     .collect();
                 (name, Binding::Record(id, uniforms))
             }
         };
         locals.bind(Name::of(name), binding);
     }
-    for name in analyzed.kernel_parameters(entry.params) {
+    for name in entry.kernel_parameters() {
         let argument = site.kernel_parameter(name)?;
         locals.bind(Name::of(name), Binding::Kernel(argument));
     }
@@ -704,7 +714,7 @@ impl<S: Site> Lowering<'_, S> {
     ///
     /// A record is only ever written by name, and read at a field it has
     /// (`sema` refuses anything else).
-    fn lower_field(&mut self, field: &FieldExpr) -> S::Term {
+    fn lower_field(&self, field: &FieldExpr) -> S::Term {
         let (record, fields) = self
             .record_named(&field.base)
             .expect("sema refuses a field read of anything but a record by name");
@@ -920,7 +930,6 @@ mod tests {
     use super::*;
     use crate::ast::KernelDef;
     use crate::parser::parse;
-    use crate::sema::Ty;
     use pixelflow_ir::arena::ExprNode;
     use quote::quote;
 
@@ -938,9 +947,9 @@ mod tests {
                 let Expr::Literal(lit) = &c.init else {
                     panic!("this harness holds literal consts only");
                 };
-                let value = match Ty::from_syn(&c.ty) {
-                    Some(Ty::Usize) => ConstValue::Usize(lit.usize_value().expect("a count")),
-                    _ => ConstValue::F32(lit.f32_value().expect("a value")),
+                let value = match matches!(&c.ty, syn::Type::Path(p) if p.path.is_ident("usize")) {
+                    true => ConstValue::Usize(lit.usize_value().expect("a count")),
+                    false => ConstValue::F32(lit.f32_value().expect("a value")),
                 };
                 (Name::of(&c.name), value)
             })

@@ -56,7 +56,7 @@ use syn::Ident;
 
 use crate::ast::{Callable, ClosureEntry, ConstItem, FnItem, KernelDef, Name, RecordItem, Role};
 use crate::lower::{Expansion, FoldRange, Holes, Lowered, Site, lower_entry};
-use crate::sema::{AnalyzedKernel, ConstValue, Parameter, Scalar};
+use crate::sema::{AnalyzedKernel, ConstValue, Scalar};
 use pixelflow_ir::arena::Axis;
 use pixelflow_ir::{Binder, Monoid};
 
@@ -90,7 +90,8 @@ pub(crate) fn emit_kernel(
 ) -> syn::Result<TokenStream> {
     match &analyzed.def {
         KernelDef::Closure(entry) => {
-            let arena_code = entry_arena(entry.callable(), analyzed, optimizer)?;
+            // A closure has no `Args` record to supply the scalars to.
+            let (arena_code, _) = entry_arena(entry.callable(), analyzed, optimizer)?;
             Ok(emit_closure(entry, &arena_code))
         }
         KernelDef::Items {
@@ -106,18 +107,18 @@ pub(crate) fn emit_kernel(
                 items.extend(emit_const(c, analyzed.consts[&Name::of(&c.name)]));
             }
             for entry in fns.iter().filter(|f| f.role() == Role::Entry) {
-                let body = match entry.takes_a_kernel() {
-                    true => Staged::lower(entry.callable(), analyzed)?,
-                    false => {
-                        let arena_code = entry_arena(entry.callable(), analyzed, optimizer)?;
-                        quote! {
-                            let (__arena, __root) = #arena_code;
-                            ::pixelflow_core::Kernel::from_parts(__arena, __root)
-                        }
-                    }
+                if entry.takes_a_kernel() {
+                    let body = Staged::lower(entry.callable(), analyzed)?;
+                    items.extend(emit_entry(entry, &body));
+                    continue;
+                }
+                let (arena_code, scalars) = entry_arena(entry.callable(), analyzed, optimizer)?;
+                let body = quote! {
+                    let (__arena, __root) = #arena_code;
+                    ::pixelflow_core::Kernel::from_parts(__arena, __root)
                 };
                 items.extend(emit_entry(entry, &body));
-                items.extend(emit_args(entry, analyzed));
+                items.extend(emit_args(entry, &scalars));
             }
             Ok(items)
         }
@@ -129,7 +130,9 @@ fn is_pub(vis: &syn::Visibility) -> bool {
 }
 
 /// Lower an entry, run the optimizer over it, and emit the code that
-/// rebuilds the arena: an expression evaluating to `(arena, root)`.
+/// rebuilds the arena: an expression evaluating to `(arena, root)`, and the
+/// scalars the lowering declared its uniforms for, which the host function
+/// and its `Args` record supply by position.
 ///
 /// An entry with structural parameters is a template: its open folds hold
 /// placeholder ranges a rewrite would read as ranges (an empty one, to
@@ -140,20 +143,20 @@ fn entry_arena(
     entry: Callable<'_>,
     analyzed: &AnalyzedKernel,
     optimizer: &mut dyn Optimize,
-) -> syn::Result<TokenStream> {
-    let Lowered { arena, root, holes } = Expansion::lower(entry, analyzed)?;
+) -> syn::Result<(TokenStream, Vec<Scalar>)> {
+    let Lowered {
+        arena,
+        root,
+        holes,
+        scalars,
+    } = Expansion::lower(entry, analyzed)?;
     let context = EntryContext {
-        arguments: analyzed
-            .parameters(entry.params)
-            .into_iter()
-            .flat_map(Parameter::scalars)
-            .map(argument)
-            .collect(),
+        arguments: scalars.iter().map(argument).collect(),
         structural: entry.structural,
         holes: &holes,
     };
     if !entry.structural.is_empty() {
-        return Ok(arena_to_tokens(&arena, root, &context));
+        return Ok((arena_to_tokens(&arena, root, &context), scalars));
     }
 
     // Declining is ordinary and needs no arm: the lowered term stands, and a
@@ -169,12 +172,12 @@ fn entry_arena(
         Some(changed) => changed,
         None => (arena, root),
     };
-    Ok(arena_to_tokens(&arena, root, &context))
+    Ok((arena_to_tokens(&arena, root, &context), scalars))
 }
 
 /// What a scalar argument is in the host function: `param`, or
 /// `param.field` for a record parameter's field.
-fn argument(scalar: Scalar<'_>) -> TokenStream {
+fn argument(scalar: &Scalar) -> TokenStream {
     match scalar {
         Scalar::Param(param) => quote!(#param),
         Scalar::Field(param, field) => quote!(#param.#field),
@@ -184,7 +187,7 @@ fn argument(scalar: Scalar<'_>) -> TokenStream {
 /// What an entry's arena is emitted against: the argument each declared
 /// uniform defaults to, in declaration order, and — for a template — the
 /// structural parameters and open ranges its holes are filled from.
-pub(crate) struct EntryContext<'a> {
+struct EntryContext<'a> {
     arguments: Vec<TokenStream>,
     structural: &'a [Ident],
     holes: &'a Holes,
@@ -248,7 +251,7 @@ fn emit_entry(entry: &FnItem, body: &TokenStream) -> TokenStream {
 /// (`UniformBlock::set_declared`), as an array literal whose length rustc
 /// counts. An entry with no parameters has none, and neither has one that
 /// takes a kernel ([`FnItem::has_args_record`]).
-fn emit_args(entry: &FnItem, analyzed: &AnalyzedKernel) -> TokenStream {
+fn emit_args(entry: &FnItem, scalars: &[Scalar]) -> TokenStream {
     if !entry.has_args_record() {
         return TokenStream::new();
     }
@@ -268,14 +271,10 @@ fn emit_args(entry: &FnItem, analyzed: &AnalyzedKernel) -> TokenStream {
             #vis #name: #ty,
         }
     });
-    let values = analyzed
-        .parameters(&entry.params)
-        .into_iter()
-        .flat_map(Parameter::scalars)
-        .map(|scalar| {
-            let value = argument(scalar);
-            quote!(self.#value)
-        });
+    let values = scalars.iter().map(|scalar| {
+        let value = argument(scalar);
+        quote!(self.#value)
+    });
     quote! {
         #[doc = #record_doc]
         #[derive(Clone, Copy, Debug, PartialEq)]
@@ -432,19 +431,11 @@ fn instantiated_range(range: &crate::sema::StructuralRange) -> TokenStream {
 /// an `f32`, and an open fold's range is evaluated per instantiation
 /// ([`instantiated_range`]).
 ///
-/// # Panics
-///
-/// If the arena's uniform table is not `context`'s arguments one for one:
-/// lowering declares one uniform per argument, and a relink restores the
-/// table after optimization, so a mismatch is a front-end bug, not a
-/// kernel's.
 fn arena_to_tokens(arena: &ExprArena, root: ExprId, context: &EntryContext) -> TokenStream {
-    assert_eq!(
+    debug_assert_eq!(
         arena.uniforms().len(),
         context.arguments.len(),
-        "kernel! declared {} uniforms for {} arguments",
-        arena.uniforms().len(),
-        context.arguments.len()
+        "lowering declares one uniform per argument, and a relink restores the table"
     );
     let decls = context.arguments.iter().enumerate().map(|(slot, value)| {
         let slot = uniform_var(slot as u64);
@@ -763,9 +754,9 @@ impl Site for Staged {
 
     /// Declared with the call's value as its default, as [`arena_to_tokens`]
     /// declares an expanded entry's, so baking the kernel draws the call.
-    fn uniform(&mut self, scalar: Scalar<'_>) -> Ident {
+    fn uniform(&mut self, scalar: Scalar) -> Ident {
         let slot = self.fresh("__u");
-        let value = argument(scalar);
+        let value = argument(&scalar);
         self.statements.push(quote! {
             let #slot = __arena.declare_uniform(::pixelflow_core::__macro::ir::arena::UniformDecl {
                 id: ::pixelflow_core::__macro::ir::arena::UniformIdentity::mint(),

@@ -138,6 +138,7 @@ pub(crate) struct ClosureEntry {
 impl ClosureEntry {
     pub(crate) fn callable(&self) -> Callable<'_> {
         Callable {
+            name: None,
             role: Role::Entry,
             structural: &[],
             params: &self.params,
@@ -152,11 +153,28 @@ impl ClosureEntry {
 /// a stage that handles an entry handles either spelling of it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Callable<'a> {
+    /// The function's name; the closure form has none.
+    pub name: Option<&'a Ident>,
     pub role: Role,
     /// An entry's structural parameters; a helper has none.
     pub structural: &'a [Ident],
     pub params: &'a [Param],
     pub body: &'a Expr,
+}
+
+impl<'a> Callable<'a> {
+    /// Its kernel-typed parameters in declaration order: the order their
+    /// arguments are admitted in, and so the order each argument's uniforms
+    /// are declared in, after the function's own
+    /// ([`AnalyzedKernel::parameters`](crate::sema::AnalyzedKernel::parameters))
+    /// — `Kernel`'s rule for a composition's operands, which a positional
+    /// binding of the composed program reads (O3 of the plan).
+    pub(crate) fn kernel_parameters(&self) -> impl Iterator<Item = &'a Ident> {
+        self.params
+            .iter()
+            .filter(|param| param.is_kernel())
+            .map(|param| &param.name)
+    }
 }
 
 /// A name as the language compares it: an identifier without its `r#`.
@@ -282,6 +300,7 @@ pub(crate) enum Role {
 impl FnItem {
     pub(crate) fn callable(&self) -> Callable<'_> {
         Callable {
+            name: Some(&self.name),
             role: self.role(),
             structural: &self.structural,
             params: &self.params,

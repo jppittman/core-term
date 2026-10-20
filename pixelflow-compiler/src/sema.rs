@@ -127,7 +127,7 @@ pub(crate) enum Ty {
 impl Ty {
     /// The type a declaration names, or `None` for one the language does not
     /// have.
-    pub(crate) fn from_syn(ty: &Type) -> Option<Ty> {
+    fn from_syn(ty: &Type) -> Option<Ty> {
         let name = bare_name(ty)?;
         [Ty::F32, Ty::Bool, Ty::Usize]
             .into_iter()
@@ -255,36 +255,22 @@ pub(crate) enum Parameter<'a> {
 
 /// One uniform scalar of an entry — what the host function's argument is,
 /// for this call.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Scalar<'a> {
+#[derive(Debug, Clone)]
+pub(crate) enum Scalar {
     /// A parameter: `param`.
-    Param(&'a Ident),
+    Param(Ident),
     /// One field of a record parameter: `param.field`.
-    Field(&'a Ident, &'a Ident),
-}
-
-impl<'a> Parameter<'a> {
-    /// Its uniform scalars, in the order its program declares them: the
-    /// parameter itself, or its record's fields in field order.
-    pub(crate) fn scalars(self) -> Vec<Scalar<'a>> {
-        match self {
-            Parameter::Scalar(name) => vec![Scalar::Param(name)],
-            Parameter::Record { name, fields, .. } => fields
-                .iter()
-                .map(|field| Scalar::Field(name, &field.name))
-                .collect(),
-        }
-    }
+    Field(Ident, Ident),
 }
 
 impl AnalyzedKernel {
     /// An entry's uniform parameters in declaration order: an `f32` is one
     /// uniform, a record one per field (plan §1.4). The one definition of
-    /// the order a program declares its own uniforms in — lowering declares
-    /// them by it, and the host function and its `Args` record supply them
-    /// by it — so a positional binding cannot disagree with the program it
-    /// binds. A kernel-typed parameter is not among them: its uniforms are
-    /// the argument's, declared after these ([`Self::kernel_parameters`]).
+    /// the order a program declares its own uniforms in. Lowering declares
+    /// them by it and hands on the scalar behind each declaration, which is
+    /// what the host function and its `Args` record supply — so a positional
+    /// binding cannot disagree with the program it binds. A kernel-typed parameter is not among them: its uniforms are
+    /// the argument's, declared after these ([`Callable::kernel_parameters`]).
     pub(crate) fn parameters<'a>(&'a self, params: &'a [Param]) -> Vec<Parameter<'a>> {
         params
             .iter()
@@ -299,20 +285,6 @@ impl AnalyzedKernel {
             })
             .collect()
     }
-
-    /// An entry's kernel-typed parameters in declaration order: the order
-    /// their arguments are admitted in, and so the order each argument's
-    /// uniforms are declared in, after the entry's own
-    /// ([`Self::parameters`]) — `Kernel`'s rule for a composition's
-    /// operands, which a positional binding of the composed program reads
-    /// (O3 of the plan).
-    pub(crate) fn kernel_parameters<'a>(&self, params: &'a [Param]) -> Vec<&'a Ident> {
-        params
-            .iter()
-            .filter(|param| param.is_kernel())
-            .map(|param| &param.name)
-            .collect()
-    }
 }
 
 /// Perform semantic analysis on a parsed kernel.
@@ -321,11 +293,11 @@ pub(crate) fn analyze(def: KernelDef) -> syn::Result<AnalyzedKernel> {
     let consts = evaluate_consts(def.consts(), &items.consts)?;
     match &def {
         KernelDef::Closure(entry) => {
-            FnAnalyzer::new(entry.callable(), &items, &consts)?.check_inferred(&entry.body)?;
+            FnAnalyzer::new(entry.callable(), &items, &consts)?.check()?;
         }
         KernelDef::Items { fns, .. } => {
             for f in fns {
-                FnAnalyzer::new(f.callable(), &items, &consts)?.check(f)?;
+                FnAnalyzer::new(f.callable(), &items, &consts)?.check()?;
             }
             refuse_recursion(fns)?;
             require_an_entry(fns)?;
@@ -640,6 +612,10 @@ struct FnAnalyzer<'a> {
     /// The `fn`'s structural parameters, which a fold's bounds may name.
     structural: &'a [Ident],
     role: Role,
+    /// What the body is checked against: the `fn`'s name and declared return
+    /// type, or nothing for the closure form, whose type is inferred.
+    declared: Option<(&'a Ident, Ty)>,
+    body: &'a Expr,
     symbols: SymbolTable,
     /// How many folds' bodies the walk is inside: a fold's body is a Rust
     /// closure, and a closure `.map` calls again cannot move what it
@@ -666,6 +642,8 @@ impl<'a> FnAnalyzer<'a> {
             consts,
             structural: f.structural,
             role: f.role,
+            declared: f.name.map(|name| (name, items.fns[&Name::of(name)].ret)),
+            body: f.body,
             symbols: SymbolTable::new(),
             folds_open: 0,
             moved: HashMap::new(),
@@ -683,21 +661,20 @@ impl<'a> FnAnalyzer<'a> {
         Ok(analyzer)
     }
 
-    /// Type the body, and check it against the declared return type.
-    fn check(mut self, f: &FnItem) -> syn::Result<()> {
-        let want = self.items.fns[&Name::of(&f.name)].ret;
-        self.expect(
-            &f.body,
-            want,
-            &format!("`{}` declares that it returns `{}`", f.name, want.name()),
-        )?;
-        Ok(())
-    }
-
-    /// Type a body whose type is inferred: the closure form's.
-    fn check_inferred(mut self, body: &Expr) -> syn::Result<()> {
-        self.type_of(body)?;
-        Ok(())
+    /// Type the body, and check it against the declared return type if it
+    /// has one.
+    fn check(mut self) -> syn::Result<()> {
+        let body = self.body;
+        match self.declared {
+            None => self.type_of(body).map(drop),
+            Some((name, want)) => self
+                .expect(
+                    body,
+                    want,
+                    &format!("`{name}` declares that it returns `{}`", want.name()),
+                )
+                .map(drop),
+        }
     }
 
     /// Register a parameter in the symbol table.
@@ -848,7 +825,7 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         };
-        self.named_record(&field.base, record)?;
+        Self::require_named_record(&field.base)?;
         let def = self.items.def.record(record);
         if def.fields.iter().any(|f| same_name(&f.name, &field.member)) {
             return Ok(Ty::F32);
@@ -871,9 +848,9 @@ impl<'a> FnAnalyzer<'a> {
     /// of one. Anything else that has a record's type — a block ending in
     /// one, a `.clone()` of one — computes a record, and a record is never
     /// computed until Phase D (D7).
-    fn named_record(&self, expr: &Expr, record: RecordId) -> syn::Result<RecordId> {
+    fn require_named_record(expr: &Expr) -> syn::Result<()> {
         if expr.named().is_some() {
-            return Ok(record);
+            return Ok(());
         }
         Err(syn::Error::new(
             expr.span(),
@@ -1394,7 +1371,10 @@ impl<'a> FnAnalyzer<'a> {
         // aliased, `let q = p;`, and so is written by name.
         let found = match &let_stmt.ty {
             None => match self.type_of(&let_stmt.init)? {
-                Ty::Record(record) => Ty::Record(self.named_record(&let_stmt.init, record)?),
+                record @ Ty::Record(_) => {
+                    Self::require_named_record(&let_stmt.init)?;
+                    record
+                }
                 Ty::Kernel => {
                     return Err(Self::kernel_is_not_a_value(let_stmt.init.span(), "a `let`"));
                 }
@@ -1433,12 +1413,12 @@ impl<'a> FnAnalyzer<'a> {
     /// Type `expr`, and refuse it unless it is `want`, saying what `what`
     /// needed. Every position of the language that needs one type goes
     /// through here, so a type error reads the same everywhere. A record is
-    /// accepted only by name ([`Self::named_record`]).
+    /// accepted only by name ([`Self::require_named_record`]).
     fn expect(&mut self, expr: &Expr, want: Ty, what: &str) -> syn::Result<Ty> {
         let found = self.type_of(expr)?;
         if found == want {
-            if let Ty::Record(record) = want {
-                self.named_record(expr, record)?;
+            if matches!(want, Ty::Record(_)) {
+                Self::require_named_record(expr)?;
             }
             return Ok(found);
         }
