@@ -17,8 +17,7 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
-use super::graph::{EGraph, SaturationStop};
-use super::node::EClassId;
+use super::graph::{Limits, Saturation, SaturationStop};
 use super::rules::RuleId;
 
 /// Result of a budget-limited saturation run.
@@ -54,7 +53,7 @@ pub struct SaturationResult {
     /// Was keyed by `Rewrite::name()`, which is a *family* name: all four
     /// `Commutative` instances answered to `"commutative"` and landed in one
     /// bucket, so every per-rule number derived from this map was wrong by
-    /// aggregation. [`RuleId`](crate::egraph::RuleId) is per instance.
+    /// aggregation. [`RuleId`] is per instance.
     pub rule_matches: HashMap<RuleId, usize>,
 
     /// The rewrite budget that was used.
@@ -64,10 +63,10 @@ pub struct SaturationResult {
     /// `max_iterations`) — recorded on the result so an observer of the run
     /// (the `saturation-telemetry` feature) reads the limits that actually
     /// applied instead of re-deriving them from `node_count`.
-    pub max_classes: usize,
+    pub max_minted: usize,
     pub hard_timeout: std::time::Duration,
 
-    /// Which condition ended the run — read off `EGraph::saturate_with_limits`'s
+    /// Which condition ended the run — read off `Saturation::saturate_with_limits`'s
     /// own stopping decision, not inferred from the counts above (those can
     /// tie: a class-cap or timeout break can leave `iterations <
     /// max_iterations` exactly like a quiesced run).
@@ -112,7 +111,7 @@ impl SaturationResult {
 /// let result = saturate_with_budget(&mut eg, 100);
 /// assert!(result.saturated || result.iterations <= 100);
 /// ```
-pub fn saturate_with_budget(egraph: &mut EGraph, max_iterations: usize) -> SaturationResult {
+pub fn saturate_with_budget(egraph: &mut Saturation, max_iterations: usize) -> SaturationResult {
     saturate_with_full_budget(
         egraph,
         max_iterations,
@@ -126,26 +125,27 @@ pub fn saturate_with_budget(egraph: &mut EGraph, max_iterations: usize) -> Satur
 /// Unlike `saturate_with_budget`, this gives full control over safety limits.
 /// The e-graph stops growing when ANY limit is reached.
 pub fn saturate_with_full_budget(
-    egraph: &mut EGraph,
+    egraph: &mut Saturation,
     max_iterations: usize,
-    max_classes: usize,
+    max_minted: usize,
     timeout: std::time::Duration,
 ) -> SaturationResult {
-    let classes_before = egraph.classes.len();
-    egraph.match_counts.clear();
+    let classes_before = egraph.num_classes();
+    // The result reports this call's matches, so start from none.
+    drop(egraph.take_match_counts());
 
     // One call drives the entire multi-round run — the loop that decides
     // when to stop (timeout, class limit, or convergence) lives exactly
-    // once, in `EGraph::saturate_with_limits`
-    // (docs/plans/2026-08-17-cost-model-domain.md, J11). This module
+    // once, in `Saturation::saturate_with_limits`
+    // (docs/archive/plans/2026-08-17-cost-model-domain.md, J11). This module
     // previously re-decided the same stopping conditions in a second,
     // hand-rolled outer loop that drove the e-graph one round at a time —
     // the duplicate-loop drift the domain model doc calls out by name.
-    let stats = egraph.saturate_with_limits(max_iterations, max_classes, timeout);
+    let stats = egraph.saturate_with_limits(max_iterations, max_minted, timeout);
 
     let saturated = stats.stop == SaturationStop::Quiesced;
-    let classes_after = egraph.classes.len();
-    let rule_matches = egraph.match_counts.clone();
+    let classes_after = egraph.num_classes();
+    let rule_matches = egraph.take_match_counts();
 
     SaturationResult {
         iterations: stats.iterations,
@@ -155,7 +155,7 @@ pub fn saturate_with_full_budget(
         classes_after,
         rule_matches,
         budget: max_iterations,
-        max_classes,
+        max_minted,
         hard_timeout: timeout,
         stop: stats.stop,
     }
@@ -174,11 +174,13 @@ pub fn saturate_with_full_budget(
 pub struct SaturationConfig {
     /// Rewrite-round budget (each round applies every rule once).
     pub max_iterations: usize,
-    /// E-class count budget — caps pathological e-graph blowup.
-    pub max_classes: usize,
+    /// The most e-class ids the graph may mint (ids are never reclaimed, so
+    /// this counts every id ever minted, not the live classes): caps
+    /// pathological e-graph blowup.
+    pub max_minted: usize,
     /// Rule-application budget — deterministic replacement for wall clock
     /// as a *stopping condition*. See
-    /// `docs/plans/2026-09-01-production-budget-determinism.md` for the
+    /// `docs/archive/plans/2026-09-01-production-budget-determinism.md` for the
     /// calibration (40 applications per e-class of the tier's own class
     /// cap, 1.9x the highest applications-per-class ratio ever observed).
     pub max_applications: u64,
@@ -186,7 +188,7 @@ pub struct SaturationConfig {
     /// bug in the budget (or the ceiling), so [`Optimizer::hard_ceiling`]
     /// panics rather than silently truncating and reporting success — which
     /// is what the old `hard_timeout` did when passed into
-    /// [`EGraph::saturate_with_limits`]. Named `safety_ceiling` rather than
+    /// [`Saturation::saturate_with_limits`]. Named `safety_ceiling` rather than
     /// `hard_timeout` to make that distinction unmissable at every call
     /// site.
     ///
@@ -196,7 +198,7 @@ pub struct SaturationConfig {
 
 /// The application budget per e-class of a tier's class cap — 1.9× the
 /// highest applications-per-class ratio ever observed at a tier's own cap
-/// (docs/plans/2026-09-01-production-budget-determinism.md, "Decision: the
+/// (docs/archive/plans/2026-09-01-production-budget-determinism.md, "Decision: the
 /// application budgets").
 pub const APPLICATIONS_PER_CLASS: u64 = 40;
 
@@ -243,20 +245,20 @@ pub const CLASSICAL_CLASS_FLOOR: usize = 5_000;
 /// a few copies.
 pub const CLASSICAL_CLASS_CEILING: usize = 50_000;
 
-// The saturation loop clamps every cap to `HARD_CLASS_LIMIT`; a ceiling above
+// The saturation loop clamps every cap to `HARD_MINTED_LIMIT`; a ceiling above
 // it would be a cap that silently never applies.
-const _: () = assert!(CLASSICAL_CLASS_CEILING <= super::graph::HARD_CLASS_LIMIT);
+const _: () = assert!(CLASSICAL_CLASS_CEILING <= super::graph::HARD_MINTED_LIMIT);
 const _: () = assert!(CLASSICAL_CLASS_FLOOR <= CLASSICAL_CLASS_CEILING);
 
 impl SaturationConfig {
     /// A tier from its two free dimensions: the application budget and the
     /// safety ceiling are derived, so the plan's ratios hold at every cap
     /// rather than at three hand-copied points.
-    const fn tier(max_iterations: usize, max_classes: usize) -> Self {
-        let max_applications = max_classes as u64 * APPLICATIONS_PER_CLASS;
+    const fn tier(max_iterations: usize, max_minted: usize) -> Self {
+        let max_applications = max_minted as u64 * APPLICATIONS_PER_CLASS;
         Self {
             max_iterations,
-            max_classes,
+            max_minted,
             max_applications,
             safety_ceiling: SAFETY_CEILING_PER_APPLICATION
                 .checked_mul(max_applications as u32)
@@ -289,13 +291,12 @@ impl SaturationConfig {
     /// [`CLASSICAL_CLASS_CEILING`]. The application budget and the safety
     /// ceiling scale with it.
     ///
-    /// Why the inserted class count and not the node count the tier is
-    /// keyed on: a `Kernel` built by composition re-expands its shared
-    /// subtrees, so the arena is 2.3 nodes per class on a glyph and 840 on
-    /// the chrome scene (a 390,815-node tree that hash-conses to 465).
-    /// Sizing by nodes would hand the chrome scene the ceiling, and at the
-    /// ceiling its extraction is 42% dearer (the sweep's chrome rows); by
-    /// inserted classes it keeps the floor it had.
+    /// Why the inserted class count and not the size of the tree written
+    /// out in full: the chrome scene is a 390,815-node tree that hash-conses
+    /// to 465 classes. Sizing by the tree would hand it the ceiling, and at
+    /// the ceiling its extraction is 42% dearer (the sweep's chrome rows); by
+    /// inserted classes it keeps the floor it had. (An `ExprArena` interns,
+    /// so its reachable count is already the hash-consed one.)
     pub fn classical_for(inserted_classes: usize) -> Self {
         let classes = inserted_classes
             .saturating_mul(CLASSICAL_CLASSES_PER_INSERTED_CLASS)
@@ -334,131 +335,143 @@ impl SaturationConfig {
     pub fn compatibility(max_iterations: usize) -> Self {
         Self {
             max_iterations,
-            max_classes: 10_000,
+            max_minted: 10_000,
             max_applications: u64::MAX,
             safety_ceiling: std::time::Duration::from_millis(500),
         }
     }
 
-    /// Run one saturation of `egraph` under this budget.
+    /// Run one saturation of `egraph` under this budget's rounds and id cap.
     ///
-    /// Goes through [`EGraph::saturate_with_limits`], which knows only
-    /// three limits (rounds, classes, a real wall-clock deadline) — the
-    /// same regime [`SaturationConfig::compatibility`] exists to reproduce.
-    /// `max_applications` is not threaded through here: no caller of this
-    /// method wants an application-budgeted, clock-truncated run at once,
-    /// and production reaches the application budget through
-    /// [`Optimizer::run`](super::optimizer::Optimizer::run) /
-    /// [`EGraph::saturate_budgeted`] instead, which never looks at a clock.
-    pub fn run(&self, egraph: &mut EGraph) -> super::graph::SaturationStats {
-        egraph.saturate_with_limits(self.max_iterations, self.max_classes, self.safety_ceiling)
+    /// Reads no clock: the callers are tests and offline harnesses, where a
+    /// deadline would make the stop reason a function of machine load.
+    /// `safety_ceiling` is not spent here (a harness that wants to assert on
+    /// elapsed time does so around the call), and neither is
+    /// `max_applications`, which no caller of this method wants. A run that
+    /// is to be cut by a wall clock says so by calling
+    /// [`Saturation::saturate_with_limits`] itself.
+    pub fn run(&self, egraph: &mut Saturation) -> super::graph::SaturationStats {
+        egraph.saturate_budgeted(Limits {
+            iterations: self.max_iterations,
+            minted: self.max_minted,
+            applications: None,
+        })
     }
 }
 
-/// The two sizes production's budget is keyed on.
+/// The size production's budget is keyed on: the e-classes the input inserted
+/// to before any rewrite.
+///
+/// The hash-consed size, read off the graph, rather than a size a caller
+/// supplies alongside it: the tier and the classical cap come from one number
+/// the graph itself reports, so no caller can hand the budget a size the
+/// input does not have, and the saturation cache (keyed on the term, not on
+/// who built it) cannot see two budgets for one term.
+/// An `ExprArena` interns, so its reachable count was already this number:
+/// on every shipped kernel (808 telemetry records, 143 macro-tier and 665
+/// runtime-tier) the two were equal, and so chose the same tier; see
+/// `docs/results/2026-10-14-the-tier-is-the-class-count.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InputSize {
-    /// A rough node count — the tier key. AST node count for the macro
-    /// tier, reachable-arena-node count for the runtime tier: a proxy, and
-    /// both serve equally well as "how big is this expression".
-    pub nodes: usize,
-    /// E-classes the input inserted to before any rewrite — the hash-consed
-    /// size, which sizes the classical class cap
-    /// ([`SaturationConfig::classical_for`]).
+    /// E-classes the input inserted to ([`EGraph::num_classes`](super::EGraph::num_classes)
+    /// right after insertion). Picks the tier, and sizes the classical class
+    /// cap ([`SaturationConfig::classical_for`]).
     pub classes: usize,
 }
 
-/// Pick a [`SaturationConfig`] from the input's sizes.
-///
-/// | Nodes | Config | Rationale |
-/// |-------|--------|-----------|
-/// | 0-10 | blitz | Trivial expressions need minimal optimization |
-/// | 11-50 | rapid | Normal complexity, balanced approach |
-/// | 51+ | classical, sized by `input.classes` | Complex expressions need thorough search, and a cap the input itself does not fill |
-pub fn config_for_input(input: InputSize) -> SaturationConfig {
-    tier_for_input(input).1
+/// A saturation budget band: how much search an input of a given size earns.
+/// (Not [`crate::tier::Tier`], which is the compiler tier the run belongs to.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Band {
+    /// Trivial expressions (at most [`BLITZ_MAX_SIZE`]) need minimal optimization.
+    Blitz,
+    /// Normal complexity (up to [`RAPID_MAX_SIZE`]): balanced.
+    Rapid,
+    /// Complex expressions need thorough search.
+    Classical,
 }
 
-/// The tier's **floor** preset for a rough node count — classical at its
-/// flat 5,000-class floor. Production goes through [`config_for_input`],
-/// which sizes classical from the inserted class count; this is what an
-/// offline caller that has only a node count gets, and what every tier
-/// resolves to for an input of at most 625 inserted classes.
-pub fn config_for_node_count(node_count: usize) -> SaturationConfig {
-    config_for_input(InputSize {
-        nodes: node_count,
-        classes: 0,
-    })
-}
+/// The largest size the blitz tier covers.
+const BLITZ_MAX_SIZE: usize = 10;
+/// The smallest size the rapid tier covers.
+const RAPID_MIN_SIZE: usize = BLITZ_MAX_SIZE + 1;
+/// The largest size the rapid tier covers.
+const RAPID_MAX_SIZE: usize = 50;
 
-/// The one place the tier thresholds live: a tier's **name** and its
-/// **budget** come out of the same match, so a diagnostic that names a tier
-/// can never disagree with the budget it is describing.
-///
-/// [`config_for_input`] is the budget half. The name half exists for
-/// [`Optimizer::run`](super::optimizer::Optimizer::run)'s safety-ceiling
-/// panic, which has to say *which* tier's ceiling was exceeded — and which,
-/// spelled as its own `match` on the node count, would be a second copy of
-/// this table, free to drift out of step with it.
-pub(crate) fn tier_for_input(input: InputSize) -> (&'static str, SaturationConfig) {
-    match input.nodes {
-        0..=10 => ("blitz", SaturationConfig::blitz()),
-        11..=50 => ("rapid", SaturationConfig::rapid()),
-        _ => ("classical", SaturationConfig::classical_for(input.classes)),
+impl Band {
+    /// The one place the thresholds live: a band's **name** and its
+    /// **budget** come out of the same value, so a diagnostic that names a
+    /// band can never disagree with the budget it is describing.
+    fn of(size: usize) -> Self {
+        match size {
+            0..=BLITZ_MAX_SIZE => Self::Blitz,
+            RAPID_MIN_SIZE..=RAPID_MAX_SIZE => Self::Rapid,
+            _ => Self::Classical,
+        }
     }
-}
 
-/// Configuration for multi-budget training data generation.
-///
-/// Generate training data at multiple budget levels for curriculum learning.
-#[derive(Clone, Debug)]
-pub struct MultiBudgetConfig {
-    /// Budget levels to generate data at (e.g., [50, 100, 200, 500]).
-    pub budgets: Vec<usize>,
+    fn name(self) -> &'static str {
+        match self {
+            Self::Blitz => "blitz",
+            Self::Rapid => "rapid",
+            Self::Classical => "classical",
+        }
+    }
 
-    /// Number of samples to generate at each budget level.
-    pub samples_per_budget: usize,
-}
-
-impl Default for MultiBudgetConfig {
-    fn default() -> Self {
-        Self {
-            budgets: vec![50, 100, 200, 500],
-            samples_per_budget: 2500,
+    /// The preset, with classical sized to `inserted_classes`.
+    fn config(self, inserted_classes: usize) -> SaturationConfig {
+        match self {
+            Self::Blitz => SaturationConfig::blitz(),
+            Self::Rapid => SaturationConfig::rapid(),
+            Self::Classical => SaturationConfig::classical_for(inserted_classes),
         }
     }
 }
 
-/// Extract the best achievable cost within budget.
+/// Pick a [`SaturationConfig`] from the input's size.
 ///
-/// This is the ground truth label for training: given an expression,
-/// what's the lowest cost we can achieve with `budget` rewrite iterations?
-pub fn achievable_cost_within_budget(
-    egraph: &mut EGraph,
-    root: EClassId,
-    budget: usize,
-    costs: &super::cost::CostModel,
-) -> (usize, SaturationResult) {
-    // Run budget-limited saturation
-    let result = saturate_with_budget(egraph, budget);
+/// | Classes | Config | Rationale |
+/// |---------|--------|-----------|
+/// | 0-10 | blitz | Trivial expressions need minimal optimization |
+/// | 11-50 | rapid | Normal complexity, balanced approach |
+/// | 51+ | classical, sized by the same count | Complex expressions need thorough search, and a cap the input itself does not fill |
+pub fn config_for_input(input: InputSize) -> SaturationConfig {
+    tier_for_input(input).1
+}
 
-    // Extract best cost
-    let (_arena, _arena_root, cost) = egraph.extract_best(root, costs);
+/// The tier's **floor** preset for a rough size — classical at its flat
+/// 5,000-class floor. Production goes through [`config_for_input`], which
+/// sizes classical from the inserted class count; this is what an offline
+/// caller that has only an arena's node count gets, and what every tier
+/// resolves to for an input of at most 625 inserted classes.
+pub fn config_for_node_count(node_count: usize) -> SaturationConfig {
+    Band::of(node_count).config(0)
+}
 
-    (cost, result)
+/// A tier's **name** and its **budget** from the same lookup.
+///
+/// [`config_for_input`] is the budget half. The name half exists for
+/// [`Optimizer::run`](super::optimizer::Optimizer::run)'s safety-ceiling
+/// panic, which has to say *which* tier's ceiling was exceeded — and which,
+/// spelled as its own `match`, would be a second copy of this table, free to
+/// drift out of step with it.
+pub(crate) fn tier_for_input(input: InputSize) -> (&'static str, SaturationConfig) {
+    let band = Band::of(input.classes);
+    (band.name(), band.config(input.classes))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::{CostModel, ENode, Rewrite, ops};
+    use crate::egraph::{ENode, Rewrite, RuleSet};
     use crate::math::algebra::{
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Identity,
         InverseAnnihilation, Involution, MulRecip,
     };
+    use pixelflow_ir::OpKind;
 
     /// Create an e-graph with standard algebraic rules for testing.
-    fn egraph_with_rules() -> EGraph {
+    fn egraph_with_rules() -> Saturation {
         let rules: Vec<Box<dyn Rewrite>> = vec![
             Canonicalize::<AddNeg>::new(),
             Involution::<AddNeg>::new(),
@@ -468,13 +481,13 @@ mod tests {
             Involution::<MulRecip>::new(),
             Cancellation::<MulRecip>::new(),
             InverseAnnihilation::<MulRecip>::new(),
-            Commutative::new(&ops::Add),
-            Commutative::new(&ops::Mul),
-            Identity::new(&ops::Add),
-            Identity::new(&ops::Mul),
-            Annihilator::new(&ops::Mul),
+            Commutative::new(OpKind::Add),
+            Commutative::new(OpKind::Mul),
+            Identity::new(OpKind::Add),
+            Identity::new(OpKind::Mul),
+            Annihilator::new(OpKind::Mul),
         ];
-        EGraph::with_rules(rules)
+        Saturation::over(RuleSet::new(rules))
     }
 
     #[test]
@@ -482,10 +495,7 @@ mod tests {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
         let zero = eg.add(ENode::constant(0.0));
-        let _sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, zero],
-        });
+        let _sum = eg.add(ENode::apply(OpKind::Add, &[x, zero]));
 
         let result = saturate_with_budget(&mut eg, 10);
 
@@ -500,42 +510,15 @@ mod tests {
         // Create a moderately complex expression
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let mul = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, y],
-        });
-        let add = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![mul, x],
-        });
-        let _sub = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![add, y],
-        });
+        let mul = eg.add(ENode::apply(OpKind::Mul, &[x, y]));
+        let add = eg.add(ENode::apply(OpKind::Add, &[mul, x]));
+        let _sub = eg.add(ENode::apply(OpKind::Sub, &[add, y]));
 
         // Very small budget - may not saturate
         let result = saturate_with_budget(&mut eg, 1);
 
         assert_eq!(result.budget, 1);
         assert!(result.iterations <= 1);
-    }
-
-    #[test]
-    fn achievable_cost() {
-        let mut eg = egraph_with_rules();
-        let x = eg.add(ENode::Var(0));
-        let zero = eg.add(ENode::constant(0.0));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, zero],
-        });
-
-        let costs = CostModel::new();
-        let (cost, result) = achievable_cost_within_budget(&mut eg, sum, 10, &costs);
-
-        // x + 0 should simplify to x (cost 0)
-        assert_eq!(cost, 0);
-        assert!(result.saturated);
     }
 
     #[test]
@@ -548,7 +531,7 @@ mod tests {
             classes_after: 15,
             rule_matches: HashMap::default(),
             budget: 100,
-            max_classes: 10_000,
+            max_minted: 10_000,
             hard_timeout: std::time::Duration::from_millis(500),
             stop: SaturationStop::Quiesced,
         };

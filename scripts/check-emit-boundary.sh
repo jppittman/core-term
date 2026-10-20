@@ -3,7 +3,7 @@
 # The emit boundary: pixelflow-codegen's emitter (`emit/`, the register
 # allocator included) names nothing upstream of it -- no optimizer, no
 # lowering, no scoping, no driver -- and `program/` names nothing downstream.
-# See docs/plans/2026-09-12-emit-should-just-emit.md, and
+# See docs/archive/plans/2026-09-12-emit-should-just-emit.md, and
 # check_emit_boundary.py's module docstring for the exact rules and for what a
 # text scan cannot see. There is no baseline: zero hits is the bar.
 #

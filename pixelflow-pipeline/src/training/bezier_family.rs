@@ -1,7 +1,7 @@
 //! The `bezier` DEV-only out-of-distribution family: Bernstein / de Casteljau
 //! curve distances and a bicubic tensor patch, POLY-only
 //! (`Add`/`Sub`/`Mul`/`MulAdd`/`Neg`), per
-//! `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §3b.
+//! `docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §3b.
 //!
 //! The generator lives here, beside [`super::sh_family`], so that every
 //! harness sampling the family — `gen_bezier_corpus` (the corpus writer) and

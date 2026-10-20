@@ -6,7 +6,7 @@
 //! `pixelflow-core` on 2026-08-02 (it was not IR and not codegen — it lived
 //! beside `Field`, which it backed). It backed a per-batch "combinator"
 //! evaluation tier that the JIT superseded; both the tier and the abstraction
-//! are gone (docs/plans/2026-09-06-kernel-with-a-lattice.md). `Field` now
+//! are gone (docs/archive/plans/2026-09-06-kernel-with-a-lattice.md). `Field` now
 //! reaches its two remaining constructors as inherent methods on
 //! `pixelflow-core`'s own `pub(crate)` lane types, with no trait at all.
 
@@ -43,11 +43,6 @@ pub use variance::{LatticeShape, Variance};
 
 pub mod arena;
 
-/// Where a mask can be nonzero, as a rectangle of lattice indices — the
-/// derivation a domain split needs, without the split.
-pub mod mask_support;
-pub use mask_support::{MaskSupport, mask_support};
-
 /// What it means for two kernels to be the same kernel: the canonical form of
 /// a reachable subgraph, and the fixed-size [`KernelKey`] that digests it.
 pub mod key;
@@ -73,7 +68,7 @@ pub use store::KernelStore;
 /// What holds it back is representation coupling, not lifecycle — its
 /// mutating methods take `&mut self` but are already pure at every call
 /// site, so `Builder` would serve them. See
-/// `docs/plans/2026-09-09-exprarena-on-dag.md` for the actual blockers and
+/// `docs/archive/plans/2026-09-09-exprarena-on-dag.md` for the actual blockers and
 /// the staging around them.
 ///
 /// A *new* graph should reach for this rather than hand-roll another `Vec`
@@ -118,6 +113,9 @@ pub use kernel::{Bits, Kernel, Uniform};
 
 pub use kind::OpKind;
 pub use kind::known_method_names;
+
+mod shift;
+pub use shift::ShiftCount;
 
 /// Fixture builders for this crate's own `benches/`/`tests/` binaries and
 /// one `pixelflow-search` unit test — the only callers still allowed to

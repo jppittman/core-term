@@ -4,9 +4,10 @@ use alloc::sync::Arc;
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::ops::Op;
+use super::ops::Vocabulary;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
+use pixelflow_ir::OpKind;
 use pixelflow_ir::Rooted;
 /// A rewrite RHS pattern, shared.
 ///
@@ -16,6 +17,7 @@ use pixelflow_ir::Rooted;
 /// wrapped rather than forcing a `Debug` impl onto `ExprArena` itself,
 /// which would be a wider API surface change than this justifies.
 use pixelflow_ir::expr::ExprData;
+use pixelflow_ir::kind::OpSet;
 
 /// A rewrite RHS pattern, shared.
 #[derive(Clone)]
@@ -64,54 +66,51 @@ pub enum RewriteAction {
     Create(ENode),
     /// Distribute: A * (B + C) -> A*B + A*C
     Distribute {
-        outer: &'static dyn Op,
-        inner: &'static dyn Op,
+        outer: OpKind,
+        inner: OpKind,
         a: EClassId,
         b: EClassId,
         c: EClassId,
     },
     /// Factor: A*B + A*C -> A * (B + C)
     Factor {
-        outer: &'static dyn Op,
-        inner: &'static dyn Op,
+        outer: OpKind,
+        inner: OpKind,
         common: EClassId,
         unique_l: EClassId,
         unique_r: EClassId,
     },
     /// Canonicalize: Sub(a,b) -> Add(a, Neg(b))
     Canonicalize {
-        target: &'static dyn Op,
-        inverse: &'static dyn Op,
+        target: OpKind,
+        inverse: OpKind,
         a: EClassId,
         b: EClassId,
     },
     /// Associate: (a op b) op c -> a op (b op c)
     Associate {
-        op: &'static dyn Op,
+        op: OpKind,
         a: EClassId,
         b: EClassId,
         c: EClassId,
     },
     /// ReverseAssociate: a op (b op c) -> (a op b) op c
     ReverseAssociate {
-        op: &'static dyn Op,
+        op: OpKind,
         a: EClassId,
         b: EClassId,
         c: EClassId,
     },
     /// OddParity: Op(neg(x)) -> neg(Op(x))
     /// Creates Op(inner), then wraps in Neg.
-    OddParity {
-        func: &'static dyn Op,
-        inner: EClassId,
-    },
+    OddParity { func: OpKind, inner: EClassId },
     /// AngleAddition: sin(a+b) -> sin(a)cos(b) + cos(a)sin(b)
     /// or cos(a+b) -> cos(a)cos(b) - sin(a)sin(b)
     AngleAddition {
-        term1_op1: &'static dyn Op,
-        term1_op2: &'static dyn Op,
-        term2_op1: &'static dyn Op,
-        term2_op2: &'static dyn Op,
+        term1_op1: OpKind,
+        term1_op2: OpKind,
+        term2_op1: OpKind,
+        term2_op2: OpKind,
         term2_sign: crate::math::trig::Sign,
         a: EClassId,
         b: EClassId,
@@ -119,8 +118,8 @@ pub enum RewriteAction {
     /// Homomorphism: f(a ⊕ b) -> f(a) ⊗ f(b)
     /// e.g., exp(a + b) -> exp(a) * exp(b)
     Homomorphism {
-        func: &'static dyn Op,
-        target_op: &'static dyn Op,
+        func: OpKind,
+        target_op: OpKind,
         a: EClassId,
         b: EClassId,
     },
@@ -133,7 +132,7 @@ pub enum RewriteAction {
     /// ReverseAngleAddition: sin(a)cos(b) + cos(a)sin(b) -> sin(a + b)
     /// (The inverse of angle addition, enables double angle discovery)
     ReverseAngleAddition {
-        trig_op: &'static dyn Op,
+        trig_op: OpKind,
         a: EClassId,
         b: EClassId,
     },
@@ -148,7 +147,7 @@ pub enum RewriteAction {
     PowerRecurrence { base: EClassId, exponent: i32 },
     /// LogPower: log(pow(x, n)) -> n * log(x)
     LogPower {
-        log_op: &'static dyn Op,
+        log_op: OpKind,
         base: EClassId,
         exponent: EClassId,
     },
@@ -160,11 +159,11 @@ pub enum RewriteAction {
     /// matched class: every fold rule's action (`PeelFold`, `HalveFold`,
     /// `FactorFold`).
     ///
-    /// A plan of nodes carrying their own resolved `Op`s rather than an
-    /// arena template, because what these rules build is, in part, a copy of
-    /// a term the graph already holds — a substituted body — and may contain
-    /// any op the graph holds, while the arena-template path resolves
-    /// through `op_from_kind`, which deliberately admits only what a
+    /// A plan of nodes carrying their own `OpKind`s rather than an arena
+    /// template, because what these rules build is, in part, a copy of a
+    /// term the graph already holds — a substituted body — and may contain
+    /// any op the graph holds, while the arena-template path instantiates
+    /// only what `template_may_name` admits, which deliberately is what a
     /// *rewrite rule* may name and so refuses a `Gather` or a mask. One
     /// variant for all of them, replayed by one function, so predicting a
     /// rule's growth and committing it cannot drift apart per rule. See
@@ -209,6 +208,82 @@ pub enum RewriteAction {
     },
 }
 
+/// The node shapes on which a rule's [`Rewrite::apply`] can return `Some`.
+///
+/// A node's *shape* is its [`OpKind`]: for an [`ENode::Op`] the op's own, for
+/// an [`ENode::Shift`] the shift its direction names, and
+/// for every other node the kind that names its variant (`Var`, `Const`,
+/// `Buffer`, `Uniform`, `Param`, `Reduce`). A [`ENode::Ref`] names no kind,
+/// so only [`RootShapes::Any`] admits one.
+///
+/// The set is a *claim about `apply`*, and the scan spends it: a node whose
+/// shape is outside it is never handed to the rule, because the rule would
+/// have declined it. A set smaller than the truth therefore silently loses
+/// rewrites; a larger one costs only the calls it was meant to save. That
+/// asymmetry is why "matches anything" is a named answer, [`RootShapes::Any`],
+/// and why [`Rewrite::root_shapes`] has no default: a rule's author states the
+/// shapes, and a forgotten impl is a compile error rather than a rule the
+/// scan quietly never calls.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RootShapes {
+    /// Every node, including a [`ENode::Ref`]: for a rule that genuinely
+    /// inspects the root's shape itself, or a probe that must see them all.
+    Any,
+    /// Exactly the nodes whose shape is marked.
+    Kinds(OpSet),
+}
+
+// Prints the kinds as a bare set, so a failed assertion names them directly.
+impl core::fmt::Debug for RootShapes {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Any => f.write_str("Any"),
+            Self::Kinds(kinds) => f.debug_set().entries(kinds.iter()).finish(),
+        }
+    }
+}
+
+impl RootShapes {
+    /// No node: a rule that can never match.
+    #[must_use]
+    pub const fn nothing() -> Self {
+        Self::Kinds(OpSet::EMPTY)
+    }
+
+    /// Nodes of this one shape.
+    #[must_use]
+    pub fn kind(kind: OpKind) -> Self {
+        Self::kinds(&[kind])
+    }
+
+    /// Nodes of any of these shapes.
+    #[must_use]
+    pub fn kinds(kinds: &[OpKind]) -> Self {
+        Self::Kinds(kinds.iter().fold(OpSet::EMPTY, |set, &kind| set.with(kind)))
+    }
+
+    /// Every operation node, [`ENode::Op`] whatever its op or [`ENode::Shift`]
+    /// by its direction's op: the kinds a runtime-tier graph can hold as an
+    /// operation, which [`Vocabulary::Runtime`] already states.
+    #[must_use]
+    pub fn every_op() -> Self {
+        Self::Kinds(
+            OpKind::all()
+                .filter(|&kind| Vocabulary::Runtime.admits(kind))
+                .fold(OpSet::EMPTY, OpSet::with),
+        )
+    }
+
+    /// Whether `node` is in the set.
+    #[must_use]
+    pub fn admits(&self, node: &ENode) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Kinds(kinds) => node.shape().is_some_and(|kind| kinds.contains(kind)),
+        }
+    }
+}
+
 /// A rewrite rule that can be applied to e-graph nodes.
 ///
 /// Requires `Send + Sync` so rules can be shared across worker threads
@@ -241,22 +316,17 @@ pub trait Rewrite: Send + Sync {
         None
     }
 
+    /// The shapes of root node this rule's [`apply`](Rewrite::apply) can
+    /// match: the scan does not call `apply` on a node outside the set.
+    ///
+    /// Derived from `apply`'s own guards on the node it is handed, not from
+    /// the shapes it goes on to read in the node's children. Required, with no
+    /// default: see [`RootShapes`].
+    fn root_shapes(&self) -> RootShapes;
+
     /// Try to apply this rule to a node in an e-class.
     /// Returns `Some(action)` if the rule matches.
     fn apply(&self, egraph: &EGraph, id: EClassId, node: &ENode) -> Option<RewriteAction>;
-
-    /// Whether this rule is destructive: the matched LHS node should be
-    /// removed from the e-class after the action is applied.
-    ///
-    /// Only safe for rules that provably simplify: the RHS is strictly
-    /// cheaper than the LHS (involution, identity, annihilator, constant-fold).
-    /// Destructive rules reduce e-graph size, preventing node accumulation
-    /// that slows future rule matching.
-    ///
-    /// Default: false (non-destructive, standard equality saturation).
-    fn is_destructive(&self) -> bool {
-        false
-    }
 
     /// LHS template expression (what this rule matches).
     ///

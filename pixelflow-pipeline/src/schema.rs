@@ -1,6 +1,6 @@
 //! Content-hash identity for persisted formats — the single mechanism that
 //! replaces hand-bumped magic/version integers as the thing that gates
-//! loading (docs/plans/2026-08-17-cost-model-domain.md, J9 — kills P1(b)).
+//! loading (docs/archive/plans/2026-08-17-cost-model-domain.md, J9 — kills P1(b)).
 //!
 //! A hand-bumped integer is a promise a human has to remember to keep every
 //! time a serialized field's MEANING changes, not just whenever the byte
@@ -55,7 +55,7 @@ pub fn fnv1a64_hex(bytes: &[u8]) -> String {
 ///
 /// Deliberately no format-evolution ceremony: an artifact that mismatches is
 /// regenerated, not migrated — these are scratch/derived files, cheaper to
-/// remint than to version (docs/plans/2026-08-17-cost-model-domain.md §2).
+/// remint than to version (docs/archive/plans/2026-08-17-cost-model-domain.md §2).
 pub trait SchemaIdentity {
     /// Short human-readable prefix. Courtesy only; never the gate.
     const MAGIC: &'static str;

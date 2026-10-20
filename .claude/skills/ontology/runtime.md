@@ -17,7 +17,7 @@
 - **Lives:** `actor_scheduler::Message<D, C, M>`, `ActorHandle::send`,
   `ActorScheduler` (`actor-scheduler/src/lib.rs`), `SendError::Timeout`
   (`actor-scheduler/src/error.rs`), `doorbell.rs`, `spsc.rs`; CLAUDE.md
-  "Actor Model"; `docs/designs/actor-scheduler-mealy-transducer.md`;
+  "Actor Model"; `docs/runtime/actor-scheduler-mealy-transducer.md`;
   `desloppify/rules/actor-lane-choice.json`. Today
   `.claude/agents/actor-scheduler.md` says Control "Never" blocks and has an
   "Unbounded buffer", which contradicts CLAUDE.md and the crate's
@@ -58,5 +58,5 @@
   per-frame heap allocation (ping-pong buffers).
 - **Lives:** `PlatformOps`, `DriverOut`
   (`pixelflow-runtime/src/display/ops.rs`), `display/drivers/`,
-  `platform/{linux,macos}/`; `docs/plans/2026-09-03-wayland-driver.md`;
+  `platform/{linux,macos}/`; `docs/runtime/2026-09-03-wayland-driver.md`;
   CLAUDE.md "Platform Notes". The Wayland driver is unbuilt.

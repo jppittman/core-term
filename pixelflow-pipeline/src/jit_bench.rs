@@ -406,7 +406,7 @@ fn input_tuples() -> &'static [[f32; 2]; INPUT_TUPLES] {
 /// per-batch entry any more, and a coordinate is `x = x0 + col`, `y = y0 +
 /// row` for whatever `(x0, y0)` origin the call supplies, not a free
 /// per-lane variable ([`shape_for`] picks the shape per mode). See
-/// docs/plans/2026-09-16-collapse-is-a-fold.md.
+/// docs/archive/plans/2026-09-16-collapse-is-a-fold.md.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BenchMode {
     /// Independent back-to-back calls, each filling one [`lanes`]-wide batch
@@ -516,7 +516,7 @@ pub struct BenchResult {
 }
 
 // =============================================================================
-// Clock newtypes (docs/plans/2026-08-17-cost-model-domain.md, J4)
+// Clock newtypes (docs/archive/plans/2026-08-17-cost-model-domain.md, J4)
 // =============================================================================
 //
 // A nanosecond reading is meaningless without saying WHICH clock it is
@@ -745,7 +745,7 @@ impl BenchResult {
 }
 
 /// A measurement that has left the clock it was taken on
-/// (docs/plans/2026-08-17-cost-model-domain.md, J3): a value in
+/// (docs/archive/plans/2026-08-17-cost-model-domain.md, J3): a value in
 /// [`SessionNs`], plus the context that makes the value meaningful — which
 /// [`BenchMode`] it was measured under, how much drift correction it took,
 /// where in the run it was minted, and the sentinel calibration it was
@@ -1585,7 +1585,7 @@ pub fn benchmark_compile_fresh(
 /// module's clock newtypes exist to make a type error. Relocated from the
 /// deleted `training::gen_es` (the ES-guided corpus-growth optimizer it lived
 /// in was RL-adjacent scaffolding removed per
-/// docs/plans/2026-07-07-guided-saturation-redesign.md).
+/// docs/compiler/2026-07-07-guided-saturation-redesign.md).
 ///
 /// # Panics
 ///

@@ -257,7 +257,7 @@ fn jit_noncommutative_heavy_right() {
 // compile time. Ground truth is the closed-form derivative; the font-shaped
 // coverage ramp is additionally cross-checked against the combinator backend
 // evaluated over `Jet2` — the exact path these kernels replace (P2 acceptance
-// in docs/plans/2026-07-20-kernel-unification.md).
+// in docs/language/2026-07-20-kernel-unification.md).
 
 #[test]
 fn jit_v_is_identity() {

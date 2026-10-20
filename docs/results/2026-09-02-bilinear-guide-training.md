@@ -1,9 +1,9 @@
-> **Retracted/Superseded (2026-09-07), ledger L047, L048.** The training-quality comparison (AUC / PR-AUC) is on a synthetic corpus and was never taken on a shipped shader; the model class is kept as an instrument only. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L047, L048.** The training-quality comparison (AUC / PR-AUC) is on a synthetic corpus and was never taken on a shipped shader; the model class is kept as an instrument only. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Training the bilinear Guide: the model class, its gradients, and its held-out ranking quality
 
 **Date:** 2026-09-02
-**Registration:** `docs/plans/2026-09-02-bilinear-guide-registration.md` (frozen; not
+**Registration:** `docs/archive/plans/2026-09-02-bilinear-guide-registration.md` (frozen; not
 edited by this document).
 **Scope:** this is the **training** half of that registration's §9 protocol — the backward
 pass, the deployed `SaturationGuide`, the cold-start fit, the mandatory skew test. It runs

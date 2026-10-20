@@ -50,7 +50,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 ///
 /// Raised again 2026-09-16 (`A` 1446 → 2076, `O` 3588 → 4092, `8` unchanged
 /// at 8124) for the same reason under a new name: bucketed trip counts
-/// (`docs/plans/2026-09-09-glyph-as-a-fold-execution.md` §S3). Each fold's
+/// (`docs/graphics/2026-09-09-glyph-as-a-fold-execution.md` §S3). Each fold's
 /// trip count — the JIT cache's key, and the unroll count the legalizer
 /// then read — is now `pieces.next_power_of_two()`, not `pieces`, so `A`'s 11
 /// pieces unroll as 16 and `O`'s 28 as 32; `8`'s piece count in this font

@@ -1,6 +1,6 @@
 //! Round 2, mode (iii): unguided anytime curves at `|R|=62` vs `62+batch`.
 //!
-//! `docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3/§5/§8 — the
+//! `docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3/§5/§8 — the
 //! fidelity arm's own measurement (mode (iii) grid is the pair {62, 62+batch}
 //! per §3, distinct from the {62,93,124,186,248} grid used by modes (i)/(ii)).
 //!
@@ -84,18 +84,6 @@ const MIN_SAMPLES: usize = 300;
 const BASE_SAFETY_TIMEOUT: Duration = Duration::from_secs(300);
 const SWEEP_SAFETY_CEILING: usize = 10_000;
 
-/// `pixelflow_search::egraph::extract::extract_dag`'s `CYCLE_COST` sentinel
-/// (1_000_000, private to that module — restated here as a threshold, not a
-/// definition: a class that is genuinely self-referential post-saturation
-/// gets this cost rather than a real one, on ANY rule set). A curve's
-/// `quiescence_cost` at or above this is a sentinel, not a measured quality
-/// number — verified pre-existing in `all_rules()` alone on large classical
-/// expressions (an 863-node DEV/TRAIN expression already hits it under the
-/// unmodified 62-rule set), not introduced by `experimental_rules()`; the
-/// per-tier reporting below tracks how much MORE often it fires as `|R|`
-/// grows, which is the on-topic measurement, not a defect to hide.
-const CYCLE_COST_THRESHOLD: usize = 900_000;
-
 fn tier_name(node_count: usize) -> &'static str {
     match node_count {
         0..=10 => "blitz",
@@ -110,7 +98,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "sweep_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -176,7 +164,7 @@ fn run_curves(
 
     for (i, (origin, name, arena, root)) in sampled.iter().enumerate() {
         let node_count = arena.len();
-        let class_cap = config_for_node_count(node_count).max_classes;
+        let class_cap = config_for_node_count(node_count).max_minted;
         // This arm's rule set names the arm: `Optimizer::rules` is the one
         // place a non-production vocabulary enters.
         let mut optimizer = Optimizer::production()
@@ -184,7 +172,7 @@ fn run_curves(
             .cost(costs.clone())
             .budget(Budget::Explicit {
                 iterations: SWEEP_SAFETY_CEILING,
-                classes: class_cap,
+                minted: class_cap,
                 applications: None,
             })
             .hard_ceiling(safety_timeout);
@@ -225,11 +213,6 @@ struct ArmRow {
     n: usize,
     median_cost_b: f64,
     median_quiescence_cost: f64,
-    /// Median `quiescence_cost` over only the curves that did NOT hit the
-    /// `CYCLE_COST` sentinel — the reliable half of `median_quiescence_cost`
-    /// when `cycle_hits > 0`.
-    median_quiescence_cost_excl_cycle: f64,
-    cycle_hits: usize,
     median_loss_pct: f64,
     median_apps_to_quiescence: f64,
     class_cap_hits: usize,
@@ -251,12 +234,6 @@ fn arm_rows(curves: &[&ExprCurve], grid: &[usize]) -> Vec<ArmRow> {
             .map(|c| loss_pct(c.cost_at[bi], c.cost_at[fi]))
             .filter(|l| l.is_finite())
             .collect();
-        let quiescence_excl_cycle: Vec<f64> = curves
-            .iter()
-            .map(|c| c.quiescence_cost)
-            .filter(|&c| c < CYCLE_COST_THRESHOLD)
-            .map(|c| c as f64)
-            .collect();
         rows.push(ArmRow {
             b,
             n: curves.len(),
@@ -267,15 +244,6 @@ fn arm_rows(curves: &[&ExprCurve], grid: &[usize]) -> Vec<ArmRow> {
                     .map(|c| c.quiescence_cost as f64)
                     .collect::<Vec<_>>(),
             ),
-            median_quiescence_cost_excl_cycle: if quiescence_excl_cycle.is_empty() {
-                0.0
-            } else {
-                median(&quiescence_excl_cycle)
-            },
-            cycle_hits: curves
-                .iter()
-                .filter(|c| c.quiescence_cost >= CYCLE_COST_THRESHOLD)
-                .count(),
             median_loss_pct: if loss.is_empty() { 0.0 } else { median(&loss) },
             median_apps_to_quiescence: median(
                 &curves
@@ -285,7 +253,7 @@ fn arm_rows(curves: &[&ExprCurve], grid: &[usize]) -> Vec<ArmRow> {
             ),
             class_cap_hits: curves
                 .iter()
-                .filter(|c| c.ended == SaturationStop::ClassCap)
+                .filter(|c| c.ended == SaturationStop::MintedCap)
                 .count(),
             quiesced: curves
                 .iter()
@@ -452,7 +420,7 @@ fn main() {
     let mut md = String::new();
     md.push_str("## Round 2, mode (iii): unguided anytime curves, |R|=62 vs 62+batch\n\n");
     md.push_str(&format!(
-        "Agent: rule-batch implementation + unguided curves (docs/plans/2026-09-01-phase3-round2-rule-scaling.md \
+        "Agent: rule-batch implementation + unguided curves (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md \
          §2.3, §8). Base arm `|R|={base_count}` (`all_rules()`, unchanged production set); batch arm \
          `|R|={total_count}` (`all_rules() + pixelflow_search::math::round2_rules::experimental_rules()`, \
          `+{batch_count}` new rules, harness-only — never added to `all_rules()`). Same Round-1 400-expression \
@@ -471,34 +439,30 @@ fn main() {
         }
         md.push_str(&format!("### Tier: {tier} (n={})\n\n", base_sub.len()));
         md.push_str(
-            "| B | arm |R| | n | median cost@B | median cost@quiescence | quiescence excl. cycle-cost | \
-             cycle-cost hits | median trunc-loss% | median apps-to-quiescence | class_cap hits | quiesced |\n\
-             |---|---|---|---|---|---|---|---|---|---|---|\n",
+            "| B | arm |R| | n | median cost@B | median cost@quiescence | \
+             median trunc-loss% | median apps-to-quiescence | class_cap hits | quiesced |\n\
+             |---|---|---|---|---|---|---|---|---|\n",
         );
         let base_rows = arm_rows(&base_sub, grid);
         let batch_rows = arm_rows(&batch_sub, grid);
         for (br, kr) in base_rows.iter().zip(batch_rows.iter()) {
             md.push_str(&format!(
-                "| {} | {base_count} (base) | {} | {:.2} | {:.2} | {:.2} | {} | {:.3} | {:.1} | {} | {} |\n",
+                "| {} | {base_count} (base) | {} | {:.2} | {:.2} | {:.3} | {:.1} | {} | {} |\n",
                 br.b,
                 br.n,
                 br.median_cost_b,
                 br.median_quiescence_cost,
-                br.median_quiescence_cost_excl_cycle,
-                br.cycle_hits,
                 br.median_loss_pct,
                 br.median_apps_to_quiescence,
                 br.class_cap_hits,
                 br.quiesced,
             ));
             md.push_str(&format!(
-                "| {} | {total_count} (+batch) | {} | {:.2} | {:.2} | {:.2} | {} | {:.3} | {:.1} | {} | {} |\n",
+                "| {} | {total_count} (+batch) | {} | {:.2} | {:.2} | {:.3} | {:.1} | {} | {} |\n",
                 kr.b,
                 kr.n,
                 kr.median_cost_b,
                 kr.median_quiescence_cost,
-                kr.median_quiescence_cost_excl_cycle,
-                kr.cycle_hits,
                 kr.median_loss_pct,
                 kr.median_apps_to_quiescence,
                 kr.class_cap_hits,
@@ -506,24 +470,10 @@ fn main() {
             ));
         }
         md.push('\n');
-        md.push_str(
-            "_\"cycle-cost hits\" = curves whose quiescence cost hit `extract_dag`'s CYCLE_COST \
-             sentinel (>= 900,000) — a genuinely self-referential e-class post-saturation, a \
-             pre-existing extraction-algorithm behavior verified present under UNCHANGED \
-             `all_rules()` alone on large classical expressions (not introduced by \
-             `experimental_rules()`; see \"quiescence excl. cycle-cost\" for the reliable median \
-             over the non-cyclic curves only). `median cost@B` (the B=100/200 regret-relevant \
-             number) is unaffected: cyclic e-classes only arise at very high application counts, \
-             past where B or 4B falls._\n\n",
-        );
 
         // Fidelity gain: per-expression, the closure-aware improvement the
         // batch buys at quiescence (§4.2's fid(e), restricted to this tier).
-        // Expressions where EITHER arm hit the CYCLE_COST sentinel are
-        // excluded (a sentinel is not a measured cost, so no ratio against
-        // it is a fidelity number) and counted separately.
         let mut fid_vals: Vec<f64> = Vec::new();
-        let mut fid_excluded_cyclic = 0usize;
         for (bc, kc) in base_sub.iter().zip(batch_sub.iter()) {
             assert_eq!(
                 bc.name, kc.name,
@@ -531,10 +481,6 @@ fn main() {
             );
             let base_q = bc.quiescence_cost.min(bc.cost_at[grid.len() - 1]);
             let batch_q = kc.quiescence_cost.min(kc.cost_at[grid.len() - 1]);
-            if base_q >= CYCLE_COST_THRESHOLD || batch_q >= CYCLE_COST_THRESHOLD {
-                fid_excluded_cyclic += 1;
-                continue;
-            }
             if base_q == 0 {
                 continue; // zero-cost reference: skip (matches the established regret convention's
                 // spirit — a ratio against 0 is not a finite fidelity gain to average)
@@ -549,8 +495,7 @@ fn main() {
         let fid_positive = fid_vals.iter().filter(|v| **v > 1e-9).count();
         md.push_str(&format!(
             "Closure-gain at quiescence (`fid(e) = (cost@62 - cost@62+batch)/cost@62` at curve-end, \
-             median over the {} tier expressions with a nonzero, non-cyclic base cost; \
-             {fid_excluded_cyclic} excluded for a CYCLE_COST sentinel on either arm): **{:.3}%**, \
+             median over the {} tier expressions with a nonzero base cost): **{:.3}%**, \
              positive for {}/{}.\n\n",
             tier,
             fid_median,
@@ -568,7 +513,7 @@ fn main() {
                 "- ended ({label}, n={n}): quiesced={} class_cap={} grid_exhausted={} \
                  sweep_ceiling={} timeout={} | ended_at_apps median={:.0} p90={:.0}\n",
                 count(SaturationStop::Quiesced),
-                count(SaturationStop::ClassCap),
+                count(SaturationStop::MintedCap),
                 count(SaturationStop::ApplicationBudget),
                 count(SaturationStop::IterationCeiling),
                 count(SaturationStop::Timeout),
@@ -586,7 +531,7 @@ fn main() {
         md.push_str(&format!(
             "| {label} | {} | {} | {} | {} | {} |\n",
             count(SaturationStop::Quiesced),
-            count(SaturationStop::ClassCap),
+            count(SaturationStop::MintedCap),
             count(SaturationStop::ApplicationBudget),
             count(SaturationStop::IterationCeiling),
             count(SaturationStop::Timeout),
@@ -604,7 +549,7 @@ fn main() {
 
     md.push_str(&format!(
         "_Grid: `{grid:?}`. Stop-name legend: `quiesced` = saturation reached a fixpoint before any \
-         budget bound; `class_cap` = hit the tier's `max_classes` memory-protection cap; \
+         budget bound; `class_cap` = hit the tier's `max_minted` memory-protection cap; \
          `grid_exhausted` = still finding unions when the grid's top checkpoint (204800 applications) \
          was reached; `sweep_ceiling`/`timeout` = safety ceilings (would panic if actually hit — \
          listed for completeness, expected 0 in both columns)._\n"
@@ -633,7 +578,7 @@ fn main() {
         header.push_str("# Round 2: unguided anytime curves vs rule count\n\n");
         header.push_str(
             "Per-mode sections appended by each agent's binary as it completes its run \
-             (docs/plans/2026-09-01-phase3-round2-rule-scaling.md §9). This file did not exist \
+             (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md §9). This file did not exist \
              when the mode (iii) section below was written — it was created with mode (iii)'s \
              section only.\n\n",
         );

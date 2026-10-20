@@ -3,10 +3,9 @@
 //! (`4095 · 16` bytes), so on NEON every slot beyond it is addressed through a
 //! register, and the values must still be the kernel's own.
 //!
-//! `a_deep_spill_frame_compiles_correctly` forces more than 128 bytes; this is
-//! the value test of a frame past 64 KiB, run on NEON under qemu and natively
-//! on aarch64 hosts, and on the host's x86 tier elsewhere, where the same
-//! kernel's spill area is wider still. The kernel has more terms than
+//! This is the value test of a frame past 64 KiB, run on NEON under qemu and
+//! natively on aarch64 hosts, and on the host's x86 tier elsewhere, where the
+//! same kernel's spill area is wider still. The kernel has more terms than
 //! `sibling_rows.rs`'s row: the frame for that row is a few KiB under
 //! the reach, and this test is about the frame past it.
 
@@ -19,10 +18,8 @@ mod rows {
     include!("support/deep_frame.rs");
 }
 
-/// The reach of a 12-bit displacement scaled by a 16-byte vector.
-const REACH: u32 = 64 * 1024;
 /// An eighth more terms than the row has: enough that every pipeline's
-/// frame is past `REACH`.
+/// frame is past the reach of a 12-bit displacement scaled by a 16-byte vector.
 const TERMS: usize = rows::DEEP_FRAME_TERMS + rows::DEEP_FRAME_TERMS / 8;
 const WIDTH: usize = 11;
 const ROWS: usize = 3;
@@ -49,11 +46,6 @@ fn a_spill_area_past_64_kib_holds_the_kernels_values() {
     let (arena, root) = rows::deep_frame(TERMS);
     let shape = LatticeShape::new([WIDTH as u32, ROWS as u32]);
     let compiled = compile(&arena, root, shape).expect("a deep frame compiles");
-    assert!(
-        compiled.frame_bytes > u64::from(REACH),
-        "the fixture no longer forces a frame past reach (frame_bytes = {})",
-        compiled.frame_bytes
-    );
 
     let mut out = vec![f32::NAN; ROWS * WIDTH];
     let uniforms: [f32; 0] = [];

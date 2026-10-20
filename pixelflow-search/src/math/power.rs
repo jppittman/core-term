@@ -15,7 +15,7 @@
 //! ```
 //!
 //! This module provides:
-//! - Special-value strength reduction via [`PowSpecialValue`]: pow(x,0)→1,
+//! - Special-value strength reduction via `PowSpecialValue`: pow(x,0)→1,
 //!   pow(x,1)→x, pow(x,2)→mul(x,x), pow(x,0.5)→sqrt(x), pow(x,-1)→recip(x),
 //!   pow(x,-0.5)→rsqrt(x)
 //! - Power recurrence: pow(x,n) ↔ x * pow(x,n-1) for integer n≥2
@@ -29,7 +29,7 @@
 //! - x-x → Canonicalize(AddNeg) → x + neg(x) → InverseAnnihilation → 0
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -60,7 +60,7 @@ enum PowResult {
     /// pow(x, 1) → x (union with base)
     Identity,
     /// pow(x, exp) → unary_op(x) (e.g. sqrt, recip, rsqrt)
-    UnaryOp(&'static dyn Op),
+    UnaryOp(OpKind),
     /// pow(x, 2) → mul(x, x)
     SelfMul,
 }
@@ -80,11 +80,15 @@ impl Rewrite for PowSpecialValue {
         self.name
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Pow)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Pow {
+        if op != OpKind::Pow {
             return None;
         }
         if children.len() != 2 {
@@ -100,14 +104,11 @@ impl Rewrite for PowSpecialValue {
         match &self.result {
             PowResult::Constant(c) => Some(RewriteAction::Create(ENode::constant(*c))),
             PowResult::Identity => Some(RewriteAction::Union(base)),
-            PowResult::UnaryOp(op) => Some(RewriteAction::Create(ENode::Op {
-                op: *op,
-                children: vec![base],
-            })),
-            PowResult::SelfMul => Some(RewriteAction::Create(ENode::Op {
-                op: &ops::Mul,
-                children: vec![base, base],
-            })),
+            PowResult::UnaryOp(op) => Some(RewriteAction::Create(ENode::apply(*op, &[base]))),
+            PowResult::SelfMul => {
+                let square = ENode::apply(OpKind::Mul, &[base, base]);
+                Some(RewriteAction::Create(square))
+            }
         }
     }
 
@@ -119,7 +120,7 @@ impl Rewrite for PowSpecialValue {
         match &self.result {
             PowResult::Constant(c) => Some(arena_pat!(__a, cst * c)),
             PowResult::Identity => Some(arena_pat!(__a, var 0)),
-            PowResult::UnaryOp(op) => Some(arena_pat!(__a, un op.kind(), (var 0))),
+            PowResult::UnaryOp(op) => Some(arena_pat!(__a, un *op, (var 0))),
             PowResult::SelfMul => Some(arena_pat!(__a, bin OpKind::Mul, (var 0), (var 0))),
         }
     }
@@ -150,19 +151,19 @@ fn pow_special_value_rules() -> Vec<Box<dyn Rewrite>> {
         Box::new(PowSpecialValue {
             target_exponent: 0.5,
             name: "power-sqrt",
-            result: PowResult::UnaryOp(&ops::Sqrt),
+            result: PowResult::UnaryOp(OpKind::Sqrt),
         }),
         // pow(x, -1) → recip(x)
         Box::new(PowSpecialValue {
             target_exponent: -1.0,
             name: "power-recip",
-            result: PowResult::UnaryOp(&ops::Recip),
+            result: PowResult::UnaryOp(OpKind::Recip),
         }),
         // pow(x, -0.5) → rsqrt(x)
         Box::new(PowSpecialValue {
             target_exponent: -0.5,
             name: "power-rsqrt",
-            result: PowResult::UnaryOp(&ops::Rsqrt),
+            result: PowResult::UnaryOp(OpKind::Rsqrt),
         }),
     ]
 }
@@ -193,11 +194,15 @@ impl Rewrite for PowerRecurrence {
         "power-recurrence"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Pow)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Pow {
+        if op != OpKind::Pow {
             return None;
         }
         if children.len() != 2 {
@@ -239,33 +244,39 @@ impl Rewrite for PowerRecurrence {
 /// Log of a power becomes multiplication: the log distributes exponentiation
 /// into multiplication, completing the tower.
 pub struct LogPower {
-    log_op: &'static dyn Op,
+    log_op: OpKind,
 }
 
 impl LogPower {
     pub fn ln() -> Box<Self> {
-        Box::new(Self { log_op: &ops::Ln })
+        Box::new(Self { log_op: OpKind::Ln })
     }
     pub fn log2() -> Box<Self> {
-        Box::new(Self { log_op: &ops::Log2 })
+        Box::new(Self {
+            log_op: OpKind::Log2,
+        })
     }
 }
 
 impl Rewrite for LogPower {
     fn name(&self) -> &str {
-        match self.log_op.kind() {
+        match self.log_op {
             OpKind::Ln => "log-power",
             OpKind::Log2 => "log2-power",
             _ => "logN-power",
         }
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.log_op)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: log(pow(x, n))
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != self.log_op.kind() {
+        if op != self.log_op {
             return None;
         }
         if children.len() != 1 {
@@ -275,33 +286,33 @@ impl Rewrite for LogPower {
         let arg = children[0];
 
         for arg_node in egraph.nodes(arg) {
-            if let ENode::Op {
+            if let &ENode::Op {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
+                && arg_op == OpKind::Pow
+                && arg_children.len() == 2
             {
-                if arg_op.kind() == OpKind::Pow && arg_children.len() == 2 {
-                    let x = arg_children[0];
-                    let n = arg_children[1];
-                    // log(pow(x, n)) → n * log(x)
-                    return Some(RewriteAction::LogPower {
-                        log_op: self.log_op,
-                        base: x,
-                        exponent: n,
-                    });
-                }
+                let x = arg_children[0];
+                let n = arg_children[1];
+                // log(pow(x, n)) → n * log(x)
+                return Some(RewriteAction::LogPower {
+                    log_op: self.log_op,
+                    base: x,
+                    exponent: n,
+                });
             }
         }
         None
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        let lk = self.log_op.kind();
+        let lk = self.log_op;
         Some(arena_pat!(__a, un lk, (bin OpKind::Pow, (var 0), (var 1))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        let lk = self.log_op.kind();
+        let lk = self.log_op;
         Some(arena_pat!(__a, bin OpKind::Mul, (var 1), (un lk, (var 0))))
     }
 }
@@ -328,12 +339,16 @@ impl Rewrite for ExpandSquare {
         "expand-square"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Pow)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Pow(sum, 2) where sum = Add(a, b)
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Pow {
+        if op != OpKind::Pow {
             return None;
         }
         if children.len() != 2 {
@@ -347,16 +362,16 @@ impl Rewrite for ExpandSquare {
 
         let sum_id = children[0];
         for sum_node in egraph.nodes(sum_id) {
-            if let ENode::Op {
+            if let &ENode::Op {
                 op: sum_op,
                 children: sum_children,
             } = sum_node
+                && sum_op == OpKind::Add
+                && sum_children.len() == 2
             {
-                if sum_op.kind() == OpKind::Add && sum_children.len() == 2 {
-                    let a = sum_children[0];
-                    let b = sum_children[1];
-                    return Some(RewriteAction::ExpandSquare { a, b });
-                }
+                let a = sum_children[0];
+                let b = sum_children[1];
+                return Some(RewriteAction::ExpandSquare { a, b });
             }
         }
         None
@@ -399,12 +414,16 @@ impl Rewrite for DiffOfSquares {
         "diff-of-squares"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Sub)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Sub(X, Y) where X contains Mul(a,a) and Y contains Mul(b,b)
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Sub {
+        if op != OpKind::Sub {
             return None;
         }
         if children.len() != 2 {
@@ -434,13 +453,12 @@ impl DiffOfSquares {
     /// Check if an e-class contains Mul(x, x) for some x, and return x.
     fn extract_self_mul(&self, egraph: &EGraph, id: EClassId) -> Option<EClassId> {
         for node in egraph.nodes(id) {
-            if let ENode::Op { op, children } = node {
-                if op.kind() == OpKind::Mul
-                    && children.len() == 2
-                    && egraph.find(children[0]) == egraph.find(children[1])
-                {
-                    return Some(children[0]);
-                }
+            if let &ENode::Op { op, children } = node
+                && op == OpKind::Mul
+                && children.len() == 2
+                && egraph.find(children[0]) == egraph.find(children[1])
+            {
+                return Some(children[0]);
             }
         }
         None

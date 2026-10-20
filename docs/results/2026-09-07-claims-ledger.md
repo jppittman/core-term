@@ -40,7 +40,7 @@ The lattice programme's rows (17, real shaders) are **11** HELD. The six that ar
 
 ## 4. Retractions
 
-Each of these gets a dated "Retracted/Superseded" block at the top of its results doc, pointing here — **applied by the follow-up PR #1215, not by this commit.** `2026-09-07-benchmark-correction.md` and the blocks themselves do not exist in this tree; a reader here should expect the pointer to be live only once that PR lands. Closed-branch docs are marked here only.
+Each of these gets a dated "Retracted/Superseded" block at the top of its results doc, pointing here — **applied by the follow-up PR #1215, not by this commit.** `../compiler/2026-09-07-benchmark-correction.md` and the blocks themselves do not exist in this tree; a reader here should expect the pointer to be live only once that PR lands. Closed-branch docs are marked here only.
 
 | row | claim | why |
 |---|---|---|
@@ -103,7 +103,7 @@ the CSV carries the full before/after reasoning in each row's `note`.
    shipped kernel. Claim restated as a range, ρ ≈ 0.19–0.35 across two draws of 800 (sampling
    variance); INSTRUMENT DEFECT was the wrong original label — noisy, not wrong (decision #5).
 6. **L078** — `minted` corrected to a file+line citation:
-   `docs/plans/2026-09-06-kernel-with-a-lattice.md:780–781` (the S4b-1 landed section), which
+   `docs/archive/plans/2026-09-06-kernel-with-a-lattice.md:780–781` (the S4b-1 landed section), which
    reads "`collapse_bench` never goes through it \[`JitManifold`\] — it calls `emit::compile`
    directly." The sentence exists and is about `JitManifold`'s rename, not the optimizer; the
    row's own verdict (FAILED, read literally) and its code-verified `real_check` are unchanged
@@ -121,7 +121,7 @@ the CSV carries the full before/after reasoning in each row's `note`.
    Every "85×" dependent on the retired regime already read "54× ... not 85×" going into this
    revision. One further row added, **L092** (HELD, real): scenes/shaders enter the e-graph
    small and the rules expand them 10–40× to the class cap in 2–5 iterations, superseding
-   `docs/plans/2026-09-06-egraph-at-production-scale.md` §2's "~4,900 classes after
+   `docs/archive/plans/2026-09-06-egraph-at-production-scale.md` §2's "~4,900 classes after
    hash-consing" framing — the dated Superseded banner for that sentence is added in #1215's
    worktree, which already carries retraction blocks on plan docs (decision #8).
 

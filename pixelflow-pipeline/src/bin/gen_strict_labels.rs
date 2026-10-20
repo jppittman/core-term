@@ -1,5 +1,5 @@
 //! Strict-label dataset minting for the saturation Guide's cold start
-//! (`docs/plans/2026-08-31-guide-design-revision.md` §3 option 3 stage 1,
+//! (`docs/archive/plans/2026-08-31-guide-design-revision.md` §3 option 3 stage 1,
 //! §4, §5).
 //!
 //! For every TRAIN-family corpus expression, this runs budgeted saturation
@@ -33,7 +33,7 @@
 //! against" — a live guided loop's budget tier `B`. This offline,
 //! full-saturation replay has no live per-call budget to report, so it uses
 //! [`REGISTERED_PRIMARY_BUDGET_APPLICATIONS`] — the classical-band primary
-//! tier B=100 fixed by `docs/plans/2026-09-01-phase3-registration.md` §4 —
+//! tier B=100 fixed by `docs/archive/plans/2026-09-01-phase3-registration.md` §4 —
 //! exactly the same constant [`saturate_guided_until_applications`] imports
 //! for the live guided loop. This dataset's earlier mint (see git history)
 //! used a 195-application placeholder (this round's measured per-expression
@@ -77,8 +77,9 @@ use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_pipeline::training::split::{Family, SplitManifest, Tier};
 use pixelflow_search::egraph::{
-    CandidateFeatures, CostModel, EGraph, EpisodeLabels, Firing, Label,
-    REGISTERED_PRIMARY_BUDGET_APPLICATIONS, RuleId, RuleSet, SaturationStop, extract_dag,
+    CandidateFeatures, CostModel, EpisodeLabels, Firing, Label, Limits,
+    REGISTERED_PRIMARY_BUDGET_APPLICATIONS, RuleId, RuleSet, Saturation, SaturationStop,
+    extract_dag,
 };
 use pixelflow_search::math::all_rules;
 
@@ -88,7 +89,7 @@ use pixelflow_search::math::all_rules;
 /// Every rule-keyed table in this binary is keyed by [`RuleId`], never by a
 /// position in `all_rules()`: a same-length reorder of that vector repoints
 /// every positional row silently, and nothing anywhere is the wrong length
-/// (docs/plans/2026-09-02-phase3-forward-port.md §2.2). The label is what
+/// (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2). The label is what
 /// the JSON carries, because a label is what a downstream loader can hash
 /// back into the same `RuleId`.
 fn label_of(rules: &RuleSet, id: RuleId) -> String {
@@ -161,7 +162,7 @@ struct Args {
     #[arg(long, default_value_t = 500_000)]
     max_total_applications: usize,
 
-    /// Per-expression e-class cap passed to `saturate_with_limits`.
+    /// Per-expression e-class cap passed to `Saturation::saturate_budgeted`.
     /// `guide_headroom` uses production's 10,000; this binary defaults
     /// lower (see module doc "Budget denominator") because class-count
     /// growth dominates this binary's own wall-clock cost on the corpus's
@@ -171,18 +172,14 @@ struct Args {
     /// provenance log are representative. Pass `--max-classes 10000` to
     /// reproduce guide_headroom's exact budget on a smaller expression
     /// sample.
-    #[arg(long, default_value_t = 2_000)]
-    max_classes: usize,
+    #[arg(long = "max-classes", default_value_t = 2_000)]
+    max_minted: usize,
 }
 
 /// Saturation iteration budget — identical to `guide_headroom`'s (and
 /// thereby `EGraph::saturate()`'s) default; called out explicitly because
 /// this binary needs the `SaturationStats`/provenance `saturate()` discards.
 const SATURATE_MAX_ITERS: usize = 100;
-/// Safety ceiling only (see `guide_headroom`'s identical constant and its
-/// module doc): this is an offline batch measurement, not the interactive
-/// compiler path, so production's 500ms deadline does not apply here.
-const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Parse `gen_bench_corpus`'s `{tier}_b{band:02}_f{seed:02}_{idx:05}` name
 /// format back into a [`Family`]. Panics on a name that doesn't match — a
@@ -366,7 +363,7 @@ fn mint_split(
     tier_name: &'static str,
     max_expr_nodes: usize,
     max_total_applications: usize,
-    max_classes: usize,
+    max_minted: usize,
 ) -> SplitStats {
     let costs = CostModel::latency_prior();
     let mut stats = SplitStats::new(tier_name);
@@ -405,7 +402,7 @@ fn mint_split(
         );
         stats.families.insert(family);
 
-        let mut egraph = EGraph::with_rules(all_rules());
+        let mut egraph = Saturation::over(RuleSet::new(all_rules()));
         let root_class = pixelflow_search::egraph::insert(
             arena,
             *root,
@@ -413,18 +410,14 @@ fn mint_split(
             pixelflow_search::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        let saturate_started = std::time::Instant::now();
-        let sat_stats =
-            egraph.saturate_with_limits(SATURATE_MAX_ITERS, max_classes, SATURATE_TIMEOUT);
-        let saturate_elapsed = saturate_started.elapsed();
-        assert!(
-            saturate_elapsed < SATURATE_TIMEOUT,
-            "gen_strict_labels: expression '{name}' ran {saturate_elapsed:?}, hitting the \
-             {SATURATE_TIMEOUT:?} safety ceiling — fail loud rather than mint labels from a \
-             truncated, non-representative replay"
-        );
-        // The elapsed-time assertion above only catches the wall-clock
-        // ceiling. A replay that stopped at the class cap or the iteration
+        // No clock: the run is bounded by its iteration and minted-id limits,
+        // both deterministic, so a replay cannot be cut by machine load.
+        let sat_stats = egraph.saturate_budgeted(Limits {
+            iterations: SATURATE_MAX_ITERS,
+            minted: max_minted,
+            applications: None,
+        });
+        // A replay that stopped at the minted-id cap or the iteration
         // ceiling was cut wherever that safety limit happened to land, and
         // its strict labels and final-graph features then describe the graph
         // the cutoff left behind rather than a settled one — contamination
@@ -443,19 +436,13 @@ fn mint_split(
         let extraction = extract_dag(&egraph, root_class, &costs);
         let labels = EpisodeLabels::compute_strict(&egraph, extraction.root, &extraction.choices);
 
-        let total_applications = egraph.provenance().recorded_count();
+        let total_applications = egraph.journal().recorded_count();
         let mut seen_keys: std::collections::HashSet<pixelflow_search::egraph::CandidateKey> =
             std::collections::HashSet::new();
         let mut expr_positives = 0usize;
 
-        for (app_id, record) in egraph.provenance().applications() {
-            let rule = record.rule.unwrap_or_else(|| {
-                panic!(
-                    "gen_strict_labels: application {app_id:?} on '{name}' carries no RuleId \
-                     — the graph was built without rule ids, and every table here is keyed \
-                     by identity"
-                )
-            });
+        for (app_id, record) in egraph.journal().applications() {
+            let rule = record.rule;
             let firing = Firing {
                 rule,
                 match_root: record.match_root,
@@ -547,7 +534,7 @@ fn mint_split(
 
         assert_eq!(
             total_applications,
-            egraph.provenance().recorded_count(),
+            egraph.journal().recorded_count(),
             "gen_strict_labels: provenance application count changed while iterating '{name}' \
              — should be impossible against an immutable-after-saturation egraph"
         );
@@ -773,7 +760,7 @@ fn main() {
         "train",
         args.max_expr_nodes,
         args.max_total_applications,
-        args.max_classes,
+        args.max_minted,
     );
     eprintln!("gen_strict_labels: wrote {}", args.out_train);
 
@@ -786,7 +773,7 @@ fn main() {
         "dev",
         args.max_expr_nodes,
         args.max_total_applications,
-        args.max_classes,
+        args.max_minted,
     );
     eprintln!("gen_strict_labels: wrote {}", args.out_dev);
 

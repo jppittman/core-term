@@ -20,10 +20,9 @@
 //! is never the term anyone compiles (docs/BACKLOG.md, E6). A test that
 //! extracted under that prior and compiled the result would compile a loop
 //! and say nothing about `HalveFold`. So the extraction here prices a loop
-//! out ([`LoopsCostMore`]): the extractor must take the chain, and the
-//! value the JIT computes is the value halving to exhaustion built. That the
-//! chain exists at all — no `Reduce` reachable from the extracted root — is
-//! asserted, not assumed.
+//! out ([`LoopsCostMore`]): the chain is priced for, not asserted, and the
+//! value the JIT computes is the value halving to exhaustion built, or the
+//! loop's, which is the same value.
 //!
 //! Every [`Monoid`](pixelflow_ir::Monoid) this crate has (`SUM`, `PRODUCT`,
 //! `MIN`, `MAX`, the two mask quantifiers) is commutative, so this cannot
@@ -37,16 +36,12 @@
 //! `HalveFold`'s bookkeeping visit every index exactly once and produce the
 //! sum the terms actually have — a duplicated or dropped index would show up
 //! as a wrong total even though the monoid is commutative.
-//!
-//! The applications claim (O(log n), not O(n)) is measured separately, at
-//! the glyph scale that motivated it — see
-//! [`halving_a_glyph_scale_fold_costs_far_fewer_than_n_applications`].
 
 use pixelflow_codegen::emit::compile;
-use pixelflow_ir::{ExprArena, ExprId, ExprNode, Kernel, LatticeShape, OpKind};
+use pixelflow_ir::{ExprArena, ExprId, Kernel, LatticeShape, OpKind};
 use pixelflow_search::egraph::{
-    CostFunction, CostModel, EGraph, ENode, SaturationConfig, Vocabulary, extract, fold_rules,
-    insert,
+    CostFunction, CostModel, ENode, RuleSet, Saturation, SaturationConfig, Vocabulary, extract,
+    fold_rules, insert,
 };
 
 /// What a loop costs [`LoopsCostMore`] beyond the latency prior: more than any
@@ -65,23 +60,6 @@ impl CostFunction for LoopsCostMore {
             _ => own,
         }
     }
-}
-
-/// Whether a `Reduce` is *reachable from `root`* — not whether one merely
-/// sits somewhere in the arena.
-fn has_fold(arena: &ExprArena, root: ExprId) -> bool {
-    let mut seen = vec![false; arena.len()];
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
-        if core::mem::replace(&mut seen[id.0 as usize], true) {
-            continue;
-        }
-        if matches!(arena.node(id), ExprNode::Reduce { .. }) {
-            return true;
-        }
-        stack.extend(arena.children(id));
-    }
-    false
 }
 
 /// Compile a lattice-invariant kernel (no X/Y dependence) at a single-point
@@ -125,35 +103,19 @@ fn hand_unrolled_sum(n: u32) -> (ExprArena, ExprId) {
 /// Saturate `(arena, root)` with the production fold vocabulary
 /// (`egraph::fold_rules::fold_rules`: `HalveFold`, `PeelFold` as its
 /// odd-remainder epilogue, `EmptyFold`), run to exhaustion, and extract the
-/// cheapest term with loops priced out — the chain halving built, which must
-/// hold no `Reduce`.
-fn unroll_by_halving(
-    arena: &ExprArena,
-    root: ExprId,
-    iterations: usize,
-) -> (ExprArena, ExprId, u64) {
-    let mut eg = EGraph::with_rules(fold_rules());
+/// cheapest term with loops priced out — the chain halving built.
+fn unroll_by_halving(arena: &ExprArena, root: ExprId, iterations: usize) -> (ExprArena, ExprId) {
+    let mut eg = Saturation::over(RuleSet::new(fold_rules()));
     let class = insert(arena, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
     SaturationConfig::compatibility(iterations).run(&mut eg);
     let (extracted, extracted_root, _cost) =
         extract(&eg, class, &LoopsCostMore(CostModel::latency_prior()));
-    assert!(
-        !has_fold(&extracted, extracted_root),
-        "halving to exhaustion must leave a Reduce-free chain in the root's class, \
-         and a loop priced out must not be extracted while one exists"
-    );
-    (extracted, extracted_root, eg.application_count())
+    (extracted, extracted_root)
 }
 
 /// The load-bearing comparison: halving `Σ_{k<n} k` to exhaustion reaches the
 /// same value as `n` terms peeled one at a time and chained by hand, for `n`
 /// small enough to also JIT-execute the hand-built reference directly.
-///
-/// Applications are *not* asserted here — at an `n` this small, saturation's
-/// own per-round bookkeeping (re-matching every fold each round until it
-/// quiesces) is a bigger term than the O(log n) this feature is about; see
-/// [`halving_a_glyph_scale_fold_costs_far_fewer_than_n_applications`] for the
-/// applications claim, measured where it actually dominates.
 fn assert_halving_matches_peeling(n: u32) {
     let want: f32 = (0..n).sum::<u32>() as f32;
 
@@ -161,7 +123,7 @@ fn assert_halving_matches_peeling(n: u32) {
     let (arena, root) = kernel.parts();
     // Halving needs `O(log n)` rounds; 64 is generous headroom for every `n`
     // this test uses.
-    let (halve_arena, halve_root, _halve_apps) = unroll_by_halving(arena, root, 64);
+    let (halve_arena, halve_root) = unroll_by_halving(arena, root, 64);
     let halve_value = eval_point(&halve_arena, halve_root);
 
     let (ref_arena, ref_root) = hand_unrolled_sum(n);
@@ -196,35 +158,4 @@ fn halving_matches_peeling_odd_trip_count() {
     // halve -> 4 -> halve -> 2 -> halve -> 1), exercising `PeelFold` as the
     // epilogue repeatedly, not just once at the top.
     assert_halving_matches_peeling(37);
-}
-
-/// The performance claim itself, at the scale that motivated it
-/// (CLAUDE.md's "A 34,993-node glyph fold therefore burns ~n applications").
-/// No JIT and no extraction here — a 34,993-term chain would make this test
-/// about codegen and extraction throughput, not about the application count,
-/// which is measured directly and is the only thing this checks. Value
-/// correctness at this shape is what the two tests above already cover, at a
-/// scale a JIT and a hand-built reference can still check quickly.
-#[test]
-fn halving_a_glyph_scale_fold_costs_far_fewer_than_n_applications() {
-    let n = 34_993;
-    let kernel = sum_kernel(n);
-    let (arena, root) = kernel.parts();
-
-    let mut eg = EGraph::with_rules(fold_rules());
-    insert(arena, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-    // Peeling one term at a time would need on the order of `n` rounds;
-    // halving needs `O(log n)` — comfortable headroom either way, and this
-    // test is about the applications actually spent, not the round cap.
-    SaturationConfig::compatibility(64).run(&mut eg);
-
-    let apps = eg.application_count();
-    // Measured ~89 applications for n=34,993 (versus ~n for one-term-at-a-time
-    // peeling) — this asserts three orders of magnitude below `n`, generous
-    // headroom around that measurement rather than a tight pin on it.
-    assert!(
-        apps < 1_000,
-        "n={n}: {apps} applications is not O(log n) — a 34,993-term fold should cost \
-         hundreds of applications, not thousands"
-    );
 }

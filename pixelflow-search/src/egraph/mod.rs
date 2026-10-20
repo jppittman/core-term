@@ -5,17 +5,18 @@
 //!
 //! # Module Structure
 //!
-//! - [`node`]: Core data structures (EClassId, Op, ENode)
+//! - `node`: Core data structures (EClassId, Op, ENode)
+//! - `shift`: the static parameters of a shift node (direction, count)
 //! - [`candidate`]: Candidate-local features and the dedup key a guided
 //!   saturation loop orders by
-//! - [`cost`]: Cost model for extraction
+//! - `cost`: Cost model for extraction
 //! - [`rewrite`]: Rewrite rule infrastructure
 //! - [`extract`]: Expression tree extraction, including DAG-aware extraction
-//! - [`extraction`]: Cost-model policy selection (the static latency prior)
+//! - `extraction`: Cost-model policy selection (the static latency prior)
 //!   shared by the AOT macro tier and [`crate::runtime`]
 //! - [`saturate`]: Budget-limited saturation, plus the size-based
 //!   [`saturate::SaturationConfig`] presets both tiers drive it with
-//! - [`graph`]: The EGraph itself
+//! - `graph`: The EGraph itself
 //! - `growth` (feature `saturation-telemetry`): per-application growth
 //!   telemetry — how many e-nodes/e-classes a rewrite actually added
 //!
@@ -26,6 +27,7 @@
 //! front door — insert an [`pixelflow_ir::arena::ExprArena`] directly, no AST
 //! involved.
 
+pub(crate) mod and_or;
 pub mod anytime;
 pub mod candidate;
 pub(crate) mod cost;
@@ -33,7 +35,7 @@ pub mod derivative;
 pub(crate) mod extract;
 pub mod fold_rules;
 mod graph;
-// Per-application growth telemetry (docs/plans/2026-08-31-guide-design-revision.md
+// Per-application growth telemetry (docs/archive/plans/2026-08-31-guide-design-revision.md
 // §4.1) has no production consumer yet, exactly like `crate::telemetry` —
 // gated behind the same `saturation-telemetry` feature so a build that
 // doesn't ask for it doesn't carry the module at all.
@@ -41,6 +43,7 @@ mod graph;
 mod growth;
 mod guided;
 pub mod insert;
+mod live;
 // The hindsight labeler reads the provenance journal directly
 // (`derivation_ancestors`, `Origin`, `Provenance::recorded_count`) — it has
 // nothing to compute without it.
@@ -54,9 +57,10 @@ pub mod rewrite;
 pub mod rule_order;
 pub mod rules;
 pub mod saturate;
+mod shift;
 pub mod template;
 // Research only: the read-only half of the extraction-witness instrument
-// (docs/plans/2026-09-08-extraction-witnesses.md). Gated behind the feature
+// (docs/archive/plans/2026-09-08-extraction-witnesses.md). Gated behind the feature
 // every `pixelflow-pipeline` harness already builds with, so nothing here
 // reaches a downstream build.
 #[cfg(feature = "provenance-journal")]
@@ -74,23 +78,22 @@ pub use cost::{CostFunction, CostModel};
 pub use derivative::{ChainRule, derivative_rules};
 pub use extract::{
     ChoiceCost, ClaimAudit, CostScale, ExtractedDAG, Extraction, ExtractionObjective,
-    ExtractionReport, SHARED_DAG_PASS_BYTE_BUDGET, SharedPassStats,
-    build_extracted_dag_from_choices, choices_to_arena, compute_ref_counts, cost_of_choices,
-    extract, extract_dag,
+    ExtractionReport, SHARED_DAG_PASS_BYTE_BUDGET, SharedPassStats, extract, extract_dag,
 };
 pub use fold_rules::{EmptyFold, FactorFold, HalveFold, PeelFold, fold_rules};
+pub(crate) use graph::FrozenGraph;
 pub use graph::{
-    ApplicationMask, ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, MaskScope, RewriteTarget,
-    SaturationStats, SaturationStop, ScanStop,
+    ApplicationMask, EGraph, HARD_MINTED_LIMIT, Limits, MaskScope, RewriteTarget, Saturation,
+    SaturationStats, SaturationStop,
 };
 #[cfg(feature = "saturation-telemetry")]
 pub use growth::{GrowthTelemetry, RuleGrowth};
-pub use insert::{Declined, insert, reachable_count};
+pub use insert::{Declined, insert, inserted_class_count};
 #[cfg(feature = "provenance-journal")]
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
-pub use node::{EClassId, ENode};
-pub use ops::{Op, Vocabulary};
-pub use optimizer::{Budget, Limits, Optimized, Optimizer, OptimizerStats};
+pub use node::{EClassId, ENode, Operands};
+pub use ops::Vocabulary;
+pub use optimizer::{Budget, Optimized, Optimizer, OptimizerStats, SaturationKey};
 #[cfg(feature = "provenance-journal")]
 pub use optimizer::{KeepJournal, Observer};
 pub use provenance::{ApplicationId, ENodeId, Provenance};
@@ -98,14 +101,14 @@ pub use provenance::{ApplicationId, ENodeId, Provenance};
 pub use provenance::{
     ApplicationRecord, Origin, UnionEvent, derivation_ancestors, format_derivation_trace,
 };
-pub use rewrite::{Rewrite, RewriteAction, TemplateArena, TemplatePattern};
-pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
+pub use rewrite::{Rewrite, RewriteAction, RootShapes, TemplateArena, TemplatePattern};
+pub use rules::{Fingerprint, RuleId, RuleIdx, RuleSet, rule_label};
 pub use saturate::{
     APPLICATIONS_PER_CLASS, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_FLOOR,
     CLASSICAL_CLASSES_PER_INSERTED_CLASS, InputSize, SaturationConfig, SaturationResult,
-    achievable_cost_within_budget, config_for_input, config_for_node_count, saturate_with_budget,
-    saturate_with_full_budget,
+    config_for_input, config_for_node_count, saturate_with_budget, saturate_with_full_budget,
 };
+pub use shift::ShiftDirection;
 pub use template::TemplateRewrite;
 
 // Re-export rule types from math module for backward compatibility
@@ -150,7 +153,7 @@ pub fn all_rules() -> Vec<Box<dyn Rewrite>> {
     crate::math::all_rules()
 }
 
-/// Build [`RuleTemplates`] from all registered rules.
+/// Build `RuleTemplates` from all registered rules.
 ///
 /// Collects LHS/RHS expression templates from every rule that provides them.
 /// Rules without templates (returning `None`) get empty slots.

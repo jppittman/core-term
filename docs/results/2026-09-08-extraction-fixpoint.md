@@ -191,7 +191,7 @@ divergence any more, because it no longer runs on this path.
 
 What is left is what the witness run said would be left: **COORDINATED**
 (44), **DISTRACTOR** (7) and **TIE** (4). Those are search, not defects, and
-they are what `docs/plans/2026-09-08-extraction-judge-registration.md`
+they are what `docs/compiler/2026-09-08-extraction-judge-registration.md`
 registers a learned component against.
 
 ## 6. Does more budget stop hurting?
@@ -288,7 +288,7 @@ cargo build --release -p pixelflow-pipeline --bin extraction_witnesses
 ## 9. What to do next
 
 1. **The judge, registered:**
-   `docs/plans/2026-09-08-extraction-judge-registration.md`. What survives
+   `docs/compiler/2026-09-08-extraction-judge-registration.md`. What survives
    the fixpoint is COORDINATED / DISTRACTOR / TIE, which is a search
    problem, and the registration names the shape, the metric, the four
    controls and the decision rule before anything is trained.

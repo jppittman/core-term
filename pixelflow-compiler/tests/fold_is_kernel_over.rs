@@ -1,6 +1,6 @@
 //! A fold written in `kernel!` is the fold `Kernel::over` builds: the same
 //! arena, by `pixelflow_ir::key::canonical`, for every monoid
-//! (docs/plans/2026-09-25-the-language-is-kernel.md §1.5; B7's equivalence
+//! (docs/language/2026-09-25-the-language-is-kernel.md §1.5; B7's equivalence
 //! gate, in miniature).
 //!
 //! What a fold *means* is pinned against rustc in `rustc_is_the_oracle.rs`.
@@ -262,7 +262,7 @@ fn a_baked_fold_is_its_terms_written_out() {
 }
 
 /// Whether the e-graph unrolls a fold is extraction's choice (plan §1.5;
-/// docs/plans/2026-09-24-one-pipeline.md §1.4), and where it keeps the loop
+/// docs/language/2026-09-24-one-pipeline.md §1.4), and where it keeps the loop
 /// instead, the pixels are still those of the terms written out.
 ///
 /// The test above reads the unrolled path; this one must read the loop, so it

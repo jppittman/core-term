@@ -20,7 +20,7 @@
 //! be — it would be whatever that build's font parsing and kernel
 //! construction produced. Capturing once to files makes the input a fixture
 //! with a diff. See `pixelflow_pipeline::collapse_bench` for what is timed and
-//! why, and `docs/plans/2026-09-01-register-allocation-escape-hatches.md` for
+//! why, and `docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md` for
 //! the measured contradiction that asked for it.
 
 use std::path::PathBuf;

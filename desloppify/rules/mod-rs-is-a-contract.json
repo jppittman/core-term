@@ -18,6 +18,7 @@
   "skills": [
     "behavioral-contracts"
   ],
+  "context": "module_intent",
   "question": "Does this module root read as the module's contract?",
   "fine": {
     "contract": "It declares traits — or, for a single implementation, a trait shape in its module docs — with testable contracts, the types they mention, constructors, `pub use`, and a module doc where a caller needs one, and holds no algorithm bodies."

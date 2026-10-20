@@ -1,7 +1,7 @@
 //! Counterfactual replay: does removing one application actually help or
 //! hurt the extraction at budget B, and do the hand-drawn hindsight bounds
 //! (loose / tight / strict / strict-by-output-class) agree with that ground
-//! truth? (docs/plans/2026-09-01-guide-return-to-go.md §4, the validation
+//! truth? (docs/archive/plans/2026-09-01-guide-return-to-go.md §4, the validation
 //! half of the R2G redirect — this binary does not touch §1-§3's training
 //! target or model; it only scores the bounds against a measured
 //! counterfactual.)
@@ -112,7 +112,7 @@ use pixelflow_search::egraph::provenance::{ApplicationId, ENodeId, Origin};
 use pixelflow_search::egraph::{
     ApplicationMask, Budget, CandidateFeatures, CostModel, EClassId, EGraph, EpisodeLabels, Firing,
     KeepJournal, Label, MaskScope, Optimizer, REGISTERED_PRIMARY_BUDGET_APPLICATIONS, RuleId,
-    RuleSet, config_for_node_count, extract_dag,
+    RuleSet, Saturation, config_for_node_count, extract_dag,
 };
 use pixelflow_search::nnue::factored::EMBED_DIM;
 use pixelflow_search::nnue::guide::linear::{
@@ -148,7 +148,7 @@ struct Args {
 
     /// Lower bound (inclusive) on an expression's arena node count; `0` =
     /// unbounded. Round 3's registered regime
-    /// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3) is the band
+    /// (docs/archive/plans/2026-09-01-guide-return-to-go.md §2b.3) is the band
     /// 101-1000 where guided orderings measurably disagree — the credit
     /// question is only meaningful where the orderings differ at all.
     #[arg(long, default_value_t = 0)]
@@ -368,8 +368,8 @@ struct ExprContext {
     name: String,
     arena: ExprArena,
     root: pixelflow_ir::ExprId,
-    max_classes: usize,
-    egraph: EGraph,
+    max_minted: usize,
+    egraph: Saturation,
     cost_original: usize,
     loose: EpisodeLabels,
     tight: EpisodeLabels,
@@ -421,13 +421,13 @@ fn reachable_canonical_classes(
                  but has no recorded choice — extractor/labeler invariant violated"
             )
         });
-        let nodes = egraph.nodes(canonical);
-        assert!(
-            node_idx < nodes.len(),
-            "counterfactual_credit: node_idx {node_idx} out of bounds ({}) for class {idx}",
-            nodes.len()
-        );
-        for child in nodes[node_idx].children() {
+        let node = egraph.nodes(canonical).nth(node_idx).unwrap_or_else(|| {
+            panic!(
+                "counterfactual_credit: node_idx {node_idx} out of bounds ({}) for class {idx}",
+                egraph.nodes(canonical).count()
+            )
+        });
+        for child in node.children() {
             stack.push(child);
         }
     }
@@ -450,7 +450,7 @@ fn build_expr_context(
     budget: usize,
     proxies: &Proxies,
 ) -> ExprContext {
-    let max_classes = config_for_node_count(arena.len()).max_classes;
+    let max_minted = config_for_node_count(arena.len()).max_minted;
     let costs = CostModel::latency_prior();
     // The replay reads the journal afterwards, so recording is asked for
     // with an observer (#1118). `hard_ceiling` panics on the ceiling rather
@@ -461,7 +461,7 @@ fn build_expr_context(
         .observe(Some(Box::new(KeepJournal)))
         .budget(Budget::Explicit {
             iterations: SATURATE_MAX_ITERS,
-            classes: max_classes,
+            minted: max_minted,
             applications: Some(budget as u64),
         })
         .hard_ceiling(SATURATE_TIMEOUT);
@@ -473,7 +473,7 @@ fn build_expr_context(
         pixelflow_search::egraph::Vocabulary::Templates,
     )
     .expect("insert into e-graph");
-    let _ = optimizer.run(&mut egraph, root_class, arena.len());
+    let _ = optimizer.run(&mut egraph, root_class);
 
     let extraction = extract_dag(&egraph, root_class, &costs);
     // DAG cost — what the emitted kernel pays (#1117).
@@ -484,13 +484,13 @@ fn build_expr_context(
     let strict = EpisodeLabels::compute_strict(&egraph, extraction.root, &extraction.choices);
 
     let mut created_by: HashMap<ApplicationId, Vec<ENodeId>> = HashMap::new();
-    for (node, origin) in egraph.provenance().origins() {
+    for (node, origin) in egraph.journal().origins() {
         if let Origin::Rule(app_id) = origin {
             created_by.entry(app_id).or_default().push(node);
         }
     }
     let mut unions_by: HashMap<ApplicationId, Vec<(EClassId, EClassId)>> = HashMap::new();
-    for event in egraph.provenance().union_events() {
+    for event in egraph.journal().union_events() {
         if let Some(app_id) = event.application_id {
             unions_by
                 .entry(app_id)
@@ -501,7 +501,7 @@ fn build_expr_context(
 
     let mut node_to_class: HashMap<ENodeId, EClassId> = HashMap::new();
     for class in egraph.class_ids() {
-        for &tag in egraph.tags(class) {
+        for tag in egraph.tags(class) {
             node_to_class.insert(tag, class);
         }
     }
@@ -518,16 +518,11 @@ fn build_expr_context(
     let mut step_of: HashMap<ApplicationId, usize> = HashMap::new();
     let mut keys: Vec<(ApplicationId, usize)> = Vec::new();
     let mut summaries: Vec<CandidateSummary> = Vec::new();
-    for (app_id, record) in egraph.provenance().applications() {
+    for (app_id, record) in egraph.journal().applications() {
         if app_id.as_u64() >= bound {
             continue;
         }
-        let rule = record.rule.unwrap_or_else(|| {
-            panic!(
-                "counterfactual_credit: application {app_id:?} carries no RuleId — the graph \
-                 was built without rule ids, and every table here is keyed by identity"
-            )
-        });
+        let rule = record.rule;
         if unions_by.contains_key(&app_id) {
             candidates.push((app_id, rule));
         }
@@ -570,7 +565,7 @@ fn build_expr_context(
         name,
         arena,
         root,
-        max_classes,
+        max_minted,
         egraph,
         cost_original,
         loose,
@@ -655,7 +650,7 @@ fn masked_replay(
         .mask(Some(mask))
         .budget(Budget::Explicit {
             iterations: SATURATE_MAX_ITERS,
-            classes: ctx.max_classes,
+            minted: ctx.max_minted,
             applications: Some(budget as u64),
         })
         .hard_ceiling(SATURATE_TIMEOUT);
@@ -667,7 +662,7 @@ fn masked_replay(
         pixelflow_search::egraph::Vocabulary::Templates,
     )
     .expect("insert into e-graph");
-    let _ = optimizer.run(&mut egraph, root_class, ctx.arena.len());
+    let _ = optimizer.run(&mut egraph, root_class);
     let skips = egraph.last_replay_mask_skips();
     assert!(
         skips >= 1,

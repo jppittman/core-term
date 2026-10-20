@@ -1,6 +1,6 @@
 # Bilinear Guide cold-start training report (strict-v1 labels)
 
-Model class: **bilinear (m(x)^T W r + b^T r)**. Registration: `docs/plans/2026-09-02-bilinear-guide-registration.md`.
+Model class: **bilinear (m(x)^T W r + b^T r)**. Registration: `docs/archive/plans/2026-09-02-bilinear-guide-registration.md`.
 
 TRAIN: 22697 samples, 217 families, positive rate 12.4069% (268649 dedup_repeat rows excluded).
 

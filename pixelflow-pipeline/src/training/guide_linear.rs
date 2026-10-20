@@ -1,5 +1,5 @@
 //! Shared feature encoding + forward pass for the cold-start linear
-//! saturation Guide (`docs/plans/2026-08-31-guide-design-revision.md` §5).
+//! saturation Guide (`docs/archive/plans/2026-08-31-guide-design-revision.md` §5).
 //!
 //! Split out of `train_guide` (2026-09-02, design doc §5 task 2) so the
 //! trainer and the mandatory train/deploy skew test
@@ -39,7 +39,7 @@ pub struct Record {
     /// (`RuleId::get()`). Read back through [`RuleId`], never used as a
     /// position: a same-length reorder of `all_rules()` repoints every
     /// positional key silently
-    /// (docs/plans/2026-09-02-phase3-forward-port.md §2.2).
+    /// (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2).
     pub rule_id: u64,
     /// The rule's canonical label — the human-readable half of the same
     /// identity, and what a checkpoint's `w_rule` table is keyed by.
@@ -590,7 +590,7 @@ mod tests {
 /// Guide has none of, since every number in this program is a deterministic
 /// `CostModel::latency_prior()` count, never a timing (design doc §0's
 /// binding framing). `label_source` is the field
-/// `docs/plans/2026-08-31-guide-design-revision.md` §0/§3 calls out by name:
+/// `docs/archive/plans/2026-08-31-guide-design-revision.md` §0/§3 calls out by name:
 /// recording `"strict-v1"` here is what lets a future label-source swap (to
 /// a tightened-labeler variant, §3 option 3's second stage) be validated by
 /// comparing checkpoints rather than by assuming which label a given file
@@ -610,7 +610,7 @@ mod tests {
 /// reorder of `all_rules()` changes the fingerprint, and
 /// [`Self::to_weights`] re-keys every weight by [`RuleId`] on the way out,
 /// so no consumer ever indexes a weight vector by a position it did not
-/// itself compute (docs/plans/2026-09-02-phase3-forward-port.md §2.2).
+/// itself compute (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2).
 #[derive(serde::Serialize, Deserialize)]
 pub struct GuideCheckpoint {
     pub schema_identity: String,

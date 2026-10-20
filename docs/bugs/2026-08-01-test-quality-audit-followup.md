@@ -14,7 +14,7 @@ troupe (`coordinator_node.rs`, `engine_troupe.rs`).
 ## Static audit: two `Explore` sub-agents swept `git diff d7d33b8..HEAD`
 
 Split by area — actor-scheduler/core-term, and the `pixelflow-*` crates —
-against docs/STYLE.md's "Test Public API" rule, cross-checked against every
+against docs/process/STYLE.md's "Test Public API" rule, cross-checked against every
 prior audit's already-accepted exceptions (`pixelflow-graphics/src/spatial_bsp.rs`'s
 private `interiors[...]` indexing; core-term's `create_test_app()` using
 `new_registered`) so those weren't re-flagged.

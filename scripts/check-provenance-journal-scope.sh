@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # `provenance-journal` (pixelflow-search/Cargo.toml) must never reach a
-# downstream user's build: docs/plans/2026-09-01-production-budget-determinism.md
+# downstream user's build: docs/archive/plans/2026-09-01-production-budget-determinism.md
 # gates the rule-provenance journal (origins, application log, union
 # journal, `derivation_ancestors`, the hindsight labeler) behind this
 # feature, default OFF, because a production compile built and discarded a

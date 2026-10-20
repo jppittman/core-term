@@ -26,7 +26,7 @@
 //!   `len` `ExprId`s), not a separate trailing section, so this format never
 //!   names an arena-internal offset: `write_node` reads a `Nary`'s children
 //!   through `ExprArena::children`, the same accessor everything outside
-//!   `arena.rs` uses (docs/plans/2026-09-09-exprarena-on-dag.md, Stage A).
+//!   `arena.rs` uses (docs/archive/plans/2026-09-09-exprarena-on-dag.md, Stage A).
 //!
 //! ## Only the reachable subtree is stored
 //!
@@ -59,7 +59,7 @@
 //! there is no separate step to forget) together with a hash of the LIVE
 //! `OpKind` encoding table — the op-renumbering case that prose alone cannot
 //! see, since "dense 0..COUNT discriminants" reads the same before and after
-//! a renumbering (docs/plans/2026-08-17-cost-model-domain.md, J9, kills
+//! a renumbering (docs/archive/plans/2026-08-17-cost-model-domain.md, J9, kills
 //! P1(b)). Any stored identity other than the current one is a hard load
 //! error.
 

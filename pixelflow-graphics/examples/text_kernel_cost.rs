@@ -2,7 +2,7 @@
 //! grows: arena size, reachable nodes, piece count, and two node counts
 //! downstream. One line per length. Every column must stay linear in the
 //! piece count — the measurement behind
-//! docs/plans/2026-09-09-composition-is-linking.md §7.
+//! docs/language/2026-09-09-composition-is-linking.md §7.
 //!
 //! The two downstream columns are different questions and the difference
 //! matters, because the runtime pipeline splits between them:

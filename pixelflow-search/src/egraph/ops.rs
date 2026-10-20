@@ -1,383 +1,270 @@
-//! Operation definitions for e-graph expressions.
+//! Which operations an e-graph may hold, and which a rewrite template may name.
 //!
-//! Each operation is a unit struct implementing the `Op` trait.
-//! Properties are delegated to `OpKind` - the single source of truth.
+//! An operation is an [`OpKind`]; its algebraic properties (`identity`,
+//! `annihilator`, `is_commutative`, ...) are `OpKind`'s own, the single source
+//! of truth. This module holds only the two admission policies, because they
+//! are the part that is the e-graph's rather than the instruction set's.
 
 use pixelflow_ir::OpKind;
 
-/// Trait for operations in the e-graph.
+/// Whether a rewrite template may *name* `kind`.
 ///
-/// All algebraic properties delegate to `OpKind` methods.
-pub trait Op: 'static + Send + Sync {
-    /// The canonical `OpKind` for this operation.
-    fn kind(&self) -> OpKind;
-
-    /// String name (delegates to `OpKind::name`).
-    #[inline]
-    fn name(&self) -> &'static str {
-        self.kind().name()
-    }
-
-    /// Default cost estimate (delegates to `OpKind::default_cost`).
-    #[inline]
-    fn default_cost(&self) -> usize {
-        self.kind().default_cost()
-    }
-
-    /// Commutativity (delegates to `OpKind::is_commutative`).
-    #[inline]
-    fn is_commutative(&self) -> bool {
-        self.kind().is_commutative()
-    }
-
-    /// Associativity (delegates to `OpKind::is_associative`).
-    #[inline]
-    fn is_associative(&self) -> bool {
-        self.kind().is_associative()
-    }
-
-    /// Identity element (delegates to `OpKind::identity`).
-    #[inline]
-    fn identity(&self) -> Option<f32> {
-        self.kind().identity()
-    }
-
-    /// Annihilator element (delegates to `OpKind::annihilator`).
-    #[inline]
-    fn annihilator(&self) -> Option<f32> {
-        self.kind().annihilator()
-    }
-
-    /// Idempotency (delegates to `OpKind::is_idempotent`).
-    #[inline]
-    fn is_idempotent(&self) -> bool {
-        self.kind().is_idempotent()
-    }
-}
-
-impl core::fmt::Debug for dyn Op {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Op({})", self.name())
-    }
-}
-
-/// Generate a ZST operation struct that delegates to `OpKind`.
-macro_rules! define_op {
-    ($name:ident) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name;
-
-        impl Op for $name {
-            #[inline]
-            fn kind(&self) -> OpKind {
-                OpKind::$name
-            }
-        }
-    };
-}
-
-// === Basic Arithmetic ===
-define_op!(Add);
-define_op!(Sub);
-define_op!(Mul);
-define_op!(Div);
-define_op!(Neg);
-define_op!(Recip);
-
-// === Roots ===
-define_op!(Sqrt);
-define_op!(Rsqrt);
-
-// === Misc Math ===
-define_op!(Abs);
-define_op!(Min);
-define_op!(Max);
-define_op!(MulAdd);
-
-// === Rounding ===
-define_op!(Floor);
-define_op!(Ceil);
-define_op!(Round);
-
-// === Trigonometry ===
-define_op!(Sin);
-define_op!(Cos);
-define_op!(Tan);
-define_op!(Asin);
-define_op!(Acos);
-define_op!(Atan);
-define_op!(Atan2);
-
-// === Exponentials/Logarithms ===
-define_op!(Exp);
-define_op!(Exp2);
-define_op!(Ln);
-define_op!(Log2);
-define_op!(Log10);
-define_op!(Pow);
-
-// === Comparison ===
-define_op!(Lt);
-define_op!(Le);
-define_op!(Gt);
-define_op!(Ge);
-define_op!(Eq);
-define_op!(Ne);
-
-// === Control Flow ===
-define_op!(If);
-
-// === Aggregates ===
-define_op!(Tuple);
-
-// === Memory ===
-// `Gather(buffer, x, y)` — bound-memory read (floor indices, clamp to the
-// declared extents, row-major). Present as an `Op` so the e-graph can carry it
-// as opaque structure — two gathers hash-cons into one e-class iff buffer
-// identity and all three children match — but deliberately ABSENT from
-// [`op_from_kind`]: rewrite templates resolve ops through that lookup, and
-// returning `None` there is what keeps the rule set unable to name Gather.
-// Its semantics depend on bound memory, so no algebraic rule (and no constant
-// fold) may ever look through it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Gather;
-
-impl Op for Gather {
-    #[inline]
-    fn kind(&self) -> OpKind {
-        OpKind::Gather
-    }
-}
-
-// === Differentiation ===
-// `Dwrt(expr, var)` is the single autodiff operator. It exists only inside the
-// e-graph: chain-rule rewrites push it toward the leaves until it dissolves
-// into ordinary arithmetic. A surviving `Dwrt` after saturation is the jet
-// fallback (not yet wired) and carries a prohibitive cost so the extractor
-// never prefers it.
-define_op!(Dwrt);
-
-/// Look up a static `&dyn Op` reference by `OpKind`.
+/// Always the smaller set of the two admission policies: [`Vocabulary::admits`]
+/// adds to it. The match is exhaustive on purpose, so a new `OpKind` fails the
+/// build here until someone decides which side of the line it is on.
 ///
-/// Returns `None` for `Var` and `Const` (which are leaves, not operations).
-pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
+/// - Leaves (`Var`, `Const`, `Buffer`, `Uniform`, `Param`) are not operations.
+/// - `Dwrt(expr, var)` is the single autodiff operator. It exists only inside
+///   the e-graph: chain-rule rewrites push it toward the leaves until it
+///   dissolves into ordinary arithmetic. A surviving `Dwrt` after saturation is
+///   the jet fallback (not yet wired) and carries a prohibitive cost so the
+///   extractor never prefers it.
+/// - `Gather` is representable (`ENode::Buffer` carries the full `BufferDecl`)
+///   but stays unnameable: its semantics depend on bound memory, so no
+///   algebraic rule, and no constant fold, may look through it. Denying every
+///   template the ability to name it leaves its participation to hash-consing
+///   CSE.
+/// - The mask and integer-domain ops are the runtime tier's alone (see
+///   [`Vocabulary::admits`]).
+/// - `RawGather` and `Seq` are built after the e-graph runs; sequencing is an
+///   effect, so no rule may name it and no e-graph holds it.
+/// - `Reduce` is held as its own node, `ENode::Reduce`, which carries its fold
+///   as a parameter; it is not an op over operands that a rule could name.
+/// - `Tuple` has no fixed arity, which an inline-operand node cannot hold.
+/// - `Shl` and `Shr` are held as `ENode::Shift`, which carries the count as a
+///   parameter; they are not operations over operand classes, so no rule
+///   could name one.
+#[must_use]
+pub fn template_may_name(kind: OpKind) -> bool {
     match kind {
-        OpKind::Add => Some(&Add),
-        OpKind::Sub => Some(&Sub),
-        OpKind::Mul => Some(&Mul),
-        OpKind::Div => Some(&Div),
-        OpKind::Neg => Some(&Neg),
-        OpKind::Recip => Some(&Recip),
-        OpKind::Sqrt => Some(&Sqrt),
-        OpKind::Rsqrt => Some(&Rsqrt),
-        OpKind::Abs => Some(&Abs),
-        OpKind::Min => Some(&Min),
-        OpKind::Max => Some(&Max),
-        OpKind::MulAdd => Some(&MulAdd),
-        OpKind::Floor => Some(&Floor),
-        OpKind::Ceil => Some(&Ceil),
-        OpKind::Round => Some(&Round),
-        OpKind::Sin => Some(&Sin),
-        OpKind::Cos => Some(&Cos),
-        OpKind::Tan => Some(&Tan),
-        OpKind::Asin => Some(&Asin),
-        OpKind::Acos => Some(&Acos),
-        OpKind::Atan => Some(&Atan),
-        OpKind::Atan2 => Some(&Atan2),
-        OpKind::Exp => Some(&Exp),
-        OpKind::Exp2 => Some(&Exp2),
-        OpKind::Ln => Some(&Ln),
-        OpKind::Log2 => Some(&Log2),
-        OpKind::Log10 => Some(&Log10),
-        OpKind::Pow => Some(&Pow),
-        OpKind::Lt => Some(&Lt),
-        OpKind::Le => Some(&Le),
-        OpKind::Gt => Some(&Gt),
-        OpKind::Ge => Some(&Ge),
-        OpKind::Eq => Some(&Eq),
-        OpKind::Ne => Some(&Ne),
-        OpKind::If => Some(&If),
-        OpKind::Tuple => Some(&Tuple),
-        // Autodiff operator: lives in the e-graph, rewritten by the chain rule.
-        OpKind::Dwrt => Some(&Dwrt),
-        // Leaves (not operations)
-        OpKind::Var | OpKind::Const => None,
-        // Bit-manip primitives are produced by *lowering* (after the e-graph
-        // runs), so they have no rewrite-rule `Op` and never appear in an
-        // e-graph. Treated as opaque here.
-        OpKind::TruncToInt
+        OpKind::Add
+        | OpKind::Sub
+        | OpKind::Mul
+        | OpKind::Div
+        | OpKind::Neg
+        | OpKind::Recip
+        | OpKind::Sqrt
+        | OpKind::Rsqrt
+        | OpKind::Abs
+        | OpKind::Min
+        | OpKind::Max
+        | OpKind::MulAdd
+        | OpKind::Floor
+        | OpKind::Ceil
+        | OpKind::Round
+        | OpKind::Sin
+        | OpKind::Cos
+        | OpKind::Tan
+        | OpKind::Asin
+        | OpKind::Acos
+        | OpKind::Atan
+        | OpKind::Atan2
+        | OpKind::Exp
+        | OpKind::Exp2
+        | OpKind::Ln
+        | OpKind::Log2
+        | OpKind::Log10
+        | OpKind::Pow
+        | OpKind::Lt
+        | OpKind::Le
+        | OpKind::Gt
+        | OpKind::Ge
+        | OpKind::Eq
+        | OpKind::Ne
+        | OpKind::If
+        | OpKind::Dwrt => true,
+        OpKind::Var
+        | OpKind::Const
+        | OpKind::Buffer
+        | OpKind::Uniform
+        | OpKind::Param
+        | OpKind::Gather
+        | OpKind::RawGather
+        | OpKind::Reduce
+        | OpKind::Seq
+        | OpKind::Tuple
+        | OpKind::TruncToInt
         | OpKind::IntToFloat
         | OpKind::IAdd
         | OpKind::Shl
         | OpKind::Shr
         | OpKind::BitAnd
-        | OpKind::BitOr => None,
-        // Memory ops are representable (`ENode::Buffer` carries the full
-        // `BufferDecl` — `BufferIdentity` is process-unique, so no arena-local
-        // table is needed) but stay opaque to the rule set: `None` here is
-        // what denies every rewrite template the ability to name them, so
-        // their participation is hash-consing CSE only. `add_arena` and the
-        // runtime tier resolve `Gather` directly via the crate-private
-        // `Gather` op above. `RawGather` and `Reduce` are lowered
-        // before/after the e-graph and never appear in one.
-        // `Uniform` and `Param` likewise: leaves the e-graph holds as
-        // `ENode::Uniform`/`ENode::Param`, never as an op a rule could match —
-        // which is exactly what keeps `ConstantFold` from ever seeing one.
-        OpKind::Buffer
-        | OpKind::Gather
-        | OpKind::RawGather
-        | OpKind::Reduce
-        | OpKind::Uniform
-        | OpKind::Param => None,
-        // Post-legalize vocabulary: sequencing is an effect built after
-        // extraction, so no rule may name it and no e-graph holds it.
-        OpKind::Seq => None,
-    }
-}
-
-// ─────────────────────────── Runtime-only mask ops ───────────────────────────
-//
-// `&`/`|` on comparison masks are surface-language ops (every glyph winding
-// kernel's Y-range gate is `(Y >= lo) & (Y < hi)`), so runtime-built arenas
-// must be representable with them present. They are deliberately NOT in
-// [`op_from_kind`]: registering them globally hands them to the
-// AOT macro tier too, whose e-graph runs at macro-expansion time — BEFORE
-// composition — where resolving the `Dwrt` nodes the masks travel with is
-// unsound (a leaf's `DX` is 1 only until an enclosing `.at()` warp scales
-// it; the fonts' density-dependent AA ramp broke exactly this way when
-// these ops were briefly global). The runtime tier optimizes the final
-// composed arena at bake time, where the calculus has its full context, so
-// mask ops are safe — and only meaningful — here.
-//
-// No rewrite rule targets them; they participate as opaque structure plus
-// `ConstantFold`, whose bitwise-domain exemption already models their
-// all-ones/zero masks.
-struct MaskAnd;
-impl Op for MaskAnd {
-    fn kind(&self) -> OpKind {
-        OpKind::BitAnd
-    }
-}
-struct MaskOr;
-impl Op for MaskOr {
-    fn kind(&self) -> OpKind {
-        OpKind::BitOr
-    }
-}
-
-/// Mask `∧` as an `Op`, for a caller that already named the *algebra*.
-///
-/// Crate-visible where [`op_from_kind`] is not: resolving an `OpKind` to
-/// these would hand them to the macro tier, which is the miscompile the
-/// comment above describes. Resolving a [`Monoid`](pixelflow_ir::Monoid) to
-/// them leaks no opcode — the caller said "the universal quantifier", and
-/// this is what that is.
-pub(crate) fn mask_and() -> &'static dyn Op {
-    &MaskAnd
-}
-
-/// Mask `∨` as an `Op`. See [`mask_and`].
-pub(crate) fn mask_or() -> &'static dyn Op {
-    &MaskOr
-}
-
-// ─────────────────────── Runtime-only integer-domain ops ─────────────────────
-//
-// The packed cell-grid kernel's spine: clamp → `TruncToInt` → `Shl` →
-// or-fold builds a `u32` pixel per lane, so the production frame kernel is
-// unrepresentable — and therefore compiles with NO CSE across its four
-// channels — unless these enter the e-graph. Runtime-tier only, for the
-// same reason as the mask ops above. Opaque to TEMPLATES: no rewrite rule can
-// name them (nothing here or in `op_from_kind` hands them to a template), and
-// their results are bit patterns the float rule set has no semantics for.
-//
-// Template-opacity is NOT fold-opacity, and the distinction is load-bearing:
-// `ConstantFold::apply` destructures any `ENode::Op` and reads `op.kind()`
-// (`math::algebra`) — it never consults `op_from_kind`. So every op registered
-// here folds, and each one needs its own answer to "does this fold agree with
-// what the backends emit?" `OpKind::fold_is_platform_specific` is where that
-// answer lives; being unnameable by a template guards nothing.
-//
-// `Shl`/`Shr` do keep `Const` shift operands, because extraction emits `Const`
-// leaves verbatim — so the emitter's immediate-only contract holds. The count's
-// RANGE is a separate matter, enforced where the `Const` narrows to an
-// immediate (`shift_immediate` in `program/lower.rs`) rather than assumed here.
-struct IntTrunc;
-impl Op for IntTrunc {
-    fn kind(&self) -> OpKind {
-        OpKind::TruncToInt
-    }
-}
-struct IntFromInt;
-impl Op for IntFromInt {
-    fn kind(&self) -> OpKind {
-        OpKind::IntToFloat
-    }
-}
-struct IntAdd;
-impl Op for IntAdd {
-    fn kind(&self) -> OpKind {
-        OpKind::IAdd
-    }
-}
-struct IntShl;
-impl Op for IntShl {
-    fn kind(&self) -> OpKind {
-        OpKind::Shl
-    }
-}
-struct IntShr;
-impl Op for IntShr {
-    fn kind(&self) -> OpKind {
-        OpKind::Shr
+        | OpKind::BitOr => false,
     }
 }
 
 /// Which ops an e-graph is allowed to *hold*, as opposed to which ops a
-/// rewrite template may *name* ([`op_from_kind`], always the smaller set).
+/// rewrite template may *name* ([`template_may_name`], always the smaller set).
 ///
 /// The two differ, and the difference is per-tier rather than global — which
 /// is the whole reason this is an argument. Mask and integer-domain ops are
 /// sound in a runtime-tier graph (built at bake time, after composition, where
 /// the derivative calculus has its full context) and unsound in a macro-tier
 /// one (expanded before composition, where a leaf's `DX` is not yet scaled by
-/// an enclosing warp). That was previously encoded in *which private helper a
-/// call site happened to call*, so nothing checked it and the two helpers had
-/// drifted apart on five op kinds besides. Naming the vocabulary makes the
-/// choice visible at each insertion, and wrong only by writing the wrong
-/// variant.
+/// an enclosing warp; the fonts' density-dependent AA ramp broke exactly this
+/// way when these ops were briefly global). That was previously encoded in
+/// *which private helper a call site happened to call*, so nothing checked it.
+/// Naming the vocabulary makes the choice visible at each insertion, and wrong
+/// only by writing the wrong variant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Vocabulary {
     /// What a rewrite template can name, plus the opaque `Gather`. The
     /// macro (`kernel!`) and `Dwrt` expansion tiers.
     Templates,
-    /// [`Self::Templates`] plus the mask and integer-domain ops above. The
-    /// runtime tier, which optimizes composed arenas at bake time.
+    /// [`Self::Templates`] plus the mask and integer-domain ops. The runtime
+    /// tier, which optimizes composed arenas at bake time.
     Runtime,
 }
 
 impl Vocabulary {
-    /// The static `Op` for `kind` in this vocabulary, or `None` if a graph
-    /// under it may not hold that op.
+    /// Whether a graph under this vocabulary may hold `kind`.
+    ///
+    /// The runtime tier's extras:
+    ///
+    /// - `&`/`|` on comparison masks are surface-language ops (every glyph
+    ///   winding kernel's Y-range gate is `(Y >= lo) & (Y < hi)`), so
+    ///   runtime-built arenas must be representable with them present.
+    /// - The packed cell-grid kernel's spine, clamp → `TruncToInt` → `Shl` →
+    ///   or-fold, builds a `u32` pixel per lane; the production frame kernel
+    ///   compiles with no CSE across its four channels unless these enter the
+    ///   e-graph.
+    ///
+    /// No rewrite rule targets any of them, but admission is not fold-opacity:
+    /// `ConstantFold` reads any `ENode::Op` or `ENode::Shift`, so every admitted
+    /// op folds and each needs its own answer to "does this fold agree with
+    /// what the backends emit?" `OpKind::fold_is_platform_specific` is where
+    /// that answer lives; being unnameable by a template guards nothing.
+    ///
+    /// `Shl`/`Shr` are held as `ENode::Shift`, whose count is a `ShiftCount`:
+    /// [`insert`](fn@super::insert) declines a shift whose count is not a
+    /// literal [`ShiftCount`](pixelflow_ir::ShiftCount), and extraction
+    /// writes the count back as the `Const` the emitter's immediate-only
+    /// contract needs. The emitter still checks the range where the `Const`
+    /// narrows to an immediate (`shift_immediate` in `program/lower.rs`), for
+    /// a term that reaches it without passing through a graph.
     #[must_use]
-    pub fn resolve(self, kind: OpKind) -> Option<&'static dyn Op> {
-        // Opaque in both: representable as structure (hash-consing CSE), never
-        // nameable by a template — `op_from_kind` returns `None` for it.
-        if kind == OpKind::Gather {
-            return Some(&Gather);
+    pub fn admits(self, kind: OpKind) -> bool {
+        let runtime_extra = self == Self::Runtime
+            && matches!(
+                kind,
+                OpKind::BitAnd
+                    | OpKind::BitOr
+                    | OpKind::TruncToInt
+                    | OpKind::IntToFloat
+                    | OpKind::IAdd
+                    | OpKind::Shl
+                    | OpKind::Shr
+            );
+        // Opaque in both: representable as structure (two gathers hash-cons
+        // into one e-class iff buffer identity and all three operands match),
+        // never nameable by a template.
+        kind == OpKind::Gather || runtime_extra || template_may_name(kind)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exact set of kinds a template may name, pinned: any change to
+    /// `template_may_name` or `Vocabulary::admits` fails here and has to be
+    /// decided. `OpKind::Tuple` is absent by design, since a node holds a
+    /// fixed arity.
+    const NAMEABLE: [OpKind; 36] = [
+        OpKind::Add,
+        OpKind::Sub,
+        OpKind::Mul,
+        OpKind::Div,
+        OpKind::Neg,
+        OpKind::Sqrt,
+        OpKind::Rsqrt,
+        OpKind::Abs,
+        OpKind::Min,
+        OpKind::Max,
+        OpKind::MulAdd,
+        OpKind::Recip,
+        OpKind::Floor,
+        OpKind::Ceil,
+        OpKind::Round,
+        OpKind::Sin,
+        OpKind::Cos,
+        OpKind::Tan,
+        OpKind::Asin,
+        OpKind::Acos,
+        OpKind::Atan,
+        OpKind::Atan2,
+        OpKind::Exp,
+        OpKind::Exp2,
+        OpKind::Ln,
+        OpKind::Log2,
+        OpKind::Log10,
+        OpKind::Pow,
+        OpKind::Lt,
+        OpKind::Le,
+        OpKind::Gt,
+        OpKind::Ge,
+        OpKind::Eq,
+        OpKind::Ne,
+        OpKind::If,
+        OpKind::Dwrt,
+    ];
+
+    const RUNTIME_ONLY: [OpKind; 7] = [
+        OpKind::TruncToInt,
+        OpKind::IntToFloat,
+        OpKind::IAdd,
+        OpKind::Shl,
+        OpKind::Shr,
+        OpKind::BitAnd,
+        OpKind::BitOr,
+    ];
+
+    fn frozen(vocabulary: Vocabulary) -> Vec<OpKind> {
+        let mut kinds = NAMEABLE.to_vec();
+        kinds.push(OpKind::Gather);
+        if vocabulary == Vocabulary::Runtime {
+            kinds.extend(RUNTIME_ONLY);
         }
-        if self == Self::Runtime {
-            match kind {
-                OpKind::BitAnd => return Some(&MaskAnd),
-                OpKind::BitOr => return Some(&MaskOr),
-                OpKind::TruncToInt => return Some(&IntTrunc),
-                OpKind::IntToFloat => return Some(&IntFromInt),
-                OpKind::IAdd => return Some(&IntAdd),
-                OpKind::Shl => return Some(&IntShl),
-                OpKind::Shr => return Some(&IntShr),
-                _ => {}
+        kinds
+    }
+
+    #[test]
+    fn a_template_names_what_it_always_named() {
+        for kind in OpKind::all() {
+            assert_eq!(
+                template_may_name(kind),
+                NAMEABLE.contains(&kind),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_vocabulary_admits_what_it_always_admitted() {
+        for vocabulary in [Vocabulary::Templates, Vocabulary::Runtime] {
+            let admitted = frozen(vocabulary);
+            for kind in OpKind::all() {
+                assert_eq!(
+                    vocabulary.admits(kind),
+                    admitted.contains(&kind),
+                    "{vocabulary:?} {kind:?}"
+                );
             }
         }
-        op_from_kind(kind)
+    }
+
+    /// A node holds its operands inline, so an operation without a fixed
+    /// arity is not one the graph can hold.
+    #[test]
+    fn every_admitted_operation_fits_an_inline_node() {
+        for vocabulary in [Vocabulary::Templates, Vocabulary::Runtime] {
+            for kind in OpKind::all().filter(|&kind| vocabulary.admits(kind)) {
+                assert!(
+                    (1..=crate::egraph::node::MAX_OPERANDS).contains(&kind.arity()),
+                    "{vocabulary:?} admits {kind:?}, arity {}",
+                    kind.arity()
+                );
+            }
+        }
     }
 }

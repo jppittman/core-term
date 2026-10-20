@@ -1,5 +1,5 @@
 //! Round 2 UNGUIDED anytime curves vs rule count, modes (i)/(ii)
-//! (`docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2, §5, §9 step 2).
+//! (`docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2, §5, §9 step 2).
 //!
 //! This is the pre-registration data: unguided-only curves at every |R|
 //! grid point of mode (i) (exact duplicates) and mode (ii) (mechanical
@@ -26,8 +26,8 @@ use clap::Parser;
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_search::egraph::{
-    APP_CHECKPOINT_GRID, AnytimeCurveOutput, Budget, CostModel, EGraph, Optimizer, Rewrite,
-    RuleSet, SaturationStop, config_for_node_count, run_anytime_curve,
+    APP_CHECKPOINT_GRID, AnytimeCurveOutput, Budget, CostModel, Limits, Optimizer, Rewrite,
+    RuleSet, Saturation, SaturationStop, config_for_node_count, run_anytime_curve,
 };
 use pixelflow_search::math::inflate::{RuleSetSpec, build_rule_set, rule_set_fingerprint};
 
@@ -42,9 +42,9 @@ fn apps_per_sweep_probe(
     arena: &ExprArena,
     root: ExprId,
     rules: Vec<Box<dyn Rewrite>>,
-    max_classes: usize,
+    max_minted: usize,
 ) -> usize {
-    let mut egraph = EGraph::with_rules(rules);
+    let mut egraph = Saturation::over(RuleSet::new(rules));
     pixelflow_search::egraph::insert(
         arena,
         root,
@@ -52,7 +52,11 @@ fn apps_per_sweep_probe(
         pixelflow_search::egraph::Vocabulary::Templates,
     )
     .expect("insert into e-graph");
-    let _ = egraph.saturate_budgeted(1, max_classes, None);
+    let _ = egraph.saturate_budgeted(Limits {
+        iterations: 1,
+        minted: max_minted,
+        applications: None,
+    });
     egraph.application_count() as usize
 }
 
@@ -120,7 +124,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "sweep_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -137,8 +141,10 @@ struct ExprCurve {
     /// mirrors `apps_at`) — divides `evals_at` into "raw matches enumerated
     /// per round" per §7.1.
     sweeps_at: Vec<usize>,
-    /// Cumulative rule-match attempts (`EGraph::total_evals`) at each grid
-    /// checkpoint — "raw matches enumerated" per §7.1; unguided has no
+    /// Cumulative rule-match attempts (`Saturation::total_evals`) at each grid
+    /// checkpoint — `apply` calls per §7.1, which exclude nodes outside a
+    /// rule's `Rewrite::root_shapes` (curves recorded before that counted
+    /// every node and do not compare directly); unguided has no
     /// scorer, so `evals_at[j] / apps_at[j]` stands in for a scored-
     /// candidate-per-application count.
     evals_at: Vec<usize>,
@@ -271,7 +277,7 @@ fn main() {
         let mut curves: Vec<ExprCurve> = Vec::with_capacity(sampled.len());
         for (i, (origin, name, arena, root)) in sampled.iter().enumerate() {
             let node_count = arena.len();
-            let class_cap = config_for_node_count(node_count).max_classes;
+            let class_cap = config_for_node_count(node_count).max_minted;
             // Every rule set needs its own fresh Vec<Box<dyn Rewrite>> — the
             // e-graph consumes it. Rebuilding per expression, per rule-set,
             // is the cost this binary pays for `build_rule_set`'s honesty
@@ -290,7 +296,7 @@ fn main() {
                 .cost(costs.clone())
                 .budget(Budget::Explicit {
                     iterations: sweep_ceiling,
-                    classes: class_cap,
+                    minted: class_cap,
                     applications: None,
                 })
                 .hard_ceiling(safety_timeout);
@@ -362,7 +368,7 @@ fn main() {
                  grid_exhausted={} sweep_ceiling={} | ended_at_apps: p25={:.0} median={:.0} \
                  p75={:.0} p95={:.0} max={:.0}",
                 count(SaturationStop::Quiesced),
-                count(SaturationStop::ClassCap),
+                count(SaturationStop::MintedCap),
                 count(SaturationStop::ApplicationBudget),
                 count(SaturationStop::IterationCeiling),
                 percentile(&apps, 0.25),

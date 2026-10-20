@@ -9,8 +9,8 @@ use std::time::Duration;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_search::egraph::{
-    EClassId, EGraph, ENode, Rewrite, RewriteAction, SaturationStop, all_rules,
-    saturate_with_full_budget,
+    EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes, RuleSet, Saturation,
+    SaturationStop, all_rules, saturate_with_full_budget,
 };
 
 const GENEROUS: Duration = Duration::from_secs(60);
@@ -34,8 +34,8 @@ fn busy_expression() -> (ExprArena, ExprId) {
     (a, root)
 }
 
-fn egraph_of(arena: &ExprArena, root: ExprId) -> EGraph {
-    let mut eg = EGraph::with_rules(all_rules());
+fn egraph_of(arena: &ExprArena, root: ExprId) -> Saturation {
+    let mut eg = Saturation::over(RuleSet::new(all_rules()));
     pixelflow_search::egraph::insert(
         arena,
         root,
@@ -52,7 +52,7 @@ fn class_cap_reports_class_cap_not_quiesced() {
     let mut eg = egraph_of(&arena, root);
     let cap = eg.num_classes() + 2;
     let result = saturate_with_full_budget(&mut eg, 100, cap, GENEROUS);
-    assert_eq!(result.stop, SaturationStop::ClassCap, "{result:?}");
+    assert_eq!(result.stop, SaturationStop::MintedCap, "{result:?}");
     assert!(
         result.classes_after <= cap,
         "budget scan must hold the cap: {result:?}"
@@ -85,7 +85,7 @@ fn busy_expression_under_production_cap_is_class_capped() {
     let (arena, root) = busy_expression();
     let mut eg = egraph_of(&arena, root);
     let result = saturate_with_full_budget(&mut eg, 100, 10_000, GENEROUS);
-    assert_eq!(result.stop, SaturationStop::ClassCap, "{result:?}");
+    assert_eq!(result.stop, SaturationStop::MintedCap, "{result:?}");
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn productive_but_class_capped_final_sweep_is_class_cap() {
         result.total_unions > 0,
         "repro needs a sweep that both truncated and committed unions: {result:?}"
     );
-    assert_eq!(result.stop, SaturationStop::ClassCap, "{result:?}");
+    assert_eq!(result.stop, SaturationStop::MintedCap, "{result:?}");
     assert!(!result.saturated, "{result:?}");
 }
 
@@ -132,6 +132,12 @@ struct SleepyRule;
 impl Rewrite for SleepyRule {
     fn name(&self) -> &str {
         "sleepy"
+    }
+
+    // The sleep must happen inside the scan, so `apply` has to be called on
+    // every node: this rule matches nothing, but the test needs it asked.
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::Any
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, _node: &ENode) -> Option<RewriteAction> {
@@ -149,7 +155,7 @@ impl Rewrite for SleepyRule {
 fn deadline_elapsing_inside_a_rule_apply_is_timeout() {
     let mut a = ExprArena::new();
     let root = a.push_var(0);
-    let mut eg = EGraph::with_rules(vec![Box::new(SleepyRule)]);
+    let mut eg = Saturation::over(RuleSet::new(vec![Box::new(SleepyRule)]));
     pixelflow_search::egraph::insert(
         &a,
         root,

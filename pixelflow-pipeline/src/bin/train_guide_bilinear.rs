@@ -1,6 +1,6 @@
 //! Cold-start supervised training of the **bilinear** saturation Guide, on
 //! the same strict-v1 labels and the same recipe `train_guide` used for the
-//! additive one (`docs/plans/2026-09-02-bilinear-guide-registration.md` §9).
+//! additive one (`docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §9).
 //!
 //! # The whole point: one difference, and it is the functional form
 //!
@@ -492,7 +492,7 @@ fn write_md_report(path: &str, report: &Report) {
     let _ = writeln!(
         md,
         "Model class: **{}**. Registration: \
-         `docs/plans/2026-09-02-bilinear-guide-registration.md`.\n",
+         `docs/archive/plans/2026-09-02-bilinear-guide-registration.md`.\n",
         report.model_class
     );
     let _ = writeln!(

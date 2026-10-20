@@ -8,10 +8,11 @@
   earlier phase owns. Other senses of the word: a saturation phase (a subset
   of one rule set), and plan or research phases (A–E, "Phase 3").
 - **Follows:** a count, reservation or size handed to an earlier stage by a
-  later one's needs means a phase is missing between them. Codegen's phases
-  are IR → instruction selection (instructions over values) → register
+  later one's needs means a phase is missing between them. The CPU backend's
+  phases are IR → instruction selection (instructions over values) → register
   allocation (and frame layout, and its own spill code) → assembly (labels,
-  sections) → encoding. The same rule applies upstream: an ordering stated
+  sections) → encoding; it alone allocates registers, and each backend is its
+  own module with its own chain (note §3). The same rule applies upstream: an ordering stated
   as a type removes the guard that defends it (the phase-typed arena, see
   Legality).
 - **Lives:** `pixelflow-codegen/src/pipeline.rs` (`compile`: the chain's
@@ -25,8 +26,9 @@
   `Output` and `run(self, input) -> Result<Output, CompileError>`, carrying
   its own parameters (shape, lanes, backend) as fields. Stages compose with
   `then`, Kleisli composition in `Result`: associative, and the first error
-  ends the chain. The chain is `Legalize → Lower → Nest → Own → Layout →
-  Select → Allocate → Assemble`, and each stage's output type is the next's
+  ends the chain. The CPU module's chain is `Nest → Own → Layout → Select →
+  Allocate → Assemble`, after `Legalize → Lower`; a GPU backend is another
+  module with its own chain (note §3). Each stage's output type is the next's
   input (JP, 2026-10-12: "I want all the passes pipelined/monadic/laid
   neatly", "I want a pass trait").
 - **Is not:** a pass manager. There is no `dyn Pass`, registry or list of
@@ -44,7 +46,7 @@
   `pipeline.rs` (`Legalize`, `Lower`); `program/{scopes,ownership,layout}.rs`
   (`Nest`, `Own`, `Layout`); `emit/select.rs`, `emit/regalloc/local.rs`,
   `emit/mod.rs` (`Select`, `Allocate`, `Assemble`);
-  docs/plans/2026-10-08-selection-is-a-phase.md §0.14.
+  docs/archive/plans/2026-10-08-selection-is-a-phase.md §0.14.
 
 ### Lowering
 
@@ -56,7 +58,8 @@
   algebra.
 - **Follows:** the e-graph reasons about the monoidal form, and the lowered
   form may fuse `acc + a[i]*b[i]` into an FMA. `arena_to_schedule` reads the
-  arena's variance once: the lane bit chooses between gather and broadcast,
+  arena's variance once, and the variance chooses the realization of a
+  discrete-kernel evaluation (broadcast, contiguous load or gather; note §2),
   and every `Def` carries its node's variance to scoping, which places by it.
   Nothing recomputes variance on the schedule.
 - **Lives:** `pixelflow-codegen/src/program/lower.rs` (`arena_to_schedule`);
@@ -72,7 +75,7 @@
   that has" a previous iteration. Other senses: the Halide sense, a form
   plus placement ("an extraction is no longer a form; it is a form **plus a
   schedule**"); and the loop nest ("the lattice is part of the schedule",
-  and schedule loops are folds).
+  and the lattice's traversal, which is not folds the kernel is wrapped in: kernels-evaluate-kernels §3).
 - **Is not:** an annotation on a previous schedule. Not sorted by demand
   (09-07, retracted 09-08). Not recovered by a search after flattening.
 - **Follows:** the schedule is never reordered: values stay in the order
@@ -118,12 +121,13 @@
   decisions"). Not a separate hoist planner ("`plan_collapse_hoist` is
   placement, and placement exists").
 - **Follows:** eviction splits a life. The frame is laid out after every
-  placement is known. Today `place_roots` always takes the outer bound and
-  reads no demand, which lifted each piece's row work above its band select
-  (79% of executed instructions). Placement that reads demand is D1.
+  placement is known. `place_roots` (deleted in the selection series) took
+  the outer bound and read no demand, which lifted each piece's row work above its band select
+  (79% of executed instructions). Placement reads no demand: demand weighting
+  is deleted (note §1).
 - **Lives:** `pixelflow-codegen/src/emit/regalloc/mod.rs` (`Placement`, `Span`,
-  `Point`, `Where`), `pixelflow-codegen/src/program/scopes.rs`
-  (`place_roots`); a-surviving-reduce-is-a-loop §4b; an-integral-is-a-fold
+  `Point`, `Where`), `pixelflow-codegen/src/program/scopes.rs` (`Nest`;
+  `place_roots` is deleted); a-surviving-reduce-is-a-loop §4b; an-integral-is-a-fold
   §4.
 
 ### Root. Homonym
@@ -146,8 +150,8 @@
   from outside in turn, and it reads nothing it does not define or name
   there — which `Own` asserts of every scope (`assert_closed`).
 - **Lives:** `ScopeFold::outer` (`pixelflow-codegen/src/program/mod.rs`),
-  `place_roots` and `assert_closed` (`program/scopes.rs`), `FoldReads`
-  (`program/guards.rs`). Selection has no root or park of its own: a value
+  `Nest` and `assert_closed` (`program/scopes.rs`; `place_roots` is deleted), `FoldReads`
+  (`program/ownership.rs`). Selection has no root or park of its own: a value
   live into a loop's head is carried in a register or stored and dropped
   there (`plan_carries`, `emit/regalloc/local.rs`). The `roots` fields were
   deleted with ownership's "no arm owns a root" pin, their one reader.
@@ -191,11 +195,11 @@
   read only inside the arm's block, which one branch skips whole. Its life,
   its slot's lease and its store end inside the block, a loop's exit store
   included, so the join after the arm never holds it. The `If` reads the
-  skipped arm's result only through a bitwise blend that takes no lane from
-  it (selection §0.12).
+  skipped arm's result only through the select, which takes no lane from
+  it (selection §0.12; note §1).
 - **Lives:** deleted with the legacy allocator (`NestAllocation::parks`,
-  `Allocation::park`); `place_roots` (`program/scopes.rs`) removes a root
-  from the folds that read it and names it in their `outer`;
+  `Allocation::park`); `Nest` (`program/scopes.rs`; `place_roots` is deleted)
+  removes a root from the folds that read it and names it in their `outer`;
   a-surviving-reduce-is-a-loop §3a (JP: "Register
   allocation is the job of the register allocator"), R1; demand §2 "Parks";
   one-conditional §4.
@@ -281,13 +285,14 @@
   deleted). Not reloaded at every read (`MovLoadPtr` per read is deleted).
   Not a vector. Not allocated outside the allocator. JP: "it should know
   what a pointer register is, and our assembler should require one."
-- **Follows:** `Gather`, `Broadcast` and `Uniform` take the base as an
+- **Follows:** `Gather` and `Broadcast` (the backend's realizations of a
+  discrete-kernel evaluation, note §2) and `Uniform` take the base as an
   operand. Selection types the base as `Value<Pointer>`, so a wrong class
   is a type error, never a silently wrong address. Loads fell from 45 per batch to 3 per call. Open: fold binders
   as integers in GPRs, the pool anchor as a value, and callee-saved GPRs.
 - **Lives:** `ScheduledOp::Context(u16)` (`pixelflow-codegen/src/program/mod.rs`),
   `emit::Pointer`, the general file's `Members::general` (`emit/register_file.rs`);
-  `docs/plans/2026-09-22-a-pointer-is-a-value.md`.
+  `docs/archive/plans/2026-09-22-a-pointer-is-a-value.md`.
 
 ### Constant pool (constants in codegen)
 
@@ -337,7 +342,7 @@
   minted only by `Pool::mint` and `Leases::new`; `In`, `Out` and `InOut`, the
   borrows an instruction's operand fields hold; `RegisterFile`
   (`emit/register_file.rs`), each backend's `IsaBackend::FILE`. Escape hatches:
-  `docs/plans/2026-09-01-register-allocation-escape-hatches.md`.
+  `docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md`.
 
 ### Temp
 
@@ -377,8 +382,10 @@
 ### Slot. Homonym
 
 - **Is:** a position in a table someone else owns. The senses:
-  1. **IR table slot**: `UniformId`/`BufferId`, "Slot index into one arena's
+  1. **IR table slot**: `UniformId`, "Slot index into one arena's
      uniform table. Not an identity". The link chooses each slot's offset.
+     A discrete kernel's table is not an IR slot: the IR names the kernel,
+     and the table is the backend's (note §2).
   2. **Binder slot**: the k-th reduction index.
   3. **Frame slot**: a stack location for a spill, a park, or a fold's
      accumulator or binder.
@@ -436,16 +443,17 @@
   An arm owns a root when it owns every scope that reads it (see Root).
 - **Lives:** `pixelflow-codegen/src/program/ownership.rs` (#1311; `Own`, the
   backward pass), `program/layout.rs` (#1312, #1313; `Layout`, `Flow::of`: an
-  `If`'s arms go immediately before it), `program/guards.rs` (`FoldReads`);
-  CLAUDE.md "`If` contains an if".
+  `If`'s arms go immediately before it);
+  CLAUDE.md "`If` guards its arms".
 
 ### Guard. Homonym
 
 - **Is:** five senses:
   1. A **guard clause**, the strongest fold.
-  2. An **`If` guard**: the branch that skips an arm's owned block when a
-     batch's mask is uniform (an `ArmBlock` of the scope's `Flow`). Every arm
-     with work of its own has one; the `If` is a blend either way.
+  2. An **`If` guard**: the branch that runs an arm's owned block when some
+     lane takes it: `if any(m)` before the true arm's block, `if !all(m)`
+     before the false arm's (an `ArmBlock` of the scope's `Flow`; note §1). An
+     arm that owns nothing has none, and the `If` ends in one select.
   3. A **runtime guard**: a check "defending what a type should have made
      unrepresentable" (`retired_axis` in `emit::compile`).
   4. The retired IR node `ExprNode::Guard { mask, on, off }`, and D7's open
@@ -460,7 +468,7 @@
   it. A skipped arm leaves nothing anyone reads (see Park). A runtime guard
   is a symptom: fold it into a type wherever the wrong value would be
   silently representable.
-- **Lives:** `pixelflow-codegen/src/program/{guards,layout}.rs`, `Flow`
+- **Lives:** `pixelflow-codegen/src/program/layout.rs`, `Flow`
   and `ArmBlock` (`program/mod.rs`); `retired_axis` checked in `compile`
   (`pixelflow-codegen/src/pipeline.rs`); `FastMathGuard`
   (`pixelflow-core/src/fastmath.rs`); emit-should-just-emit status
@@ -471,7 +479,7 @@
 - **Is:** a block whose last instruction may branch back to its own label. A
   fold that survives optimization is a loop.
 - **Is not:** an instruction; a scaffold of verbs around a body. Not a
-  different kind of thing from the lattice's loops, which are folds. Not
+  different kind of thing from a fold's loop. The lattice's traversal is not a fold (kernels-evaluate-kernels §3). Not
   free: allocation across the back edge, the loop-carried accumulator, and
   lost CSE across copies are its costs.
 - **Follows:** the header is the block's label. The binder and accumulator are
@@ -479,11 +487,11 @@
   instructions. Nothing about a loop needs reserved registers. A fold inside
   a fold is a loop inside a loop. The lane fold is a loop executed by lanes,
   with no counter and no back edge.
-- **Lives:** decided in `docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md`
+- **Lives:** decided in `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md`
   (R1: "the accumulate is an ordinary `Binary` def … the allocator learns
   nothing about folds"); selected as blocks by `Selector::fold`
   (`pixelflow-codegen/src/emit/select.rs`, B3 of
-  `docs/plans/2026-10-08-selection-is-a-phase.md`), whose
+  `docs/archive/plans/2026-10-08-selection-is-a-phase.md`), whose
   `Loop::trips` is the body's runs per call. The verbs that once emitted it
   inline (`Reduce` arm, `Scratch::REDUCE_TEMPS`) were deleted with the legacy
   driver (D1).
@@ -501,7 +509,7 @@
   is nothing to search for."
 - **Lives:** `Block`, `Function` and `build::Builder`
   (`pixelflow-codegen/src/emit/{mod,build}.rs`), built by B1 of
-  `docs/plans/2026-10-08-selection-is-a-phase.md`.
+  `docs/archive/plans/2026-10-08-selection-is-a-phase.md`.
   `pixelflow-codegen/src/program/layout.rs`'s blocks have no label,
   parameters or terminating instruction; selection makes the `Block`s from
   them (D3).
@@ -533,7 +541,7 @@
   (`Function::labels`). Selection mints a block's label with the block, and
   the constant pool's with the pool. Nothing is derived from the id of what
   it names. History: R0 of
-  `docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md` made a label an
+  `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md` made a label an
   item and its reference an operand; "A label should be keyed by the node it
   names" in the same plan removed the site-to-label map by keying on the
   node — minting the label with the block removes it without the label
@@ -553,15 +561,20 @@
 - **Follows:** each phase reads the operand kinds it owns — the allocator
   binds registers and frame slots, the assembler resolves labels, the encoder
   writes all of them. A block's successors are the label operands of its last
-  instruction. `pin_shift_counts`, which re-pins a shift count's extraction
-  choice to a `Const`, is the symptom of a missing operand-kind type.
+  instruction. The e-graph keeps a shift's count out of its operands (it is
+  a `ShiftCount` parameter of `ENode::Shift`), so nothing there re-pins it
+  after extraction; codegen's operand kinds still have no type for an
+  immediate, and `shift_immediate` checks the `Const` at lowering.
 - **Lives:** `Operand`, `Access` and `operands` (`emit/mod.rs`), built by B1
-  of `docs/plans/2026-10-08-selection-is-a-phase.md`. The schedule still has the
+  of `docs/archive/plans/2026-10-08-selection-is-a-phase.md`. The schedule still has the
   split below: `program::operands()` yields only vector reads, and the base
   comes from a separate `pointer_operand()` (both in
   `pixelflow-codegen/src/program/mod.rs`); selection joins them
-  (`all_operands`). `pin_shift_counts` lives in
-  `pixelflow-search/src/egraph/extract.rs`.
+  (`all_operands`). A shift's count is `ShiftCount` in
+  `pixelflow-ir/src/shift.rs`, the one definition of a valid count that the
+  constant folder, the e-graph's `ENode::Shift` (`pixelflow-search/src/egraph/node.rs`)
+  and `shift_immediate` all ask; the e-graph's direction tag and its reading of
+  the arena's spelling are in `pixelflow-search/src/egraph/shift.rs`.
 
 ### Instruction
 
@@ -576,8 +589,8 @@
   over a `Stage` and with named fields typed by `Class` (`emit/x86_64.rs`);
   `Inst<S>` in `emit/avx2.rs` and `emit/avx512.rs`, the VEX and EVEX
   instructions, over the same vocabulary, and `avx2::Op<S>`, the instruction
-  AVX2's selection puts in a block; `Inst` in `emit/aarch64.rs`. One encoder
-  serves the allocator's `Bound` stage, through `Placed` (`emit/mod.rs`).
+  AVX2's selection puts in a block; `Inst` in `emit/aarch64.rs`. The encoders are
+  written for the allocator's `Bound` stage, the only one with registers placed.
   ("Instructions: bytes written inline by ~236 functions, not values",
   denotational-diagnosis, described the legacy `LegacyBackend` verbs, deleted
   at D1.)
@@ -590,10 +603,10 @@
   discriminants are the manual's values).
 - **Is not:** something that returns a position. Not hand-picked mnemonics
   over a private `jcc(code, cc: u8)`.
-- **Follows:** a loop's back edge is `Gp::Jmp { to: top }`. Arm skips are one
-  verb, `IsaBackend::branch(.., Test, Edges)`, "because they differed only in
-  which uniform mask lets an arm go, which is what `IfArm` already names". A
-  fold's trip test reuses `IfArm::False`'s test.
+- **Follows:** a loop's back edge is `Gp::Jmp { to: top }`. Arm guards are one
+  verb, `IsaBackend::branch(.., Test, Edges)`, with one test per arm: `any(m)`
+  for the true arm, `!all(m)` for the false arm (note §1). A fold's trip test
+  reuses `IfArm::False`'s test.
 - **Lives:** `pixelflow-codegen/src/emit/{x86_64,aarch64}.rs` (the
   instructions), `IsaBackend::{branch, jump}` (`emit/mod.rs`, implemented in
   `emit/{avx2,avx512,aarch64}.rs`), `IfArm` (`program/mod.rs`);
@@ -637,7 +650,7 @@
   imports nothing from the crate (`scripts/check_emit_boundary.py` rule A) and
   is handed the encoder as a closure, so it names no instruction type. It is
   called once, by the `Assemble` pass, on the program the allocator builds.
-  `docs/designs/assembler-as-functor.md`.
+  `docs/archive/designs/assembler-as-functor.md`.
 
 ### Emitter
 
@@ -673,7 +686,8 @@
 - **Is:** "The ISA tier is a property of the process, not of the build: a
   fact the CPU reports, read once." `Isa` has three inhabitants: `Avx2`
   (AVX2+FMA, the floor), `Avx512` (needs avx512f+dq) and `Neon`. The backend
-  is a function of the tier, and the width is `Isa::vector_bytes`.
+  is a function of the tier, and the width is that backend's register file
+  (`B::FILE.vector_bytes()`), read publicly through `jit_vector_bytes()`.
 - **Is not:** a build flag (`RUSTFLAGS`/`target-cpu` change nothing). Not
   SSE2: "It was the default only because the build flag was unset". Not a
   ladder of fallbacks: a host below the floor is refused, naming the missing

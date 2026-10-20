@@ -15,7 +15,7 @@
 //! 4. Assert the baked value matches scalar `f32` within epsilon
 //!
 //! A kernel's parameters are its uniforms (§1.4 of
-//! docs/plans/2026-09-25-the-language-is-kernel.md), never constants folded
+//! docs/language/2026-09-25-the-language-is-kernel.md), never constants folded
 //! into it, so a property with parameters (`|c: f32| X * Y + c`) is one
 //! compiled program, and its random parameters fuzz that program's
 //! arguments, not the rewrites a particular constant would enable. Before,

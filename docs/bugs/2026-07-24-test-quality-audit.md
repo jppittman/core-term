@@ -83,7 +83,7 @@ test-only public API (see below).
   boundary cases the existing tests check (`backoff == max` vs `> max`, the
   attempt=0 case) require observing a specific *unstarted* backoff attempt,
   which isn't reachable without racing a real sleep/timeout through the
-  public surface. Left as-is per docs/STYLE.md's Flexibility clause — this
+  public surface. Left as-is per docs/process/STYLE.md's Flexibility clause — this
   is timing-sensitive internal arithmetic where a private-function unit test
   is more honest than a flaky public-API timing test would be.
 - **`mouse.rs`/`key_translator.rs`** (core-term): both construct

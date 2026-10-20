@@ -174,8 +174,8 @@ fn a_reduce_runs_inside_the_lattices_folds() {
 }
 
 /// `if x < y { x * x } else { y * y }`: an `If` whose mask varies by lane
-/// in some batches and is uniform in others, so both the blend and the
-/// guarded branch execute.
+/// in some batches and is uniform in others, so both a batch that skips an
+/// arm and a batch that runs both execute.
 #[test]
 fn an_if_blends_and_branches() {
     let mut a = ExprArena::new();
@@ -193,8 +193,8 @@ fn an_if_blends_and_branches() {
 /// `if x < edge { x * x + y } else { 3 * x - y }`, both arms with work of
 /// their own, with `edge` in the second batch of a row: the first batch is
 /// uniformly true, the second is mixed, and the remainder is uniformly false
-/// at every lane width. An `If` is a blend whose arms are blocks, and each of
-/// the three runs it differently.
+/// at every lane width. An `If` is a select over two arms that are blocks, and
+/// each of the three runs a different set of them.
 #[test]
 fn an_if_with_work_in_both_arms_is_right_on_every_kind_of_batch() {
     let lanes = jit_vector_bytes() / core::mem::size_of::<f32>();
@@ -220,10 +220,10 @@ fn an_if_with_work_in_both_arms_is_right_on_every_kind_of_batch() {
     );
 }
 
-/// `if x < 14 { sin(x) * y } else { exp(y / 8) + sqrt(x) }`: both arms are
-/// worth a branch. A batch whose mask is uniform runs the one arm, and a batch
-/// whose mask varies runs both and blends them, so the three ways through an
-/// `If` all execute, a column of them at a time.
+/// `if x < 14 { sin(x) * y } else { exp(y / 8) + sqrt(x) }`: both arms own
+/// work of their own, so each has a guard. A batch whose mask is uniform runs
+/// the one arm it reaches, and a batch whose mask varies runs both and selects,
+/// so the three ways through an `If` all execute, a column of them at a time.
 #[test]
 fn a_guarded_if_runs_the_arm_that_ran() {
     let mut a = ExprArena::new();

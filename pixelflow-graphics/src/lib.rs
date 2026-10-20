@@ -65,6 +65,8 @@
 pub mod fonts;
 pub mod render;
 pub mod scene3d;
+#[cfg(test)]
+mod test_support;
 
 // Re-export fonts (user-facing types only)
 pub use fonts::{CachedGlyph, CachedText, Font, GlyphCache};

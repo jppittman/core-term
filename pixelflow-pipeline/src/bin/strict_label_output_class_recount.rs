@@ -148,23 +148,37 @@ struct Report {
 fn render_chosen(eg: &EGraph, choices: &[Option<usize>], class: EClassId) -> String {
     let c = eg.find(class);
     let idx = choices[c.index()].unwrap_or_else(|| panic!("class e{} has no choice", c.index()));
-    match &eg.nodes(c)[idx] {
+    match eg
+        .nodes(c)
+        .nth(idx)
+        .expect("a choice indexes its class's e-nodes")
+    {
         ENode::Var(v) => format!("v{v}"),
         ENode::Const(bits) => format!("{}", f32::from_bits(*bits)),
         ENode::Buffer(_) => "buf".to_string(),
         ENode::Uniform(_) => "uniform".to_string(),
         ENode::Param(i) => format!("p{i}"),
-        ENode::Ref { key, .. } => format!("unit{:016x}", key.bits()),
+        ENode::Ref { key } => format!("unit{:016x}", key.bits()),
         ENode::Op { op, children } => {
             let kids: Vec<String> = children
                 .iter()
                 .map(|&k| render_chosen(eg, choices, k))
                 .collect();
-            format!("{:?}({})", op.kind(), kids.join(", "))
+            format!("{op:?}({})", kids.join(", "))
         }
         ENode::Reduce { fold, body } => {
             format!("Reduce[{fold}]({})", render_chosen(eg, choices, *body))
         }
+        ENode::Shift {
+            direction,
+            count,
+            operand,
+        } => format!(
+            "{:?}({}, {})",
+            direction.op(),
+            render_chosen(eg, choices, *operand),
+            count.literal()
+        ),
     }
 }
 
@@ -185,8 +199,13 @@ fn chosen_path(out: &AnytimeCurveOutput) -> HashMap<EClassId, ENodeId> {
                 c.index()
             )
         });
-        chosen.insert(c, eg.tags(c)[idx]);
-        stack.extend(eg.nodes(c)[idx].children());
+        let (node, tag) = eg
+            .nodes(c)
+            .zip(eg.tags(c))
+            .nth(idx)
+            .expect("a choice indexes its class's e-nodes");
+        chosen.insert(c, tag);
+        stack.extend(node.children());
     }
     chosen
 }
@@ -195,7 +214,7 @@ fn chosen_path(out: &AnytimeCurveOutput) -> HashMap<EClassId, ENodeId> {
 ///
 /// Keyed by [`RuleId`], never by a position in `all_rules()`: a same-length
 /// reorder repoints every positional key silently
-/// (docs/plans/2026-09-02-phase3-forward-port.md §2.2).
+/// (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2).
 fn rule_name(rules: &RuleSet, id: RuleId) -> String {
     rules
         .index_of(id)
@@ -205,20 +224,15 @@ fn rule_name(rules: &RuleSet, id: RuleId) -> String {
 
 /// The [`RuleId`] a recorded application carries, or a loud failure.
 fn rule_of(rec: &pixelflow_search::egraph::ApplicationRecord) -> RuleId {
-    rec.rule.unwrap_or_else(|| {
-        panic!(
-            "strict_label_output_class_recount: an application carries no RuleId — the graph \
-             was built without rule ids, and every table here is keyed by identity"
-        )
-    })
+    rec.rule
 }
 
 fn origin_label(eg: &EGraph, rules: &RuleSet, tag: ENodeId) -> String {
-    match eg.provenance().origin(tag) {
+    match eg.journal().origin(tag) {
         Some(Origin::Seed) => "seed".to_string(),
         Some(Origin::Rule(app)) => {
             let rec = eg
-                .provenance()
+                .journal()
                 .application(app)
                 .unwrap_or_else(|| panic!("no record for {app:?}"));
             rule_name(rules, rule_of(rec))
@@ -273,7 +287,7 @@ fn tally_expression(
     by_rule: &mut BTreeMap<RuleId, RuleTally>,
 ) -> Option<PythagoreanRow> {
     let eg = &out.egraph;
-    let prov = eg.provenance();
+    let prov = eg.journal();
     let labels = labels_of(out);
     let path = chosen_path(out);
 
@@ -351,12 +365,8 @@ fn tally_expression(
                 chosen_origin_in_output_class: BTreeSet::new(),
                 extracted: render_chosen(eg, &out.extraction.choices, out.root),
                 const_one_on_path: path.iter().any(|(c, tag)| {
-                    let i = eg
-                        .tags(*c)
-                        .iter()
-                        .position(|t| t == tag)
-                        .expect("tag in class");
-                    matches!(eg.nodes(*c)[i], ENode::Const(b) if b == 1.0_f32.to_bits())
+                    let i = eg.tags(*c).position(|t| t == *tag).expect("tag in class");
+                    matches!(eg.nodes(*c).nth(i), Some(&ENode::Const(b)) if b == 1.0_f32.to_bits())
                 }),
                 strict_credited_rules: BTreeMap::new(),
             });
@@ -445,7 +455,7 @@ fn main() {
     let started = Instant::now();
 
     for (i, (name, arena, root)) in selected.iter().enumerate() {
-        let class_cap = config_for_node_count(arena.len()).max_classes;
+        let class_cap = config_for_node_count(arena.len()).max_minted;
         let t0 = Instant::now();
         let mut optimizer = Optimizer::production()
             .cost(costs.clone())
@@ -455,7 +465,7 @@ fn main() {
             .observe(Some(Box::new(KeepJournal)))
             .budget(Budget::Explicit {
                 iterations: SWEEP_SAFETY_CEILING,
-                classes: class_cap,
+                minted: class_cap,
                 applications: None,
             })
             .hard_ceiling(SAFETY_TIMEOUT);

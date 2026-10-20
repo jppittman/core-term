@@ -1,6 +1,6 @@
 //! A program too big for one e-graph compiles, a unit at a time.
 //!
-//! docs/plans/2026-09-25-the-language-is-kernel.md §4, O1: Noto's ASCII
+//! docs/language/2026-09-25-the-language-is-kernel.md §4, O1: Noto's ASCII
 //! inlined is 169,263 classes before any rule fires, over the e-graph's hard
 //! class limit, so its saturation stops at once and the whole font is
 //! emitted as written. Each glyph is a *unit* (`Kernel::by_ref`): saturated and extracted
@@ -19,13 +19,13 @@
 
 use pixelflow_core::{Kernel, Lattice, Manifold, Uniform};
 use pixelflow_ir::OpKind;
-use pixelflow_search::egraph::{EGraph, HARD_CLASS_LIMIT, Vocabulary, insert};
+use pixelflow_search::egraph::{EGraph, HARD_MINTED_LIMIT, Vocabulary, insert};
 
 /// How many units the program holds.
 const UNITS: usize = 64;
 
 /// Pairs of redundant negations each unit is padded with: enough that the
-/// units inlined pass [`HARD_CLASS_LIMIT`] (64 units of about 1,700 nodes),
+/// units inlined pass [`HARD_MINTED_LIMIT`] (64 units of about 1,700 nodes),
 /// and all of it gone after one rule and congruence, so each unit saturates
 /// in two rounds and the linked program is small enough to emit. (A chain of
 /// `+ 0` does not: associativity and commutativity grow it to the class cap,
@@ -131,7 +131,7 @@ fn a_program_past_the_class_limit_compiles_unit_by_unit() {
     let _root_class = insert(&inlined, inlined_root, &mut graph, Vocabulary::Runtime)
         .expect("the inlined program inserts");
     assert!(
-        graph.num_classes() > HARD_CLASS_LIMIT,
+        graph.num_classes() > HARD_MINTED_LIMIT,
         "the fixture must be past the limit inlined: {} classes",
         graph.num_classes()
     );

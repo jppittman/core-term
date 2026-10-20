@@ -25,7 +25,7 @@
 //! The generator is the same dependency-free pairwise routine used by the
 //! other two POCs, duplicated per the workspace's minimal-dependency policy.
 
-use crate::egraph::{EGraph, ENode, saturate_with_budget};
+use crate::egraph::{EGraph, ENode, RuleSet, Saturation, extract_dag, saturate_with_budget};
 use crate::math::all_rules;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
@@ -101,6 +101,17 @@ fn pairwise(level_counts: &[usize]) -> Vec<Vec<usize>> {
 // E-graph plumbing (mirrors the harness in `math::tests`).
 // ============================================================================
 
+/// `kind`, once it is known to be an op a rewrite template may name: the
+/// harness covers what the rule set can rewrite, and a kind outside it is a
+/// generator bug to hear about.
+fn named_op(kind: OpKind) -> OpKind {
+    assert!(
+        crate::egraph::ops::template_may_name(kind),
+        "{kind:?} is not an op a rewrite template may name"
+    );
+    kind
+}
+
 fn expr_to_egraph(arena: &ExprArena, id: ExprId, egraph: &mut EGraph) -> crate::egraph::EClassId {
     match arena.node(id) {
         ExprNode::Var(idx) => egraph.add(ENode::Var(idx)),
@@ -110,30 +121,18 @@ fn expr_to_egraph(arena: &ExprArena, id: ExprId, egraph: &mut EGraph) -> crate::
         ExprNode::Write { .. } => panic!("a Write reached the pict rewrite tests"),
         ExprNode::Unary(kind, a) => {
             let ca = expr_to_egraph(arena, a, egraph);
-            let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op {
-                op,
-                children: vec![ca],
-            })
+            egraph.add(ENode::apply(named_op(kind), &[ca]))
         }
         ExprNode::Binary(kind, a, b) => {
             let ca = expr_to_egraph(arena, a, egraph);
             let cb = expr_to_egraph(arena, b, egraph);
-            let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op {
-                op,
-                children: vec![ca, cb],
-            })
+            egraph.add(ENode::apply(named_op(kind), &[ca, cb]))
         }
         ExprNode::Ternary(kind, a, b, c) => {
             let ca = expr_to_egraph(arena, a, egraph);
             let cb = expr_to_egraph(arena, b, egraph);
             let cc = expr_to_egraph(arena, c, egraph);
-            let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op {
-                op,
-                children: vec![ca, cb, cc],
-            })
+            egraph.add(ENode::apply(named_op(kind), &[ca, cb, cc]))
         }
         ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) | ExprNode::Nary(..) => {
             panic!("unsupported node in rewrite POC")
@@ -271,14 +270,23 @@ fn build_shape(a: &mut ExprArena, shape: usize, konst: f32) -> ExprId {
     }
 }
 
-fn build_expr(
-    a: &mut ExprArena,
+/// One row of the covering array, resolved to the ops and shapes it names.
+struct Recipe {
     outer: OpKind,
     wrapper: Option<OpKind>,
     left: usize,
     right: usize,
     konst: f32,
-) -> ExprId {
+}
+
+fn build_expr(a: &mut ExprArena, recipe: &Recipe) -> ExprId {
+    let Recipe {
+        outer,
+        wrapper,
+        left,
+        right,
+        konst,
+    } = *recipe;
     let l = build_shape(a, left, konst);
     let r = build_shape(a, right, konst);
     let inner = a.push_binary(outer, l, r);
@@ -366,7 +374,7 @@ fn pict_rewrite_rules_preserve_semantics() {
     let num_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let chunk_size = (rows.len() + num_threads - 1) / num_threads;
+    let chunk_size = rows.len().div_ceil(num_threads);
 
     let mut handles = Vec::new();
     for chunk in rows.chunks(chunk_size) {
@@ -384,20 +392,28 @@ fn pict_rewrite_rules_preserve_semantics() {
                 let konst = CONSTS[row[4]];
 
         let mut arena = ExprArena::new();
-        let root = build_expr(&mut arena, outer, wrapper, left, right, konst);
+        let recipe = Recipe {
+            outer,
+            wrapper,
+            left,
+            right,
+            konst,
+        };
+        let root = build_expr(&mut arena, &recipe);
         let orig_str = arena.display(root).to_string();
 
         // Optimize the way the compiler does: build e-graph, saturate once,
         // then extract under several cost models — each pulls out a different
         // rewritten form from the same saturated graph.
-        let mut eg = EGraph::with_rules(all_rules());
+        let mut eg = Saturation::over(RuleSet::new(all_rules()));
         let root_class = expr_to_egraph(&arena, root, &mut eg);
         let _ = saturate_with_budget(&mut eg, 25);
         let canon_root = eg.find(root_class);
 
         for (model_name, costs) in adversarial_cost_models() {
-            let (opt_arena, opt_root, _cost) =
-                crate::egraph::extract::extract(&eg, canon_root, &costs);
+            let dag = extract_dag(&eg, canon_root, &costs);
+            let (opt_arena, opt_root) =
+                dag.to_arena(&eg);
             let opt_str = opt_arena.display(opt_root).to_string();
             if opt_str != orig_str {
                 changed += 1;

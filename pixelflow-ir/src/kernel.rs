@@ -30,6 +30,7 @@ use crate::expr::{
 use crate::fold::{Binder, Chain, Fold, Monoid, Placeholder};
 use crate::kind::OpKind;
 use crate::library::{self, Terms};
+use crate::shift::ShiftCount;
 
 /// One bit per placeholder index, set while that index is claimed by a binder
 /// under construction. Claims are taken and released in any order, so this is a
@@ -154,7 +155,7 @@ struct KernelData {
     /// Tabulations this kernel carries, by the [`BufferIdentity`] each was
     /// seeded under — the data travelling with the value, so a consumer
     /// never carries a binding beside the kernel that needs it
-    /// (docs/plans/2026-09-09-composition-is-linking.md §6). `Arc<[f32]>`,
+    /// (docs/language/2026-09-09-composition-is-linking.md §6). `Arc<[f32]>`,
     /// not `Arc<Vec<f32>>`: the tabulation is immutable once seeded, so the
     /// `Vec` header is a wasted indirection, and every combinator below
     /// merges two of these by cloning the `Arc` — a refcount bump, never a
@@ -329,7 +330,7 @@ impl Kernel {
             entry.retired_axis().is_none(),
             "Kernel::from_parts: the arena names Var({}), which was the {} \
              coordinate; a lattice has {} axes and a per-call scalar is a \
-             Uniform (docs/plans/2026-09-06-lattice-is-the-index.md)",
+             Uniform (docs/archive/plans/2026-09-06-lattice-is-the-index.md)",
             entry.retired_axis().unwrap_or_default(),
             if entry.retired_axis() == Some(2) {
                 "Z"
@@ -617,7 +618,7 @@ impl Kernel {
     /// `self ? if_true : if_false` — `self` is the mask.
     ///
     /// Lowers to [`OpKind::If`]. The method keeps its name until Phase B of
-    /// docs/plans/2026-09-25-the-language-is-kernel.md renames it `if`.
+    /// docs/language/2026-09-25-the-language-is-kernel.md renames it `if`.
     #[must_use]
     pub fn select(&self, if_true: &Kernel, if_false: &Kernel) -> Self {
         self.combine3(if_true, if_false, OpKind::If)
@@ -905,7 +906,7 @@ impl Kernel {
     /// string cost millions of nodes to *construct*. A reference is the other
     /// option: `k.by_ref()` denotes exactly what `k` denotes, at one node,
     /// and composes like any other kernel
-    /// (docs/plans/2026-09-09-composition-is-linking.md §1).
+    /// (docs/language/2026-09-09-composition-is-linking.md §1).
     ///
     /// The tabulations `k` carries come along, so the data still travels with
     /// the value; the referent's arena, root and tables are reachable through
@@ -917,7 +918,7 @@ impl Kernel {
     /// opaque leaf no rewrite reaches inside, and links the two after
     /// extraction ([`link`](crate::passes::link)), so the emitter still sees
     /// one program. That is how a font too big for one e-graph is optimized
-    /// a glyph at a time (docs/plans/2026-09-25-the-language-is-kernel.md §4,
+    /// a glyph at a time (docs/language/2026-09-25-the-language-is-kernel.md §4,
     /// O1). So this changes what a kernel *costs to build* and where the
     /// optimizer's boundaries fall — which rewrites can cross the name —
     /// never what it means.
@@ -983,7 +984,7 @@ impl Kernel {
 
     /// Seed this kernel's own tabulation table with `data` under `id` — the
     /// write side of "the data travels with the value"
-    /// (docs/plans/2026-09-09-composition-is-linking.md §6). A kernel over
+    /// (docs/language/2026-09-09-composition-is-linking.md §6). A kernel over
     /// bound memory (`DiscreteManifold::kernel`, `BilinearSampler::kernel`)
     /// calls this once, at the point its data exists, so every later
     /// composition — `.at`, `.add`, `Kernel::sum`, a reduction body, … —
@@ -1030,7 +1031,7 @@ pub struct Argument<'k>(&'k Kernel);
 /// **Application is contramap, in an arena.** A `kernel!` entry that takes a
 /// kernel-typed parameter, `k: impl Fn(f32, f32) -> f32`, runs lowering's
 /// steps when it is called, and `k(u, v)` in its body is one of them
-/// (docs/plans/2026-09-25-the-language-is-kernel.md, Phase D-a).
+/// (docs/language/2026-09-25-the-language-is-kernel.md, Phase D-a).
 ///
 /// What `k(u, v)` denotes. A kernel is a function of the coordinate map:
 /// `⟦k⟧ : (S → ℝ²) → (S → ℝ)`, with `X`, `Y` the map's two components and
@@ -1068,7 +1069,7 @@ impl ExprArena {
     /// # Panics
     ///
     /// If `kernel` reads a table — a buffer declared or carried: the
-    /// language has none (D3 of docs/plans/2026-09-25-the-language-is-kernel.md)
+    /// language has none (D3 of docs/language/2026-09-25-the-language-is-kernel.md)
     /// — or is open ([`ExprArena::free_index`]): an index no fold in it binds
     /// would be bound by whichever fold this arena builds around its
     /// application, as [`Kernel::by_ref`] refuses a name for one.
@@ -1076,7 +1077,7 @@ impl ExprArena {
         assert!(
             kernel.buffers().is_empty() && kernel.buffer_data().next().is_none(),
             "a kernel-typed argument reads a table, and the language has none (D3 of \
-             docs/plans/2026-09-25-the-language-is-kernel.md): pass a kernel over \
+             docs/language/2026-09-25-the-language-is-kernel.md): pass a kernel over \
              uniforms",
         );
         let (arena, root) = kernel.parts();
@@ -1085,7 +1086,7 @@ impl ExprArena {
             open.is_none(),
             "a kernel-typed argument reads Var({}), an index no fold in it binds, which \
              a fold around its application would bind: an argument is closed (D4 of \
-             docs/plans/2026-09-25-the-language-is-kernel.md)",
+             docs/language/2026-09-25-the-language-is-kernel.md)",
             open.unwrap_or_default(),
         );
         for decl in kernel.uniforms() {
@@ -1111,7 +1112,7 @@ impl ExprArena {
     /// the order this application reads them, and only those it reads,
     /// which is not the order a positional binding of the composed program
     /// reads off its parameters (D-a and O3 of
-    /// docs/plans/2026-09-25-the-language-is-kernel.md).
+    /// docs/language/2026-09-25-the-language-is-kernel.md).
     ///
     /// [`Ref`]: ExprNode::Ref
     pub fn apply(&mut self, argument: &Argument<'_>, [u, v]: [ExprId; 2]) -> ExprId {
@@ -1121,7 +1122,7 @@ impl ExprArena {
             kernel.uniforms().iter().all(declared),
             "a kernel-typed argument applied in an arena that did not admit it: its \
              uniforms would be declared in the order this application reads them, not \
-             its own (D-a of docs/plans/2026-09-25-the-language-is-kernel.md)",
+             its own (D-a of docs/language/2026-09-25-the-language-is-kernel.md)",
         );
         let at_the_sample = self.node(u) == ExprNode::Var(Axis::X.var())
             && self.node(v) == ExprNode::Var(Axis::Y.var());
@@ -1162,13 +1163,16 @@ impl Bits {
     ///
     /// # Panics
     ///
-    /// Panics if `bits >= 32` — a 32-bit lane has no bits there.
+    /// Panics if `bits` is not below [`ShiftCount::WORD_BITS`] — a 32-bit lane
+    /// has no bits there.
     #[must_use]
     pub fn shl(&self, bits: u32) -> Self {
-        assert!(bits < 32, "Bits::shl: shift of {bits} on a 32-bit lane");
+        let Some(shift) = ShiftCount::from_literal(bits as f32) else {
+            panic!("Bits::shl: shift of {bits} on a 32-bit lane");
+        };
         let mut b = Builder::new();
         let r = copy_subgraph(&mut b, self.inner.root());
-        let count = b.push_const(bits as f32);
+        let count = b.push_const(shift.literal());
         let root = b.push_binary(OpKind::Shl, r, count);
         Self {
             inner: Kernel::wrap(

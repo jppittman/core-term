@@ -42,19 +42,6 @@ impl EncodedInst {
         self.len += slice.len() as u8;
     }
 
-    /// Create from a slice (`slice.len() <= 15`).
-    #[must_use]
-    #[inline]
-    pub(super) fn from_slice(slice: &[u8]) -> Self {
-        assert!(slice.len() <= 15, "x86 instruction cannot exceed 15 bytes");
-        let mut bytes = [0u8; 15];
-        bytes[..slice.len()].copy_from_slice(slice);
-        Self {
-            bytes,
-            len: slice.len() as u8,
-        }
-    }
-
     /// Return the encoded instruction bytes as a slice.
     #[must_use]
     #[inline]

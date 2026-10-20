@@ -2,7 +2,7 @@
 //! against the packed kernel, plus a sustained hot-loop target for external
 //! sampling profilers (samply/xctrace).
 //!
-//! Postsubmit-only (docs/POSTSUBMIT.md): only ever invoked via
+//! Postsubmit-only (docs/process/POSTSUBMIT.md): only ever invoked via
 //! `cargo bench --workspace --benches`, never presubmit. Moved out of
 //! `pixelflow-graphics/src/render/scene.rs`'s `#[cfg(test)] mod frame_bench`
 //! (previously `#[ignore]`d `#[test]`s) so "never runs during a regular test

@@ -1,6 +1,6 @@
 //! Kernel-typed parameters: a `kernel!` entry that takes a kernel the host
 //! passes at run time, `k: impl Fn(f32, f32) -> f32`, and applies it,
-//! `k(x, y)` (docs/plans/2026-09-25-the-language-is-kernel.md §1.3, §1.4,
+//! `k(x, y)` (docs/language/2026-09-25-the-language-is-kernel.md §1.3, §1.4,
 //! D4, D6, Phase D-a).
 //!
 //! What an application *means* is pinned against rustc in

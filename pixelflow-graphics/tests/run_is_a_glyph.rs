@@ -1,6 +1,6 @@
 //! **A run of characters is a glyph, and glyphs form a monoid.**
 //!
-//! The laws behind docs/plans/2026-09-09-a-run-is-a-glyph.md. `text()` used
+//! The laws behind docs/archive/plans/2026-09-09-a-run-is-a-glyph.md. `text()` used
 //! to merge every character's contours into one `Outline` before building a
 //! kernel, on the correct premise that *coverage is not additive*. Windings
 //! are, and they vanish outside a closed contour, so the run folds the

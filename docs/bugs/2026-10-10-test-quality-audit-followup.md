@@ -13,7 +13,7 @@ untouched by any mutation-testing pass so far. Picked these two over the
 by this series' own precedent of auditing a complete unit at a time; the
 carried-forward items are untouched again.
 
-## STYLE.md compliance: test naming and scope
+## ../process/STYLE.md compliance: test naming and scope
 
 Every test name added across the selection phase's own test files
 (`golden_selected.rs`, `selection_stays_linear.rs`, `register_pressure.rs`,
@@ -32,7 +32,7 @@ until this pass added them (below).
 `cargo mutants` on this sandbox's host detects AVX-512
 (`pixelflow_codegen::isa::detect() == Isa::Avx512`), and
 `Pipeline::of(Isa::Avx512)` is still `Legacy` — only AVX2 has switched to
-the selection pipeline by default (`docs/plans/2026-10-08-selection-is-a-phase.md`).
+the selection pipeline by default (`docs/archive/plans/2026-10-08-selection-is-a-phase.md`).
 Every integration test that means something only under the selection
 pipeline starts with `if !selection() { return }` (`tests/support/knob.rs`),
 so a first `cargo mutants -f .../select.rs` run, with no

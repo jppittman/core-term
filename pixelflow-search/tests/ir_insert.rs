@@ -8,7 +8,7 @@
 
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprNode, UniformDecl, UniformIdentity};
 use pixelflow_ir::{Children, ExprArena, Ir, Kernel, KernelStore, OpKind, Shape};
-use pixelflow_search::egraph::{Declined, EGraph, Vocabulary, insert, reachable_count};
+use pixelflow_search::egraph::{Declined, EGraph, Vocabulary, insert, inserted_class_count};
 use pixelflow_search::runtime::optimize_runtime_arena;
 
 /// A fresh uniform declaration with the given default.
@@ -67,12 +67,12 @@ fn templates_vocabulary_refuses_the_runtime_only_ops() {
         OpKind::Shr,
     ] {
         assert!(
-            Vocabulary::Templates.resolve(kind).is_none(),
+            !Vocabulary::Templates.admits(kind),
             "{kind:?} must not be holdable by a macro-tier e-graph — it is \
              unsound before composition"
         );
         assert!(
-            Vocabulary::Runtime.resolve(kind).is_some(),
+            Vocabulary::Runtime.admits(kind),
             "{kind:?} must be holdable by a runtime-tier e-graph, or the \
              production frame kernel loses CSE across its channels"
         );
@@ -83,10 +83,10 @@ fn templates_vocabulary_refuses_the_runtime_only_ops() {
 /// its whole participation is hash-consing CSE.
 #[test]
 fn gather_is_holdable_everywhere_and_nameable_nowhere() {
-    assert!(Vocabulary::Templates.resolve(OpKind::Gather).is_some());
-    assert!(Vocabulary::Runtime.resolve(OpKind::Gather).is_some());
+    assert!(Vocabulary::Templates.admits(OpKind::Gather));
+    assert!(Vocabulary::Runtime.admits(OpKind::Gather));
     assert!(
-        pixelflow_search::egraph::ops::op_from_kind(OpKind::Gather).is_none(),
+        !pixelflow_search::egraph::ops::template_may_name(OpKind::Gather),
         "a rewrite template must not be able to name Gather"
     );
 }
@@ -95,7 +95,7 @@ fn gather_is_holdable_everywhere_and_nameable_nowhere() {
 /// happens to hold.
 ///
 /// An append-only arena rewritten in place carries abandoned nodes. Inserting
-/// those spends `max_classes` — a budget dimension — on an expression nobody
+/// those spends `max_minted` — a budget dimension — on an expression nobody
 /// asked about, making saturation a function of allocation history. Callers
 /// used to compact first to avoid it; now they do not have to.
 #[test]
@@ -110,7 +110,11 @@ fn insertion_ignores_unreachable_nodes() {
     let _garbage = arena.push_binary(OpKind::Mul, g, g);
 
     assert_eq!(arena.len(), 5, "arena holds the garbage");
-    assert_eq!(reachable_count(&arena, root), 3, "but only 3 are reachable");
+    assert_eq!(
+        inserted_class_count(&arena, root),
+        3,
+        "but only 3 are reachable"
+    );
 
     let mut eg = EGraph::new();
     let _ = insert(&arena, root, &mut eg, Vocabulary::Templates).expect("insert");
@@ -172,7 +176,7 @@ fn a_param_is_held_by_the_macro_vocabulary_and_declined_by_the_runtime_one() {
 /// A reference the graph was not told is a unit is declined, not mishandled.
 /// The runtime tier's unit walk admits each unit it holds the body of
 /// (`EGraph::admit_unit`, crate-private — its own test is in `insert.rs`), and
-/// only then does a `Ref` insert, as a leaf carrying its referent's variance.
+/// only then does a `Ref` insert, as a leaf varying as its referent does.
 /// A graph nobody told — any vocabulary, any caller outside that walk — has no
 /// variance to give the leaf, and must say so rather than insert one it
 /// cannot reason about.
@@ -194,7 +198,7 @@ fn a_reference_is_declined_by_every_vocabulary() {
 
 /// A `Write` is declined for a standing reason: an effect is not a value
 /// any rule may rewrite, and the legalize passes build one *after*
-/// extraction (docs/plans/2026-09-16-collapse-is-a-fold.md §2.4), so a term
+/// extraction (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.4), so a term
 /// carrying one into saturation skipped the pipeline. `Seq`, the unit
 /// monoid's combine, is declined as an op no vocabulary resolves.
 #[test]
@@ -244,7 +248,7 @@ fn the_runtime_pipeline_optimizes_a_named_body() {
 /// L3a, materialisation: `embed` after `project` reconstructs the same term.
 ///
 /// The optimizer-api plan recorded this law as UNREPRESENTABLE AS STATED
-/// (docs/plans/2026-09-02-optimizer-api.md:188) because there was no boundary
+/// (docs/archive/plans/2026-09-02-optimizer-api.md:188) because there was no boundary
 /// to state it against. There is one now, and it is generic over any `Ir`.
 #[test]
 fn project_then_embed_round_trips() {
@@ -262,7 +266,7 @@ fn project_then_embed_round_trips() {
 
     assert_eq!(
         dst.len(),
-        reachable_count(&src, root),
+        inserted_class_count(&src, root),
         "sharing must survive the round trip — a re-expanded DAG would be larger"
     );
     // Same term: both sides insert into an e-graph as the same single class.
@@ -338,4 +342,37 @@ fn projection_reports_arity() {
 
 fn alloc_vec(ids: &[pixelflow_ir::ExprId]) -> Vec<pixelflow_ir::ExprId> {
     ids.to_vec()
+}
+
+/// The size a budget is read from is the class count the term inserts to, and
+/// for an arena built by `push_*` that is the count of nodes the root reaches:
+/// `push_*` interns, so a subterm spelled twice is one node, and insertion
+/// hash-conses to the same classes. This is the premise of
+/// `docs/results/2026-10-14-the-tier-is-the-class-count.md` (808 shipped
+/// kernels, no band moved); it is pinned here so insertion starting to fold, or
+/// an arena starting not to intern, fails a test instead of moving a tier.
+#[test]
+fn a_pushed_arena_inserts_to_as_many_classes_as_it_reaches() {
+    let mut arena = ExprArena::new();
+    let x = arena.push_var(0);
+    let y = arena.push_var(1);
+    let mut acc = arena.push_const(0.0);
+    for k in 0..15 {
+        let c = arena.push_const(1.0 + k as f32 * 0.37);
+        let xc = arena.push_binary(OpKind::Mul, x, c);
+        let yc = arena.push_binary(OpKind::Mul, y, c);
+        // The same sum spelled twice, in both operand orders: one node each.
+        let sum = arena.push_binary(OpKind::Add, xc, yc);
+        let again = arena.push_binary(OpKind::Add, xc, yc);
+        let swapped = arena.push_binary(OpKind::Add, yc, xc);
+        assert_eq!(sum, again, "push_* interns a repeated spelling");
+        let both = arena.push_binary(OpKind::Mul, sum, swapped);
+        acc = arena.push_binary(OpKind::Add, acc, both);
+    }
+    // A node nothing reaches is neither reached nor inserted.
+    let _unreached = arena.push_binary(OpKind::Sub, x, y);
+
+    let mut eg = EGraph::new();
+    insert(&arena, acc, &mut eg, Vocabulary::Runtime).expect("every op is modelled");
+    assert_eq!(eg.num_classes(), inserted_class_count(&arena, acc));
 }

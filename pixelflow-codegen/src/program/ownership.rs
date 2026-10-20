@@ -13,7 +13,7 @@
 //! **lowest common ancestor** of the regions that read it: if only one arm
 //! reads it, it is that arm's; if both arms, or the mask, or anything outside
 //! the `If`, read it, it belongs to the region around the `If`. A loop reads
-//! what it reads at its `Reduce` (`FoldReads`), so a value only the loops in
+//! what it reads at its `Reduce` ([`FoldReads`]), so a value only the loops in
 //! one arm read is that arm's, and a batch that skips them skips it too.
 //!
 //! That is the whole relation. It is computed in one reverse pass over the
@@ -23,24 +23,14 @@
 //! One pass, O(reads × log depth): the lowest common ancestor is a climb on
 //! skip pointers, so a ladder of `else if`s a thousand deep costs what a flat
 //! scope does.
-//!
-//! This replaced a search. The old analysis recovered the same sets per `If`
-//! by closing a cone under "every consumer is in the set", which is a walk of
-//! the whole scope for every `If`. The two were asserted equal on every compile
-//! (and on 300 random DAGs) until the search was deleted; what keeps this pass
-//! honest now is its own tests, which pin the relation case by case, and the
-//! layout built on it, whose every branch is checked to be exactly the run of
-//! the values its arm owns, ahead of its `If`.
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-
-use pixelflow_ir::kind::OpKind;
 
 use crate::error::CompileError;
 use crate::pass::Pass;
-use crate::program::guards::FoldReads;
 use crate::program::tree::Tree;
-use crate::program::{Def, IfArm, ScheduledOp, ScopedSchedule, ValueId};
+use crate::program::{Def, IfArm, ScheduledOp, ScopedSchedule, ValueId, all_operands};
 
 /// A region of one scope: the scope itself, or one arm of one `If` in it.
 ///
@@ -92,10 +82,40 @@ impl Pass for Own {
                 .folds
                 .iter()
                 .filter(|fold| fold.parent == scope)
-                .map(|fold| (fold.reduce, fold.reads()));
-            Ownership::of(schedule, &FoldReads::new(schedule, opened))
+                .map(|fold| (fold.reduce, fold.reads().collect()))
+                .collect();
+            Ownership::of(schedule, &opened)
         }))
     }
+}
+
+/// What each loop a scope opens reads, keyed by the loop's `Reduce` def: the
+/// ids its body names, which the scope's own schedule holds or an enclosing
+/// scope does (`ScopeFold::reads`).
+///
+/// To [`operands`](crate::program::operands) a `Reduce` def is a leaf: once
+/// `scopes::extract_folds` has carved a fold's body into a scope of its own,
+/// the def is only where the loop opens. But the loop *runs* there, and its
+/// body reads this scope: a sibling fold's result from its accumulator slot, a
+/// value invariant in the fold from the park this scope leaves it in. Without
+/// these edges a guard could skip a fold whose result a sibling fold's body
+/// still reads, or a value a fold reads, which the fold then finds unwritten
+/// (`pixelflow-core/tests/guard_sibling_fold.rs` pins both).
+///
+/// They take no walk of a body: a fold's schedule keeps its parent's `ValueId`s,
+/// so what it reads from its parent is among the ids it names, and a fold
+/// nested in it reads nothing its parent does not name
+/// (`ScopedSchedule::assert_closed`, run before this). Every named id is an
+/// edge, a leaf the body rebuilds for itself included, which over-approximates
+/// (such a leaf is kept out of an arm the fold does not run in); one this scope
+/// does not define is not a position here and is ignored.
+pub(super) type FoldReads = BTreeMap<ValueId, Vec<ValueId>>;
+
+/// Everything the def `def` reads: its operands of both register classes, and,
+/// for a `Reduce` that opens a fold, what the fold reads.
+pub(super) fn reads<'a>(folds: &'a FoldReads, def: &'a Def) -> impl Iterator<Item = ValueId> + 'a {
+    let fold = folds.get(&def.value).into_iter().flatten().copied();
+    all_operands(&def.op).chain(fold)
 }
 
 /// Ownership of one scope's schedule.
@@ -136,7 +156,7 @@ impl Ownership {
     /// The ownership of `schedule`.
     ///
     /// `folds` is what each loop the scope opens reads from it, which makes
-    /// the loop's `Reduce` def a reader of each of those values (`FoldReads`).
+    /// the loop's `Reduce` def a reader of each of those values.
     pub(super) fn of(schedule: &[Def], folds: &FoldReads) -> Self {
         let positions = Positions::of(schedule);
         let mut me = Self {
@@ -164,7 +184,7 @@ impl Ownership {
             };
 
             match &def.op {
-                ScheduledOp::Ternary(OpKind::If, mask, if_true, if_false) => {
+                ScheduledOp::If(mask, if_true, if_false) => {
                     let on_true = Region(me.regions.grow(here.0));
                     let on_false = Region(me.regions.grow(here.0));
                     // Pushed false arm first: the sweep meets the `If`s
@@ -185,8 +205,8 @@ impl Ownership {
                     read(&mut me, *if_true, on_true);
                     read(&mut me, *if_false, on_false);
                 }
-                op => {
-                    for value in folds.reads(def.value, op) {
+                _ => {
+                    for value in reads(folds, def) {
                         read(&mut me, value, here);
                     }
                 }
@@ -210,287 +230,5 @@ impl Ownership {
     /// The regions, for a stage that nests something in them.
     pub(super) fn regions(&self) -> &Tree {
         &self.regions
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::program::{Item, Layout, Nest};
-    use pixelflow_ir::LatticeShape;
-    use pixelflow_ir::arena::{ExprArena, ExprId};
-    use pixelflow_ir::fold::{Binder, Fold, Monoid};
-    use pixelflow_ir::variance::Variance;
-
-    /// A def whose variance is a placeholder, `CONST`: the analyses under
-    /// test read operands and nesting, never a def's variance (scoping does,
-    /// and these fixtures do not go through it). Only [`var`] is exact.
-    fn def(value: u64, op: ScheduledOp) -> Def {
-        Def {
-            value: ValueId(value),
-            op,
-            variance: Variance::CONST,
-        }
-    }
-
-    /// A binder's value: a leaf the scope reads and does not compute, varying
-    /// with that binder alone.
-    fn var(value: u64, slot: u8) -> Def {
-        let binder = Binder::from_slot(slot).expect("a binder slot");
-        Def {
-            value: ValueId(value),
-            op: ScheduledOp::Var(binder),
-            variance: Variance::from_var(binder.var()),
-        }
-    }
-
-    fn if_of(value: u64, mask: u64, if_true: u64, if_false: u64) -> Def {
-        def(
-            value,
-            ScheduledOp::Ternary(
-                OpKind::If,
-                ValueId(mask),
-                ValueId(if_true),
-                ValueId(if_false),
-            ),
-        )
-    }
-
-    /// The positions an arm owns, nested arms included.
-    fn owned(own: &Ownership, arm: &Arm, len: usize) -> Vec<usize> {
-        (0..len)
-            .filter(|&pos| {
-                own.regions()
-                    .common_ancestor(own.region_of(pos).0, arm.region.0)
-                    == arm.region.0
-            })
-            .collect()
-    }
-
-    /// Only the true arm reads `Rsqrt(v1)`, so the true arm owns it; the mask
-    /// and the false arm (the mask again) own nothing.
-    #[test]
-    fn an_arm_owns_what_only_it_reads() {
-        let schedule = alloc::vec![
-            var(0, 0),
-            var(1, 1),
-            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
-            if_of(3, 0, 2, 0),
-        ];
-        let own = Ownership::of(&schedule, &FoldReads::default());
-        let [on_true, on_false] = own.arms() else {
-            panic!("one If is two arms");
-        };
-        assert_eq!((on_true.arm, on_false.arm), (IfArm::True, IfArm::False));
-        assert_eq!(owned(&own, on_true, schedule.len()), alloc::vec![1, 2]);
-        assert_eq!(owned(&own, on_false, schedule.len()), Vec::<usize>::new());
-    }
-
-    /// A value both arms read belongs to the region around the `If`, and so
-    /// does the mask's cone.
-    #[test]
-    fn a_value_both_arms_read_belongs_to_neither() {
-        let schedule = alloc::vec![
-            var(0, 0),
-            var(1, 1),
-            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
-            def(3, ScheduledOp::Unary(OpKind::Neg, ValueId(2))),
-            def(4, ScheduledOp::Unary(OpKind::Sqrt, ValueId(2))),
-            if_of(5, 0, 3, 4),
-        ];
-        let own = Ownership::of(&schedule, &FoldReads::default());
-        let [on_true, on_false] = own.arms() else {
-            panic!("one If is two arms");
-        };
-        assert_eq!(owned(&own, on_true, schedule.len()), alloc::vec![3]);
-        assert_eq!(owned(&own, on_false, schedule.len()), alloc::vec![4]);
-        assert_eq!(own.region_of(2), Region::SCOPE);
-    }
-
-    /// A value whose readers are all loops one arm runs is the arm's, through
-    /// production scoping (`Nest`, `Own`, `Layout`): a loop reads what
-    /// it reads at its `Reduce` (`FoldReads`), so a batch that skips the arm
-    /// skips the loops and what only they read. A reader outside the arm keeps
-    /// the value outside (`layout`'s
-    /// `an_arm_does_not_own_what_a_sibling_fold_reads`).
-    #[test]
-    fn an_arm_owns_the_roots_only_its_loops_read() {
-        type Placed = Vec<(Def, Option<IfArm>)>;
-        // `Σ_{j<4} (v + j)`, over the binder in `slot`: a loop that reads `v`.
-        let loop_over = |a: &mut ExprArena, v: ExprId, slot: u8| {
-            let binder = Binder::from_slot(slot).expect("the slot exists");
-            let j = a.push_var(binder.var());
-            let body = a.push_binary(OpKind::Add, v, j);
-            a.push_reduce(Fold::new(Monoid::SUM, binder, 0..4), body)
-        };
-        // The defs of the scope of `root` that holds its `If`, each with the arm
-        // of the block it runs in, if any.
-        let placed = |a: &ExprArena, root: ExprId| -> Placed {
-            let lanes = (crate::jit_vector_bytes() / core::mem::size_of::<f32>()) as u32;
-            let schedule =
-                crate::pipeline::tests::schedule_for(a, root, LatticeShape::new([lanes, 1]), lanes);
-            let scoped = Nest.then(Own).then(Layout).run(schedule).expect("scoped");
-            let ScopedSchedule { body, folds } = scoped;
-            let (schedule, flow) = core::iter::once((body.schedule, body.analysis))
-                .chain(folds.into_iter().map(|fold| (fold.schedule, fold.analysis)))
-                .find(|(schedule, _)| {
-                    schedule
-                        .iter()
-                        .any(|def| matches!(def.op, ScheduledOp::Ternary(OpKind::If, ..)))
-                })
-                .expect("a scope holds the If");
-            let mut arm_of = alloc::vec![None; schedule.len()];
-            for block in &flow.arms {
-                for item in &block.items {
-                    if let Item::Def(at) = *item {
-                        arm_of[at] = Some(block.arm);
-                    }
-                }
-            }
-            schedule.into_iter().zip(arm_of).collect()
-        };
-        // The arms of the defs `which` picks, in schedule order.
-        let arms = |placed: &Placed, which: fn(&ScheduledOp) -> bool| -> Vec<Option<IfArm>> {
-            (placed.iter())
-                .filter(|(def, _)| which(&def.op))
-                .map(|&(_, arm)| arm)
-                .collect()
-        };
-        let reduce = |op: &ScheduledOp| matches!(op, ScheduledOp::Reduce(..));
-        let sqrt = |op: &ScheduledOp| matches!(op, ScheduledOp::Unary(OpKind::Sqrt, _));
-
-        // `select(X < 8, R(F(X)), 0)`, `F` invariant in `R`'s binder: `F` is a
-        // sibling of `R`, a root of the scope that opens both, and only `R`
-        // reads it.
-        let mut a = ExprArena::new();
-        let (x, eight, zero) = (a.push_var(0), a.push_const(8.0), a.push_const(0.0));
-        let f = loop_over(&mut a, x, 1);
-        let r = loop_over(&mut a, f, 0);
-        let mask = a.push_binary(OpKind::Lt, x, eight);
-        let root = a.push_ternary(OpKind::If, mask, r, zero);
-        assert_eq!(
-            arms(&placed(&a, root), reduce),
-            [Some(IfArm::True); 2],
-            "the true arm runs R and the sibling F it reads"
-        );
-
-        // `select(X < 8, 0, F(√(X + Y)))`: the loop reads `√(X + Y)`, which the
-        // mask does not, so the false arm owns it. The mask reads `X`, as does
-        // `X + Y`, so `X` stays in the region around the `If`.
-        let mut a = ExprArena::new();
-        let (x, y) = (a.push_var(0), a.push_var(1));
-        let (eight, zero) = (a.push_const(8.0), a.push_const(0.0));
-        let sum = a.push_binary(OpKind::Add, x, y);
-        let s = a.push_unary(OpKind::Sqrt, sum);
-        let f = loop_over(&mut a, s, 0);
-        let mask = a.push_binary(OpKind::Lt, x, eight);
-        let arm = a.push_ternary(OpKind::If, mask, zero, f);
-        let placed_arm = placed(&a, arm);
-        assert_eq!(
-            arms(&placed_arm, sqrt),
-            [Some(IfArm::False)],
-            "the loop's input"
-        );
-        // `X`, told by being what the one comparison, the mask, compares.
-        let compared: Vec<ValueId> = (placed_arm.iter())
-            .filter_map(|(def, _)| match def.op {
-                ScheduledOp::Binary(OpKind::Lt, x, _) => Some(x),
-                _ => None,
-            })
-            .collect();
-        let [x] = compared[..] else {
-            panic!("one comparison is the mask: {compared:?}")
-        };
-        let (_, x_arm) = (placed_arm.iter())
-            .find(|(def, _)| def.value == x)
-            .expect("the mask's X is a def of this scope");
-        assert_eq!(*x_arm, None, "the mask reads X too, so X stays outside");
-
-        // The control: `select(X < 8, 0, F(√(X + Y))) + G(√(X + Y))`. `G` runs
-        // whatever the mask, so `√(X + Y)` is not the arm's, while `F` still is.
-        let g = loop_over(&mut a, s, 1);
-        let root = a.push_binary(OpKind::Add, arm, g);
-        let placed_both = placed(&a, root);
-        assert_eq!(
-            arms(&placed_both, sqrt),
-            [None],
-            "a loop outside the arm reads it"
-        );
-        let mut loops = arms(&placed_both, reduce);
-        loops.sort();
-        assert_eq!(
-            loops,
-            [None, Some(IfArm::False)],
-            "F is the arm's, G is not"
-        );
-    }
-
-    /// An arm that owns an `If` owns what that `If`'s arms own: the outer true
-    /// arm holds everything nested in it.
-    #[test]
-    fn a_nested_arm_is_owned_by_the_arm_around_it() {
-        let schedule = alloc::vec![
-            var(0, 0),
-            var(1, 1),
-            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
-            def(3, ScheduledOp::Unary(OpKind::Sqrt, ValueId(1))),
-            if_of(4, 0, 2, 3),
-            def(5, ScheduledOp::Unary(OpKind::Recip, ValueId(1))),
-            if_of(6, 0, 4, 5),
-        ];
-        let own = Ownership::of(&schedule, &FoldReads::default());
-        let [inner_true, inner_false, outer_true, outer_false] = own.arms() else {
-            panic!("two Ifs are four arms, in schedule order");
-        };
-        assert_eq!(owned(&own, inner_true, schedule.len()), alloc::vec![2]);
-        assert_eq!(owned(&own, inner_false, schedule.len()), alloc::vec![3]);
-        assert_eq!(
-            owned(&own, outer_true, schedule.len()),
-            alloc::vec![2, 3, 4],
-            "the inner If and everything under it belongs to the arm it is the root of"
-        );
-        assert_eq!(owned(&own, outer_false, schedule.len()), alloc::vec![5]);
-    }
-
-    /// The relation is a property of the reads, so reordering the schedule
-    /// within what the reads allow changes no arm's membership.
-    #[test]
-    fn the_order_of_the_schedule_does_not_change_what_is_owned() {
-        let ops = alloc::vec![
-            var(0, 0),
-            var(1, 1),
-            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
-            def(3, ScheduledOp::Unary(OpKind::Sqrt, ValueId(1))),
-            def(4, ScheduledOp::Unary(OpKind::Neg, ValueId(3))),
-            if_of(5, 0, 2, 4),
-        ];
-        // The same defs with the two arms' work interleaved the other way.
-        let swapped = alloc::vec![
-            ops[0].clone(),
-            ops[1].clone(),
-            ops[3].clone(),
-            ops[2].clone(),
-            ops[4].clone(),
-            ops[5].clone(),
-        ];
-        let by_value = |schedule: &[Def]| {
-            let own = Ownership::of(schedule, &FoldReads::default());
-            own.arms()
-                .iter()
-                .map(|arm| {
-                    let mut values: Vec<u64> = (0..schedule.len())
-                        .filter(|&pos| {
-                            own.regions()
-                                .common_ancestor(own.region_of(pos).0, arm.region.0)
-                                == arm.region.0
-                        })
-                        .map(|pos| schedule[pos].value.0)
-                        .collect();
-                    values.sort_unstable();
-                    (arm.arm, values)
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(by_value(&ops), by_value(&swapped));
     }
 }

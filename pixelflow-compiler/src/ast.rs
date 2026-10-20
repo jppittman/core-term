@@ -95,7 +95,7 @@ impl KernelDef {
 pub struct RecordId(pub usize);
 
 /// `struct R { a: f32, b: f32 }`: a record of named `f32` fields
-/// (docs/plans/2026-09-25-the-language-is-kernel.md §1.3).
+/// (docs/language/2026-09-25-the-language-is-kernel.md §1.3).
 ///
 /// Emitted as a host `#[repr(C)]` struct of the same name, fields and
 /// visibility. In a body a record is its fields: an entry's record parameter
@@ -624,7 +624,7 @@ pub struct IfExpr {
 
 /// `(lo..hi).map(|i| e).sum()` and its siblings: the fold of `e` over
 /// `i ∈ [lo, hi)` under a monoid, or the monoid's identity when the range is
-/// empty (docs/plans/2026-09-25-the-language-is-kernel.md §1.5).
+/// empty (docs/language/2026-09-25-the-language-is-kernel.md §1.5).
 ///
 /// The closure's parameter is the binder and its body is the fold's body.
 /// The closure is not a value, and has no meaning anywhere else. The bounds

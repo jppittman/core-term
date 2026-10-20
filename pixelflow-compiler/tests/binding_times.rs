@@ -1,5 +1,5 @@
 //! Records, binding times and `Args`
-//! (docs/plans/2026-09-25-the-language-is-kernel.md §1.3, §1.4; B3).
+//! (docs/language/2026-09-25-the-language-is-kernel.md §1.3, §1.4; B3).
 //!
 //! An entry's `const N: usize` generics are **structural**: each value is its
 //! own program. Everything else is a **uniform**: an `f32` parameter is one,

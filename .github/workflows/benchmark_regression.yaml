@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "main" ]
 
-# Benchmarks are postsubmit-only (docs/POSTSUBMIT.md). A presubmit copy was
+# Benchmarks are postsubmit-only (docs/process/POSTSUBMIT.md). A presubmit copy was
 # tried and removed: one hosted-runner sample against a single baseline point
 # alerts on noisy neighbors as readily as on code, and a check that fails for
 # reasons the author cannot act on is one that gets ignored. Attribution to a
@@ -123,7 +123,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           # Commit-level attribution on the regressing main commit
-          # (docs/POSTSUBMIT.md) — the tracking issue below is in addition,
+          # (docs/process/POSTSUBMIT.md) — the tracking issue below is in addition,
           # not instead.
           comment-on-alert: true
           summary-always: true

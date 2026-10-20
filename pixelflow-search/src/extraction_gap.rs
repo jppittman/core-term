@@ -1,20 +1,23 @@
 //! How much extracted cost does the greedy DP leave on the table?
 //!
-//! `extract_dag` is not argmin under its own cost model, three ways over
-//! (issue #1111, and the `Optimizer::cost` doc comment says so outright):
+//! `extract_dag` was not argmin under its own cost model three ways over
+//! (issue #1111); defect 1 remains, and the `Optimizer::cost` doc comment
+//! says so outright:
 //!
 //! 1. **Unpriced sharing.** It sums each child's `best_cost`, which is a
 //!    TREE cost. A subexpression used five times is charged five times in
 //!    the objective and emitted once in the code, so the objective is not
 //!    the thing being minimized.
-//! 2. **Single DFS, not a fixpoint.** On the cyclic e-graphs saturation
-//!    always produces (commutativity alone makes cycles), a class whose
-//!    child is still `on_stack` is scored `CYCLE_COST` and never revisited.
+//! 2. ~~**Single DFS, not a fixpoint.**~~ **Fixed.** On the cyclic e-graphs
+//!    saturation always produces (commutativity alone makes cycles), a class
+//!    whose child was still on the DFS stack was scored at a cycle sentinel
+//!    and never revisited. Extraction now settles classes in cost order, so
+//!    nothing is priced at a sentinel.
 //! 3. ~~**Costed before repaired.**~~ **Fixed (#1111).** `total_cost` used to
-//!    be read before `repair_choices_well_founded` may change the choices, so
+//!    be read before a repair stage may change the choices, so
 //!    the reported number need not describe the returned term — this harness
 //!    measured that on 132 of 302 kernels. Both reported numbers are now
-//!    computed from the repaired choices, and there are two:
+//!    computed from the returned choices, and there are two:
 //!    `ExtractedDAG::total_cost` is the tree cost the DP minimizes and
 //!    `ExtractedDAG::dag_cost` is the DAG cost the kernel pays. The
 //!    `reported_matches_returned` column below is kept as the standing
@@ -45,8 +48,9 @@
 //!
 //! ```text
 //! cost(greedy) - cost(exact)
-//!   = [cost(greedy) - cost(tree-optimal)]   <- defects 2+3: the DP not
-//!                                              attaining its own objective
+//!   = [cost(greedy) - cost(tree-optimal)]   <- the DP not attaining its own
+//!                                              objective (defects 2+3, fixed:
+//!                                              expected 0)
 //!   + [cost(tree-optimal) - cost(exact)]    <- defect 1: optimizing tree
 //!                                              cost instead of DAG cost
 //! ```
@@ -59,48 +63,92 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use crate::arena_corpus::{category_of, load_arena_dump, median, percentile};
+use crate::egraph::and_or::{AndOrGraph, Candidate, Child, Live};
 use crate::egraph::extract::{
     ExtractedDAG, extract_dag_objectives, extract_dag_scoped, extract_dag_tree_arm,
 };
-use crate::egraph::{Budget, CostModel, EClassId, EGraph, ENode, Extraction, Optimizer};
-use crate::egraph::{Vocabulary, insert, reachable_count};
+use crate::egraph::{Budget, CostModel, EClassId, EGraph, ENode, Limits, Optimizer};
+use crate::egraph::{Vocabulary, insert, inserted_class_count};
 
 // ---------------------------------------------------------------------------
 // The instance: one saturated e-graph, reduced to what a chooser must decide
 // ---------------------------------------------------------------------------
 
-/// One candidate e-node for one e-class: its own op cost and the canonical
-/// classes it depends on, deduplicated (a DAG prices a child class once no
-/// matter how many of a node's slots point at it).
-#[derive(Clone, Debug)]
-struct Candidate {
-    /// Index into `egraph.nodes(class)` — the choice a chooser records.
-    node_idx: usize,
-    own: u64,
-    /// Distinct child classes: what a DAG pays for, once each.
-    children: Vec<u32>,
-    /// Parallel to `children`: how many of the node's operand slots name
-    /// that class. What a TREE pays for, and therefore what the DP sums.
-    /// `Mul(a, a)` is one entry in `children` with multiplicity 2.
-    mult: Vec<u32>,
+/// The extraction problem priced by a model: production's own
+/// [`AndOrGraph`] (the live classes, their candidates, their distinct
+/// children and multiplicities) with the model's price of each candidate.
+/// Shared by every copy of an [`Instance`], which differ only in how far
+/// they have pruned.
+struct Priced {
+    graph: AndOrGraph,
+    /// The model's price of each candidate's e-node, by [`AndOrGraph::slot`].
+    own: Vec<u64>,
+    /// Whether each candidate, by slot, is a fold.
+    ///
+    /// The model prices an op or a leaf and has no fold semantics: it never
+    /// charged a fold's body, and a fold's row is empty here as it was when
+    /// rows were built from `Op` operands alone. Production's tree objective
+    /// charges the body once per iteration (`extract.rs`'s `below`), so the
+    /// model's numbers on a graph with a fold are not production's tree
+    /// objective; closing that is a change to this harness's results and
+    /// not part of lifting its setup onto the shared problem.
+    folds: Vec<bool>,
+    /// Per canonical class id: its position in the reach, or `None` when the
+    /// root does not reach it. Choice maps are keyed by class id.
+    live_of: Vec<Option<Live>>,
 }
 
-/// The extraction problem, lifted off the e-graph so the search never touches
-/// `find` in its inner loop.
+impl Priced {
+    /// Candidate `idx` of canonical class `class`, or `None` when the class
+    /// is not reached or has no such e-node.
+    fn candidate(&self, class: EClassId, idx: usize) -> Option<Candidate> {
+        let live = self.live_of[class.index()]?;
+        self.graph.candidate(live, idx)
+    }
+
+    fn own(&self, candidate: Candidate) -> u64 {
+        self.own[self.graph.slot(candidate)]
+    }
+
+    /// The distinct classes the model says `candidate` needs, with how many
+    /// operand slots name each.
+    fn needs(&self, candidate: Candidate) -> &[Child] {
+        match self.folds[self.graph.slot(candidate)] {
+            true => &[],
+            false => self.graph.children(candidate),
+        }
+    }
+
+    /// The canonical class id of a child.
+    fn class_of(&self, child: Child) -> EClassId {
+        self.graph.class(child.live)
+    }
+
+    /// Classes in the e-graph: what a choice map is sized by.
+    fn num_classes(&self) -> usize {
+        self.live_of.len()
+    }
+}
+
+/// The extraction problem for a search: [`Priced`], and which candidates of
+/// each class are still worth choosing. Lifted off the e-graph so the search
+/// never touches `find` in its inner loop.
+#[derive(Clone)]
 struct Instance {
-    root: u32,
-    /// Per canonical class id, per e-node index: EVERY node, so that any
-    /// chooser's answer — including one that picked a node this instance
-    /// would never search — can be re-costed. `cands[c][i].node_idx == i`.
-    cands: Vec<Vec<Candidate>>,
+    priced: Rc<Priced>,
+    root: EClassId,
     /// Per class: every node index that can appear in SOME well-founded
     /// selection — self-referential nodes removed, nothing else. This is the
     /// full feasible set, and it is what the tree-cost reference searches.
+    /// Every node of every reached class is in the search space, so that any
+    /// chooser's answer — including one that picked a node this instance
+    /// would never search — can be re-costed through [`Priced`].
     feasible: Vec<Vec<usize>>,
     /// Per class: the node indices the DAG search may choose — `feasible`
     /// minus the nodes dominance proves can never help. Dominance is sound
@@ -112,7 +160,7 @@ struct Instance {
     /// per-class floor the bound sums over.
     floor: Vec<u64>,
     /// Classes reachable from the root over ALL nodes (the search space).
-    reachable: Vec<u32>,
+    reachable: Vec<EClassId>,
     /// Candidates dropped by dominance, for the report.
     dominated: usize,
 }
@@ -120,75 +168,49 @@ struct Instance {
 impl Instance {
     fn build(egraph: &EGraph, root: EClassId, model: &CostModel) -> Self {
         let n = egraph.num_classes();
-        let root = egraph.find(root).0;
-
-        // Reachable set over every node of every class: any of them could be
-        // chosen, so all of them are in the search space.
-        let mut reachable: Vec<u32> = Vec::new();
-        let mut seen = vec![false; n];
-        let mut stack = vec![root];
-        seen[root as usize] = true;
-        while let Some(c) = stack.pop() {
-            reachable.push(c);
-            for node in egraph.nodes(EClassId(c)) {
-                {
-                    let children = (node).children_slice();
-                    for &ch in children {
-                        let ch = egraph.find(ch).0;
-                        if !seen[ch as usize] {
-                            seen[ch as usize] = true;
-                            stack.push(ch);
-                        }
-                    }
-                }
-            }
-        }
+        let frozen = egraph.as_frozen();
+        let graph = AndOrGraph::of(frozen, root);
+        let root = graph.root();
+        let mut reachable: Vec<EClassId> = graph.classes().to_vec();
         reachable.sort_unstable();
 
-        let mut cands: Vec<Vec<Candidate>> = vec![Vec::new(); n];
+        let mut live_of = vec![None; n];
+        for live in graph.lives() {
+            live_of[graph.class(live).index()] = Some(live);
+        }
+        let mut own = vec![0; graph.slot_count()];
+        let mut folds = vec![false; graph.slot_count()];
+        for live in graph.lives() {
+            for at in graph.candidates(live) {
+                let node = frozen.node(graph.node_id(at));
+                own[graph.slot(at)] = model.node_cost_of(node);
+                folds[graph.slot(at)] = matches!(node, ENode::Reduce { .. });
+            }
+        }
+        let priced = Priced {
+            graph,
+            own,
+            folds,
+            live_of,
+        };
+
         let mut alive: Vec<Vec<usize>> = vec![Vec::new(); n];
         let mut feasible: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for &c in &reachable {
-            let mut out: Vec<Candidate> = Vec::new();
-            let mut live: Vec<usize> = Vec::new();
-            for (node_idx, node) in egraph.nodes(EClassId(c)).iter().enumerate() {
-                let own = model.node_cost_of(node);
-                let mut slots: Vec<u32> = match node {
-                    ENode::Op { children, .. } => {
-                        children.iter().map(|&ch| egraph.find(ch).0).collect()
-                    }
-                    _ => Vec::new(),
-                };
-                slots.sort_unstable();
-                let mut children: Vec<u32> = Vec::new();
-                let mut mult: Vec<u32> = Vec::new();
-                for sl in slots {
-                    if children.last() == Some(&sl) {
-                        *mult.last_mut().expect("pushed with children") += 1;
-                    } else {
-                        children.push(sl);
-                        mult.push(1);
-                    }
-                }
-                // A node that names its own class can never appear in a
-                // well-founded selection. Excluding it from the search is
-                // the same judgement `extract_dag`'s `CYCLE_COST` makes,
-                // made once instead of as a sentinel that then has to be
-                // kept above every real cost. It stays in `cands` so a
-                // chooser that picked it can still be re-costed.
-                if !children.contains(&c) {
-                    live.push(node_idx);
-                }
-                out.push(Candidate {
-                    node_idx,
-                    own,
-                    children,
-                    mult,
-                });
-            }
-            cands[c as usize] = out;
-            feasible[c as usize] = live.clone();
-            alive[c as usize] = live;
+        for live in priced.graph.lives() {
+            let c = priced.graph.class(live).index();
+            // A node that names its own class can never appear in a
+            // well-founded selection. Excluding it from the search is the
+            // same judgement the extractor's settlement makes: a candidate
+            // naming its own class is never admitted. It stays priced so a
+            // chooser that picked it can still be re-costed.
+            let live_nodes: Vec<usize> = priced
+                .graph
+                .candidates(live)
+                .filter(|&at| priced.needs(at).iter().all(|child| child.live != live))
+                .map(|at| at.idx())
+                .collect();
+            feasible[c] = live_nodes.clone();
+            alive[c] = live_nodes;
         }
 
         // Dominance: candidate A makes candidate B useless when A costs no
@@ -198,25 +220,34 @@ impl Instance {
         // filter is deterministic and never empties a class.
         let mut dominated = 0usize;
         for &c in &reachable {
-            let live = std::mem::take(&mut alive[c as usize]);
-            let mut keep: Vec<bool> = vec![true; live.len()];
-            for i in 0..live.len() {
-                for j in 0..live.len() {
+            let live_nodes = std::mem::take(&mut alive[c.index()]);
+            let mut keep: Vec<bool> = vec![true; live_nodes.len()];
+            for i in 0..live_nodes.len() {
+                for j in 0..live_nodes.len() {
                     if i == j || !keep[i] || !keep[j] {
                         continue;
                     }
-                    let a = &cands[c as usize][live[j]];
-                    let b = &cands[c as usize][live[i]];
-                    let a_dominates_b = a.own <= b.own
-                        && a.children.iter().all(|ch| b.children.contains(ch))
-                        && (a.own < b.own || a.children.len() < b.children.len() || j < i);
+                    let a = priced
+                        .candidate(c, live_nodes[j])
+                        .expect("a feasible node is one of its class's");
+                    let b = priced
+                        .candidate(c, live_nodes[i])
+                        .expect("a feasible node is one of its class's");
+                    let (a_needs, b_needs) = (priced.needs(a), priced.needs(b));
+                    let a_dominates_b = priced.own(a) <= priced.own(b)
+                        && a_needs
+                            .iter()
+                            .all(|x| b_needs.iter().any(|y| y.live == x.live))
+                        && (priced.own(a) < priced.own(b)
+                            || a_needs.len() < b_needs.len()
+                            || j < i);
                     if a_dominates_b {
                         keep[i] = false;
                         dominated += 1;
                     }
                 }
             }
-            alive[c as usize] = live
+            alive[c.index()] = live_nodes
                 .into_iter()
                 .zip(keep)
                 .filter_map(|(idx, k)| k.then_some(idx))
@@ -225,16 +256,22 @@ impl Instance {
 
         let mut floor = vec![0u64; n];
         for &c in &reachable {
-            floor[c as usize] = alive[c as usize]
+            floor[c.index()] = alive[c.index()]
                 .iter()
-                .map(|&i| cands[c as usize][i].own)
+                .map(|&i| {
+                    priced.own(
+                        priced
+                            .candidate(c, i)
+                            .expect("a live node is one of its class's"),
+                    )
+                })
                 .min()
                 .unwrap_or(0);
         }
 
         Self {
+            priced: Rc::new(priced),
             root,
-            cands,
             feasible,
             alive,
             floor,
@@ -250,31 +287,32 @@ impl Instance {
     /// root, or leaves a reachable class unchosen — either way it does not
     /// describe a term, and a number for it would be a silent lie.
     fn dag_cost(&self, choice: &[Option<usize>]) -> Option<u64> {
+        let priced = &*self.priced;
         let mut total = 0u64;
-        let mut state = vec![0u8; self.cands.len()]; // 0 unseen, 1 on path, 2 done
-        let mut stack: Vec<(u32, usize)> = vec![(self.root, 0)];
-        state[self.root as usize] = 1;
-        let node_of = |c: u32| -> Option<&Candidate> {
-            let idx = choice.get(c as usize).copied().flatten()?;
-            self.cands[c as usize].get(idx)
+        let mut state = vec![0u8; priced.num_classes()]; // 0 unseen, 1 on path, 2 done
+        let mut stack: Vec<(EClassId, usize)> = vec![(self.root, 0)];
+        state[self.root.index()] = 1;
+        let node_of = |c: EClassId| -> Option<Candidate> {
+            let idx = choice.get(c.index()).copied().flatten()?;
+            priced.candidate(c, idx)
         };
-        total += node_of(self.root)?.own;
+        total += priced.own(node_of(self.root)?);
         while let Some(&mut (c, ref mut next)) = stack.last_mut() {
-            let cand = node_of(c)?;
-            if *next < cand.children.len() {
-                let ch = cand.children[*next];
+            let needs = priced.needs(node_of(c)?);
+            if *next < needs.len() {
+                let ch = priced.class_of(needs[*next]);
                 *next += 1;
-                match state[ch as usize] {
+                match state[ch.index()] {
                     0 => {
-                        state[ch as usize] = 1;
-                        total = total.saturating_add(node_of(ch)?.own);
+                        state[ch.index()] = 1;
+                        total = total.saturating_add(priced.own(node_of(ch)?));
                         stack.push((ch, 0));
                     }
                     1 => return None, // cycle
                     _ => {}
                 }
             } else {
-                state[c as usize] = 2;
+                state[c.index()] = 2;
                 stack.pop();
             }
         }
@@ -290,25 +328,27 @@ impl Instance {
     /// its depth, so the obvious recursion would not return on a real
     /// kernel. `None` when the choice function is cyclic or incomplete.
     fn tree_cost(&self, choice: &[Option<usize>]) -> Option<u64> {
-        let n = self.cands.len();
+        let priced = &*self.priced;
+        let n = priced.num_classes();
         let mut memo: Vec<Option<u64>> = vec![None; n];
         let mut state = vec![0u8; n]; // 0 unseen, 1 on path, 2 done
-        let mut stack: Vec<(u32, usize)> = vec![(self.root, 0)];
-        state[self.root as usize] = 1;
-        let node_of = |c: u32| -> Option<&Candidate> {
-            let idx = choice.get(c as usize).copied().flatten()?;
-            self.cands[c as usize].get(idx)
+        let mut stack: Vec<(EClassId, usize)> = vec![(self.root, 0)];
+        state[self.root.index()] = 1;
+        let node_of = |c: EClassId| -> Option<Candidate> {
+            let idx = choice.get(c.index()).copied().flatten()?;
+            priced.candidate(c, idx)
         };
         node_of(self.root)?;
         while let Some(&mut (c, ref mut next)) = stack.last_mut() {
             let cand = node_of(c)?;
-            if *next < cand.children.len() {
-                let ch = cand.children[*next];
+            let needs = priced.needs(cand);
+            if *next < needs.len() {
+                let ch = priced.class_of(needs[*next]);
                 *next += 1;
-                match state[ch as usize] {
+                match state[ch.index()] {
                     0 => {
                         node_of(ch)?;
-                        state[ch as usize] = 1;
+                        state[ch.index()] = 1;
                         stack.push((ch, 0));
                     }
                     1 => return None, // cycle
@@ -317,17 +357,17 @@ impl Instance {
             } else {
                 // Multiplied back out by slot count: the DP sums
                 // `children.iter()`, so `Mul(a, a)` charges `a` twice.
-                let mut total = cand.own;
-                for (i, &ch) in cand.children.iter().enumerate() {
-                    let child = memo[ch as usize].expect("child finished first");
-                    total = total.saturating_add(child.saturating_mul(cand.mult[i] as u64));
+                let mut total = priced.own(cand);
+                for &child in needs {
+                    let sub = memo[priced.class_of(child).index()].expect("child finished first");
+                    total = total.saturating_add(sub.saturating_mul(child.uses as u64));
                 }
-                memo[c as usize] = Some(total);
-                state[c as usize] = 2;
+                memo[c.index()] = Some(total);
+                state[c.index()] = 2;
                 stack.pop();
             }
         }
-        memo[self.root as usize]
+        memo[self.root.index()]
     }
 }
 
@@ -352,8 +392,8 @@ impl NodeCostU64 for CostModel {
 ///
 /// Finalizing classes in nondecreasing cost order makes the resulting choice
 /// function well-founded by construction — the finalization order IS a
-/// topological order — so unlike the DP this never needs a repair pass, and
-/// unlike the DP it is an exact argmin of the objective it names.
+/// topological order — so it never needs a repair pass, and it is an exact
+/// argmin of the objective it names, independently of the production arms.
 ///
 /// Returns the per-class choice vector, or `None` if the root is unreachable
 /// (every route to it passes through a class with no finite-cost node).
@@ -361,64 +401,63 @@ fn tree_optimal_choices(inst: &Instance) -> Option<Vec<Option<usize>>> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    let n = inst.cands.len();
-    // Per (class, candidate): how many child *slots* are still unfinalized,
-    // and the accumulated cost of the finalized ones. Slots, not distinct
-    // classes: a tree cost charges each occurrence.
-    let mut remaining: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut acc: Vec<Vec<u64>> = vec![Vec::new(); n];
-    // Reverse index: class -> the (class, candidate) slots waiting on it.
-    let mut waiters: Vec<Vec<(u32, usize)>> = vec![Vec::new(); n];
+    let priced = &*inst.priced;
+    let graph = &priced.graph;
+    let n = priced.num_classes();
+    // Per candidate, by slot: how many child *classes* are still
+    // unfinalized, and the accumulated cost of the finalized ones. Each is
+    // charged by its occurrence count: a tree cost charges each occurrence.
+    let mut remaining = vec![0usize; graph.slot_count()];
+    let mut acc = vec![0u64; graph.slot_count()];
 
-    let mut heap: BinaryHeap<Reverse<(u64, u32, usize)>> = BinaryHeap::new();
+    let mut heap: BinaryHeap<Reverse<(u64, EClassId, usize)>> = BinaryHeap::new();
     for &c in &inst.reachable {
-        let list = &inst.cands[c as usize];
-        remaining[c as usize] = vec![0; list.len()];
-        acc[c as usize] = vec![0; list.len()];
-        for &i in &inst.feasible[c as usize] {
-            let cd = &list[i];
-            remaining[c as usize][i] = cd.children.len();
-            acc[c as usize][i] = cd.own;
-            if cd.children.is_empty() {
-                heap.push(Reverse((cd.own, c, i)));
-            }
-            for &ch in &cd.children {
-                waiters[ch as usize].push((c, i));
+        for &i in &inst.feasible[c.index()] {
+            let cand = priced
+                .candidate(c, i)
+                .expect("a feasible node is one of its class's");
+            let slot = graph.slot(cand);
+            remaining[slot] = priced.needs(cand).len();
+            acc[slot] = priced.own(cand);
+            if priced.needs(cand).is_empty() {
+                heap.push(Reverse((priced.own(cand), c, i)));
             }
         }
     }
 
     let mut best: Vec<Option<(u64, usize)>> = vec![None; n];
     while let Some(Reverse((cost, c, cand_idx))) = heap.pop() {
-        if best[c as usize].is_some() {
+        if best[c.index()].is_some() {
             continue;
         }
-        best[c as usize] = Some((cost, cand_idx));
-        for (pc, pi) in waiters[c as usize].clone() {
-            if best[pc as usize].is_some() {
+        best[c.index()] = Some((cost, cand_idx));
+        let live = priced.live_of[c.index()].expect("a settled class is reached");
+        for parent in graph.parents(live) {
+            if best[parent.class().index()].is_some() {
                 continue;
             }
-            let cand = &inst.cands[pc as usize][pi];
-            let Some(slot) = cand.children.iter().position(|&x| x == c) else {
+            // A parent whose row the model leaves empty (a fold) or that is
+            // not feasible waits on nothing and has no count to take down.
+            let Some(child) = priced.needs(parent).iter().find(|ch| ch.live == live) else {
                 continue;
             };
-            let r = &mut remaining[pc as usize][pi];
+            let slot = graph.slot(parent);
+            let r = &mut remaining[slot];
             if *r == 0 {
                 continue;
             }
             *r -= 1;
-            acc[pc as usize][pi] =
-                acc[pc as usize][pi].saturating_add(cost.saturating_mul(cand.mult[slot] as u64));
+            acc[slot] = acc[slot].saturating_add(cost.saturating_mul(child.uses as u64));
             if *r == 0 {
-                heap.push(Reverse((acc[pc as usize][pi], pc, pi)));
+                heap.push(Reverse((acc[slot], parent.class(), parent.idx())));
             }
         }
     }
 
-    best[inst.root as usize]?;
+    best[inst.root.index()]?;
     let mut choices: Vec<Option<usize>> = vec![None; n];
     for &c in &inst.reachable {
-        choices[c as usize] = best[c as usize].map(|(_, idx)| idx);
+        choices[c.index()] = best[c.index()].map(|(_, idx)| idx);
     }
     Some(choices)
 }
@@ -438,25 +477,21 @@ fn path_lower_bounds(inst: &Instance) -> Vec<u64> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    let n = inst.cands.len();
-    let mut remaining: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut acc: Vec<Vec<u64>> = vec![Vec::new(); n];
-    let mut waiters: Vec<Vec<(u32, usize)>> = vec![Vec::new(); n];
-    let mut heap: BinaryHeap<Reverse<(u64, u32, usize)>> = BinaryHeap::new();
+    let priced = &*inst.priced;
+    let graph = &priced.graph;
+    let n = priced.num_classes();
+    let mut remaining = vec![0usize; graph.slot_count()];
+    let mut acc = vec![0u64; graph.slot_count()];
+    let mut heap: BinaryHeap<Reverse<(u64, EClassId, usize)>> = BinaryHeap::new();
 
     for &c in &inst.reachable {
-        let list = &inst.cands[c as usize];
-        remaining[c as usize] = vec![0; list.len()];
-        acc[c as usize] = vec![0; list.len()];
-        for &i in &inst.alive[c as usize] {
-            let cd = &list[i];
-            remaining[c as usize][i] = cd.children.len();
-            acc[c as usize][i] = 0;
-            if cd.children.is_empty() {
-                heap.push(Reverse((cd.own, c, i)));
-            }
-            for &ch in &cd.children {
-                waiters[ch as usize].push((c, i));
+        for &i in &inst.alive[c.index()] {
+            let cand = priced
+                .candidate(c, i)
+                .expect("a live node is one of its class's");
+            remaining[graph.slot(cand)] = priced.needs(cand).len();
+            if priced.needs(cand).is_empty() {
+                heap.push(Reverse((priced.own(cand), c, i)));
             }
         }
     }
@@ -464,24 +499,32 @@ fn path_lower_bounds(inst: &Instance) -> Vec<u64> {
     let mut lb: Vec<u64> = vec![0; n];
     let mut done: Vec<bool> = vec![false; n];
     while let Some(Reverse((cost, c, _))) = heap.pop() {
-        if done[c as usize] {
+        if done[c.index()] {
             continue;
         }
-        done[c as usize] = true;
-        lb[c as usize] = cost;
-        for (pc, pi) in waiters[c as usize].clone() {
-            if done[pc as usize] {
+        done[c.index()] = true;
+        lb[c.index()] = cost;
+        let live = priced.live_of[c.index()].expect("a settled class is reached");
+        for parent in graph.parents(live) {
+            if done[parent.class().index()] {
                 continue;
             }
-            let r = &mut remaining[pc as usize][pi];
+            if priced.needs(parent).iter().all(|ch| ch.live != live) {
+                continue;
+            }
+            let slot = graph.slot(parent);
+            let r = &mut remaining[slot];
             if *r == 0 {
                 continue;
             }
             *r -= 1;
-            acc[pc as usize][pi] = acc[pc as usize][pi].max(cost);
+            acc[slot] = acc[slot].max(cost);
             if *r == 0 {
-                let own = inst.cands[pc as usize][pi].own;
-                heap.push(Reverse((own.saturating_add(acc[pc as usize][pi]), pc, pi)));
+                heap.push(Reverse((
+                    priced.own(parent).saturating_add(acc[slot]),
+                    parent.class(),
+                    parent.idx(),
+                )));
             }
         }
     }
@@ -501,21 +544,24 @@ fn chain_upper_bounds(inst: &Instance) -> Vec<u64> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    let n = inst.cands.len();
-    let mut dist: Vec<u64> = vec![u64::MAX; n];
-    let mut heap: BinaryHeap<Reverse<(u64, u32)>> = BinaryHeap::new();
-    dist[inst.root as usize] = 0;
+    let priced = &*inst.priced;
+    let mut dist: Vec<u64> = vec![u64::MAX; priced.num_classes()];
+    let mut heap: BinaryHeap<Reverse<(u64, EClassId)>> = BinaryHeap::new();
+    dist[inst.root.index()] = 0;
     heap.push(Reverse((0, inst.root)));
     while let Some(Reverse((d, c))) = heap.pop() {
-        if d > dist[c as usize] {
+        if d > dist[c.index()] {
             continue;
         }
-        for &i in &inst.alive[c as usize] {
-            let cd = &inst.cands[c as usize][i];
-            let through = d.saturating_add(cd.own);
-            for &ch in &cd.children {
-                if through < dist[ch as usize] {
-                    dist[ch as usize] = through;
+        for &i in &inst.alive[c.index()] {
+            let cand = priced
+                .candidate(c, i)
+                .expect("a live node is one of its class's");
+            let through = d.saturating_add(priced.own(cand));
+            for &child in priced.needs(cand) {
+                let ch = priced.class_of(child);
+                if through < dist[ch.index()] {
+                    dist[ch.index()] = through;
                     heap.push(Reverse((through, ch)));
                 }
             }
@@ -543,6 +589,7 @@ fn chain_upper_bounds(inst: &Instance) -> Vec<u64> {
 /// already optimal.
 fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
     const MAX_ROUNDS: usize = 8;
+    let priced = Rc::clone(&inst.priced);
     let mut below = path_lower_bounds(inst);
     for _ in 0..MAX_ROUNDS {
         below = path_lower_bounds(inst);
@@ -550,27 +597,28 @@ fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
         let mut changed = false;
         for idx in 0..inst.reachable.len() {
             let c = inst.reachable[idx];
-            let before = inst.alive[c as usize].len();
-            let kept: Vec<usize> = inst.alive[c as usize]
+            let before = inst.alive[c.index()].len();
+            let kept: Vec<usize> = inst.alive[c.index()]
                 .iter()
                 .copied()
                 .filter(|&i| {
-                    let cd = &inst.cands[c as usize][i];
-                    if cd
-                        .children
+                    let cand = priced
+                        .candidate(c, i)
+                        .expect("a live node is one of its class's");
+                    let needs = priced.needs(cand);
+                    if needs
                         .iter()
-                        .any(|&ch| inst.alive[ch as usize].is_empty())
+                        .any(|&ch| inst.alive[priced.class_of(ch).index()].is_empty())
                     {
                         return false;
                     }
-                    let deepest = cd
-                        .children
+                    let deepest = needs
                         .iter()
-                        .map(|&ch| below[ch as usize])
+                        .map(|&ch| below[priced.class_of(ch).index()])
                         .max()
                         .unwrap_or(0);
-                    above[c as usize]
-                        .saturating_add(cd.own)
+                    above[c.index()]
+                        .saturating_add(priced.own(cand))
                         .saturating_add(deepest)
                         < ub
                 })
@@ -578,23 +626,29 @@ fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
             if kept.len() != before {
                 changed = true;
             }
-            inst.alive[c as usize] = kept;
+            inst.alive[c.index()] = kept;
         }
         if !changed {
             break;
         }
-        if inst.alive[inst.root as usize].is_empty() {
+        if inst.alive[inst.root.index()].is_empty() {
             return (below, false);
         }
     }
     for &c in &inst.reachable {
-        inst.floor[c as usize] = inst.alive[c as usize]
+        inst.floor[c.index()] = inst.alive[c.index()]
             .iter()
-            .map(|&i| inst.cands[c as usize][i].own)
+            .map(|&i| {
+                priced.own(
+                    priced
+                        .candidate(c, i)
+                        .expect("a live node is one of its class's"),
+                )
+            })
             .min()
             .unwrap_or(0);
     }
-    let alive_root = !inst.alive[inst.root as usize].is_empty();
+    let alive_root = !inst.alive[inst.root.index()].is_empty();
     (below, alive_root)
 }
 
@@ -627,9 +681,9 @@ struct Search<'a> {
     /// Per class, an admissible lower bound on the DAG cost of its subtree.
     path_lb: &'a [u64],
     assign: Vec<Option<usize>>,
-    /// Class -> index into `inst.cands[class]` of the assigned candidate.
+    /// Class -> index of the assigned candidate among its class's e-nodes.
     cand_of: Vec<Option<usize>>,
-    pending: Vec<u32>,
+    pending: Vec<EClassId>,
     cost: u64,
     best: u64,
     best_assign: Vec<Option<usize>>,
@@ -657,12 +711,12 @@ impl<'a> Search<'a> {
         let mut max_chain = 0u64;
         for i in from..self.pending.len() {
             let c = self.pending[i];
-            if self.assign[c as usize].is_some() || self.stamp[c as usize] == e {
+            if self.assign[c.index()].is_some() || self.stamp[c.index()] == e {
                 continue;
             }
-            self.stamp[c as usize] = e;
-            sum_floors = sum_floors.saturating_add(self.inst.floor[c as usize]);
-            max_chain = max_chain.max(self.path_lb[c as usize]);
+            self.stamp[c.index()] = e;
+            sum_floors = sum_floors.saturating_add(self.inst.floor[c.index()]);
+            max_chain = max_chain.max(self.path_lb[c.index()]);
         }
         // Both are lower bounds on the same remaining cost; the larger is
         // the better one. They are not additive — a chain under one pending
@@ -676,11 +730,17 @@ impl<'a> Search<'a> {
     /// A cycle can only form entirely among assigned classes, because an
     /// unassigned class has no outgoing edges yet — so this check at the
     /// moment of assignment is complete.
-    fn creates_cycle(&self, c: u32) -> bool {
-        let mut seen: HashSet<u32> = HashSet::new();
-        let mut stack: Vec<u32> = Vec::new();
-        let cand = &self.inst.cands[c as usize][self.cand_of[c as usize].expect("just assigned")];
-        stack.extend(cand.children.iter().copied());
+    fn creates_cycle(&self, c: EClassId) -> bool {
+        let mut seen: HashSet<EClassId> = HashSet::new();
+        let mut stack: Vec<EClassId> = Vec::new();
+        let priced = &*self.inst.priced;
+        let needs_of = |class: EClassId, ci: usize| {
+            let cand = priced
+                .candidate(class, ci)
+                .expect("an assigned node is one of its class's");
+            priced.needs(cand).iter().map(|&ch| priced.class_of(ch))
+        };
+        stack.extend(needs_of(c, self.cand_of[c.index()].expect("just assigned")));
         while let Some(x) = stack.pop() {
             if x == c {
                 return true;
@@ -688,8 +748,8 @@ impl<'a> Search<'a> {
             if !seen.insert(x) {
                 continue;
             }
-            if let Some(ci) = self.cand_of[x as usize] {
-                stack.extend(self.inst.cands[x as usize][ci].children.iter().copied());
+            if let Some(ci) = self.cand_of[x.index()] {
+                stack.extend(needs_of(x, ci));
             }
         }
         false
@@ -700,7 +760,7 @@ impl<'a> Search<'a> {
             return;
         }
         self.expansions += 1;
-        if self.expansions % 2048 == 0
+        if self.expansions.is_multiple_of(2048)
             && (self.expansions > self.max_expansions || Instant::now() > self.deadline)
         {
             self.timed_out = true;
@@ -708,7 +768,7 @@ impl<'a> Search<'a> {
         }
 
         let mut pos = pos;
-        while pos < self.pending.len() && self.assign[self.pending[pos] as usize].is_some() {
+        while pos < self.pending.len() && self.assign[self.pending[pos].index()].is_some() {
             pos += 1;
         }
         if pos == self.pending.len() {
@@ -722,27 +782,33 @@ impl<'a> Search<'a> {
         let c = self.pending[pos];
         // Cheapest own cost first: finds good incumbents early, which is what
         // makes the bound bite.
-        let mut order: Vec<usize> = self.inst.alive[c as usize].clone();
+        let mut order: Vec<usize> = self.inst.alive[c.index()].clone();
+        let priced = &*self.inst.priced;
         order.sort_by_key(|&i| {
-            let cd = &self.inst.cands[c as usize][i];
-            (cd.own, cd.children.len(), cd.node_idx)
+            let cand = priced
+                .candidate(c, i)
+                .expect("a live node is one of its class's");
+            (priced.own(cand), priced.needs(cand).len(), i)
         });
 
         for ci in order {
             if self.timed_out {
                 return;
             }
-            let own = self.inst.cands[c as usize][ci].own;
-            self.assign[c as usize] = Some(ci);
-            self.cand_of[c as usize] = Some(ci);
+            let cand = priced
+                .candidate(c, ci)
+                .expect("a live node is one of its class's");
+            let own = priced.own(cand);
+            self.assign[c.index()] = Some(ci);
+            self.cand_of[c.index()] = Some(ci);
             self.cost = self.cost.saturating_add(own);
 
             let ok = !self.creates_cycle(c);
             if ok {
                 let saved = self.pending.len();
-                for k in 0..self.inst.cands[c as usize][ci].children.len() {
-                    let ch = self.inst.cands[c as usize][ci].children[k];
-                    if self.assign[ch as usize].is_none() {
+                for &child in priced.needs(cand) {
+                    let ch = priced.class_of(child);
+                    if self.assign[ch.index()].is_none() {
                         self.pending.push(ch);
                     }
                 }
@@ -754,36 +820,42 @@ impl<'a> Search<'a> {
             }
 
             self.cost -= own;
-            self.assign[c as usize] = None;
-            self.cand_of[c as usize] = None;
+            self.assign[c.index()] = None;
+            self.cand_of[c.index()] = None;
         }
     }
+}
+
+/// The best term known before the exact search starts: its choice map and
+/// DAG cost.
+#[derive(Clone, Copy)]
+struct Incumbent<'a> {
+    choices: &'a [Option<usize>],
+    cost: u64,
 }
 
 /// Exact DAG-cost extraction, seeded with `ub_choices` (the greedy term) as
 /// the incumbent so the bound bites from the first node.
 fn exact_dag_choices(
     inst: &Instance,
-    seed: &[Option<usize>],
-    seed_cost: u64,
-    max_expansions: u64,
-    time_limit: Duration,
+    incumbent: Incumbent<'_>,
+    limits: SearchLimits,
 ) -> ExactResult {
-    let n = inst.cands.len();
+    let Incumbent {
+        choices: seed,
+        cost: seed_cost,
+    } = incumbent;
+    let SearchLimits {
+        time_limit,
+        max_expansions,
+    } = limits;
+    let n = inst.priced.num_classes();
     let started = Instant::now();
     // The search runs on a pruned copy; the caller's instance keeps every
     // node, so a chooser's answer can still be re-costed afterwards.
-    let mut inst = Instance {
-        root: inst.root,
-        cands: inst.cands.clone(),
-        feasible: inst.feasible.clone(),
-        alive: inst.alive.clone(),
-        floor: inst.floor.clone(),
-        reachable: inst.reachable.clone(),
-        dominated: inst.dominated,
-    };
+    let mut inst = inst.clone();
     let (path_lb, root_alive) = prune_to_incumbent(&mut inst, seed_cost);
-    let root_chain_lb = path_lb[inst.root as usize];
+    let root_chain_lb = path_lb[inst.root.index()];
     if !root_alive {
         // Reduced-cost fixing removed every way of beating the incumbent, so
         // the incumbent IS the optimum — proved without expanding a node.
@@ -847,115 +919,6 @@ fn exact_dag_choices(
 }
 
 // ---------------------------------------------------------------------------
-// An instrumented mirror of `extract_dag_scoped`, pinned to the real thing
-// ---------------------------------------------------------------------------
-
-/// The greedy DP again, byte-identical in behavior, but recording which
-/// classes it priced at `CYCLE_COST` — the observation defect 2 needs and
-/// the public return type does not carry.
-///
-/// The caller asserts the mirror's choices equal `extract_dag_scoped`'s. A
-/// mirror that has drifted is a measurement reporting someone else's
-/// algorithm, so drift fails loudly rather than being averaged in.
-struct GreedyTrace {
-    choices: Vec<Option<usize>>,
-    /// Classes whose winning node was priced at the cycle sentinel.
-    cycle_priced: HashSet<u32>,
-}
-
-fn greedy_trace(egraph: &EGraph, root: EClassId, costs: &CostModel) -> GreedyTrace {
-    use std::collections::BTreeSet;
-    const CYCLE_COST: usize = usize::MAX / 4;
-
-    let num_classes = egraph.num_classes();
-    let mut best_cost: Vec<Option<usize>> = vec![None; num_classes];
-    let mut best_node: Vec<Option<usize>> = vec![None; num_classes];
-    let mut cycle_priced: HashSet<u32> = HashSet::new();
-
-    let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
-    let mut on_stack: BTreeSet<u32> = BTreeSet::new();
-
-    while let Some((class, children_done)) = stack.pop() {
-        let canonical = egraph.find(class);
-        if best_cost[canonical.0 as usize].is_some() {
-            continue;
-        }
-        if !children_done {
-            if !on_stack.insert(canonical.0) {
-                continue;
-            }
-            stack.push((canonical, true));
-            for node in egraph.nodes(canonical) {
-                {
-                    let children = (node).children_slice();
-                    for &child in children {
-                        let child_canonical = egraph.find(child);
-                        if best_cost[child_canonical.0 as usize].is_none() {
-                            stack.push((child, false));
-                        }
-                    }
-                }
-            }
-        } else {
-            on_stack.remove(&canonical.0);
-            let nodes = egraph.nodes(canonical);
-            let mut min_cost = usize::MAX;
-            let mut min_idx = 0;
-            let mut min_was_cycle = false;
-            for (idx, node) in nodes.iter().enumerate() {
-                let mut saw_cycle = false;
-                let this_node_cost = match node {
-                    ENode::Var(_)
-                    | ENode::Const(_)
-                    | ENode::Buffer(_)
-                    | ENode::Uniform(_)
-                    | ENode::Param(_)
-                    | ENode::Ref { .. } => costs.node_op_cost(node),
-                    ENode::Op { .. } | ENode::Reduce { .. } => {
-                        let children = node.children_slice();
-                        if children.iter().any(|&c| egraph.find(c) == canonical) {
-                            saw_cycle = true;
-                            CYCLE_COST
-                        } else {
-                            let op_cost = costs.node_op_cost(node);
-                            let children_cost: usize = children
-                                .iter()
-                                .map(|&child| {
-                                    let c = egraph.find(child);
-                                    match best_cost[c.0 as usize] {
-                                        Some(v) => v,
-                                        None => {
-                                            saw_cycle = true;
-                                            CYCLE_COST
-                                        }
-                                    }
-                                })
-                                .fold(0usize, usize::saturating_add);
-                            op_cost.saturating_add(children_cost)
-                        }
-                    }
-                };
-                if this_node_cost < min_cost {
-                    min_cost = this_node_cost;
-                    min_idx = idx;
-                    min_was_cycle = saw_cycle;
-                }
-            }
-            if min_was_cycle {
-                cycle_priced.insert(canonical.0);
-            }
-            best_cost[canonical.0 as usize] = Some(min_cost);
-            best_node[canonical.0 as usize] = Some(min_idx);
-        }
-    }
-
-    GreedyTrace {
-        choices: best_node,
-        cycle_priced,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // One kernel, measured
 // ---------------------------------------------------------------------------
 
@@ -997,11 +960,6 @@ struct Row {
     /// (greedy_tree - treeopt_tree) / greedy_tree — how far the DP lands from
     /// the optimum of the objective it *names*, with no DAG argument at all.
     objective_miss_frac: f64,
-    /// Classes the greedy DP priced at `CYCLE_COST` that the best term found
-    /// by the exact search nevertheless uses. On an unsolved kernel that
-    /// term is the seed, so this is a floor, not a count of all of them.
-    cycle_priced_used_by_exact: usize,
-    cycle_priced_total: usize,
     /// Defect 3: does the reported cost describe the returned term?
     reported_matches_returned: bool,
     reported_delta: i64,
@@ -1034,16 +992,43 @@ struct Measured {
     row: Row,
 }
 
-fn measure(
-    name: &str,
-    category: &'static str,
+/// The saturation budget a kernel is optimized under, with the name it
+/// carries in the report.
+#[derive(Clone, Copy)]
+struct Regime {
     budget: Budget,
-    budget_label: &'static str,
-    arena: &ExprArena,
+    label: &'static str,
+}
+
+/// The kernel one measurement is taken on, and the regime it is optimized
+/// under.
+struct Subject<'a> {
+    name: &'a str,
+    category: &'static str,
+    regime: Regime,
+    arena: &'a ExprArena,
     root: ExprId,
+}
+
+/// How long the exact search may run: wall clock and node expansions.
+#[derive(Clone, Copy)]
+struct SearchLimits {
     time_limit: Duration,
     max_expansions: u64,
-) -> Measured {
+}
+
+fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
+    let Subject {
+        name,
+        category,
+        regime,
+        arena,
+        root,
+    } = subject;
+    let Regime {
+        budget,
+        label: budget_label,
+    } = regime;
     // What `optimize_runtime_arena_uncached` hands the e-graph for a term
     // with no reference: the arena as written (`expand_refs` is the identity
     // on it; one that held a reference is measured here whole rather than
@@ -1053,14 +1038,14 @@ fn measure(
     // that no longer exists, on an arena an order of magnitude larger than
     // production's.
     let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
-    let node_count = reachable_count(&arena, root);
+    let node_count = inserted_class_count(&arena, root);
 
     let mut optimizer = Optimizer::production().budget(budget);
     let mut egraph = optimizer.egraph();
     let root_class = insert(&arena, root, &mut egraph, Vocabulary::Runtime)
         .ok()
         .unwrap_or_else(|| panic!("{name}: arena_to_egraph returned None (unsupported node)"));
-    let optimized = optimizer.run(&mut egraph, root_class, node_count);
+    let optimized = optimizer.run(&mut egraph, root_class);
 
     let model = CostModel::latency_prior();
     let inst = Instance::build(&egraph, root_class, &model);
@@ -1072,20 +1057,11 @@ fn measure(
     let (tree_arm, shared_arm): (ExtractedDAG, ExtractedDAG) =
         extract_dag_objectives(&egraph, root_class, &model, LatticeShape::POINT);
     let dag = tree_arm;
-    let trace = greedy_trace(&egraph, root_class, &model);
-    let mirrored = Extraction::from_dp(&egraph, root_class, trace.choices.clone());
-    assert_eq!(
-        mirrored.choices(),
-        dag.choices.as_slice(),
-        "{name}: the instrumented greedy mirror has drifted from the tree arm of \
-         extract_dag_objectives — the measurement would be describing a different \
-         algorithm than the one #1116 replaces"
-    );
     let greedy_choices = dag.choices.clone();
     let greedy_dag = inst.dag_cost(&greedy_choices).unwrap_or_else(|| {
         panic!(
             "{name}: extract_dag returned a choice function that is not a term — either \
-             cyclic after `repair_choices_well_founded`, or missing a choice for a class \
+             cyclic, or missing a choice for a class \
              the root reaches. That is a production bug, not a measurement outcome"
         )
     });
@@ -1097,7 +1073,7 @@ fn measure(
     let sharing_dag = inst.dag_cost(&sharing_choices).unwrap_or_else(|| {
         panic!(
             "{name}: the sharing-aware DP returned a choice function that is not a term \
-             — either cyclic after `repair_choices_well_founded`, or missing a choice \
+             — either cyclic, or missing a choice \
              for a class the root reaches. That is a production bug, not a measurement \
              outcome"
         )
@@ -1160,23 +1136,21 @@ fn measure(
     .min_by_key(|&(_, c)| c)
     .map(|(choices, c)| (choices.clone(), c))
     .expect("three seeds");
-    let exact = exact_dag_choices(&inst, &seed, seed_cost, max_expansions, time_limit);
-
-    let cycle_priced_used_by_exact = trace
-        .cycle_priced
-        .iter()
-        .filter(|&&c| exact.choices.get(c as usize).copied().flatten().is_some())
-        .count();
+    let incumbent = Incumbent {
+        choices: &seed,
+        cost: seed_cost,
+    };
+    let exact = exact_dag_choices(&inst, incumbent, limits);
 
     let free_classes = inst
         .reachable
         .iter()
-        .filter(|&&c| inst.alive[c as usize].len() > 1)
+        .filter(|&&c| inst.alive[c.index()].len() > 1)
         .count();
     let branch_product_log10: f64 = inst
         .reachable
         .iter()
-        .map(|&c| (inst.alive[c as usize].len().max(1) as f64).log10())
+        .map(|&c| (inst.alive[c.index()].len().max(1) as f64).log10())
         .sum();
 
     let solved = exact.status == ExactStatus::Optimal;
@@ -1224,8 +1198,6 @@ fn measure(
         } else {
             0
         },
-        cycle_priced_used_by_exact,
-        cycle_priced_total: trace.cycle_priced.len(),
         reported_matches_returned: greedy_tree == dag.total_cost as u64,
         reported_delta: dag.total_cost as i64 - greedy_tree as i64,
         dominated_candidates: inst.dominated,
@@ -1273,6 +1245,10 @@ fn extraction_gap_measurement() {
     );
     let time_limit = Duration::from_secs(env_usize("PIXELFLOW_EXTRACTION_GAP_SECS", 20) as u64);
     let max_expansions = env_usize("PIXELFLOW_EXTRACTION_GAP_EXPANSIONS", 40_000_000) as u64;
+    let limits = SearchLimits {
+        time_limit,
+        max_expansions,
+    };
     let limit_kernels = env_usize("PIXELFLOW_EXTRACTION_GAP_LIMIT", usize::MAX);
 
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -1294,14 +1270,17 @@ fn extraction_gap_measurement() {
         let (name, arena, root) = load_arena_dump(path);
         let category = category_of(&path.file_name().unwrap().to_string_lossy());
         let m = measure(
-            &name,
-            category,
-            Budget::Production,
-            "production",
-            &arena,
-            root,
-            time_limit,
-            max_expansions,
+            Subject {
+                name: &name,
+                category,
+                regime: Regime {
+                    budget: Budget::Production,
+                    label: "production",
+                },
+                arena: &arena,
+                root,
+            },
+            limits,
         );
         eprintln!(
             "{:<28} {:>6} cls {:>7} reach {:>6} free  greedy {:>7} treeopt {:>7} exact {:>7} [{}] {:.0}ms",
@@ -1337,14 +1316,17 @@ fn extraction_gap_measurement() {
                 let pair = generator.generate_arena();
                 let name = format!("synth_d{max_depth}_s{seed}");
                 let m = measure(
-                    &name,
-                    "synthetic",
-                    Budget::Production,
-                    "production",
-                    &pair.arena,
-                    pair.unoptimized,
-                    time_limit,
-                    max_expansions,
+                    Subject {
+                        name: &name,
+                        category: "synthetic",
+                        regime: Regime {
+                            budget: Budget::Production,
+                            label: "production",
+                        },
+                        arena: &pair.arena,
+                        root: pair.unoptimized,
+                    },
+                    limits,
                 );
                 rows.push(m.row);
             }
@@ -1377,21 +1359,21 @@ fn extraction_gap_measurement() {
             (
                 Budget::Explicit {
                     iterations: 100,
-                    classes: 20_000,
+                    minted: 20_000,
                     applications: None,
                 },
                 "roomier",
             ),
         ] {
             let m = measure(
-                &format!("{name} [{label}]"),
-                category,
-                budget,
-                label,
-                &arena,
-                root,
-                time_limit,
-                max_expansions,
+                Subject {
+                    name: &format!("{name} [{label}]"),
+                    category,
+                    regime: Regime { budget, label },
+                    arena: &arena,
+                    root,
+                },
+                limits,
             );
             eprintln!(
                 "monotonicity {:<32} greedy {:>7} treeopt {:>7} exact {:>7} [{}]",
@@ -1406,23 +1388,35 @@ fn extraction_gap_measurement() {
     }
 
     write_report(
-        &rows,
-        &monotone_rows,
-        real_count,
-        synth_count,
-        time_limit,
-        max_expansions,
+        &KernelRows {
+            rows: &rows,
+            monotone: &monotone_rows,
+            real_count,
+            synth_count,
+        },
+        limits,
     );
 }
 
-fn write_report(
-    rows: &[Row],
-    monotone: &[Row],
+/// What a finished run measured, for the report to summarize.
+struct KernelRows<'a> {
+    rows: &'a [Row],
+    monotone: &'a [Row],
     real_count: usize,
     synth_count: usize,
-    time_limit: Duration,
-    max_expansions: u64,
-) {
+}
+
+fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
+    let KernelRows {
+        rows,
+        monotone,
+        real_count,
+        synth_count,
+    } = *measured;
+    let SearchLimits {
+        time_limit,
+        max_expansions,
+    } = limits;
     let solved: Vec<&Row> = rows
         .iter()
         .filter(|r| r.exact_status == "OPTIMAL")
@@ -1513,10 +1507,6 @@ fn write_report(
     let total_loss_dp: i64 = solved.iter().map(|r| r.loss_dp).sum();
     let total_loss_sharing: i64 = solved.iter().map(|r| r.loss_sharing).sum();
     let reported_mismatch = rows.iter().filter(|r| !r.reported_matches_returned).count();
-    let cycle_used = rows
-        .iter()
-        .filter(|r| r.cycle_priced_used_by_exact > 0)
-        .count();
 
     eprintln!("=== extraction gap ===");
     eprintln!(
@@ -1558,10 +1548,6 @@ fn write_report(
         rows.len()
     );
     eprintln!(
-        "cycle-priced classes used by the exact term: {cycle_used}/{} kernels",
-        rows.len()
-    );
-    eprintln!(
         "certified floor over ALL kernels: median greedy/best-found {certified_med:.4}, \
          strictly improved on {certified_improved}"
     );
@@ -1578,12 +1564,12 @@ fn write_report(
         "name,category,budget,node_count,classes,reachable_classes,free_classes,branch_product_log10,\
          stop,greedy_dag,greedy_tree,greedy_reported,treeopt_dag,treeopt_tree,exact_status,exact_dag,\
          exact_lower_bound,exact_expansions,exact_ms,ratio,loss_dp,loss_sharing,\
-         cycle_priced_used_by_exact,cycle_priced_total,reported_matches_returned,reported_delta,\
+         reported_matches_returned,reported_delta,\
          dominated_candidates,dp_loss_frac,objective_miss_frac\n",
     );
     for r in rows.iter().chain(monotone.iter()) {
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1},{:.6},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1},{:.6},{},{},{},{},{},{:.6},{:.6}\n",
             r.name,
             r.category,
             r.budget,
@@ -1606,14 +1592,11 @@ fn write_report(
             r.ratio,
             r.loss_dp,
             r.loss_sharing,
-            r.cycle_priced_used_by_exact,
-            r.cycle_priced_total,
             r.reported_matches_returned,
             r.reported_delta,
-            format!(
-                "{},{:.6},{:.6}",
-                r.dominated_candidates, r.dp_loss_frac, r.objective_miss_frac
-            ),
+            r.dominated_candidates,
+            r.dp_loss_frac,
+            r.objective_miss_frac,
         ));
     }
     let csv_path = out_dir.join("2026-09-02-extraction-gap.csv");
@@ -1627,8 +1610,8 @@ fn write_report(
              \"branch_product_log10\":{:.3},\"stop\":\"{}\",\"greedy_dag\":{},\"greedy_tree\":{},\
              \"greedy_reported\":{},\"treeopt_dag\":{},\"treeopt_tree\":{},\"exact_status\":\"{}\",\
              \"exact_dag\":{},\"exact_lower_bound\":{},\"exact_expansions\":{},\"exact_ms\":{:.1},\
-             \"ratio\":{},\"loss_dp\":{},\"loss_sharing\":{},\"cycle_priced_used_by_exact\":{},\
-             \"cycle_priced_total\":{},\"reported_matches_returned\":{},\"reported_delta\":{},\
+             \"ratio\":{},\"loss_dp\":{},\"loss_sharing\":{},\
+             \"reported_matches_returned\":{},\"reported_delta\":{},\
              \"dp_loss_frac\":{:.6},\"objective_miss_frac\":{:.6}}}",
             r.name,
             r.category,
@@ -1656,8 +1639,6 @@ fn write_report(
             },
             r.loss_dp,
             r.loss_sharing,
-            r.cycle_priced_used_by_exact,
-            r.cycle_priced_total,
             r.reported_matches_returned,
             r.reported_delta,
             r.dp_loss_frac,
@@ -1705,8 +1686,7 @@ fn write_report(
         jnum(obj_worst)
     ));
     json.push_str(&format!(
-        "    \"reported_cost_mismatch_kernels\": {reported_mismatch}, \
-         \"cycle_priced_used_kernels\": {cycle_used},\n"
+        "    \"reported_cost_mismatch_kernels\": {reported_mismatch},\n"
     ));
     json.push_str(&format!(
         "    \"certified_ratio_median_all_kernels\": {}, \
@@ -1822,10 +1802,11 @@ fn write_report(
          ```\n\n\
          `tree_optimal` is Knuth's algorithm — Dijkstra generalized to AND-OR graphs — which \
          computes the exact minimum TREE cost in polynomial time. That is the objective \
-         `extract_dag` *names*, so the first term is the DP failing its own objective \
-         (single DFS + `CYCLE_COST`, defects 2 and 3) and the second is that objective being \
-         the wrong one (sharing unpriced, defect 1). Both terms are measured as the true DAG \
-         cost of the term each chooser returns.\n"
+         `extract_dag` *names*, so the first term is the tree arm's distance from that optimum: \
+         settlement is exact on tree cost, so it is expected to be 0 and anything else is a \
+         regression. The second is that objective being the wrong one (sharing unpriced, \
+         defect 1). Both terms are measured as the true DAG cost of the term each chooser \
+         returns.\n"
     )
     .unwrap();
     writeln!(w, "| share | pooled cost units (solved kernels) |").unwrap();
@@ -1843,19 +1824,11 @@ fn write_report(
     .unwrap();
     writeln!(
         w,
-        "\n(iii) **cost reported before repair** (issue #1111, fixed): `total_cost` fails to \
+        "\n(iii) **cost not describing the returned term** (issue #1111, fixed): `total_cost` fails to \
          describe the returned term on **{reported_mismatch} of {}** kernels. It was 132/302 \
-         when the number was read before `repair_choices_well_founded`; it is costed from the \
-         repaired choices now, so anything but 0 here is a regression. Per-kernel magnitudes \
+         when the number was read before the choices were final; it is costed from the \
+         returned choices now, so anything but 0 here is a regression. Per-kernel magnitudes \
          are in `reported_delta`.\n",
-        rows.len()
-    )
-    .unwrap();
-    writeln!(
-        w,
-        "Cycle handling, separately: the greedy DP priced at least one class at `CYCLE_COST` \
-         that the best term the exact search holds nevertheless uses, on **{cycle_used} of \
-         {}** kernels. On an unsolved kernel that term is the seed, so this is a floor.\n",
         rows.len()
     )
     .unwrap();
@@ -2089,6 +2062,10 @@ fn extraction_objective_measurement() {
     );
     let time_limit = Duration::from_secs(env_usize("PIXELFLOW_EXTRACTION_GAP_SECS", 4) as u64);
     let max_expansions = env_usize("PIXELFLOW_EXTRACTION_GAP_EXPANSIONS", 15_000_000) as u64;
+    let limits = SearchLimits {
+        time_limit,
+        max_expansions,
+    };
     let limit_kernels = env_usize("PIXELFLOW_EXTRACTION_GAP_LIMIT", usize::MAX);
     let skip_synthetic = std::env::var("PIXELFLOW_EXTRACTION_OBJECTIVE_REAL_ONLY").is_ok();
 
@@ -2111,14 +2088,17 @@ fn extraction_objective_measurement() {
         let (name, arena, root) = load_arena_dump(path);
         let category = category_of(&path.file_name().unwrap().to_string_lossy());
         let m = measure(
-            &name,
-            category,
-            Budget::Production,
-            "production",
-            &arena,
-            root,
-            time_limit,
-            max_expansions,
+            Subject {
+                name: &name,
+                category,
+                regime: Regime {
+                    budget: Budget::Production,
+                    label: "production",
+                },
+                arena: &arena,
+                root,
+            },
+            limits,
         );
         eprintln!(
             "{:<28} tree {:>8} shared {:>8} chosen {:>8} exact {:>8} [{}]",
@@ -2152,29 +2132,31 @@ fn extraction_objective_measurement() {
                 let pair = generator.generate_arena();
                 let name = format!("synth_d{max_depth}_s{seed}");
                 let m = measure(
-                    &name,
-                    "synthetic",
-                    Budget::Production,
-                    "production",
-                    &pair.arena,
-                    pair.unoptimized,
-                    time_limit,
-                    max_expansions,
+                    Subject {
+                        name: &name,
+                        category: "synthetic",
+                        regime: Regime {
+                            budget: Budget::Production,
+                            label: "production",
+                        },
+                        arena: &pair.arena,
+                        root: pair.unoptimized,
+                    },
+                    limits,
                 );
                 rows.push(m.row);
             }
         }
     }
 
-    write_objective_report(&rows, real_count, time_limit, max_expansions);
+    write_objective_report(&rows, real_count, limits);
 }
 
-fn write_objective_report(
-    rows: &[Row],
-    real_count: usize,
-    time_limit: Duration,
-    max_expansions: u64,
-) {
+fn write_objective_report(rows: &[Row], real_count: usize, limits: SearchLimits) {
+    let SearchLimits {
+        time_limit,
+        max_expansions,
+    } = limits;
     // The gate, first and unconditionally: a single real kernel priced worse
     // than before is a stop, not a line in a table.
     let regressions: Vec<&Row> = rows
@@ -2677,7 +2659,7 @@ fn write_objective_report(
         "No real kernel regresses in `dag_cost` — asserted above, and structural. Extraction \
          runs at {ratio_med:.2}x median: the second DP pass is not free, and the compacted \
          bitset only took it from 2.57x to {ratio_med:.2}x, because the sharing arm also pays \
-         a repair and a costing pass of its own. The trade is {units_all} cost units and \
+         a costing pass of its own. The trade is {units_all} cost units and \
          {:.1}% of the closable gap against {ratio_med:.2}x on a phase that runs once per \
          compile. What that costs at the two production shapes — a scene's compile against \
          its ~250 ms budget and a glyph warm's compile summed — is the shape A / shape B \
@@ -2729,7 +2711,6 @@ fn write_objective_report(
 #[cfg(test)]
 mod self_check {
     use super::*;
-    use crate::egraph::ops::op_from_kind;
     use pixelflow_ir::OpKind;
 
     /// A hand-built e-graph where sharing and tree cost disagree, so the two
@@ -2744,15 +2725,13 @@ mod self_check {
         let mut egraph = Optimizer::production().egraph();
         let x = egraph.add(ENode::Var(0));
         let _y = egraph.add(ENode::Var(1));
-        let sq = egraph.add(ENode::Op {
-            op: op_from_kind(OpKind::Mul).expect("Mul is a known op"),
-            children: vec![x, x],
+        let sq = egraph.add(ENode::apply(OpKind::Mul, &[x, x]));
+        let sum = egraph.add(ENode::apply(OpKind::Add, &[sq, sq]));
+        egraph.saturate_budgeted(Limits {
+            iterations: 6,
+            minted: 400,
+            applications: None,
         });
-        let sum = egraph.add(ENode::Op {
-            op: op_from_kind(OpKind::Add).expect("Add is a known op"),
-            children: vec![sq, sq],
-        });
-        egraph.saturate_budgeted(6, 400, None);
 
         let inst = Instance::build(&egraph, sum, &model);
         let greedy = extract_dag_scoped(&egraph, sum, &model, LatticeShape::POINT);
@@ -2763,10 +2742,14 @@ mod self_check {
         let treeopt_cost = inst.dag_cost(&treeopt).expect("tree-optimal is a term");
         let exact = exact_dag_choices(
             &inst,
-            &greedy.choices,
-            greedy_cost.min(treeopt_cost),
-            5_000_000,
-            Duration::from_secs(30),
+            Incumbent {
+                choices: &greedy.choices,
+                cost: greedy_cost.min(treeopt_cost),
+            },
+            SearchLimits {
+                time_limit: Duration::from_secs(30),
+                max_expansions: 5_000_000,
+            },
         );
         assert_eq!(
             exact.status,
@@ -2795,10 +2778,10 @@ mod self_check {
     /// enough to enumerate. The only way to know a branch-and-bound is
     /// exact is to check it against something that cannot be wrong.
     fn brute_force(inst: &Instance) -> Option<u64> {
-        let free: Vec<u32> = inst.reachable.to_vec();
+        let free: Vec<EClassId> = inst.reachable.to_vec();
         let sizes: Vec<usize> = free
             .iter()
-            .map(|&c| inst.feasible[c as usize].len().max(1))
+            .map(|&c| inst.feasible[c.index()].len().max(1))
             .collect();
         let total: u128 = sizes.iter().map(|&s| s as u128).product();
         if total > 4_000_000 {
@@ -2807,11 +2790,11 @@ mod self_check {
         let mut counter = vec![0usize; free.len()];
         let mut best: Option<u64> = None;
         loop {
-            let mut choice: Vec<Option<usize>> = vec![None; inst.cands.len()];
+            let mut choice: Vec<Option<usize>> = vec![None; inst.priced.num_classes()];
             for (k, &c) in free.iter().enumerate() {
-                let feasible = &inst.feasible[c as usize];
+                let feasible = &inst.feasible[c.index()];
                 if !feasible.is_empty() {
-                    choice[c as usize] = Some(feasible[counter[k] % feasible.len()]);
+                    choice[c.index()] = Some(feasible[counter[k] % feasible.len()]);
                 }
             }
             if let Some(cost) = inst.dag_cost(&choice) {
@@ -2859,7 +2842,11 @@ mod self_check {
             };
             // Deliberately tiny budget: the point is an instance small
             // enough that enumeration is a reference, not a second heuristic.
-            egraph.saturate_budgeted(2, 60, Some(40));
+            egraph.saturate_budgeted(Limits {
+                iterations: 2,
+                minted: 60,
+                applications: Some(40),
+            });
             let inst = Instance::build(&egraph, root, &model);
             let Some(truth) = brute_force(&inst) else {
                 continue;
@@ -2868,10 +2855,14 @@ mod self_check {
             let seed_cost = inst.dag_cost(&treeopt).expect("tree-optimal is a term");
             let exact = exact_dag_choices(
                 &inst,
-                &treeopt,
-                seed_cost,
-                50_000_000,
-                Duration::from_secs(20),
+                Incumbent {
+                    choices: &treeopt,
+                    cost: seed_cost,
+                },
+                SearchLimits {
+                    time_limit: Duration::from_secs(20),
+                    max_expansions: 50_000_000,
+                },
             );
             assert_eq!(
                 exact.status,
@@ -2900,10 +2891,7 @@ mod self_check {
         let mut egraph = Optimizer::production().egraph();
         let x = egraph.add(ENode::Var(0));
         let one = egraph.add(ENode::constant(1.0));
-        let add = egraph.add(ENode::Op {
-            op: op_from_kind(OpKind::Add).expect("Add is a known op"),
-            children: vec![x, one],
-        });
+        let add = egraph.add(ENode::apply(OpKind::Add, &[x, one]));
         let inst = Instance::build(&egraph, add, &model);
         let treeopt = tree_optimal_choices(&inst).expect("root reachable");
         let dp = extract_dag_scoped(&egraph, add, &model, LatticeShape::POINT);

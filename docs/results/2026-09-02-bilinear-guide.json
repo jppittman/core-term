@@ -21,11 +21,11 @@
       800
     ],
     "inherited": [
-      "docs/plans/2026-09-01-phase3-registration.md",
-      "docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md"
+      "docs/archive/plans/2026-09-01-phase3-registration.md",
+      "docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md"
     ],
     "linear_checkpoint": "pixelflow-pipeline/data/guide_checkpoint_strict_remint.json",
-    "registration": "docs/plans/2026-09-02-bilinear-guide-registration.md",
+    "registration": "docs/archive/plans/2026-09-02-bilinear-guide-registration.md",
     "source_rev": "b0bcc898932850746c21b7d89c33f0034a3f4d2e",
     "train_guide_report": "docs/results/2026-09-01-train-guide-report.json",
     "uptime_at_end": "19:02  up 52 days,  9:35, 2 users, load averages: 4.83 6.49 5.82",

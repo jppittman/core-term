@@ -39,6 +39,9 @@ pub struct Call {
     /// The module root's outline, when the rules ask for it and the file has
     /// one.
     pub(crate) root: Option<Source>,
+    /// The module's `intent.md`, when the rules ask for it and one is found
+    /// between the file's directory and its crate root.
+    pub(crate) intent: Option<Source>,
 }
 
 /// A file shown for context.

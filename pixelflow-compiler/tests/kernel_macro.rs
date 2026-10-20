@@ -362,7 +362,7 @@ fn macro_acos() {
 
 // ============================================================================
 // Every parameter is a uniform; a constant is a `const` item
-// (docs/plans/2026-09-25-the-language-is-kernel.md §1.4)
+// (docs/language/2026-09-25-the-language-is-kernel.md §1.4)
 // ============================================================================
 
 kernel! {

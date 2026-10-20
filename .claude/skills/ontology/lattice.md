@@ -7,8 +7,9 @@
   index, and the law [`index(collapse(f)) = f`] holds without a side
   condition." It has two axes. Its extent is part of the program: "L_s is
   the lattice. It is part of the program, not an argument." JP: "the lattice
-  is part of the schedule." After legalize, its rows, batches and lanes are
-  three folds around the kernel.
+  is part of the schedule." Its rows, batches and lanes are the schedule's
+  traversal, not folds the kernel is wrapped in: each backend owns them
+  (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §3).
 - **Is not:**
   - A coordinate frame. JP, 2026-09-06: "forced all of the translation to be
     contramaps plus uniforms". With an origin, `index ∘ collapse = f ∘
@@ -27,8 +28,8 @@
   sub-lattice is a `usize` index range. The extent is in the compile key, so
   a resize recompiles. `Lattice::point` became a contramap over a 1×1 extent
   (`eval_at`). The law is pinned by a test that fails if a coordinate is put
-  back on the index. The lattice is wrapped after extraction, so no rule
-  reaches its folds (L4, open).
+  back on the index. The lattice's traversal is the schedule's and runs after
+  extraction, so no rule reaches it (L4, open).
 - **Lives:** `pixelflow_core::Lattice { extent: [u32; AXES] }`, `AXES =
   COORD_AXES = 2` (`pixelflow-core/src/lattice/mod.rs`);
   `pixelflow_ir::LatticeShape` (`pixelflow-ir/src/variance.rs`). Decided in
@@ -61,50 +62,53 @@
   `Manifold::compile(extent)`. Decided in collapse-is-a-fold §2.5 and
   one-pipeline §4.
 
-### Manifold (BoundManifold, bind, bake)
+### Manifold (compile, bake)
 
 - **Is:** a kernel compiled at a lattice's shape, "the thing you can sample
-  over a domain". It knows its extents, its buffer declarations and its code
+  over a domain". It knows its extents and its code
   bytes. It has no `eval` and is not batch-shaped, and it keeps a table of
-  the shapes it was compiled at. Binding memory gives a `BoundManifold`. "A
-  kernel that reads nothing binds the empty slice and is a bound manifold
-  too." `bake = collapse(compile(k, extent).bind(&[]))`.
+  the shapes it was compiled at. `bake = collapse(compile(k, extent))`: sugar for
+  applying a program to the lattice's schedule. Tabulation is trivial and nothing
+  chooses it; there is no bind and no `BoundManifold` in the language
+  (kernels-evaluate-kernels §2).
 - **Is not:** the per-batch trait `eval(point) -> value`: "That had the word
   bound to the wrong level." That trait is what forced a Rust loop around
   the JIT and the per-batch ABI cost ("every vector register caller-saved,
   every invariant recomputed — and that is the whole 2×"). Not
   `CompiledKernel`. Not "the composition substrate" (07-20). Not a colour
   object.
-- **Follows:** "Per-batch evaluation is not an API." `bind` panics, naming
-  the slot it cannot fill, so nothing reads a null context. A colour scene,
-  a field over memory and a bake are one object "sampled three ways". One
+- **Follows:** "Per-batch evaluation is not an API." A colour scene,
+  a discrete kernel and a bake are one object "sampled three ways". One
   name must not mean two things in two crates, so graphics' re-export of the
   trait is gone.
-- **Lives:** `pixelflow_core::{Manifold, BoundManifold}`
+- **Lives:** `pixelflow_core::Manifold` (`BoundManifold` is retired with bind, kernels-evaluate-kernels §2)
   (`pixelflow-core/src/lattice/manifold.rs`). Decided in kernel-with-a-lattice
-  "The shape", S1, S4b-1, S4b-2. `BoundManifold::eval_at` is a 1×1
+  "The shape", S1, S4b-1, S4b-2. `eval_at` on the retired bound manifold is a 1×1
   `collapse_rows`, not a per-batch entry.
 
 ### CompiledKernel
 
 - **Is:** "one kernel's emitted bytes at one shape", in one
   executable-memory region that is freed on drop.
-- **Is not:** a Manifold, which carries buffer declarations and binding.
+- **Is not:** a Manifold, which is a kernel at a shape and binds nothing.
   Never re-exported from core. Not a reusable code buffer (`CodeBuffer`,
   `CompileWorkspace` and `MAP_JIT` are deleted).
 - **Follows:** core holds it only in private fields. The width it was
   compiled for belongs to the JIT.
-- **Lives:** `pixelflow-codegen/src/compiled_kernel.rs`,
-  `pixelflow-codegen/src/emit/executable.rs`. Renamed from `JitManifold` in
-  S4b-1.
+- **Lives:** `pixelflow-codegen/src/emit/executable.rs` (there is no
+  `compiled_kernel.rs`; an earlier entry named one). Renamed from
+  `JitManifold` in S4b-1.
 
 ### Collapse
 
 - **Is:** the one verb that turns a compiled kernel into numbers. It
-  tabulates a bound manifold over a lattice or a band of it. Its
-  denotation is three SEQ folds around one store:
+  tabulates a compiled manifold over a lattice or a band of it. Its
+  denotation is the table, `index(collapse(f)) = f` (kernels-evaluate-kernels
+  §2). Its three SEQ folds around one store are the CPU module's traversal of
+  that denotation (§3):
   `collapse(f) = fold_j fold_k fold_l Write(out, j, k, l, f(x0 + k + l, y0 + j))`.
-  As a pass, `collapse(extent)` followed by `pack(L)` is target-agnostic.
+  `collapse(extent)` followed by `pack(L)` is that CPU pass, not a
+  target-agnostic one.
   The ABI is `fn(ctx, out, pitch)`, called once per stripe. The origin is
   two uniforms.
 - **Is not:**
@@ -118,21 +122,21 @@
   - Superseded: one JIT call per row with `(x0, y, z, w)` arguments; "over
     eliminates a dimension; the render loop is the second shape" (07-28),
     retracted because the render loop is a fold over SEQ.
-- **Follows:** the compiler owns the loop nest, the hoisting, broadcast
-  versus gather, and the tail. The whole 2.3× win over LLVM was hoisting.
+- **Follows:** the CPU module owns the loop nest, the hoisting, the choice of
+  broadcast versus gather, and the tail (kernels-evaluate-kernels §2). The whole 2.3× win over LLVM was hoisting.
   No vector crosses the ABI. The remainder is the same fold, shorter, with a
   masked or lane-wise store. A band of a new height is a new shape.
 - **Lives:** `Lattice::collapse` (`pixelflow-core/src/lattice/mod.rs`),
-  `BoundManifold::collapse_rows` (`pixelflow-core/src/lattice/manifold.rs`),
+  `collapse_rows` on the retired `BoundManifold` (`pixelflow-core/src/lattice/manifold.rs`),
   `pixelflow_ir::passes::lattice::{collapse, pack}`
   (`pixelflow-ir/src/passes/lattice.rs`). Decided in collapse-is-a-fold
   §2.1–§2.5 and step 5 (JP: "I'd literally insert folds to iterate over the
-  lattice").
+  lattice"); the traversal is superseded by kernels-evaluate-kernels §3.
 
 ### Write and Seq (effects)
 
-- **Is:** "A store: the one effect in the language, and the body of the
-  folds a lattice is." `Write { row, col, lane, value }` stores `value`'s
+- **Is:** the store that realizes collapse. The language has no write:
+  collapse yields a whole value, so no intermediate state is observable (§2). `Write { row, col, lane, value }` stores `value`'s
   first `len(lane)` lanes at `out + 4·(row·pitch + col + lane)`. It names
   binders, not an address expression. `OpKind::Seq` means "evaluate the
   left, then the right".
@@ -153,7 +157,8 @@
 
 - **Is:** an implementation detail of codegen. "pixelflow-core holds no
   vector type and no width. The one width in the workspace is the JIT's."
-  The width is a function of the ISA tier (`Isa::vector_bytes`). A batch is
+  The width is the chosen backend's register file
+  (`B::FILE.vector_bytes()`), read through `jit_vector_bytes()`. A batch is
   one trip of the column fold, which is one vector. "Lanes are a scope: the
   fold a Write names as its lane binder is executed by lanes." That fold has
   no counter and no back edge, and its binder materialises as
@@ -164,7 +169,7 @@
   lane.
 - **Follows:** a lane-uniform value is a broadcast, and a value varying by
   lane alone is invariant over the call, so it is a body root (step 5½).
-  `pack(L)` is the one pass that takes L, and codegen hands L to it.
+  `pack(L)` is the CPU module's pass that takes L (§3).
 - **Lives:** `ScheduledOp::Lanes` (`pixelflow-codegen/src/program/mod.rs`),
   `jit_vector_bytes()` (`pixelflow-codegen/src/isa/mod.rs`); CLAUDE.md "SIMD
   is an implementation detail"; collapse-is-a-fold §1a, §2.2;
@@ -174,8 +179,8 @@
 
 - **Is:** the lattice's strip-mine by lane count L. It splits `fold_i` into
   `fold_k fold_l` with `i := k + l` and sequences a remainder fold. The two
-  inner folds' ranges move, and nothing else does. It is a legalize pass
-  that reads the tier only through L.
+  inner folds' ranges move, and nothing else does. It is a pass of the CPU
+  module's chain (§3), reading the tier only through L.
 - **Is not:** width-aware inside the IR: "`pixelflow-ir` never names a
   width". Not a rewrite rule ("A rule cannot run after extraction"). Not an
   unroller. Not a scalar remainder loop.
@@ -192,12 +197,13 @@
   threads, or interleaved by halving. A **stripe** is the unit one collapse
   call fills, pulled from a pool sized to the cores by work-stealing, and
   written straight into the frame.
-- **Is not:** a different kind of loop. JP is "anti, 'the schedule loops are
-  different than folds'". Not a staging copy.
+- **Is not:** a loop of the language. A stripe is the schedule's loop, which
+  each backend owns (§3); the lattice's traversal is not written as folds in
+  pixelflow-core. Not a staging copy.
 - **Follows:** "how the stripes are shared out does not change pixels". The
-  target (L5, open) is that stripes become the row fold strip-mined and
-  "executed by threads as a lane fold is by lanes", instead of a Rust loop
-  in `scene.rs`/`manifold.rs`.
+  stripes are each backend's schedule: the CPU module runs them on a thread
+  pool, and a GPU backend maps one pixel to one thread. The L5 target, stripes
+  as the row fold run by threads like a lane fold, is withdrawn (§3).
 - **Lives:** kernel-with-a-lattice S2; one-pipeline §1.5, §1.6. Today the
   stripes are a Rust work-stealing loop in
   `pixelflow-graphics/src/render/scene.rs` around `collapse_rows`.
@@ -244,8 +250,8 @@
   type carries two meanings, which must become two types (D3):
   - A **requested band**: a work partition chosen by the caller. It is
     public and never derived.
-  - A **derived region**: what a mask implies. It is internal and "never
-    appears in a signature".
+  - A **derived region**: what a mask implies. Retired with the domain split
+    (§1).
 - **Is not:** a coordinate. Not one concept just because both are
   rectangles. `Union`, a caller-declared disjoint sum of ranges, "a missing
   compiler capability that leaked into the public API", was deleted on
@@ -260,43 +266,29 @@
   as a band). Decided in lattice-is-the-index §3, §7 and one-conditional
   §5. CLAUDE.md still cites "`Union`'s explicit ranges" as live.
 
-### Derived range and domain split (lowering 1)
+### Derived range and domain split (retired)
 
-- **Is:** for a mask node, a rectangle of lattice indices containing every
-  index where the mask can be nonzero. "A mask does not have to *be* a range
-  to yield one; it only has to imply one." The domain split emits two
-  disjoint programs: the region gets the `If`, and the complement gets "the
-  whole root kernel specialized with `m ≡ false`", constant-folded.
-- **Is not:** a narrowed loop, which would leave the complement holding the
-  destination's old value. Not the false arm alone: "`If(m, a, b) + c` must
-  produce `b + c` over the complement". Not computed in the build host's
-  arithmetic: transfer functions round outward and are target-aware. Not a
-  non-rectangular domain ("GPU-shaped thinking").
-- **Follows:** the complement is usually a fill. Overlapping regions are cut
-  on the arrangement of their boundaries. A range depending on a uniform is
-  a bind-time answer, computed from the defaults at bind. The gate is a
-  differential over the whole extent, because "a wrong complement is
-  invisible to any test that only looks inside the region".
-- **Lives:** `pixelflow-ir/src/mask_support.rs` (`mask_support`,
-  `MaskSupport`; D1, symbolic tier only); the split is unbuilt (D2).
-  one-conditional-three-lowerings §1, §3, §5, §8.
+- **Is:** nothing in the language. A mask's implied rectangle existed to feed a
+  domain split, which emits a second program. `If` has one shape, guards and
+  one select (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §1), so the
+  split is deleted.
+- **Lives:** nothing. The range analysis (D1) was deleted with the split;
+  the split was never built (D2) and is not to be built.
 
 ### Region. Homonym
 
-- **Is:** four senses in force:
+- **Is:** three senses in force:
   1. An **ownership region**: a scope, or one arm of one `If` in it.
      Regions nest as `If`s do.
-  2. A **derived region**: the index rectangle a mask implies.
-  3. `PlaneRegion`: a band of rows to collapse.
-  4. `ScopeRegion`: the type name of the body scope, "which opens nowhere".
+  2. `PlaneRegion`: a band of rows to collapse.
+  3. `ScopeRegion`: the type name of the body scope, "which opens nowhere".
 - **Is not:** a prologue in a chain of scopes (`Scope::Region(i)` and the
   frame/row/body "three regions" were deleted in collapse-is-a-fold step 5).
   Not R1's "fold region is a span" (retracted). Not 09-07's "region of equal
   demand", which became arm regions in code.
 - **Follows:** whenever code says "region", ask which sense it means.
 - **Lives:** `pixelflow-codegen/src/program/ownership.rs`,
-  `pixelflow-codegen/src/program/mod.rs` (`ScopeRegion`),
-  `pixelflow-ir/src/mask_support.rs`, `PlaneRegion`
+  `pixelflow-codegen/src/program/mod.rs` (`ScopeRegion`), `PlaneRegion`
   (`pixelflow-core/src/lattice/manifold.rs`).
 
 ### Scene (channel kernels, pack, colour)
@@ -341,5 +333,5 @@
 - **Is not:** immediate-mode drawing. Not a camera object. Not a lattice with
   an origin.
 - **Follows:** "In a pull renderer the lattice does the asking." Movement is
-  a contramap. A domain split's complement is still filled.
+  a contramap.
 - **Lives:** CLAUDE.md "Philosophy"; lattice-is-the-index §3.
