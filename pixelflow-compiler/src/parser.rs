@@ -255,7 +255,7 @@ fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
     input.parse::<Token![|]>()?;
 
     let syn_expr: syn::Expr = input.parse()?;
-    let body = convert_expr(syn_expr)?;
+    let body = convert_expr(syn_expr, Nesting::ROOT)?;
 
     Ok(KernelDef::Closure(ClosureEntry { params, body }))
 }
@@ -384,7 +384,7 @@ fn convert_const(item: syn::ItemConst) -> syn::Result<ConstItem> {
         vis: item.vis,
         name: item.ident,
         ty: *item.ty,
-        init: convert_expr(*item.expr)?,
+        init: convert_expr(*item.expr, Nesting::ROOT)?,
     })
 }
 
@@ -460,7 +460,7 @@ fn convert_fn(item: syn::ItemFn) -> syn::Result<FnItem> {
         structural,
         params,
         ret,
-        body: Expr::Block(convert_block(*item.block)?),
+        body: Expr::Block(convert_block(*item.block, Nesting::ROOT)?),
     })
 }
 
@@ -698,25 +698,83 @@ fn refuse_where_clause(generics: &syn::Generics, what: &str) -> syn::Result<()> 
     }
 }
 
+/// The deepest an expression may nest: a body of `MAX_NESTING` terms in a
+/// chain (`a + b + …`, `x.f().g()…`, a long `else if`) converts, one more is
+/// refused. Every level costs the stack of [`convert_expr`] and its arm, and
+/// then of `sema` and lowering below it, which walk no deeper an AST than
+/// this one.
+///
+/// Measured in a dev build of `kernel_raw!` on rustc's 8 MiB thread stack,
+/// the whole pipeline overflows at about 2,058 terms of a sum, 1,736 of a
+/// method chain, 2,219 of unary minus and 1,836 of an `else if` chain. The
+/// bound is half the smallest (868) rounded to a power of two, 1,024: the
+/// stack keeps a margin of 1.7x over the worst shape, for a host whose frames
+/// are somewhat larger. A host with a smaller stack than rustc's default can
+/// still overflow; that is not a bound this crate can set.
+///
+/// `syn` recurses by itself on a prefix operator and on a delimiter
+/// (`-(-(…))`, `f(f(…))`, `{{…}}`) before this parser sees a node, and
+/// overflows at about 2,200 levels of those; a shape it parses iteratively
+/// (a sum, a method chain, `as`, a field, `else if`) arrives here whole, and
+/// this bound is what holds it.
+const MAX_NESTING: usize = 1024;
+
+/// How deep in a body's expression the conversion is: the depth of the
+/// `convert_expr` that is running, handed down by value so a level that is
+/// finished takes its count with it.
+#[derive(Clone, Copy)]
+struct Nesting(usize);
+
+impl Nesting {
+    /// Outside every expression.
+    const ROOT: Self = Self(0);
+
+    /// One level below this, or the refusal of an expression past
+    /// [`MAX_NESTING`].
+    fn deeper(self, expr: &syn::Expr) -> syn::Result<Self> {
+        match self.0 < MAX_NESTING {
+            true => Ok(Self(self.0 + 1)),
+            false => Err(refuse_nesting(expr)),
+        }
+    }
+}
+
+/// The refusal of an expression nested past [`MAX_NESTING`]. Cold, because
+/// the span of a deep expression is a walk of all of it.
+#[cold]
+#[inline(never)]
+fn refuse_nesting(expr: &syn::Expr) -> syn::Error {
+    syn::Error::new(
+        expr.span(),
+        format!(
+            "expression nested deeper than {MAX_NESTING}\n\
+             \n\
+             note: each level of a body's nesting is a level of the compiler's own stack\n\
+             help: bind the parts with `let`, or move one into a helper `fn`"
+        ),
+    )
+}
+
 /// Convert syn::Expr to our AST Expr.
 ///
 /// Only a dispatcher: this is the function every nesting level of a body
 /// recurses through, so what a level costs is this frame plus its arm's, and
 /// each arm is a function of its own with its own temporaries. A refusal's
 /// text is built in [`refuse_expression`], off the recursive path.
-fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
+fn convert_expr(expr: syn::Expr, nesting: Nesting) -> syn::Result<Expr> {
+    let nesting = nesting.deeper(&expr)?;
     match expr {
         syn::Expr::Path(expr_path) => convert_path(expr_path),
         syn::Expr::Lit(expr_lit) => convert_lit(expr_lit),
-        syn::Expr::Binary(expr_binary) => convert_binary(expr_binary),
-        syn::Expr::Unary(expr_unary) => convert_unary(expr_unary),
-        syn::Expr::MethodCall(expr_method) => convert_method_call(expr_method),
-        syn::Expr::Call(expr_call) => convert_call(expr_call),
-        syn::Expr::If(expr_if) => convert_if(expr_if),
-        syn::Expr::Paren(expr_paren) => convert_paren(expr_paren),
-        syn::Expr::Field(expr_field) => convert_field(expr_field),
-        syn::Expr::Cast(expr_cast) => convert_cast(expr_cast),
-        syn::Expr::Block(expr_block) => convert_labeled_block(expr_block),
+        syn::Expr::Binary(expr_binary) => convert_binary(expr_binary, nesting),
+        syn::Expr::Unary(expr_unary) => convert_unary(expr_unary, nesting),
+        syn::Expr::MethodCall(expr_method) => convert_method_call(expr_method, nesting),
+        syn::Expr::Call(expr_call) => convert_call(expr_call, nesting),
+        syn::Expr::If(expr_if) => convert_if(expr_if, nesting),
+        syn::Expr::Paren(expr_paren) => convert_paren(expr_paren, nesting),
+        syn::Expr::Field(expr_field) => convert_field(expr_field, nesting),
+        syn::Expr::Cast(expr_cast) => convert_cast(expr_cast, nesting),
+        syn::Expr::Block(expr_block) => convert_labeled_block(expr_block, nesting),
         refused => Err(refuse_expression(&refused)),
     }
 }
@@ -752,11 +810,11 @@ fn convert_lit(expr_lit: syn::ExprLit) -> syn::Result<Expr> {
     }))
 }
 
-fn convert_binary(expr_binary: syn::ExprBinary) -> syn::Result<Expr> {
+fn convert_binary(expr_binary: syn::ExprBinary, nesting: Nesting) -> syn::Result<Expr> {
     let op = binary_op(&expr_binary.op)?;
     let span = expr_binary.op.span();
-    let lhs = convert_expr(*expr_binary.left)?;
-    let rhs = convert_expr(*expr_binary.right)?;
+    let lhs = convert_expr(*expr_binary.left, nesting)?;
+    let rhs = convert_expr(*expr_binary.right, nesting)?;
     Ok(Expr::Binary(BinaryExpr {
         op,
         lhs: Box::new(lhs),
@@ -765,10 +823,10 @@ fn convert_binary(expr_binary: syn::ExprBinary) -> syn::Result<Expr> {
     }))
 }
 
-fn convert_unary(expr_unary: syn::ExprUnary) -> syn::Result<Expr> {
+fn convert_unary(expr_unary: syn::ExprUnary, nesting: Nesting) -> syn::Result<Expr> {
     let op = unary_op(&expr_unary.op)?;
     let span = expr_unary.op.span();
-    let operand = convert_expr(*expr_unary.expr)?;
+    let operand = convert_expr(*expr_unary.expr, nesting)?;
     Ok(Expr::Unary(UnaryExpr {
         op,
         operand: Box::new(operand),
@@ -776,8 +834,8 @@ fn convert_unary(expr_unary: syn::ExprUnary) -> syn::Result<Expr> {
     }))
 }
 
-fn convert_paren(expr_paren: syn::ExprParen) -> syn::Result<Expr> {
-    let inner = convert_expr(*expr_paren.expr)?;
+fn convert_paren(expr_paren: syn::ExprParen, nesting: Nesting) -> syn::Result<Expr> {
+    let inner = convert_expr(*expr_paren.expr, nesting)?;
     Ok(Expr::Paren(Box::new(inner)))
 }
 
@@ -894,7 +952,7 @@ fn refuse_expression(expr: &syn::Expr) -> syn::Error {
 /// `p.x0`: a named field. Which record `p` is, and whether it has the field,
 /// are `sema`'s questions. A tuple's field, `p.0`, is refused: a record's
 /// fields have names.
-fn convert_field(expr_field: syn::ExprField) -> syn::Result<Expr> {
+fn convert_field(expr_field: syn::ExprField, nesting: Nesting) -> syn::Result<Expr> {
     let member = match expr_field.member {
         syn::Member::Named(member) => member,
         syn::Member::Unnamed(index) => {
@@ -911,7 +969,7 @@ fn convert_field(expr_field: syn::ExprField) -> syn::Result<Expr> {
         }
     };
     Ok(Expr::Field(FieldExpr {
-        base: Box::new(convert_expr(*expr_field.base)?),
+        base: Box::new(convert_expr(*expr_field.base, nesting)?),
         member,
     }))
 }
@@ -919,7 +977,7 @@ fn convert_field(expr_field: syn::ExprField) -> syn::Result<Expr> {
 /// `if c { a } else { b }`, and `else if` chains. The `else` is required —
 /// there is no unit for an `if` without one to be — and `if let` is not a
 /// choice between two values.
-fn convert_if(expr_if: syn::ExprIf) -> syn::Result<Expr> {
+fn convert_if(expr_if: syn::ExprIf, nesting: Nesting) -> syn::Result<Expr> {
     let span = expr_if.if_token.span;
     if let syn::Expr::Let(pattern) = *expr_if.cond {
         return Err(syn::Error::new_spanned(
@@ -938,9 +996,9 @@ fn convert_if(expr_if: syn::ExprIf) -> syn::Result<Expr> {
              body has no unit for the missing arm to be",
         ));
     };
-    let cond = convert_expr(*expr_if.cond)?;
-    let then_branch = convert_block(expr_if.then_branch)?;
-    let else_branch = convert_expr(*else_expr)?;
+    let cond = convert_expr(*expr_if.cond, nesting)?;
+    let then_branch = convert_block(expr_if.then_branch, nesting)?;
+    let else_branch = convert_expr(*else_expr, nesting)?;
     Ok(Expr::If(IfExpr {
         cond: Box::new(cond),
         then_branch,
@@ -951,12 +1009,15 @@ fn convert_if(expr_if: syn::ExprIf) -> syn::Result<Expr> {
 
 /// `receiver.method(args)`: a fold's terminal, a method of the language, or
 /// a refusal of any other name.
-fn convert_method_call(mut expr_method: syn::ExprMethodCall) -> syn::Result<Expr> {
+fn convert_method_call(
+    mut expr_method: syn::ExprMethodCall,
+    nesting: Nesting,
+) -> syn::Result<Expr> {
     if let Some(range) = take_range(&mut expr_method.receiver) {
-        return convert_range_method(range, MethodTail::take(&mut expr_method));
+        return convert_range_method(range, MethodTail::take(&mut expr_method), nesting);
     }
-    if let Some((range, map)) = take_mapped_range(&mut expr_method.receiver) {
-        return convert_fold_terminal(range, map, MethodTail::take(&mut expr_method));
+    if let Some(mapped) = take_mapped_range(&mut expr_method.receiver) {
+        return convert_fold_terminal(mapped, MethodTail::take(&mut expr_method), nesting);
     }
     // Built before the receiver is converted, returned after it: the
     // receiver's own refusal, the innermost, comes first, as rustc's
@@ -971,14 +1032,14 @@ fn convert_method_call(mut expr_method: syn::ExprMethodCall) -> syn::Result<Expr
              generic",
         ));
     }
-    let receiver = convert_expr(*expr_method.receiver)?;
+    let receiver = convert_expr(*expr_method.receiver, nesting)?;
     if let Some(refusal) = collection {
         return Err(refusal);
     }
     let args = expr_method
         .args
         .into_iter()
-        .map(convert_expr)
+        .map(|arg| convert_expr(arg, nesting))
         .collect::<syn::Result<Vec<_>>>()?;
     let method = resolve_method(&expr_method.method, args.len())?;
     Ok(Expr::MethodCall(MethodCallExpr {
@@ -1055,7 +1116,7 @@ fn unknown_method(name: &syn::Ident, arity: usize) -> syn::Error {
 
 /// A free call by a single name: a projection, resolved here, or a helper or
 /// a kernel, which only `sema` can tell apart (it takes the scope).
-fn convert_call(expr_call: syn::ExprCall) -> syn::Result<Expr> {
+fn convert_call(expr_call: syn::ExprCall, nesting: Nesting) -> syn::Result<Expr> {
     let syn::Expr::Path(ref path) = *expr_call.func else {
         return Err(refuse_a_qualified_call(&expr_call));
     };
@@ -1070,7 +1131,7 @@ fn convert_call(expr_call: syn::ExprCall) -> syn::Result<Expr> {
     let args = expr_call
         .args
         .into_iter()
-        .map(convert_expr)
+        .map(|arg| convert_expr(arg, nesting))
         .collect::<syn::Result<Vec<_>>>()?;
     // A projection takes one argument. At any other arity the name stays a
     // call, so `sema` refuses it after the binding checks: a kernel parameter
@@ -1171,8 +1232,14 @@ fn take_range(receiver: &mut syn::Expr) -> Option<syn::ExprRange> {
 }
 
 /// `(a..b).map(f)`: the range and the `map` call a fold's terminal method is
-/// called on, taken out of the receiver as [`take_range`] does.
-fn take_mapped_range(receiver: &mut syn::Expr) -> Option<(syn::ExprRange, MethodTail)> {
+/// called on.
+struct MappedRange {
+    range: syn::ExprRange,
+    map: MethodTail,
+}
+
+/// A [`MappedRange`], taken out of the receiver as [`take_range`] does.
+fn take_mapped_range(receiver: &mut syn::Expr) -> Option<MappedRange> {
     let syn::Expr::MethodCall(map) = receiver else {
         return None;
     };
@@ -1180,7 +1247,10 @@ fn take_mapped_range(receiver: &mut syn::Expr) -> Option<(syn::ExprRange, Method
         return None;
     }
     let range = take_range(&mut map.receiver)?;
-    Some((range, MethodTail::take(map)))
+    Some(MappedRange {
+        range,
+        map: MethodTail::take(map),
+    })
 }
 
 /// The methods that iterate, by name: a fold's `.map`, `.any` and `.all`.
@@ -1267,7 +1337,11 @@ const TUPLE_LET: &str = "`let (a, b) = (e1, e2);` binds each name to its express
 
 /// A method called on a range itself: `.any(|i| m)` and `.all(|i| m)` are
 /// folds, and nothing else is a value.
-fn convert_range_method(range: syn::ExprRange, call: MethodTail) -> syn::Result<Expr> {
+fn convert_range_method(
+    range: syn::ExprRange,
+    call: MethodTail,
+    nesting: Nesting,
+) -> syn::Result<Expr> {
     let reduction = match RangeMethod::of(&call.method) {
         Some(RangeMethod::Any) => Reduction::Any,
         Some(RangeMethod::All) => Reduction::All,
@@ -1295,10 +1369,10 @@ fn convert_range_method(range: syn::ExprRange, call: MethodTail) -> syn::Result<
     };
     refuse_turbofish(&call)?;
     let span = call.method.span();
-    let (binder, body) = the_closure(call)?;
+    let (binder, body) = the_closure(call, nesting)?;
     Ok(Expr::Fold(FoldExpr {
         reduction,
-        range: convert_range(range)?,
+        range: convert_range(range, nesting)?,
         binder,
         body: Box::new(body),
         span,
@@ -1308,9 +1382,9 @@ fn convert_range_method(range: syn::ExprRange, call: MethodTail) -> syn::Result<
 /// The method that ends `(a..b).map(|i| e)`: the reduction the fold combines
 /// its terms under.
 fn convert_fold_terminal(
-    range: syn::ExprRange,
-    map: MethodTail,
+    MappedRange { range, map }: MappedRange,
     call: MethodTail,
+    nesting: Nesting,
 ) -> syn::Result<Expr> {
     let reduction = match FoldTerminal::of(&call.method) {
         Some(FoldTerminal::Sum) => sum_or_product(&call, Reduction::Sum)?,
@@ -1329,10 +1403,10 @@ fn convert_fold_terminal(
         }
     };
     refuse_turbofish(&map)?;
-    let (binder, body) = the_closure(map)?;
+    let (binder, body) = the_closure(map, nesting)?;
     Ok(Expr::Fold(FoldExpr {
         reduction,
-        range: convert_range(range)?,
+        range: convert_range(range, nesting)?,
         binder,
         body: Box::new(body),
         span: call.method.span(),
@@ -1373,7 +1447,7 @@ fn sum_or_product(call: &MethodTail, reduction: Reduction) -> syn::Result<Reduct
 /// `operand as f32`. The conversion's target is always `f32`, so any other
 /// is refused here and the AST does not hold one; what may be converted — a
 /// `usize`, by name — is `sema`'s question, since it needs the name's type.
-fn convert_cast(expr_cast: syn::ExprCast) -> syn::Result<Expr> {
+fn convert_cast(expr_cast: syn::ExprCast, nesting: Nesting) -> syn::Result<Expr> {
     if !is_f32(&expr_cast.ty) {
         return Err(syn::Error::new_spanned(
             &expr_cast.ty,
@@ -1386,7 +1460,7 @@ fn convert_cast(expr_cast: syn::ExprCast) -> syn::Result<Expr> {
     }
     Ok(Expr::Cast(CastExpr {
         span: expr_cast.as_token.span,
-        operand: Box::new(convert_expr(*expr_cast.expr)?),
+        operand: Box::new(convert_expr(*expr_cast.expr, nesting)?),
     }))
 }
 
@@ -1448,7 +1522,7 @@ fn refuse_turbofish(call: &MethodTail) -> syn::Result<()> {
 
 /// The one argument of a fold's `.map`, `.any` or `.all`: a closure whose
 /// parameter is the fold's index and whose body is the fold's body.
-fn the_closure(call: MethodTail) -> syn::Result<(syn::Ident, Expr)> {
+fn the_closure(call: MethodTail, nesting: Nesting) -> syn::Result<(syn::Ident, Expr)> {
     let args = call.args.into_iter().collect::<Vec<_>>();
     let Ok([syn::Expr::Closure(closure)]) = <[syn::Expr; 1]>::try_from(args) else {
         return Err(syn::Error::new(
@@ -1506,12 +1580,12 @@ fn the_closure(call: MethodTail) -> syn::Result<(syn::Ident, Expr)> {
             ));
         }
     };
-    Ok((binder, convert_expr(*closure.body)?))
+    Ok((binder, convert_expr(*closure.body, nesting)?))
 }
 
 /// `a..b`: both bounds, half-open. Whether they are constant, and run
 /// forwards, is `sema`'s question: it evaluates them.
-fn convert_range(range: syn::ExprRange) -> syn::Result<RangeExpr> {
+fn convert_range(range: syn::ExprRange, nesting: Nesting) -> syn::Result<RangeExpr> {
     if let syn::RangeLimits::Closed(dots) = &range.limits {
         return Err(syn::Error::new_spanned(
             dots,
@@ -1523,8 +1597,8 @@ fn convert_range(range: syn::ExprRange) -> syn::Result<RangeExpr> {
     let span = range.limits.span();
     match (range.start, range.end) {
         (Some(lo), Some(hi)) => Ok(RangeExpr {
-            lo: Box::new(convert_expr(*lo)?),
-            hi: Box::new(convert_expr(*hi)?),
+            lo: Box::new(convert_expr(*lo, nesting)?),
+            hi: Box::new(convert_expr(*hi, nesting)?),
             span,
         }),
         (start, end) => Err(syn::Error::new_spanned(
@@ -1600,7 +1674,7 @@ fn unary_op(op: &syn::UnOp) -> syn::Result<UnaryOp> {
 
 /// A `{ .. }` in expression position. A block is a value, so a label has
 /// nothing to jump to.
-fn convert_labeled_block(expr_block: syn::ExprBlock) -> syn::Result<Expr> {
+fn convert_labeled_block(expr_block: syn::ExprBlock, nesting: Nesting) -> syn::Result<Expr> {
     match expr_block.label {
         Some(label) => Err(syn::Error::new_spanned(
             label,
@@ -1609,12 +1683,12 @@ fn convert_labeled_block(expr_block: syn::ExprBlock) -> syn::Result<Expr> {
              note: a block is a value, the last expression in it; there is no `break` \
              to name it, so a label has no use",
         )),
-        None => convert_block(expr_block.block).map(Expr::Block),
+        None => convert_block(expr_block.block, nesting).map(Expr::Block),
     }
 }
 
 /// Convert a syn::Block to our BlockExpr.
-fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
+fn convert_block(block: syn::Block, nesting: Nesting) -> syn::Result<BlockExpr> {
     let span = block.brace_token.span.join();
     let count = block.stmts.len();
     let mut stmts = Vec::with_capacity(count);
@@ -1624,10 +1698,10 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
         let is_last = i + 1 == count;
 
         match stmt {
-            syn::Stmt::Local(local) => stmts.push(convert_let(local)?),
+            syn::Stmt::Local(local) => stmts.push(convert_let(local, nesting)?),
 
             syn::Stmt::Expr(expr, semi) => {
-                let converted = convert_expr(expr)?;
+                let converted = convert_expr(expr, nesting)?;
                 if is_last && semi.is_none() {
                     final_expr = Some(Box::new(converted));
                 } else {
@@ -1674,7 +1748,7 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
 
 /// A `let`: a plain name bound to its expression, or `let (a, b) = (e1,
 /// e2);`, each name bound to its own expression (D7's front half).
-fn convert_let(local: syn::Local) -> syn::Result<Stmt> {
+fn convert_let(local: syn::Local, nesting: Nesting) -> syn::Result<Stmt> {
     let (pattern, annotation) = match &local.pat {
         Pat::Type(pat_type) => (&*pat_type.pat, Some(&*pat_type.ty)),
         pattern => (pattern, None),
@@ -1702,18 +1776,34 @@ fn convert_let(local: syn::Local) -> syn::Result<Stmt> {
              help: remove the `else` branch",
         ));
     }
-    match pattern {
-        Pat::Ident(pat_ident) => {
-            let name = plain_name(pat_ident, &local.pat)?;
-            Ok(Stmt::Let(vec![LetStmt {
-                name,
-                ty: annotation.cloned(),
-                init: convert_expr(*init.expr)?,
-            }]))
-        }
-        Pat::Tuple(names) => convert_let_tuple(names, annotation, *init.expr),
-        pattern => Err(refuse_let_pattern(pattern)),
-    }
+    let bindings = match pattern {
+        Pat::Ident(pat_ident) => vec![Binding {
+            name: plain_name(pat_ident, &local.pat)?,
+            ty: annotation.cloned(),
+            value: *init.expr,
+        }],
+        Pat::Tuple(names) => tuple_let(names, annotation, *init.expr)?,
+        pattern => return Err(refuse_let_pattern(pattern)),
+    };
+    bindings
+        .into_iter()
+        .map(|binding| {
+            Ok(LetStmt {
+                name: binding.name,
+                ty: binding.ty,
+                init: convert_expr(binding.value, nesting)?,
+            })
+        })
+        .collect::<syn::Result<Vec<_>>>()
+        .map(Stmt::Let)
+}
+
+/// A name a `let` binds, with the annotation and the expression it is bound
+/// to, before the expression is converted.
+struct Binding {
+    name: syn::Ident,
+    ty: Option<Type>,
+    value: syn::Expr,
 }
 
 /// `let (a, b) = (e1, e2);`: plain names, as many as the tuple of
@@ -1721,11 +1811,11 @@ fn convert_let(local: syn::Local) -> syn::Result<Stmt> {
 /// taken apart where it is written and nowhere else, so nothing of it is
 /// left to be a value (D7's front half); a pattern within the pattern, a
 /// `_`, and a value that is not a tuple of expressions are refused.
-fn convert_let_tuple(
+fn tuple_let(
     pattern: &syn::PatTuple,
     annotation: Option<&Type>,
     mut init: syn::Expr,
-) -> syn::Result<Stmt> {
+) -> syn::Result<Vec<Binding>> {
     let mut names: Vec<syn::Ident> = Vec::with_capacity(pattern.elems.len());
     for element in &pattern.elems {
         let name = match element {
@@ -1806,15 +1896,12 @@ fn convert_let_tuple(
     }
     let values = std::mem::take(&mut tuple.elems);
     let types = element_types(annotation, names.len())?;
-    let mut lets = Vec::with_capacity(names.len());
-    for ((name, value), ty) in names.into_iter().zip(values).zip(types) {
-        lets.push(LetStmt {
-            name,
-            ty,
-            init: convert_expr(value)?,
-        });
-    }
-    Ok(Stmt::Let(lets))
+    Ok(names
+        .into_iter()
+        .zip(values)
+        .zip(types)
+        .map(|((name, value), ty)| Binding { name, ty, value })
+        .collect())
 }
 
 /// The tuple an expression is, through parentheses, or `None` for anything
@@ -2320,29 +2407,67 @@ mod tests {
         }
     }
 
-    /// A macro that generates a body writes a long left-leaning sum, and
-    /// the parser recurses once per term, so what a term costs in stack is
-    /// how long a body can be. On rustc's own 8 MiB thread stack a dev
-    /// build parses about 2,000 terms (under 4 KiB each); a frame holding
-    /// every arm's refusal text costs about 8 KiB and stops at about 1,000.
-    /// 1,300 terms is past the second and well short of the first, so a
-    /// platform that sizes its frames differently neither flakes a pass nor
-    /// overflows by accident.
-    #[test]
-    fn a_long_chain_of_terms_parses_within_a_compiler_threads_stack() {
-        const RUSTC_THREAD_STACK: usize = 8 * 1024 * 1024;
-        const TERMS: usize = 1_300;
-        let chain = vec!["X"; TERMS].join(" + ");
-        let parsed = std::thread::Builder::new()
-            .stack_size(RUSTC_THREAD_STACK)
-            .spawn(move || {
-                let input: TokenStream = format!("|| {chain}").parse().unwrap();
-                parse(input).map(|_| ()).map_err(|e| e.to_string())
-            })
+    /// Runs `work` on a thread with `stack` bytes, so that a test of the bound
+    /// cannot take the test process down with it.
+    fn on_a_stack<T: Send + 'static>(stack: usize, work: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(stack)
+            .spawn(work)
             .unwrap()
             .join()
-            .unwrap();
-        assert_eq!(parsed, Ok(()));
+            .unwrap()
+    }
+
+    /// Every chain shape the parser converts level by level while `syn`
+    /// parses it flat: `terms` deep exactly, in a closure body.
+    fn chains(terms: usize) -> [(&'static str, String); 4] {
+        [
+            ("a sum", vec!["X"; terms].join(" + ")),
+            ("a method chain", format!("X{}", ".abs()".repeat(terms - 1))),
+            ("a field chain", format!("X{}", ".x".repeat(terms - 1))),
+            (
+                "an else-if chain",
+                format!("{}{{ 1.0 }}", "if X < 1.0 { 1.0 } else ".repeat(terms - 1)),
+            ),
+        ]
+    }
+
+    fn parse_body(body: &str) -> Result<(), String> {
+        let input: TokenStream = format!("|| {body}").parse().unwrap();
+        parse(input).map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// A macro that generates a body writes a long left-leaning sum, and the
+    /// parser recurses once per term, so what a term costs in stack is how
+    /// long a body can be. The bound's whole claim is that a body at it
+    /// parses on rustc's own 8 MiB thread stack, so this runs on exactly
+    /// that one: a frame that grows past the bound's margin (1.7x) aborts
+    /// here rather than in a user's build.
+    #[test]
+    fn a_chain_at_the_bound_parses_within_a_compiler_threads_stack() {
+        const RUSTC_THREAD_STACK: usize = 8 * 1024 * 1024;
+        for (shape, body) in chains(MAX_NESTING - 1) {
+            let parsed = on_a_stack(RUSTC_THREAD_STACK, move || parse_body(&body));
+            assert_eq!(parsed, Ok(()), "{shape}");
+        }
+    }
+
+    /// Past the bound the program is refused where it is, not crashed. The
+    /// stack is four times rustc's: the refusal is reached after MAX_NESTING
+    /// levels either way, and a test must not be the thing that overflows.
+    #[test]
+    fn a_chain_past_the_bound_is_refused_not_a_crash() {
+        const TEST_STACK: usize = 32 * 1024 * 1024;
+        for terms in [MAX_NESTING + 1, MAX_NESTING * 20] {
+            for (shape, body) in chains(terms) {
+                let refused = on_a_stack(TEST_STACK, move || parse_body(&body));
+                let message = refused.expect_err(shape);
+                assert!(
+                    message.contains(&format!("nested deeper than {MAX_NESTING}")),
+                    "{shape}, {terms} terms: {message}"
+                );
+            }
+        }
     }
 
     #[test]
