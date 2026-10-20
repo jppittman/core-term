@@ -194,6 +194,7 @@ use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ConstItem, Expr, FieldExpr, FnItem,
     FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr, MethodCallExpr,
     Param, RangeExpr, RecordField, RecordItem, Reduction, Spelling, Stmt, UnaryExpr, UnaryOp,
+    is_f32, is_usize,
 };
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
@@ -618,14 +619,15 @@ fn refuse_a_kernel_in_a_closure(ty: &Type) -> syn::Result<()> {
 }
 
 /// A parameter typed as a collection — an array `[R; N]` or a slice `[R]`,
-/// through references and parentheses — is refused where it is written: the
-/// language has none.
+/// through references, parentheses and a macro's invisible group — is refused
+/// where it is written: the language has none.
 fn refuse_a_collection(ty: &Type) -> syn::Result<()> {
     fn names_a_collection(ty: &Type) -> bool {
         match ty {
             Type::Array(_) | Type::Slice(_) => true,
             Type::Reference(reference) => names_a_collection(&reference.elem),
             Type::Paren(inner) => names_a_collection(&inner.elem),
+            Type::Group(inner) => names_a_collection(&inner.elem),
             _ => false,
         }
     }
@@ -1195,17 +1197,6 @@ fn sum_or_product(call: &syn::ExprMethodCall, reduction: Reduction) -> syn::Resu
         ));
     }
     Ok(reduction)
-}
-
-/// Whether `ty` is exactly `f32`: the one type a fold's terms, and the one
-/// conversion's target, may name.
-fn is_f32(ty: &Type) -> bool {
-    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("f32"))
-}
-
-/// Whether `ty` is exactly `usize`: the one type a structural parameter has.
-fn is_usize(ty: &Type) -> bool {
-    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("usize"))
 }
 
 /// `operand as f32`. The conversion's target is always `f32`, so any other
@@ -2529,6 +2520,19 @@ mod tests {
                 "expected `{expected}`, got: {err}"
             );
         }
+    }
+
+    /// A collection reaching `kernel!` through a macro's `$t:ty` fragment, a
+    /// type inside an invisible group, is a collection as it is spelled
+    /// bare.
+    #[test]
+    fn a_collection_inside_a_macros_type_fragment_is_refused_as_one() {
+        let fragment = proc_macro2::Group::new(proc_macro2::Delimiter::None, quote! { [f32; 2] });
+        let err = refusal(quote! { |v: #fragment| X });
+        assert!(
+            err.contains("a collection-typed parameter"),
+            "expected the collection's refusal, got: {err}"
+        );
     }
 
     // ───────────────────────────── tuple lets ─────────────────────────────

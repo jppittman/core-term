@@ -70,16 +70,10 @@ impl KernelDef {
     /// it, and lowering and emission lay a record parameter out by it, so no
     /// two stages can disagree about which record a type is.
     pub(crate) fn record_named(&self, ty: &Type) -> Option<RecordId> {
-        let Type::Path(path) = ty else {
-            return None;
-        };
-        if path.qself.is_some() {
-            return None;
-        }
-        let ident = path.path.get_ident()?;
+        let name = bare_name(ty)?;
         self.records
             .iter()
-            .position(|record| record.name == *ident)
+            .position(|record| record.name == *name)
             .map(RecordId)
     }
 
@@ -92,7 +86,7 @@ impl KernelDef {
 /// Which of the block's records a type is: an index into
 /// [`KernelDef::records`], in declaration order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct RecordId(pub usize);
+pub(crate) struct RecordId(usize);
 
 /// `struct R { a: f32, b: f32 }`: a record of named `f32` fields
 /// (docs/language/2026-09-25-the-language-is-kernel.md §1.3).
@@ -351,13 +345,30 @@ impl FunctionType {
     }
 }
 
-/// Whether `ty` is `f32`, by its own name.
-fn is_f32(ty: &Type) -> bool {
+/// The one name a declared type is, by itself: `f32`, `usize`, a record's.
+///
+/// The one reading of "this type is the bare name N", which every stage that
+/// classifies a declaration builds on. A macro's `$t:ty` fragment arrives as
+/// a type inside an invisible group, and rustc reads the type inside, so this
+/// does too: a spelling is the same type in every position. A path with a
+/// leading `::`, a qualified self or generic arguments names nothing bare.
+pub(crate) fn bare_name(ty: &Type) -> Option<&Ident> {
     match ty {
-        Type::Path(path) => path.qself.is_none() && path.path.is_ident("f32"),
-        Type::Group(inner) => is_f32(&inner.elem),
-        _ => false,
+        Type::Group(inner) => bare_name(&inner.elem),
+        Type::Path(path) if path.qself.is_none() => path.path.get_ident(),
+        _ => None,
     }
+}
+
+/// Whether `ty` is exactly `f32`: the one type a fold's terms, a kernel's
+/// coordinates and value, and the one conversion's target, may name.
+pub(crate) fn is_f32(ty: &Type) -> bool {
+    bare_name(ty).is_some_and(|name| name == "f32")
+}
+
+/// Whether `ty` is exactly `usize`: the one type a structural parameter has.
+pub(crate) fn is_usize(ty: &Type) -> bool {
+    bare_name(ty).is_some_and(|name| name == "usize")
 }
 
 /// An expression in the kernel body.
@@ -748,6 +759,28 @@ impl UnaryOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one reading of a bare type name: through a macro's invisible
+    /// group, and for nothing a path spells with more than its name.
+    #[test]
+    fn a_bare_name_is_seen_through_a_group_and_nothing_longer() {
+        let fragment = proc_macro2::Group::new(proc_macro2::Delimiter::None, quote::quote!(f32));
+        let grouped: Type = syn::parse_quote!(#fragment);
+        assert!(matches!(grouped, Type::Group(_)));
+        assert!(is_f32(&grouped) && !is_usize(&grouped));
+        assert!(is_usize(&syn::parse_quote!(usize)));
+        for refused in [
+            syn::parse_quote!(::f32),
+            syn::parse_quote!(std::primitive::f32),
+            syn::parse_quote!(<f32>::Item),
+            syn::parse_quote!(Vec<f32>),
+            syn::parse_quote!((f32)),
+            syn::parse_quote!(&f32),
+        ] {
+            let refused: Type = refused;
+            assert_eq!(bare_name(&refused), None, "{}", quote::quote!(#refused));
+        }
+    }
 
     #[test]
     fn binary_op_from_syn_maps_every_supported_syn_binop_to_its_own_variant() {

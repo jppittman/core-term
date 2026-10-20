@@ -196,3 +196,45 @@ fn an_entry_named_by_a_digit_has_an_args_record() {
     assert_eq!(moved, 7.0, "4 + X");
     let _ = (_2dArgs { a: 0.0 }, _3Args { a: 0.0 });
 }
+
+/// A `macro_rules` `$t:ty` reaches `kernel!` as a type inside an invisible
+/// group, and rustc reads the type inside, so every position that names a
+/// type does too: a parameter, a return, a field, a `const`, a `let`, a
+/// structural parameter, a cast and a fold's `::<f32>`.
+// The `Args` record the entry brings is not under test.
+#[allow(dead_code)]
+mod typed_by_a_fragment {
+    use super::*;
+
+    macro_rules! spelled_by_fragments {
+        ($real:ty, $count:ty) => {
+            ::pixelflow_compiler::kernel! {
+                const SCALE: $real = 2.0;
+                const FOUR: $count = 4;
+                pub struct Pair { pub a: $real, pub b: $real }
+                fn twice(v: $real) -> $real { v * 2.0 }
+                pub fn spelled<const N: $count>(p: Pair, w: $real) -> $real {
+                    let sum: $real = (0..N).map(|i| X * (i as $real)).sum::<$real>();
+                    twice(sum) + p.a * p.b * w * SCALE + (0..FOUR).map(|i| i as f32).sum::<f32>()
+                }
+            }
+            pub fn closure(v: $real) -> Kernel {
+                let k = ::pixelflow_compiler::kernel!(|v: $real| {
+                    let doubled: $real = v * 2.0;
+                    doubled + X
+                });
+                k(v)
+            }
+        };
+    }
+
+    spelled_by_fragments!(f32, usize);
+
+    #[test]
+    fn every_position_reads_the_type_inside_the_group() {
+        // X = 3: Σ_{i<3} 3i = 9, doubled 18, + 2·5·7·2 = 140, + (0+1+2+3) = 6.
+        let k = spelled::<3>(Pair { a: 2.0, b: 5.0 }, 7.0);
+        assert_eq!(bake(&k), 18.0 + 140.0 + 6.0);
+        assert_eq!(bake(&closure(4.0)), 8.0 + 3.0);
+    }
+}

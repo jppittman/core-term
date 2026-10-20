@@ -72,14 +72,14 @@ use crate::PLAN;
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ConstItem, Expr, FieldExpr, FnItem,
     FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, MethodCallExpr, Param, RangeExpr,
-    RecordField, RecordId, Reduction, Role, Spelling, Stmt, UnaryOp,
+    RecordField, RecordId, Reduction, Role, Spelling, Stmt, UnaryOp, bare_name,
 };
 use crate::lower::{LIBRARY_METHODS, Projection};
 use crate::symbol::{SymbolKind, SymbolTable};
 use pixelflow_ir::{OpKind, known_method_names};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use syn::{Ident, Type};
 
 /// The type of a name or an expression in a kernel body.
@@ -127,22 +127,10 @@ impl Ty {
     /// The type a declaration names, or `None` for one the language does not
     /// have.
     pub(crate) fn from_syn(ty: &Type) -> Option<Ty> {
-        let Type::Path(path) = ty else {
-            return None;
-        };
-        if path.qself.is_some() || path.path.segments.len() != 1 {
-            return None;
-        }
-        let segment = &path.path.segments[0];
-        if !segment.arguments.is_empty() {
-            return None;
-        }
-        match segment.ident.to_string().as_str() {
-            "f32" => Some(Ty::F32),
-            "bool" => Some(Ty::Bool),
-            "usize" => Some(Ty::Usize),
-            _ => None,
-        }
+        let name = bare_name(ty)?;
+        [Ty::F32, Ty::Bool, Ty::Usize]
+            .into_iter()
+            .find(|primitive| name == primitive.name())
     }
 
     /// The value type a declaration names, `f32` or `bool`; `what` begins
@@ -380,7 +368,7 @@ struct Items<'a> {
     /// The block, whose records a type names ([`KernelDef::record_named`]).
     def: &'a KernelDef,
     /// Every record's name, which no other item may take.
-    records: HashMap<String, RecordId>,
+    records: HashSet<String>,
     /// Every `const`'s declared type: `f32` or `usize`.
     consts: HashMap<String, Ty>,
     fns: HashMap<String, Signature>,
@@ -393,15 +381,13 @@ impl<'a> Items<'a> {
     fn collect(def: &'a KernelDef) -> syn::Result<Self> {
         let mut items = Items {
             def,
-            records: HashMap::with_capacity(def.records.len()),
+            records: HashSet::with_capacity(def.records.len()),
             consts: HashMap::with_capacity(def.consts.len()),
             fns: HashMap::with_capacity(def.fns.len()),
         };
-        for (index, record) in def.records.iter().enumerate() {
+        for record in &def.records {
             items.refuse_a_taken_name(&record.name)?;
-            items
-                .records
-                .insert(record.name.to_string(), RecordId(index));
+            items.records.insert(record.name.to_string());
         }
         for record in &def.records {
             items.check_fields(&record.fields)?;
@@ -450,7 +436,7 @@ impl<'a> Items<'a> {
         }
         let taken = self.consts.contains_key(&text)
             || self.fns.contains_key(&text)
-            || self.records.contains_key(&text);
+            || self.records.contains(&text);
         if taken {
             return Err(syn::Error::new(
                 name.span(),
@@ -472,7 +458,7 @@ impl<'a> Items<'a> {
                 Some(other) => Some(format!("the `Args` record of `{other}`")),
                 None => self
                     .records
-                    .contains_key(&args)
+                    .contains(&args)
                     .then(|| format!("the record `{args}`")),
             };
             if let Some(clash) = clash {
@@ -618,11 +604,7 @@ impl<'a> Items<'a> {
             }
             FunctionType::NotOne => {}
         }
-        let named = match &*param.ty {
-            Type::Path(path) if path.qself.is_none() => path.path.get_ident(),
-            _ => None,
-        };
-        if let Some(name) = named.filter(|_| Ty::from_syn(&param.ty).is_none()) {
+        if let Some(name) = bare_name(&param.ty).filter(|_| Ty::from_syn(&param.ty).is_none()) {
             return Err(syn::Error::new_spanned(
                 &param.ty,
                 format!(
