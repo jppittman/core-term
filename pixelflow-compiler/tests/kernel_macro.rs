@@ -46,8 +46,8 @@ fn pow_takes_its_receiver_as_the_base_and_its_argument_as_the_exponent() {
 
 // ============================================================================
 // Library methods: fixed compositions of primitive ops, not an `OpKind`
-// themselves. `sema` validates a name against the `LIBRARY_METHODS` list that
-// lowering reads.
+// themselves. The parser resolves a name to a `LibraryMethod`, which `sema`
+// types and lowering builds.
 // ============================================================================
 
 #[test]

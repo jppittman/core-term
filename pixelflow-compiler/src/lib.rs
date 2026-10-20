@@ -426,15 +426,15 @@ fn expand(input: TokenStream, optimizer: &mut dyn Optimize) -> TokenStream {
 /// written `X.round()` inside a `kernel!` body.
 ///
 /// So run the real pipeline, both macros' versions of it, over the whole
-/// advertised surface. Adding an op to `OpKind::is_dsl_method` or a name to
-/// `LIBRARY_METHODS` without a path through every stage fails here, for
+/// advertised surface. Adding an op to `OpKind::is_dsl_method` or a
+/// `LibraryMethod` without a path through every stage fails here, for
 /// whoever adds it.
 #[cfg(test)]
 mod every_advertised_method_compiles {
-    use crate::lower::LIBRARY_METHODS;
+    use crate::ast::Method;
     use crate::sema::{MethodTyping, method_typing};
     use crate::{Identity, Optimize, emit, macro_tier, parser, sema};
-    use pixelflow_ir::{OpKind, known_method_names};
+    use pixelflow_ir::OpKind;
     use proc_macro2::Span;
     use quote::quote;
     use syn::Ident;
@@ -488,22 +488,9 @@ mod every_advertised_method_compiles {
         emit::emit_kernel(&analyzed, optimizer).map(|_| ())
     }
 
-    /// Every `(method, arg_count)` the front end accepts: the primitive ops
-    /// `sema` validates against, plus the library compositions.
-    fn advertised() -> impl Iterator<Item = (&'static str, usize)> {
-        known_method_names()
-            .map(|name| {
-                let op = OpKind::from_name(name)
-                    .expect("known_method_names() only yields names from_name parses");
-                // Arity counts the receiver as the first operand.
-                (name, op.arity() - 1)
-            })
-            .chain(LIBRARY_METHODS.iter().copied())
-    }
-
     #[test]
     fn through_the_kernel_macros_pipeline() {
-        for (method, arg_count) in advertised() {
+        for (method, arg_count) in Method::advertised() {
             assert_eq!(
                 expand(Macro::Kernel, method, arg_count),
                 Ok(()),
@@ -514,7 +501,7 @@ mod every_advertised_method_compiles {
 
     #[test]
     fn through_the_kernel_raw_macros_pipeline() {
-        for (method, arg_count) in advertised() {
+        for (method, arg_count) in Method::advertised() {
             assert_eq!(
                 expand(Macro::KernelRaw, method, arg_count),
                 Ok(()),

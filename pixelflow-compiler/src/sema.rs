@@ -71,12 +71,12 @@
 use crate::PLAN;
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Callable, CastExpr, ConstItem, Expr, FieldExpr,
-    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, MethodCallExpr, Param, RangeExpr,
-    RecordField, RecordId, Reduction, Role, Stmt, UnaryOp, bare_name,
+    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Method, MethodCallExpr, Param,
+    ProjectExpr, Projection, RangeExpr, RecordField, RecordId, Reduction, Role, Stmt, UnaryOp,
+    arity_mismatch, bare_name,
 };
-use crate::lower::{LIBRARY_METHODS, Projection};
 use crate::symbol::{SymbolKind, SymbolTable};
-use pixelflow_ir::{OpKind, known_method_names};
+use pixelflow_ir::OpKind;
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use std::collections::{HashMap, HashSet};
@@ -347,19 +347,6 @@ const RETIRED_COORDINATES: [&str; 2] = ["Z", "W"];
 
 /// The projection of the retired axis.
 const RETIRED_PROJECTION: &str = "DZ";
-
-/// Method names that meant something in a tier that is gone. `.at()` warped
-/// a manifold-typed parameter, `.constant()`/`.collapse()` evaluated one to
-/// a field; a kernel composes `Kernel` values instead.
-const RETIRED_METHODS: [&str; 3] = ["at", "constant", "collapse"];
-
-/// The one method that is neither an `OpKind` nor a library composition:
-/// the identity on an arena value.
-const CLONE: &str = "clone";
-
-/// Maximum per-character difference for a same-length method name to be
-/// suggested as a typo fix (e.g. `sqrtt` -> `sqrt`).
-const MAX_TYPO_CHAR_DIFF: usize = 2;
 
 /// A `fn`'s declared types.
 #[derive(Debug)]
@@ -816,6 +803,8 @@ impl<'a> FnAnalyzer<'a> {
 
             Expr::MethodCall(call) => self.type_of_method_call(call),
 
+            Expr::Project(project) => self.type_of_projection(project),
+
             Expr::Call(call) => self.type_of_call(call),
 
             Expr::If(choice) => self.type_of_if(choice),
@@ -1089,44 +1078,19 @@ impl<'a> FnAnalyzer<'a> {
         ))
     }
 
-    /// Type a method call: the method by name and arity, then its operands
+    /// Type a method call: the method the parser resolved, then its operands
     /// against what it takes.
     fn type_of_method_call(&mut self, call: &MethodCallExpr) -> syn::Result<Ty> {
-        let method_name = call.method.to_string();
-        let arg_count = call.args.len();
-
-        if RETIRED_METHODS.contains(&method_name.as_str()) {
-            return Err(syn::Error::new(
-                call.method.span(),
-                format!(
-                    "`.{method_name}()` inside a kernel body sampled a manifold-typed \
-                     parameter, and there are none\n\
-                     help: compose `Kernel` values instead: `Kernel::at` is the warp"
-                ),
-            ));
+        match call.method {
+            Method::Clone => self.type_of(&call.receiver),
+            Method::Op(op) => self.check_op_method(op, call),
+            Method::Library(_) => self.all_f32(call, &format!("`.{}` takes `f32`s", call.name)),
         }
-        // Arena expressions are values, so `.clone()` is the identity.
-        if method_name == CLONE && arg_count == 0 {
-            return self.type_of(&call.receiver);
-        }
-
-        // Validate method name AND arity against known methods (IR ops +
-        // library compositions) — `OpKind::from_method_call` checks arity,
-        // so `.sqrt(1)` is rejected here rather than slipping through as
-        // "known" and failing later with a less specific error.
-        if let Some(op) = OpKind::from_method_call(&method_name, arg_count) {
-            return self.check_op_method(op, call);
-        }
-        if LIBRARY_METHODS.contains(&(method_name.as_str(), arg_count)) {
-            return self.all_f32(call, &format!("`.{method_name}` takes `f32`s"));
-        }
-
-        Err(self.unknown_method(call))
     }
 
     /// The operands of an `OpKind` method against its typing.
     fn check_op_method(&mut self, op: OpKind, call: &MethodCallExpr) -> syn::Result<Ty> {
-        let method_name = call.method.to_string();
+        let method_name = &call.name;
         match method_typing(op) {
             MethodTyping::Arithmetic => {
                 self.all_f32(call, &format!("`.{method_name}` takes `f32`s"))
@@ -1166,83 +1130,9 @@ impl<'a> FnAnalyzer<'a> {
         Ok(Ty::F32)
     }
 
-    /// The refusal of a method name nothing advertises, or of a known one at
-    /// the wrong arity.
-    fn unknown_method(&self, call: &MethodCallExpr) -> syn::Error {
-        let method_name = call.method.to_string();
-        let arg_count = call.args.len();
-
-        // A recognized name at the wrong arity is not an unknown name, and
-        // sending it into the typo search below produced the useless
-        // `unknown method 'sqrt'; did you mean 'sqrt'?` — the search found
-        // the very name it had just declared unknown. Answer the question
-        // the caller actually got wrong.
-        if let Some(want) = Self::expected_arg_count(&method_name) {
-            return arity_mismatch(call.method.span(), &method_name, want, arg_count);
-        }
-
-        // Find similar method for suggestion - collect all known methods
-        let all_methods: Vec<&str> = known_method_names()
-            .chain(LIBRARY_METHODS.iter().map(|(name, _)| *name))
-            .chain(std::iter::once(CLONE))
-            .collect();
-
-        let suggestion = all_methods
-            .iter()
-            .find(|&&m| {
-                let m_lower = m.to_lowercase();
-                let name_lower = method_name.to_lowercase();
-                m_lower == name_lower
-                    || (m.len() == method_name.len()
-                        && m.chars()
-                            .zip(method_name.chars())
-                            .filter(|(a, b)| a != b)
-                            .count()
-                            <= MAX_TYPO_CHAR_DIFF)
-            })
-            .copied();
-
-        let msg = match suggestion {
-            Some(similar) => format!(
-                "unknown method '{}'\n\
-                 help: did you mean '{}'?",
-                method_name, similar
-            ),
-            None => format!(
-                "unknown method '{}'\n\
-                 note: common methods: sqrt, abs, sin, cos, exp, min, max, clone\n\
-                 help: see Kernel's method surface for what is available",
-                method_name
-            ),
-        };
-
-        syn::Error::new(call.method.span(), msg)
-    }
-
-    /// The argument count a known method takes, or `None` if no method has
-    /// that name at any arity.
-    ///
-    /// Name and arity are separate questions. `OpKind::from_method_call`
-    /// deliberately answers them together — that is what makes `.sqrt(1.0)` a
-    /// hard error rather than something that slips through and fails later —
-    /// but a *diagnostic* has to take them apart again to say which one is
-    /// wrong.
-    ///
-    /// Asking `from_method_call` again at the op's own arity is what
-    /// distinguishes a DSL method from an op that merely shares a name
-    /// (`add`, `shl`), without this module needing to see the private
-    /// predicate that decides it.
-    fn expected_arg_count(name: &str) -> Option<usize> {
-        if let Some(op) = OpKind::from_name(name) {
-            let args = op.arity().checked_sub(1)?;
-            if OpKind::from_method_call(name, args).is_some() {
-                return Some(args);
-            }
-        }
-        LIBRARY_METHODS
-            .iter()
-            .find(|(known, _)| *known == name)
-            .map(|(_, count)| *count)
+    /// `DX(e)`: a projection of an `f32`.
+    fn type_of_projection(&mut self, project: &ProjectExpr) -> syn::Result<Ty> {
+        self.expect(&project.arg, Ty::F32, "a projection takes an `f32`")
     }
 
     /// A free function call: a kernel applied, a helper inlined by
@@ -1275,12 +1165,6 @@ impl<'a> FnAnalyzer<'a> {
                 call.func.span(),
                 "`DZ` is no longer a coordinate: a lattice has two axes, X and Y",
             ));
-        }
-        if Projection::from_name(&name).is_some() {
-            let [arg] = call.args.as_slice() else {
-                return Err(arity_mismatch(call.func.span(), &name, 1, call.args.len()));
-            };
-            return self.expect(arg, Ty::F32, "a projection takes an `f32`");
         }
         Err(syn::Error::new(
             call.func.span(),
@@ -1592,23 +1476,6 @@ impl<'a> FnAnalyzer<'a> {
             ),
         )
     }
-}
-
-/// The refusal of a call that supplies `got` arguments to a callee that takes
-/// `want`.
-fn arity_mismatch(span: Span, callee: &str, want: usize, got: usize) -> syn::Error {
-    let plural = |count: usize, one: &'static str, many: &'static str| match count {
-        1 => one,
-        _ => many,
-    };
-    syn::Error::new(
-        span,
-        format!(
-            "`{callee}` takes {want} argument{}, but {got} {} supplied",
-            plural(want, "", "s"),
-            plural(got, "was", "were"),
-        ),
-    )
 }
 
 /// A `usize` where a value is expected. A `usize` — a fold's index, a
@@ -2118,6 +1985,7 @@ fn collect_calls(expr: &Expr, fns: &[String], out: &mut Vec<(String, Span)>) {
                 collect_calls(arg, fns, out);
             }
         }
+        Expr::Project(project) => collect_calls(&project.arg, fns, out),
         Expr::Call(call) => {
             let name = call.func.to_string();
             if fns.contains(&name) {
@@ -2289,44 +2157,6 @@ mod tests {
                 dx * dx
             }
         });
-    }
-
-    #[test]
-    fn an_unknown_method_is_refused_by_name() {
-        let err = refusal(quote! { |r: f32| X.unknownmethod() });
-        assert!(err.contains("unknown method"));
-    }
-
-    #[test]
-    fn typo_suggestion_for_method_matches_case_insensitively() {
-        // "SQRT" differs from "sqrt" in every char position case-sensitively,
-        // so only the case-insensitive fallback catches it.
-        let err = refusal(quote! { || X.SQRT() });
-        assert!(err.contains("did you mean 'sqrt'"), "{err}");
-    }
-
-    #[test]
-    fn a_method_name_near_a_method_gets_a_suggestion() {
-        // One character from `sqrt`; only that a suggestion is offered is
-        // asserted, so the vocabulary may grow another near name.
-        let err = refusal(quote! { || X.sqrx() });
-        assert!(err.contains("did you mean"), "{err}");
-    }
-
-    #[test]
-    fn a_method_name_of_a_methods_length_but_far_from_it_gets_no_suggestion() {
-        // `qqqq` is the length of `sqrt` and differs from it in three
-        // characters, past MAX_TYPO_CHAR_DIFF: matching length alone must not
-        // be enough to suggest one.
-        let err = refusal(quote! { || X.qqqq() });
-        assert!(!err.contains("did you mean"), "{err}");
-    }
-
-    #[test]
-    fn a_method_name_far_from_every_length_gets_no_suggestion() {
-        // Far from every method however the vocabulary grows.
-        let err = refusal(quote! { || X.qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq() });
-        assert!(!err.contains("did you mean"), "{err}");
     }
 
     #[test]
@@ -2596,19 +2426,6 @@ mod tests {
         ] {
             let err = refusal(input);
             assert!(err.contains("recursion is refused"), "got: {err}");
-        }
-    }
-
-    /// A retired method is refused by name, with the way out.
-    #[test]
-    fn a_retired_method_is_refused() {
-        for input in [
-            quote! { || X.at(Y, X) },
-            quote! { || X.constant() },
-            quote! { || X.collapse() },
-        ] {
-            let err = refusal(input);
-            assert!(err.contains("Kernel::at"), "got: {err}");
         }
     }
 
@@ -2890,7 +2707,7 @@ mod tests {
     /// is ternary.
     #[test]
     fn every_advertised_op_method_has_a_typing() {
-        for name in known_method_names() {
+        for name in pixelflow_ir::known_method_names() {
             let op = OpKind::from_name(name).expect("advertised names parse");
             match method_typing(op) {
                 MethodTyping::Comparison => assert_eq!(op.arity(), 2, "{name}"),
@@ -3367,7 +3184,7 @@ mod tests {
     #[test]
     fn a_binding_named_after_a_projection_is_refused() {
         for input in [
-            quote! { pub fn f(DX: impl Fn(f32, f32) -> f32) -> f32 { DX(X, Y) } },
+            quote! { pub fn f(DX: impl Fn(f32, f32) -> f32) -> f32 { DX(X) } },
             quote! { pub fn f(V: f32) -> f32 { V } },
             quote! { || { let DY = X; DY } },
             quote! { || (0..2).map(|DXX| DXX as f32).sum() },

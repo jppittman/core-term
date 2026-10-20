@@ -86,7 +86,7 @@
 //!
 //! VIS        -- `pub`, `pub(crate)`, …: a visibility, kept on the host item
 //! RECORD     -- the name of one of the block's records
-//! METHOD     -- an `OpKind` method, a `LIBRARY_METHODS` composition, or `clone`
+//! METHOD     -- an `OpKind` method, a `LibraryMethod` composition, or `clone`
 //! PROJECTION -- V, DX, DY, DXX, DXY, DYY
 //! KERNEL     -- a kernel-typed parameter in scope
 //! ```
@@ -143,7 +143,10 @@
 //! closure with a type annotation, a pattern, more than one
 //! parameter, a return type or a qualifier; type arguments on a method
 //! (`::<f32>` on `.sum` and `.product` excepted); an `as` to any type but
-//! `f32`; a path or a call from outside the block; `%` and `!` (no IR op);
+//! `f32`; a path or a call from outside the block; a method the language
+//! does not have, a known one at the wrong arity, and the retired `.at()`,
+//! `.constant()` and `.collapse()`; a projection called with other than one
+//! argument; `%` and `!` (no IR op);
 //! a `let` whose pattern is neither a plain name nor a tuple of them (`mut`,
 //! `ref`, `@`, a record's pattern); a tuple `let` whose value is not a tuple
 //! of as many expressions, with a pattern within its pattern, a `_` or a
@@ -156,18 +159,15 @@
 //! for a later stage to refuse: the AST holds only what the language means.
 //!
 //! Parsed, and refused by `sema`: an unbound or retired name; a coordinate in
-//! a helper; a call to an entry or to an unknown function; recursion; an
-//! unknown method or a
-//! known one at the wrong arity; a type error (every expression is an `f32`
-//! or a `bool`; a `usize` is used only as `i as f32`; a record only by name);
+//! a helper; a call to an entry or to an unknown function; recursion; a
+//! type error (every expression is an `f32` or a `bool`; a `usize` is used only as `i as f32`; a record only by name);
 //! a record's field that is not an `f32` (§1.3); a
 //! record returned, built, chosen by an `if`, or used in arithmetic or a
 //! comparison (Phase D, D7); an unknown field; an `as` of anything but a
 //! `usize` name; an integer an `f32` does not hold exactly where a value is
 //! expected; a `const` whose initializer is not a `cexpr` or an `iexpr`; a
 //! negated `usize`; a range whose bounds are not constant or that runs
-//! backwards; `.at()`,
-//! `.constant()`, `.collapse()`; a block with no final expression; an
+//! backwards; a block with no final expression; an
 //! `Args` record's name taken twice; a function type spelled any way but
 //! `impl Fn(f32, f32) -> f32`; a kernel used as anything but applied, with
 //! two `f32`s, or passed by name to a helper's kernel-typed parameter — in
@@ -192,9 +192,9 @@
 use crate::PLAN;
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ClosureEntry, ConstItem, Expr, FieldExpr,
-    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr,
-    MethodCallExpr, Param, RangeExpr, RecordField, RecordItem, Reduction, Stmt, UnaryExpr, UnaryOp,
-    is_f32, is_usize,
+    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr, Method,
+    MethodCallExpr, Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordItem, Reduction,
+    Stmt, UnaryExpr, UnaryOp, arity_mismatch, is_f32, is_usize,
 };
 use proc_macro2::TokenStream;
 use syn::parse::{Parse, ParseStream};
@@ -755,69 +755,9 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             }))
         }
 
-        syn::Expr::MethodCall(expr_method) => {
-            if let Some(range) = a_range(&expr_method.receiver) {
-                return convert_range_method(range, &expr_method);
-            }
-            if let Some((range, map)) = a_mapped_range(&expr_method.receiver) {
-                return convert_fold_terminal(range, map, &expr_method);
-            }
-            // Built before the receiver is converted, returned after it: the
-            // receiver's own refusal, the innermost, comes first, as rustc's
-            // does (`(0..4).rev().map(…)` is about `.rev`).
-            let collection = a_collection_iterated(&expr_method);
-            if let Some(arguments) = &expr_method.turbofish {
-                return Err(syn::Error::new_spanned(
-                    arguments,
-                    "type arguments on a method in a kernel body\n\
-                     \n\
-                     note: every value in a kernel body is an `f32` or a `bool`; no method is \
-                     generic",
-                ));
-            }
-            let receiver = convert_expr(*expr_method.receiver)?;
-            if let Some(refusal) = collection {
-                return Err(refusal);
-            }
-            let args = expr_method
-                .args
-                .into_iter()
-                .map(convert_expr)
-                .collect::<syn::Result<Vec<_>>>()?;
-            Ok(Expr::MethodCall(MethodCallExpr {
-                receiver: Box::new(receiver),
-                method: expr_method.method,
-                args,
-            }))
-        }
+        syn::Expr::MethodCall(expr_method) => convert_method_call(expr_method),
 
-        syn::Expr::Call(expr_call) => {
-            // Free function call: V(m), DX(expr), a helper, etc.
-            // Extract the function name from the callee
-            if let syn::Expr::Path(ref path) = *expr_call.func {
-                if path.path.segments.len() == 1 && path.qself.is_none() {
-                    let func = path.path.segments[0].ident.clone();
-                    let args = expr_call
-                        .args
-                        .into_iter()
-                        .map(convert_expr)
-                        .collect::<syn::Result<Vec<_>>>()?;
-                    return Ok(Expr::Call(CallExpr { func, args }));
-                }
-            }
-            // A qualified callee names something outside the block.
-            Err(syn::Error::new_spanned(
-                &expr_call.func,
-                format!(
-                    "a qualified call in a kernel body: `{}`\n\
-                     \n\
-                     note: a body calls the block's helpers (private `fn`s) and the \
-                     projections V, DX, DY, DXX, DXY, DYY, by name; an operation on a value is \
-                     a method, `x.sqrt()`",
-                    quote::quote!(#expr_call)
-                ),
-            ))
-        }
+        syn::Expr::Call(expr_call) => convert_call(expr_call),
 
         syn::Expr::If(expr_if) => convert_if(expr_if),
 
@@ -996,6 +936,163 @@ fn convert_if(expr_if: syn::ExprIf) -> syn::Result<Expr> {
     }))
 }
 
+/// `receiver.method(args)`: a fold's terminal, a method of the language, or
+/// a refusal of any other name.
+fn convert_method_call(expr_method: syn::ExprMethodCall) -> syn::Result<Expr> {
+    if let Some(range) = a_range(&expr_method.receiver) {
+        return convert_range_method(range, &expr_method);
+    }
+    if let Some((range, map)) = a_mapped_range(&expr_method.receiver) {
+        return convert_fold_terminal(range, map, &expr_method);
+    }
+    // Built before the receiver is converted, returned after it: the
+    // receiver's own refusal, the innermost, comes first, as rustc's
+    // does (`(0..4).rev().map(…)` is about `.rev`).
+    let collection = a_collection_iterated(&expr_method);
+    if let Some(arguments) = &expr_method.turbofish {
+        return Err(syn::Error::new_spanned(
+            arguments,
+            "type arguments on a method in a kernel body\n\
+             \n\
+             note: every value in a kernel body is an `f32` or a `bool`; no method is \
+             generic",
+        ));
+    }
+    let receiver = convert_expr(*expr_method.receiver)?;
+    if let Some(refusal) = collection {
+        return Err(refusal);
+    }
+    let args = expr_method
+        .args
+        .into_iter()
+        .map(convert_expr)
+        .collect::<syn::Result<Vec<_>>>()?;
+    let method = resolve_method(&expr_method.method, args.len())?;
+    Ok(Expr::MethodCall(MethodCallExpr {
+        receiver: Box::new(receiver),
+        name: expr_method.method,
+        method,
+        args,
+    }))
+}
+
+/// Method names that meant something in a tier that is gone. `.at()` warped
+/// a manifold-typed parameter, `.constant()`/`.collapse()` evaluated one to
+/// a field; a kernel composes `Kernel` values instead.
+const RETIRED_METHODS: [&str; 3] = ["at", "constant", "collapse"];
+
+/// Maximum per-character difference for a same-length method name to be
+/// suggested as a typo fix (e.g. `sqrtt` -> `sqrt`).
+const MAX_TYPO_CHAR_DIFF: usize = 2;
+
+/// What `name` denotes called with `arity` arguments, or the refusal of it:
+/// the one place a method's spelling is read.
+fn resolve_method(name: &syn::Ident, arity: usize) -> syn::Result<Method> {
+    let text = name.to_string();
+    if RETIRED_METHODS.contains(&text.as_str()) {
+        return Err(syn::Error::new(
+            name.span(),
+            format!(
+                "`.{text}()` inside a kernel body sampled a manifold-typed \
+                 parameter, and there are none\n\
+                 help: compose `Kernel` values instead: `Kernel::at` is the warp"
+            ),
+        ));
+    }
+    Method::resolve(&text, arity).ok_or_else(|| unknown_method(name, arity))
+}
+
+/// The refusal of a method name nothing advertises, or of a known one at
+/// the wrong arity.
+fn unknown_method(name: &syn::Ident, arity: usize) -> syn::Error {
+    let text = name.to_string();
+
+    // A recognized name at the wrong arity is not an unknown name, and
+    // sending it into the typo search below produced the useless
+    // `unknown method 'sqrt'; did you mean 'sqrt'?` — the search found
+    // the very name it had just declared unknown. Answer the question
+    // the caller actually got wrong.
+    if let Some((_, want)) = Method::advertised().find(|(known, _)| *known == text) {
+        return arity_mismatch(name.span(), &text, want, arity);
+    }
+
+    let suggestion = Method::advertised().map(|(known, _)| known).find(|known| {
+        known.to_lowercase() == text.to_lowercase()
+            || (known.len() == text.len()
+                && known
+                    .chars()
+                    .zip(text.chars())
+                    .filter(|(a, b)| a != b)
+                    .count()
+                    <= MAX_TYPO_CHAR_DIFF)
+    });
+
+    let msg = match suggestion {
+        Some(similar) => format!(
+            "unknown method '{text}'\n\
+             help: did you mean '{similar}'?"
+        ),
+        None => format!(
+            "unknown method '{text}'\n\
+             note: common methods: sqrt, abs, sin, cos, exp, min, max, clone\n\
+             help: see Kernel's method surface for what is available"
+        ),
+    };
+
+    syn::Error::new(name.span(), msg)
+}
+
+/// A free call by a single name: a projection, resolved here, or a helper or
+/// a kernel, which only `sema` can tell apart (it takes the scope).
+fn convert_call(expr_call: syn::ExprCall) -> syn::Result<Expr> {
+    let syn::Expr::Path(ref path) = *expr_call.func else {
+        return Err(refuse_a_qualified_call(&expr_call));
+    };
+    if path.path.segments.len() != 1 || path.qself.is_some() {
+        return Err(refuse_a_qualified_call(&expr_call));
+    }
+    let func = path.path.segments[0].ident.clone();
+    let args = expr_call
+        .args
+        .into_iter()
+        .map(convert_expr)
+        .collect::<syn::Result<Vec<_>>>()?;
+    let Some(projection) = Projection::from_name(&func.to_string()) else {
+        return Ok(Expr::Call(CallExpr { func, args }));
+    };
+    let arg = match <[Expr; 1]>::try_from(args) {
+        Ok([arg]) => arg,
+        Err(args) => {
+            return Err(arity_mismatch(
+                func.span(),
+                &func.to_string(),
+                1,
+                args.len(),
+            ));
+        }
+    };
+    Ok(Expr::Project(ProjectExpr {
+        projection,
+        arg: Box::new(arg),
+        span: func.span(),
+    }))
+}
+
+/// A qualified callee names something outside the block.
+fn refuse_a_qualified_call(expr_call: &syn::ExprCall) -> syn::Error {
+    syn::Error::new_spanned(
+        &expr_call.func,
+        format!(
+            "a qualified call in a kernel body: `{}`\n\
+             \n\
+             note: a body calls the block's helpers (private `fn`s) and the \
+             projections V, DX, DY, DXX, DXY, DYY, by name; an operation on a value is \
+             a method, `x.sqrt()`",
+            quote::quote!(#expr_call)
+        ),
+    )
+}
+
 // ─────────────────────────────── folds ───────────────────────────────
 
 /// Every spelling of a fold, as a refusal of any other names them.
@@ -1027,14 +1124,54 @@ fn a_mapped_range(receiver: &syn::Expr) -> Option<(&syn::ExprRange, &syn::ExprMe
     let syn::Expr::MethodCall(map) = receiver else {
         return None;
     };
-    if map.method != "map" {
+    if RangeMethod::of(&map.method) != Some(RangeMethod::Map) {
         return None;
     }
     Some((a_range(&map.receiver)?, map))
 }
 
-/// The methods that iterate: a fold's `.map`, `.any` and `.all`.
-const ITERATING_METHODS: [&str; 3] = ["map", "any", "all"];
+/// The methods that iterate, by name: a fold's `.map`, `.any` and `.all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeMethod {
+    /// `.map(|i| e)`: an iterator, which a terminal method ends.
+    Map,
+    /// `.any(|i| m)`: a fold by itself.
+    Any,
+    /// `.all(|i| m)`: a fold by itself.
+    All,
+}
+
+impl RangeMethod {
+    /// The one reading of an iterating method's name.
+    fn of(method: &syn::Ident) -> Option<Self> {
+        match method.to_string().as_str() {
+            "map" => Some(Self::Map),
+            "any" => Some(Self::Any),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+/// The method that ends `(a..b).map(|i| e)`, by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FoldTerminal {
+    Sum,
+    Product,
+    Fold,
+}
+
+impl FoldTerminal {
+    /// The one reading of a terminal method's name.
+    fn of(method: &syn::Ident) -> Option<Self> {
+        match method.to_string().as_str() {
+            "sum" => Some(Self::Sum),
+            "product" => Some(Self::Product),
+            "fold" => Some(Self::Fold),
+            _ => None,
+        }
+    }
+}
 
 /// The methods that make a collection something to iterate: an array's or a
 /// slice's, by value or by reference.
@@ -1052,9 +1189,7 @@ fn a_collection_iterated(call: &syn::ExprMethodCall) -> Option<syn::Error> {
             &format!("the one iteration is a fold, over a range: {FOLD_SPELLINGS}"),
         ));
     }
-    if !ITERATING_METHODS.iter().any(|name| call.method == name) {
-        return None;
-    }
+    RangeMethod::of(&call.method)?;
     if !call
         .args
         .iter()
@@ -1080,10 +1215,10 @@ const TUPLE_LET: &str = "`let (a, b) = (e1, e2);` binds each name to its express
 /// A method called on a range itself: `.any(|i| m)` and `.all(|i| m)` are
 /// folds, and nothing else is a value.
 fn convert_range_method(range: &syn::ExprRange, call: &syn::ExprMethodCall) -> syn::Result<Expr> {
-    let reduction = match call.method.to_string().as_str() {
-        "any" => Reduction::Any,
-        "all" => Reduction::All,
-        "map" => {
+    let reduction = match RangeMethod::of(&call.method) {
+        Some(RangeMethod::Any) => Reduction::Any,
+        Some(RangeMethod::All) => Reduction::All,
+        Some(RangeMethod::Map) => {
             return Err(syn::Error::new_spanned(
                 call,
                 format!(
@@ -1093,13 +1228,14 @@ fn convert_range_method(range: &syn::ExprRange, call: &syn::ExprMethodCall) -> s
                 ),
             ));
         }
-        other => {
+        None => {
             return Err(syn::Error::new(
                 call.method.span(),
                 format!(
-                    "`.{other}` on a range\n\
+                    "`.{}` on a range\n\
                      \n\
-                     note: a range is the domain of a fold: {FOLD_SPELLINGS}"
+                     note: a range is the domain of a fold: {FOLD_SPELLINGS}",
+                    call.method
                 ),
             ));
         }
@@ -1122,17 +1258,18 @@ fn convert_fold_terminal(
     map: &syn::ExprMethodCall,
     call: &syn::ExprMethodCall,
 ) -> syn::Result<Expr> {
-    let reduction = match call.method.to_string().as_str() {
-        "sum" => sum_or_product(call, Reduction::Sum)?,
-        "product" => sum_or_product(call, Reduction::Product)?,
-        "fold" => fold_monoid(call)?,
-        other => {
+    let reduction = match FoldTerminal::of(&call.method) {
+        Some(FoldTerminal::Sum) => sum_or_product(call, Reduction::Sum)?,
+        Some(FoldTerminal::Product) => sum_or_product(call, Reduction::Product)?,
+        Some(FoldTerminal::Fold) => fold_monoid(call)?,
+        None => {
             return Err(syn::Error::new(
                 call.method.span(),
                 format!(
-                    "`.{other}` does not end a fold\n\
+                    "`.{}` does not end a fold\n\
                      \n\
-                     note: a fold is spelled {FOLD_SPELLINGS}"
+                     note: a fold is spelled {FOLD_SPELLINGS}",
+                    call.method
                 ),
             ));
         }
@@ -2745,6 +2882,69 @@ mod tests {
                 err.contains("E0562") && err.contains("Phase D-a"),
                 "{closure}: got {err}"
             );
+        }
+    }
+
+    // ───────────────────────────── methods ─────────────────────────────
+
+    #[test]
+    fn an_unknown_method_is_refused_by_name() {
+        let err = refusal(quote! { |r: f32| X.unknownmethod() });
+        assert!(err.contains("unknown method"));
+    }
+
+    #[test]
+    fn typo_suggestion_for_method_matches_case_insensitively() {
+        // "SQRT" differs from "sqrt" in every char position case-sensitively,
+        // so only the case-insensitive fallback catches it.
+        let err = refusal(quote! { || X.SQRT() });
+        assert!(err.contains("did you mean 'sqrt'"), "{err}");
+    }
+
+    #[test]
+    fn a_method_name_near_a_method_gets_a_suggestion() {
+        // One character from `sqrt`; only that a suggestion is offered is
+        // asserted, so the vocabulary may grow another near name.
+        let err = refusal(quote! { || X.sqrx() });
+        assert!(err.contains("did you mean"), "{err}");
+    }
+
+    #[test]
+    fn a_method_name_of_a_methods_length_but_far_from_it_gets_no_suggestion() {
+        // `qqqq` is the length of `sqrt` and differs from it in three
+        // characters, past MAX_TYPO_CHAR_DIFF: matching length alone must not
+        // be enough to suggest one.
+        let err = refusal(quote! { || X.qqqq() });
+        assert!(!err.contains("did you mean"), "{err}");
+    }
+
+    #[test]
+    fn a_method_name_far_from_every_length_gets_no_suggestion() {
+        // Far from every method however the vocabulary grows.
+        let err = refusal(quote! { || X.qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq() });
+        assert!(!err.contains("did you mean"), "{err}");
+    }
+
+    /// A retired method is refused by name, with the way out.
+    #[test]
+    fn a_retired_method_is_refused() {
+        for input in [
+            quote! { || X.at(Y, X) },
+            quote! { || X.constant() },
+            quote! { || X.collapse() },
+        ] {
+            let err = refusal(input);
+            assert!(err.contains("Kernel::at"), "got: {err}");
+        }
+    }
+
+    /// A call to a projection takes the one argument a projection takes, said
+    /// where the call is written: `DX(x, y)` is no application of a kernel.
+    #[test]
+    fn a_projection_takes_one_argument() {
+        for input in [quote! { || DX(X, Y) }, quote! { || V() }] {
+            let err = refusal(input);
+            assert!(err.contains("takes 1 argument, but"), "got: {err}");
         }
     }
 }

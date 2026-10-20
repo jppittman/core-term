@@ -60,8 +60,9 @@
 
 use crate::PLAN;
 use crate::ast::{
-    BinaryOp, BlockExpr, Callable, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt, RecordId,
-    Reduction, Role, Stmt, UnaryOp,
+    BinaryOp, BlockExpr, Callable, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt,
+    LibraryMethod, Method, MethodCallExpr, ProjectExpr, Projection, RecordId, Reduction, Role,
+    Stmt, UnaryOp,
 };
 use crate::sema::{
     AnalyzedKernel, Bounds, ConstValue, Parameter, RangeScope, Scalar, StructuralRange,
@@ -79,49 +80,11 @@ use std::ops::Range;
 use std::rc::Rc;
 use syn::Ident;
 
-/// DSL method calls that denote a fixed composition of primitive ops rather
-/// than a single [`OpKind`] — `(name, arg_count)`, `arg_count` excluding the
-/// receiver.
-///
-/// The syntax's names for [`library`]'s definitions, which lowering calls
-/// and does not restate. This list is the one place that says which names
-/// and arities exist, so `sema`'s validation and lowering's dispatch cannot
-/// silently drift on which library methods a kernel body may call. They did
-/// once, in both directions at once — see `every_advertised_method_compiles`
-/// in the crate root.
-pub(crate) const LIBRARY_METHODS: &[(&str, usize)] = &[("fract", 0), ("hypot", 1), ("clamp", 2)];
-
-/// A derivative projection, called as `DX(e)`.
-///
-/// One definition of the names: `sema` accepts a call by asking here, and
-/// lowering builds the `Dwrt` chain by matching on the variant, so the two
-/// cannot disagree about which projections exist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Projection {
-    /// `V(e)`: the value itself. Every arena expression is already
-    /// value-space, so it is the identity.
-    Value,
-    Dx,
-    Dy,
-    Dxx,
-    Dxy,
-    Dyy,
-}
+/// Why a method's operands are all there: [`Method::resolve`] admits a name
+/// only at the arity it takes.
+const RESOLVED_AT_ITS_ARITY: &str = "`Method::resolve` admits a method only at its arity";
 
 impl Projection {
-    /// The projection a name denotes, if any.
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "V" => Some(Self::Value),
-            "DX" => Some(Self::Dx),
-            "DY" => Some(Self::Dy),
-            "DXX" => Some(Self::Dxx),
-            "DXY" => Some(Self::Dxy),
-            "DYY" => Some(Self::Dyy),
-            _ => None,
-        }
-    }
-
     /// The axes the projection differentiates along, innermost first: `DXY`
     /// is `∂/∂Y` of `∂e/∂X`, as `Kernel`'s `e.dx().dy()` is.
     fn axes(self) -> &'static [Axis] {
@@ -659,58 +622,13 @@ impl<S: Site> Lowering<'_, S> {
                 Ok(self.site.unary(op, operand))
             }
 
-            Expr::MethodCall(call) => {
-                let method = call.method.to_string();
-                let receiver = self.lower(&call.receiver)?;
-                let arg_count = call.args.len();
+            Expr::MethodCall(call) => self.lower_method_call(call),
 
-                // Arena expressions are values, so `.clone()` is the identity.
-                if method == "clone" && arg_count == 0 {
-                    return Ok(receiver);
-                }
-
-                // Primitive ops: one `OpKind` per (name, arity), read from
-                // the single table `OpKind::from_method_call` resolves
-                // against — not re-listed here as a second copy that could
-                // silently drift from it (see `LIBRARY_METHODS` below for
-                // the one part of this dispatch that table doesn't cover).
-                if let Some(op) = OpKind::from_method_call(&method, arg_count) {
-                    let mut args = Vec::with_capacity(arg_count);
-                    for arg in &call.args {
-                        args.push(self.lower(arg)?);
-                    }
-                    let mut args = args.into_iter();
-                    return Ok(match (args.next(), args.next(), args.next()) {
-                        (None, ..) => self.site.unary(op, receiver),
-                        (Some(a), None, _) => self.site.binary(op, [receiver, a]),
-                        (Some(a), Some(b), None) => self.site.ternary(op, [receiver, a, b]),
-                        (Some(_), Some(_), Some(_)) => unreachable!(
-                            "OpKind::from_method_call only resolves ops of arity 1..=3"
-                        ),
-                    });
-                }
-
-                // Library, not primitives: the IR's one definition of each,
-                // which `Kernel`'s method of the same name builds too.
-                match (method.as_str(), call.args.as_slice()) {
-                    ("fract", []) => Ok(self.site.fract(receiver)),
-                    ("hypot", [other]) => {
-                        let other = self.lower(other)?;
-                        Ok(self.site.hypot([receiver, other]))
-                    }
-                    ("clamp", [lo, hi]) => {
-                        let lo = self.lower(lo)?;
-                        let hi = self.lower(hi)?;
-                        Ok(self.site.clamp(receiver, [lo, hi]))
-                    }
-                    _ => Err(format!("Unsupported method: {}", method)),
-                }
-            }
+            Expr::Project(project) => self.lower_projection(project),
 
             // A name in scope is resolved first, as `sema` resolves it: a
             // kernel is applied, and any other binding is not a function.
-            // Then a helper is inlined, and a projection becomes a `Dwrt`
-            // chain.
+            // Then a helper is inlined.
             Expr::Call(call) => {
                 let func = call.func.to_string();
                 if let Some(binding) = self.frame.locals.lookup(&func) {
@@ -722,10 +640,10 @@ impl<S: Site> Lowering<'_, S> {
                     let kernel = kernel.clone();
                     return self.apply(kernel, &func, &call.args);
                 }
-                if let Some(helper) = self.program.helpers.get(&func).copied() {
-                    return self.inline(helper, &call.args);
-                }
-                self.lower_projection(&func, &call.args)
+                let helper = self.program.helpers.get(&func).copied().expect(
+                    "`sema` refuses a call to anything but a kernel, a helper or a projection",
+                );
+                self.inline(helper, &call.args)
             }
 
             // The choice, the same node `.select` lowers to: `If(m, a, b)`
@@ -876,22 +794,45 @@ impl<S: Site> Lowering<'_, S> {
         }
     }
 
+    /// `receiver.method(args)`: the operands are lowered in order, receiver
+    /// first, then the method builds its one node. The parser resolved the
+    /// method at this arity, so a method always finds the operands it takes.
+    fn lower_method_call(&mut self, call: &MethodCallExpr) -> Result<S::Term, String> {
+        let receiver = self.lower(&call.receiver)?;
+        let mut args = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
+            args.push(self.lower(arg)?);
+        }
+        let mut args = args.into_iter();
+        let mut operand = || args.next().expect(RESOLVED_AT_ITS_ARITY);
+        Ok(match call.method {
+            // Arena expressions are values, so `.clone()` is the identity.
+            Method::Clone => receiver,
+            // Primitive ops: one `OpKind` per (name, arity), read from the
+            // single table `OpKind::from_method_call` resolves against.
+            Method::Op(op) => match call.args.len() {
+                0 => self.site.unary(op, receiver),
+                1 => self.site.binary(op, [receiver, operand()]),
+                2 => self.site.ternary(op, [receiver, operand(), operand()]),
+                _ => unreachable!("OpKind::from_method_call only resolves ops of arity 1..=3"),
+            },
+            // Library, not primitives: the IR's one definition of each,
+            // which `Kernel`'s method of the same name builds too.
+            Method::Library(LibraryMethod::Fract) => self.site.fract(receiver),
+            Method::Library(LibraryMethod::Hypot) => self.site.hypot([receiver, operand()]),
+            Method::Library(LibraryMethod::Clamp) => {
+                self.site.clamp(receiver, [operand(), operand()])
+            }
+        })
+    }
+
     /// Derivative projections (V/DX/DY and the Hessian family) map to
     /// [`library::derivative`]s, one per axis, as `Kernel::dx`/`dy` build
     /// them: the runtime `lower_dwrt` pass (pixelflow-ir) rewrites them into
     /// chain-rule arithmetic before codegen.
-    fn lower_projection(&mut self, func: &str, args: &[Expr]) -> Result<S::Term, String> {
-        let Some(projection) = Projection::from_name(func) else {
-            return Err(format!("Unsupported call: {func}"));
-        };
-        let [arg] = args else {
-            return Err(format!(
-                "Unsupported call: {func}/{} (projections take one argument)",
-                args.len()
-            ));
-        };
-        let mut e = self.lower(arg)?;
-        for &axis in projection.axes() {
+    fn lower_projection(&mut self, project: &ProjectExpr) -> Result<S::Term, String> {
+        let mut e = self.lower(&project.arg)?;
+        for &axis in project.projection.axes() {
             e = self.site.derivative(e, axis);
         }
         Ok(e)
