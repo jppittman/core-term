@@ -712,11 +712,19 @@ fn refuse_where_clause(generics: &syn::Generics, what: &str) -> syn::Result<()> 
 /// are somewhat larger. A host with a smaller stack than rustc's default can
 /// still overflow; that is not a bound this crate can set.
 ///
-/// `syn` recurses by itself on a prefix operator and on a delimiter
-/// (`-(-(…))`, `f(f(…))`, `{{…}}`) before this parser sees a node, and
-/// overflows at about 2,200 levels of those; a shape it parses iteratively
-/// (a sum, a method chain, `as`, a field, `else if`) arrives here whole, and
-/// this bound is what holds it.
+/// The bound covers only the shapes `syn` parses flat (a sum, a
+/// method chain, `as`, a field, `else if`, and a run of prefix operators,
+/// `----X`), which arrive here whole. It does **not** cover a nested
+/// delimiter: `syn` recurses by itself on one before this parser sees a node,
+/// and it overflows well below `MAX_NESTING`. Measured on `syn::parse2::<Expr>`
+/// alone, in a dev build on rustc's 8 MiB thread stack, tokens built
+/// iteratively so no `from_str` recursion is involved: `if c { if c { … } … }`
+/// holds to about 400 levels, `{{…}}` to about 480, `-(-(…))` to about 590,
+/// `f(f(…))` and `X.max(X.max(…))` to about 650, `((…))` to about 770, while a
+/// run of prefix operators holds to about 2,390. So a program nested 500 to
+/// 800 deep in a delimiter still crashes the compiler with no diagnostic, and
+/// no bound in this crate can reach it: a refusal there needs a token pre-scan
+/// that restates `syn`'s grammar, or a stack the compiler does not own.
 const MAX_NESTING: usize = 1024;
 
 /// How deep in a body's expression the conversion is: the depth of the
