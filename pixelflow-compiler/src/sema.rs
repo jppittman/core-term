@@ -318,10 +318,10 @@ pub(crate) fn analyze(def: KernelDef) -> syn::Result<AnalyzedKernel> {
             for f in fns {
                 FnAnalyzer::new(f.callable(), &items, &consts)?.check(f)?;
             }
+            refuse_recursion(fns)?;
             require_an_entry(fns)?;
         }
     }
-    refuse_recursion(def.fns())?;
     Ok(AnalyzedKernel { def, consts })
 }
 
@@ -2581,6 +2581,22 @@ mod tests {
     fn a_block_with_no_entry_is_refused() {
         let err = refusal(quote! { fn h(x: f32) -> f32 { x } });
         assert!(err.contains("no entry emits nothing"), "got: {err}");
+    }
+
+    /// A block of helpers that recurse is refused for the recursion, not for
+    /// having no entry: the cycle is the diagnostic that says what to fix.
+    #[test]
+    fn recursion_is_refused_before_a_missing_entry() {
+        for input in [
+            quote! { fn h(x: f32) -> f32 { h(x) } },
+            quote! {
+                fn a(x: f32) -> f32 { b(x) }
+                fn b(x: f32) -> f32 { a(x) }
+            },
+        ] {
+            let err = refusal(input);
+            assert!(err.contains("recursion is refused"), "got: {err}");
+        }
     }
 
     /// A retired method is refused by name, with the way out.
