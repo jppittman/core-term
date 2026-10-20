@@ -5,8 +5,8 @@
 //! ## Design Philosophy
 //!
 //! The AST is a **source-level representation** that preserves the structure
-//! the user wrote. It does NOT attempt to mirror PixelFlow's type-level AST
-//! (the `Sqrt<Add<Mul<X,X>,...>>` trees) - that's what the generated code produces.
+//! the user wrote. It is not the IR: lowering builds the IR, an `ExprArena`,
+//! from it.
 //!
 //! The compiler's job is to transform this source AST into Rust code that
 //! rebuilds the corresponding arena fragment at load time.
@@ -26,7 +26,7 @@
 //! FnItem
 //!   ├── vis                           // `pub` makes an entry; private is a helper
 //!   ├── structural: [name, ...]       // an entry's `const N: usize` parameters
-//!   ├── params: [(name, type), ...]   // scalar and record parameters
+//!   ├── params: [(name, type), ...]   // scalar, record and kernel parameters
 //!   ├── ret: type                     // declared
 //!   └── body: Expr
 //!
@@ -504,7 +504,7 @@ pub(crate) fn is_usize(ty: &Type) -> bool {
 /// An expression in the kernel body.
 ///
 /// Every variant is syntax the language gives a meaning to. What it does not
-/// — a tuple, a field, a range, a path from outside the block — the parser
+/// — a tuple, a tuple's field, a range, a path from outside the block — the parser
 /// refuses at the token, with a span; nothing is carried along to be refused
 /// by a later stage.
 #[derive(Debug, Clone)]

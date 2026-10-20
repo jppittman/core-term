@@ -1,7 +1,7 @@
 //! `ExprArena` → the `TokenStream` that rebuilds it at load time.
 //!
-//! The back end, and there is one. It produces a [`Kernel`] — an arena
-//! fragment, the language's own value. Nothing is compiled at
+//! The back end, and there is one. It produces a `pixelflow_core::Kernel` — an
+//! arena fragment, the language's own value. Nothing is compiled at
 //! macro-expansion time and nothing is compiled at construction: a `Kernel`
 //! becomes machine code when a consumer compiles it at a lattice's shape and
 //! collapses it (`Lattice::bake`), which is the only way a kernel turns into
@@ -44,8 +44,6 @@
 //! entry's `Args` record. An entry's structural parameters (`const N:
 //! usize`) are the host function's const generics, and each value is its
 //! own program.
-//!
-//! [`Kernel`]: pixelflow_core::Kernel
 
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 use pixelflow_ir::optimize::Optimize;
@@ -64,7 +62,7 @@ use pixelflow_ir::{Binder, Monoid};
 /// Emit arena-backend code for an analyzed kernel.
 ///
 /// For the closure form, a token stream evaluating to:
-/// - zero params — a [`Kernel`](pixelflow_core::Kernel) value, built at load
+/// - zero params — a `pixelflow_core::Kernel` value, built at load
 ///   time from the arena this expansion computed.
 /// - N params — a closure `move |p0: f32, ...| -> Kernel` whose kernel
 ///   declares one uniform per parameter, its default the call's argument

@@ -40,8 +40,8 @@ kernel! {
         (0..N).map(|i| X * (i as f32)).sum::<f32>() * scale / (N as f32)
     }
 
-    /// `N` rings about a box's corner, `fg` on `bg`: the macro doc's
-    /// example, compiled, so the doc cannot drift from the language. A
+    /// `N` rings about a box's corner, `fg` on `bg`: the shape of the
+    /// macro doc's example, which the doctest compiles. A
     /// record is its block's: this one could not name `Bounds` from another.
     pub fn rings<const N: usize>(b: Bounds, fg: f32, bg: f32) -> f32 {
         let dx = X - b.x0;

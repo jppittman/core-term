@@ -46,7 +46,7 @@
 //!   parameters lowers to a *template* whose folds over a range that names
 //!   one, and its `N as f32`s, are left open ([`Holes`]) and filled when its
 //!   host function is instantiated.
-//! - [`Staged`](crate::emit::Staged): Rust statements that build the arena
+//! - `emit::Staged`: Rust statements that build the arena
 //!   when the entry's host function is called — an entry that takes a
 //!   kernel-typed parameter, whose argument exists only then. Each step is
 //!   the step [`Expansion`] takes, run later: the same IR calls, in the same
