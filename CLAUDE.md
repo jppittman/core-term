@@ -475,9 +475,10 @@ docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md.
   around the existing implementation *first*, then add the new one as a
   second `impl`. Don't grow the second implementation as a parallel free
   function, a copy of the first, or a mode flag/enum bolted onto it. Worked
-  example already in this tree: `pixelflow-codegen`'s `RegisterAllocator`
-  trait with `LinearScan` as its one `impl` — a second allocator is a second
-  `impl RegisterAllocator`, not a fork of `LinearScan`.
+  example already in this tree: `pixelflow-codegen`'s `IsaBackend` trait in
+  `emit`, with `Neon` and every x86-64 tier (`impl<B: X86> IsaBackend for B`)
+  as its impls — a fourth backend is a fourth `impl IsaBackend`, not a fork of
+  one of the three.
 
   This is "fold before you dispatch" at type scope, which is why the two rules
   don't contradict each other. A case matched at twenty call sites is live at
