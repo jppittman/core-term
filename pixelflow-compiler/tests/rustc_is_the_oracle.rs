@@ -1011,3 +1011,36 @@ fn a_kernel_passed_on_in_one_arm_is_rusts() {
         );
     }
 }
+
+kernel! {
+    /// Parameters spelled like the emission's own locals: the arena it builds,
+    /// its root, a node's variable and a uniform's slot.
+    pub fn named_like_the_emission(__arena: f32, __root: f32, __e0: f32, __u0: f32) -> f32 {
+        __arena * X + __root * Y + __e0 - __u0
+    }
+
+    /// The same for an entry that takes a kernel, which names its steps
+    /// `__t0`, `__u1`, `__k2`, … as it goes.
+    pub fn staged_named_like_the_emission(
+        __t0: impl Fn(f32, f32) -> f32,
+        __u1: f32,
+        __arena: f32,
+    ) -> f32 {
+        __t0(X, Y) * __u1 + __arena
+    }
+}
+
+/// A name the emission uses for its own locals means what rustc says it means
+/// when the program spells it: the emitted `__arena` is not the entry's
+/// parameter of that name, so a program may call its parameters anything.
+#[test]
+fn a_parameter_named_like_an_emitted_local_means_what_rustc_says() {
+    let rust = |x: f32, y: f32, a: f32, r: f32, e: f32, u: f32| a * x + r * y + e - u;
+    let k = named_like_the_emission(2.0, 3.0, 5.0, 7.0);
+    assert_eq!(bake(&k), rust(AT.0, AT.1, 2.0, 3.0, 5.0, 7.0));
+    assert_eq!(bake(&k), 2.0 * 3.0 + 3.0 * 5.0 + 5.0 - 7.0);
+
+    let ink = Kernel::x().add(&Kernel::y());
+    let k = staged_named_like_the_emission(&ink, 2.0, 10.0);
+    assert_eq!(bake(&k), (AT.0 + AT.1) * 2.0 + 10.0);
+}

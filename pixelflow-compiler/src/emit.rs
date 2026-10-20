@@ -50,8 +50,9 @@
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 use pixelflow_ir::optimize::Optimize;
 use pixelflow_ir::{Fold, OpKind};
+use proc_macro2::Span;
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::Ident;
 
 use crate::ast::{Callable, ClosureEntry, ConstItem, FnItem, KernelDef, Name, RecordItem, Role};
@@ -113,15 +114,62 @@ pub(crate) fn emit_kernel(
                     continue;
                 }
                 let (arena_code, scalars) = entry_arena(entry.callable(), analyzed, optimizer)?;
-                let body = quote! {
-                    let (__arena, __root) = #arena_code;
-                    ::pixelflow_core::Kernel::from_parts(__arena, __root)
-                };
-                items.extend(emit_entry(entry, &body));
+                items.extend(emit_entry(entry, &kernel_from(&arena_code)));
                 items.extend(emit_args(entry, &scalars));
             }
             Ok(items)
         }
+    }
+}
+
+/// `quote!` for the emission's own tokens: every identifier written in it is
+/// at the macro's mixed-site span, so a local it binds (`__arena`, `__t3`,
+/// `__lo`) is a different variable from a user's of the same spelling, which
+/// keeps the call site's. A user's tokens interpolated into it keep theirs.
+///
+/// Mixed-site hygiene covers locals and labels only; an item or a path
+/// resolves at the call site as ever. So a structural parameter or a `const`
+/// spelled like an emitted local (`const __lo: usize`) still meets it, and
+/// rustc refuses that loudly (E0530); the `__` prefix is what keeps an
+/// unprefixed one from meeting a structural parameter `lo`.
+macro_rules! emitted {
+    ($($tokens:tt)*) => {
+        quote_spanned!(Span::mixed_site()=> $($tokens)*)
+    };
+}
+
+/// A local of the emitted code, `prefix` then `n`.
+fn local(prefix: &str, n: u64) -> Ident {
+    Ident::new(&format!("{prefix}{n}"), Span::mixed_site())
+}
+
+/// The statement declaring `slot`'s uniform in the arena being built, with
+/// the call's `default`: an identity minted per call, so an entry expanded at
+/// compile time and one staged at run time declare an argument alike.
+fn declare_uniform(slot: &Ident, default: &TokenStream) -> TokenStream {
+    emitted! {
+        let #slot = __arena.declare_uniform(::pixelflow_core::__macro::ir::arena::UniformDecl {
+            id: ::pixelflow_core::__macro::ir::arena::UniformIdentity::mint(),
+            default: #default,
+        });
+    }
+}
+
+/// The expression decoding `fold`, which travels as bits because its fields
+/// are private precisely so no caller can assemble one that means nothing.
+fn fold_from_bits(fold: Fold) -> TokenStream {
+    let bits = fold.to_bits();
+    emitted! {
+        ::pixelflow_core::__macro::ir::fold::Fold::from_bits(#bits)
+            .expect("kernel! emitted a well-formed fold")
+    }
+}
+
+/// The `Kernel` made of the `(arena, root)` that `arena_code` evaluates to.
+fn kernel_from(arena_code: &TokenStream) -> TokenStream {
+    emitted! {
+        let (__arena, __root) = #arena_code;
+        ::pixelflow_core::Kernel::from_parts(__arena, __root)
     }
 }
 
@@ -195,10 +243,7 @@ struct EntryContext<'a> {
 
 /// The closure form's expansion: a `Kernel`, or a closure over `f32`s.
 fn emit_closure(entry: &ClosureEntry, arena_code: &TokenStream) -> TokenStream {
-    let body = quote! {
-        let (__arena, __root) = #arena_code;
-        ::pixelflow_core::Kernel::from_parts(__arena, __root)
-    };
+    let body = kernel_from(arena_code);
     if entry.params.is_empty() {
         return quote! {{ #body }};
     }
@@ -394,10 +439,7 @@ fn instantiated_range(range: &crate::sema::StructuralRange) -> TokenStream {
          `f32` lane, which names every integer only that far",
         range.text()
     );
-    // The locals are the emission's own names, `__`-prefixed as its others
-    // are: spelled `lo`, a structural parameter `lo` in scope turned the
-    // binding into a pattern naming it, which rustc refuses (E0158).
-    quote! {
+    emitted! {
         const {
             let __lo: usize = #lo;
             let __hi: usize = #hi;
@@ -437,24 +479,20 @@ fn arena_to_tokens(arena: &ExprArena, root: ExprId, context: &EntryContext) -> T
         context.arguments.len(),
         "lowering declares one uniform per argument, and a relink restores the table"
     );
-    let decls = context.arguments.iter().enumerate().map(|(slot, value)| {
-        let slot = uniform_var(slot as u64);
-        quote! {
-            let #slot = __arena.declare_uniform(::pixelflow_core::__macro::ir::arena::UniformDecl {
-                id: ::pixelflow_core::__macro::ir::arena::UniformIdentity::mint(),
-                default: #value,
-            });
-        }
-    });
+    let decls = context
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(slot, value)| declare_uniform(&uniform_var(slot as u64), value));
     let nodes = reached(arena, root).into_iter().map(|id| {
         let var = node_var(id);
         let expr = node(arena, id, context);
-        quote! {
+        emitted! {
             let #var = #expr;
         }
     });
     let root_ident = node_var(root);
-    quote! {{
+    emitted! {{
         let mut __arena = ::pixelflow_core::__macro::ir::arena::ExprArena::new();
         #(#decls)*
         #(#nodes)*
@@ -465,12 +503,12 @@ fn arena_to_tokens(arena: &ExprArena, root: ExprId, context: &EntryContext) -> T
 /// The variable holding a uniform slot's `UniformId` in the arena being
 /// built.
 fn uniform_var(slot: u64) -> Ident {
-    format_ident!("__u{slot}")
+    local("__u", slot)
 }
 
 /// The variable holding a node's id in the arena being built.
 fn node_var(id: ExprId) -> Ident {
-    format_ident!("__e{}", id.0)
+    local("__e", u64::from(id.0))
 }
 
 /// The nodes `root` reaches, in the arena's order, children before parents:
@@ -485,16 +523,17 @@ fn reached(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
         }
         stack.extend(arena.children(id));
     }
-    (0..arena.len())
-        .filter(|index| reached[*index])
-        .map(|index| ExprId(index as u32))
+    arena
+        .nodes()
+        .map(|(id, _)| id)
+        .filter(|id| reached[id.0 as usize])
         .collect()
 }
 
 /// One node, built in `__arena` from the nodes before it.
 fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
     match arena.node(id) {
-        ExprNode::Var(i) => quote! { __arena.push_var(#i) },
+        ExprNode::Var(i) => emitted! { __arena.push_var(#i) },
         // By bit pattern, not as a decimal literal: `quote`'s `f32`
         // impl goes through `Literal::f32_suffixed`, which asserts
         // `is_finite()` — and non-finite constants are ordinary here. A
@@ -504,7 +543,7 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
         // no decimal-formatting question to get wrong.
         ExprNode::Const(v) => {
             let bits = v.to_bits();
-            quote! { __arena.push_const(f32::from_bits(#bits)) }
+            emitted! { __arena.push_const(f32::from_bits(#bits)) }
         }
         // A template's hole: the structural parameter, as its `f32`, as
         // Rust's `as` rounds it — which is `N as f32` in the body.
@@ -515,7 +554,7 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
                      structural parameters"
                 )
             });
-            quote! { __arena.push_const(#count as f32) }
+            emitted! { __arena.push_const(#count as f32) }
         }
         // The `kernel!` macro has no buffer surface yet, so this is
         // unreachable in practice; fail loud rather than emit a node that
@@ -530,7 +569,7 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
         // An argument: the slot declared above for it.
         ExprNode::Uniform(u) => {
             let slot = uniform_var(u.0);
-            quote! { __arena.push_uniform(#slot) }
+            emitted! { __arena.push_uniform(#slot) }
         }
         // And a reference is minted by `Kernel::by_ref` at composition
         // time — a runtime value, and the key it carries names a store
@@ -545,41 +584,37 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
         ExprNode::Unary(op, child) => {
             let op_code = opkind_to_tokens(op);
             let child = node_var(child);
-            quote! { __arena.push_unary(#op_code, #child) }
+            emitted! { __arena.push_unary(#op_code, #child) }
         }
         ExprNode::Binary(op, a, b) => {
             let op_code = opkind_to_tokens(op);
             let (a, b) = (node_var(a), node_var(b));
-            quote! { __arena.push_binary(#op_code, #a, #b) }
+            emitted! { __arena.push_binary(#op_code, #a, #b) }
         }
         ExprNode::Ternary(op, a, b, c) => {
             let op_code = opkind_to_tokens(op);
             let (a, b, c) = (node_var(a), node_var(b), node_var(c));
-            quote! { __arena.push_ternary(#op_code, #a, #b, #c) }
+            emitted! { __arena.push_ternary(#op_code, #a, #b, #c) }
         }
         ExprNode::Nary(op, ..) => {
             let op_code = opkind_to_tokens(op);
             let children: Vec<Ident> = arena.children(id).map(node_var).collect();
-            quote! { __arena.push_nary(#op_code, &[#(#children),*]) }
+            emitted! { __arena.push_nary(#op_code, &[#(#children),*]) }
         }
         // A fold's metadata is a `Fold`, whose fields are private
         // precisely so no caller can assemble one that means nothing —
         // so it travels the way the two cache keys carry it, as bits
         // with a total inverse on the far side.
         ExprNode::Reduce { fold, body } => {
-            let bits = fold.to_bits();
             let body = node_var(body);
-            let decoded = quote! {
-                ::pixelflow_core::__macro::ir::fold::Fold::from_bits(#bits)
-                    .expect("kernel! emitted a well-formed fold")
-            };
+            let decoded = fold_from_bits(fold);
             // An open fold keeps its monoid and binder, which are
             // structure, and takes its range from this instantiation.
             let emitted = match context.holes.range_of(fold) {
                 None => decoded,
                 Some(range) => {
                     let range = instantiated_range(range);
-                    quote! {{
+                    emitted! {{
                         let __placeholder = #decoded;
                         ::pixelflow_core::__macro::ir::fold::Fold::new(
                             __placeholder.monoid(),
@@ -589,7 +624,7 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
                     }}
                 }
             };
-            quote! { __arena.push_reduce(#emitted, #body) }
+            emitted! { __arena.push_reduce(#emitted, #body) }
         }
         // A store is post-legalize vocabulary: the passes that wrap a
         // kernel in the lattice's folds build one, after extraction,
@@ -649,17 +684,17 @@ impl Staged {
         let mut site = Staged::default();
         let root = lower_entry(entry, analyzed, &mut site)?;
         let statements = site.statements;
-        Ok(quote! {
+        let kernel = kernel_from(&emitted!(__arena.compact(#root)));
+        Ok(emitted! {
             let mut __arena = ::pixelflow_core::__macro::ir::arena::ExprArena::new();
             #(#statements)*
-            let (__arena, __root) = __arena.compact(#root);
-            ::pixelflow_core::Kernel::from_parts(__arena, __root)
+            #kernel
         })
     }
 
     /// A fresh variable, `prefix` then a number.
     fn fresh(&mut self, prefix: &str) -> Ident {
-        let name = format_ident!("{prefix}{}", self.named);
+        let name = local(prefix, self.named);
         self.named += 1;
         name
     }
@@ -668,7 +703,7 @@ impl Staged {
     /// it.
     fn step(&mut self, step: TokenStream) -> Ident {
         let term = self.fresh("__t");
-        self.statements.push(quote! { let #term = #step; });
+        self.statements.push(emitted! { let #term = #step; });
         term
     }
 
@@ -678,19 +713,17 @@ impl Staged {
     /// instantiation's ([`instantiated_range`]).
     fn fold_at(monoid: Monoid, range: FoldRange) -> TokenStream {
         let first = Binder::from_slot(0).expect("the IR has a binder");
-        let bits = pixelflow_ir::Fold::new(monoid, first, 0..0).to_bits();
+        let monoid_of = fold_from_bits(pixelflow_ir::Fold::new(monoid, first, 0..0));
         let range = match range {
             FoldRange::Known(range) => {
                 let (lo, hi) = (range.start, range.end);
-                quote!(#lo..#hi)
+                emitted!(#lo..#hi)
             }
             FoldRange::Structural(range) => instantiated_range(&range),
         };
-        quote! {
+        emitted! {
             |__binder| ::pixelflow_core::__macro::ir::fold::Fold::new(
-                ::pixelflow_core::__macro::ir::fold::Fold::from_bits(#bits)
-                    .expect("kernel! emitted a well-formed fold")
-                    .monoid(),
+                #monoid_of.monoid(),
                 __binder,
                 #range,
             )
@@ -705,49 +738,49 @@ impl Site for Staged {
     fn constant(&mut self, value: f32) -> Ident {
         // By bit pattern, for `node`'s reason.
         let bits = value.to_bits();
-        self.step(quote!(__arena.push_const(f32::from_bits(#bits))))
+        self.step(emitted!(__arena.push_const(f32::from_bits(#bits))))
     }
 
     fn coordinate(&mut self, axis: Axis) -> Ident {
         let var = axis.var();
-        self.step(quote!(__arena.push_var(#var)))
+        self.step(emitted!(__arena.push_var(#var)))
     }
 
     fn unary(&mut self, op: pixelflow_ir::OpKind, a: Ident) -> Ident {
         let op = opkind_to_tokens(op);
-        self.step(quote!(__arena.push_unary(#op, #a)))
+        self.step(emitted!(__arena.push_unary(#op, #a)))
     }
 
     fn binary(&mut self, op: pixelflow_ir::OpKind, [a, b]: [Ident; 2]) -> Ident {
         let op = opkind_to_tokens(op);
-        self.step(quote!(__arena.push_binary(#op, #a, #b)))
+        self.step(emitted!(__arena.push_binary(#op, #a, #b)))
     }
 
     fn ternary(&mut self, op: pixelflow_ir::OpKind, [a, b, c]: [Ident; 3]) -> Ident {
         let op = opkind_to_tokens(op);
-        self.step(quote!(__arena.push_ternary(#op, #a, #b, #c)))
+        self.step(emitted!(__arena.push_ternary(#op, #a, #b, #c)))
     }
 
     fn fract(&mut self, x: Ident) -> Ident {
-        self.step(quote!(::pixelflow_core::__macro::ir::library::fract(&mut __arena, #x)))
+        self.step(emitted!(::pixelflow_core::__macro::ir::library::fract(&mut __arena, #x)))
     }
 
     fn hypot(&mut self, [a, b]: [Ident; 2]) -> Ident {
-        self.step(quote!(::pixelflow_core::__macro::ir::library::hypot(&mut __arena, [#a, #b])))
+        self.step(emitted!(::pixelflow_core::__macro::ir::library::hypot(&mut __arena, [#a, #b])))
     }
 
     fn clamp(&mut self, x: Ident, [lo, hi]: [Ident; 2]) -> Ident {
-        self.step(quote!(
+        self.step(emitted!(
             ::pixelflow_core::__macro::ir::library::clamp(&mut __arena, #x, [#lo, #hi])
         ))
     }
 
     fn derivative(&mut self, e: Ident, axis: Axis) -> Ident {
         let axis = match axis {
-            Axis::X => quote!(::pixelflow_core::__macro::ir::arena::Axis::X),
-            Axis::Y => quote!(::pixelflow_core::__macro::ir::arena::Axis::Y),
+            Axis::X => emitted!(::pixelflow_core::__macro::ir::arena::Axis::X),
+            Axis::Y => emitted!(::pixelflow_core::__macro::ir::arena::Axis::Y),
         };
-        self.step(quote!(
+        self.step(emitted!(
             ::pixelflow_core::__macro::ir::library::derivative(&mut __arena, #e, #axis)
         ))
     }
@@ -756,38 +789,33 @@ impl Site for Staged {
     /// declares an expanded entry's, so baking the kernel draws the call.
     fn uniform(&mut self, scalar: Scalar) -> Ident {
         let slot = self.fresh("__u");
-        let value = argument(&scalar);
-        self.statements.push(quote! {
-            let #slot = __arena.declare_uniform(::pixelflow_core::__macro::ir::arena::UniformDecl {
-                id: ::pixelflow_core::__macro::ir::arena::UniformIdentity::mint(),
-                default: #value,
-            });
-        });
-        self.step(quote!(__arena.push_uniform(#slot)))
+        self.statements
+            .push(declare_uniform(&slot, &argument(&scalar)));
+        self.step(emitted!(__arena.push_uniform(#slot)))
     }
 
     fn kernel_parameter(&mut self, name: &Ident) -> syn::Result<Ident> {
         let argument = self.fresh("__k");
         self.statements
-            .push(quote! { let #argument = __arena.admit(#name); });
+            .push(emitted! { let #argument = __arena.admit(#name); });
         Ok(argument)
     }
 
     /// The host function's own `N as f32`: it is generic over `N`.
     fn count(&mut self, _position: usize, name: &Ident) -> syn::Result<Ident> {
-        Ok(self.step(quote!(__arena.push_const(#name as f32))))
+        Ok(self.step(emitted!(__arena.push_const(#name as f32))))
     }
 
     fn open_fold(&mut self, depth: usize, monoid: Monoid, range: FoldRange) -> Ident {
         let fold = self.fresh("__f");
         let depth = proc_macro2::Literal::usize_unsuffixed(depth);
-        self.statements.push(quote! {
+        self.statements.push(emitted! {
             let #fold = __arena
                 .open_fold(#depth)
                 .expect("kernel! refused a fold nested past the binders at expansion");
         });
         self.open.push((fold.clone(), Self::fold_at(monoid, range)));
-        self.step(quote!(#fold.index()))
+        self.step(emitted!(#fold.index()))
     }
 
     fn close_fold(&mut self, body: Ident) -> Ident {
@@ -795,7 +823,7 @@ impl Site for Staged {
             .open
             .pop()
             .expect("lowering closes only the folds it opened");
-        self.step(quote! {
+        self.step(emitted! {
             __arena.close_fold(#fold, #body, #fold_at).expect(
                 "kernel!: a fold around a kernel's application has no binder left: its body, \
                  the argument's folds among them, binds every one of the IR's indices \
@@ -805,7 +833,7 @@ impl Site for Staged {
     }
 
     fn apply(&mut self, kernel: Ident, [x, y]: [Ident; 2]) -> Ident {
-        self.step(quote!(__arena.apply(&#kernel, [#x, #y])))
+        self.step(emitted!(__arena.apply(&#kernel, [#x, #y])))
     }
 }
 
