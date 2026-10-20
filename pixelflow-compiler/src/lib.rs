@@ -205,8 +205,9 @@ pub(crate) const PLAN: &str = "docs/language/2026-09-25-the-language-is-kernel.m
 /// let plane = Lattice::frame(64, 64).bake(&unit_circle);
 /// ```
 ///
-/// Derivatives (`V`, `DX`, `DY`, `DXX`, `DXY`, `DYY`) lower to `Dwrt` nodes
-/// that the macro tier never resolves: a kernel carrying one is not saturated
+/// The five derivative projections (`DX`, `DY`, `DXX`, `DXY`, `DYY`) lower to
+/// `Dwrt` chains (`V` is the value itself: `V(e)` is `e`, and lowers to no
+/// node) that the macro tier never resolves: a kernel carrying one is not saturated
 /// at expansion, and the runtime tier lowers it when the kernel is baked,
 /// after composition, so a `Kernel::at` warp reaches the differentiated
 /// operand (`tests/derivative_under_warp.rs`).

@@ -145,8 +145,7 @@
 //! (`::<f32>` on `.sum` and `.product` excepted); an `as` to any type but
 //! `f32`; a path or a call from outside the block; a method the language
 //! does not have, a known one at the wrong arity, and the `Kernel` methods
-//! `.at()`, `.constant()` and `.collapse()`; a projection called with other than one
-//! argument; `%` and `!` (no IR op);
+//! `.at()`, `.constant()` and `.collapse()`; `%` and `!` (no IR op);
 //! a `let` whose pattern is neither a plain name nor a tuple of them (`mut`,
 //! `ref`, `@`, a record's pattern); a tuple `let` whose value is not a tuple
 //! of as many expressions, with a pattern within its pattern, a `_` or a
@@ -175,7 +174,9 @@
 //! return, `as` (Phase D-a); a kernel passed on twice on one path, or used
 //! after it is passed on on that path, or passed on inside a fold's body —
 //! what rustc refuses of an `impl Fn` it moves (E0382, E0507); and a
-//! parameter, `let` or index named after a projection.
+//! parameter, `let` or index named after a projection; and a projection called
+//! with other than one argument (`type_of_call`: the parser leaves the name a
+//! call, so the refusal says what to rename).
 //!
 //! Refused by `sema`, where the language meets the IR's widths: a range
 //! bound past 2²⁴, the last integer bound a fold's index — an `f32` lane —

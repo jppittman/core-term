@@ -81,8 +81,8 @@ use pixelflow_ir::{Binder, Monoid};
 ///
 /// # Errors
 ///
-/// When lowering refuses what `sema` accepted: a fold bound past 2^24, folds
-/// nested past `Binder::COUNT`, or more than 256 structural parameters read
+/// When lowering refuses what `sema` accepted: folds nested past
+/// `Binder::COUNT`, or more than 256 structural parameters read
 /// as values.
 pub(crate) fn emit_kernel(
     analyzed: &AnalyzedKernel,
@@ -129,7 +129,8 @@ pub(crate) fn emit_kernel(
 /// Mixed-site hygiene covers locals and labels only; an item or a path
 /// resolves at the call site as ever. So a structural parameter or a `const`
 /// spelled like an emitted local (`const __lo: usize`) still meets it, and
-/// rustc refuses that loudly (E0530); the `__` prefix is what keeps an
+/// rustc refuses that loudly (E0530, E0158, E0308 or E0005, by the type of
+/// the `const`); the `__` prefix is what keeps an
 /// unprefixed one from meeting a structural parameter `lo`.
 macro_rules! emitted {
     ($($tokens:tt)*) => {

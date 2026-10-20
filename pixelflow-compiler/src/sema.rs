@@ -3353,9 +3353,11 @@ mod tests {
 
     /// Every method name the front end advertises must survive both macros.
     ///
-    /// A name `sema` accepts that lowering has no arm for, or the reverse, is a
-    /// disagreement between pipeline stages, so no test of a single stage can see
-    /// it: the stage under test is the one that is right. Nor can sampling: a
+    /// `Method::resolve` settles a method's name and arity once, in the parser,
+    /// and every later stage matches the resulting value exhaustively. What
+    /// still has to be shown is that every `Method` the parser resolves survives
+    /// `sema` typing, lowering and emission, which no test of a single stage can
+    /// see: the stage under test is the one that is right. Nor can sampling: a
     /// method is exercised only if some test happens to write a kernel calling it.
     /// So run the real pipeline, both macros' versions of it, over the whole
     /// advertised surface. Adding an op to `OpKind::is_dsl_method` or a
@@ -3451,10 +3453,9 @@ mod tests {
         }
 
         /// A recognized name at the wrong arity must say so. Refusing it is not
-        /// enough: `sema` validates name and arity together, which makes
-        /// `.sqrt(1.0)` a hard error, so the refusal must report the arity rather
-        /// than fall into the typo-suggestion search, which would answer
-        /// `unknown method 'sqrt'; did you mean 'sqrt'?`.
+        /// enough: `.sqrt(1.0)` is a hard error, and the refusal must
+        /// report the arity rather than fall into the typo-suggestion search, which
+        /// would answer `unknown method 'sqrt'; did you mean 'sqrt'?`.
         #[test]
         fn a_known_name_at_the_wrong_arity_reports_the_arity() {
             let err = expand(Macro::Kernel, "sqrt", 2).expect_err("wrong arity must fail");

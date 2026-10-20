@@ -36,7 +36,8 @@ that term to is an `Optimize` value, never a branch (§8).
 `src/lib.rs` exports exactly `kernel!` and `kernel_raw!`, both `expand(input,
 optimizer)` over `front_end`, the one pipeline (`parser::parse`, `sema::analyze`,
 `emit::emit_kernel`), in which every stage refuses with a `syn::Error` spanned
-at the construct. Behind them: `parser.rs` (tokens to `ast.rs`, whose `KernelDef`
+at the construct (one exception: a block with no entry has no construct to
+span, and is refused at the invocation). Behind them: `parser.rs` (tokens to `ast.rs`, whose `KernelDef`
 is a sum of the closure and items spellings), `sema.rs` (types, consts, call
 graph, binding times; scopes in `symbol.rs`), `lower.rs` (AST to a term at a
 `Site`), `emit.rs` (arena to `TokenStream`; the private `Staged` site for a
