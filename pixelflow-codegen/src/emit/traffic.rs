@@ -20,7 +20,7 @@
 //! decorates an encoder.
 
 use super::asm::Assembled;
-use super::regalloc::local::{Allocated, Origin};
+use super::regalloc::{Allocated, Origin};
 use super::{FileId, IsaBackend};
 use crate::program::Scope;
 use alloc::vec::Vec;
