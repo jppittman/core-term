@@ -201,13 +201,21 @@ pub(crate) enum MethodTyping {
 }
 
 /// The typing of an `OpKind` a kernel body may call as a method.
+///
+/// An op whose result is a bit pattern ([`OpKind::is_bitwise_domain`]) is a
+/// mask or an integer lane, which `f32` arithmetic would read as a number:
+/// the ones the language types are named above it, and a new one the IR
+/// advertises refuses to be typed as arithmetic until it is given a typing
+/// here. `every_advertised_method_compiles` types every advertised op, so the
+/// addition fails there, for whoever makes it.
 pub(crate) fn method_typing(op: OpKind) -> MethodTyping {
     match op {
         OpKind::Lt | OpKind::Le | OpKind::Gt | OpKind::Ge | OpKind::Eq | OpKind::Ne => {
             MethodTyping::Comparison
         }
         OpKind::If => MethodTyping::Choice,
-        _ => MethodTyping::Arithmetic,
+        op if !op.is_bitwise_domain() => MethodTyping::Arithmetic,
+        op => unreachable!("`{op:?}` yields a bit pattern and has no `MethodTyping`: give it one"),
     }
 }
 
@@ -2715,6 +2723,15 @@ mod tests {
                 MethodTyping::Arithmetic => {}
             }
         }
+    }
+
+    /// An op whose result is a bit pattern is typed on purpose or not at all:
+    /// were the IR to advertise `.bitand`, it must not quietly type as `f32`
+    /// arithmetic.
+    #[test]
+    #[should_panic(expected = "yields a bit pattern")]
+    fn a_bit_pattern_op_without_a_typing_is_refused() {
+        method_typing(OpKind::BitAnd);
     }
 
     // ───────────────────────────── records ─────────────────────────────
