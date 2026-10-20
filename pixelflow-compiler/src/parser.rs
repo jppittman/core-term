@@ -197,7 +197,7 @@ use crate::ast::{
     Method, MethodCallExpr, Name, Param, ProjectExpr, Projection, RangeExpr, RecordField,
     RecordItem, Reduction, Stmt, UnaryExpr, UnaryOp, arity_mismatch, is_f32, is_usize, same_name,
 };
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{Pat, Token, Type};
@@ -739,13 +739,16 @@ impl Nesting {
     }
 }
 
-/// The refusal of an expression nested past [`MAX_NESTING`]. Cold, because
-/// the span of a deep expression is a walk of all of it.
+/// The refusal of an expression nested past [`MAX_NESTING`]. Cold, and
+/// pointed at the node's own head token ([`head_span`]): the refused
+/// expression is the whole unconverted rest of the chain, and the span of a
+/// subtree is a recursive walk of all of it, which overflows rustc's stack on
+/// a chain far enough past the bound.
 #[cold]
 #[inline(never)]
 fn refuse_nesting(expr: &syn::Expr) -> syn::Error {
     syn::Error::new(
-        expr.span(),
+        head_span(expr),
         format!(
             "expression nested deeper than {MAX_NESTING}\n\
              \n\
@@ -753,6 +756,24 @@ fn refuse_nesting(expr: &syn::Expr) -> syn::Error {
              help: bind the parts with `let`, or move one into a helper `fn`"
         ),
     )
+}
+
+/// The span of the token that makes `expr` the shape it is (its operator,
+/// method name, keyword or delimiter), in constant time. Never `Spanned::span`
+/// of the node, which walks every descendant.
+fn head_span(expr: &syn::Expr) -> Span {
+    match expr {
+        syn::Expr::Binary(binary) => binary.op.span(),
+        syn::Expr::Unary(unary) => unary.op.span(),
+        syn::Expr::MethodCall(method) => method.method.span(),
+        syn::Expr::Call(call) => call.paren_token.span.join(),
+        syn::Expr::If(expr_if) => expr_if.if_token.span,
+        syn::Expr::Paren(paren) => paren.paren_token.span.join(),
+        syn::Expr::Field(field) => field.member.span(),
+        syn::Expr::Cast(cast) => cast.as_token.span,
+        syn::Expr::Block(block) => block.block.brace_token.span.join(),
+        _ => Span::call_site(),
+    }
 }
 
 /// Convert syn::Expr to our AST Expr.
@@ -2452,15 +2473,19 @@ mod tests {
         }
     }
 
-    /// Past the bound the program is refused where it is, not crashed. The
-    /// stack is four times rustc's: the refusal is reached after MAX_NESTING
-    /// levels either way, and a test must not be the thing that overflows.
+    /// Past the bound the program is refused where it is, not crashed, and
+    /// the refusal costs the same however far past: it runs on rustc's own
+    /// stack, 20 times the bound out (`syn`'s own recursive parse and drop of
+    /// a chain overflow at about 25 times in a dev build, which this crate
+    /// cannot hold), because a refusal that walks the remaining chain (a span
+    /// of the whole subtree did) overflows there while the same test on a
+    /// larger stack passes.
     #[test]
     fn a_chain_past_the_bound_is_refused_not_a_crash() {
-        const TEST_STACK: usize = 32 * 1024 * 1024;
+        const RUSTC_THREAD_STACK: usize = 8 * 1024 * 1024;
         for terms in [MAX_NESTING + 1, MAX_NESTING * 20] {
             for (shape, body) in chains(terms) {
-                let refused = on_a_stack(TEST_STACK, move || parse_body(&body));
+                let refused = on_a_stack(RUSTC_THREAD_STACK, move || parse_body(&body));
                 let message = refused.expect_err(shape);
                 assert!(
                     message.contains(&format!("nested deeper than {MAX_NESTING}")),
