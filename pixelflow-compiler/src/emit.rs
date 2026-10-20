@@ -5,8 +5,7 @@
 //! macro-expansion time and nothing is compiled at construction: a `Kernel`
 //! becomes machine code when a consumer compiles it at a lattice's shape and
 //! collapses it (`Lattice::bake`), which is the only way a kernel turns into
-//! numbers. So there is no per-batch entry — no `Manifold` impl calling into
-//! the JIT once per SIMD batch — and nothing here emits one.
+//! numbers.
 //!
 //! Two steps, because the interesting thing happens between them: an arena is
 //! lowered from the AST ([`crate::lower`]), *then* optionally rewritten, then
@@ -27,7 +26,7 @@
 //! when it calls the entry's host function, so the program does not exist
 //! at expansion: the host function *is* lowering, run then. [`Staged`] is
 //! the [`Site`] that writes each of lowering's steps as the statement that
-//! takes it — the same IR call [`Expansion`] makes now, in the same order —
+//! takes it — the same IR call [`Expansion`] makes, in the same order —
 //! and `k(x, y)` is one more, [`ExprArena::apply`]. No optimizer runs at
 //! expansion on such an entry, as on a template: the composed program is
 //! optimized when it is baked (§1.8).
@@ -66,8 +65,6 @@ use pixelflow_ir::{Binder, Monoid};
 ///   time from the arena this expansion computed.
 /// - N params — a closure `move |p0: f32, ...| -> Kernel` whose kernel
 ///   declares one uniform per parameter, its default the call's argument
-///   (no JIT — leaves are bake-time-only and fuse at a root, which is what
-///   lets a font build thousands of leaf kernels and compile one arena).
 ///   The closure sugar has no `Args` record: a program compiled from it is
 ///   rebound by position, with `UniformBlock::set_declared`.
 ///
@@ -82,7 +79,11 @@ use pixelflow_ir::{Binder, Monoid};
 /// `kernel_raw!` passes [`Identity`](pixelflow_ir::optimize::Identity), and
 /// that is the entire difference between the two macros.
 ///
-/// Returns `Err` if a body contains an operation lowering cannot express.
+/// # Errors
+///
+/// When lowering refuses what `sema` accepted: a fold bound past 2^24, folds
+/// nested past `Binder::COUNT`, or more than 256 structural parameters read
+/// as values.
 pub(crate) fn emit_kernel(
     analyzed: &AnalyzedKernel,
     optimizer: &mut dyn Optimize,
@@ -262,8 +263,7 @@ fn emit_closure(entry: &ClosureEntry, arena_code: &TokenStream) -> TokenStream {
 /// A kernel-typed parameter is taken as a `&Kernel`, not a `Kernel`: the
 /// host function only reads it, splicing a copy of its term into the
 /// program it builds, and a borrow passes one instance to two parameters,
-/// `sum2(&a, &a)`, and halves a list into a tree by reference, as
-/// `Kernel::at` and `Lattice::bake` take theirs. Owning it would buy the
+/// `sum2(&a, &a)`, as `Kernel::at` and `Lattice::bake` take theirs. Owning it would buy the
 /// argument's arena only by building on top of it, which would declare its
 /// uniforms before the entry's own.
 fn emit_entry(entry: &FnItem, body: &TokenStream) -> TokenStream {
@@ -451,16 +451,10 @@ fn instantiated_range(range: &crate::sema::StructuralRange) -> TokenStream {
 /// Emit the arena as code that rebuilds it at load time: every node the
 /// root reaches, in the arena's order, children before parents.
 ///
-/// `Dwrt` nodes are emitted as they were built and resolved at bake time, by
-/// the one `LowerDwrt` pass in the runtime pipeline. Resolving them at
-/// expansion time — which this front end used to do — is not an optimization
-/// but a miscompilation under composition: `Kernel::at` warps a kernel by
-/// substituting into its `Var` leaves, so a surviving `Dwrt(f, x)` has the
-/// warp reach its *operand* and differentiates the warped function, which is
-/// the chain rule. A `Dwrt` already resolved to `f'` has no operand left for
-/// the warp to reach, and the substitution silently lands inside `f'`.
-///
-/// See docs/archive/plans/2026-09-08-macro-tier-is-arena-native.md.
+/// `Dwrt` nodes are emitted as built: the macro tier never resolves one
+/// (`macro_tier`), so a warp applied to the emitted kernel reaches the
+/// `Dwrt`'s operand and the chain rule holds
+/// (`tests/derivative_under_warp.rs`).
 ///
 /// The arena's uniform table is declared first, one per argument of
 /// `context`, in order: each with an identity minted per call and the
@@ -470,7 +464,6 @@ fn instantiated_range(range: &crate::sema::StructuralRange) -> TokenStream {
 /// host function's structural parameters: a `Param(k)` is the `k`th one as
 /// an `f32`, and an open fold's range is evaluated per instantiation
 /// ([`instantiated_range`]).
-///
 fn arena_to_tokens(arena: &ExprArena, root: ExprId, context: &EntryContext) -> TokenStream {
     debug_assert_eq!(
         arena.uniforms().len(),
@@ -537,7 +530,7 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
         // `is_finite()` — and non-finite constants are ordinary here. A
         // true comparison mask is all-ones (`OpKind::mask`), which is
         // `BitAnd`'s monoid identity and therefore `all_over`'s seed, and
-        // the folder now produces those. Bits also roundtrip exactly, with
+        // the folder produces those. Bits also roundtrip exactly, with
         // no decimal-formatting question to get wrong.
         ExprNode::Const(v) => {
             let bits = v.to_bits();
@@ -554,13 +547,14 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
             });
             emitted! { __arena.push_const(#count as f32) }
         }
-        // The `kernel!` macro has no buffer surface yet, so this is
-        // unreachable in practice; fail loud rather than emit a node that
-        // references a buffer table `from_raw` does not reconstruct.
+        // No body can spell a buffer: the language has none
+        // (docs/DENOTATION.md §11), so one here is a front-end bug. Fail
+        // loud rather than emit a node that references a buffer table the
+        // emitted code never declares.
         ExprNode::Buffer(b) => {
             panic!(
-                "kernel! produced ExprNode::Buffer({}) — lattice parameters are not wired \
-                 into the compiler yet (KERNELS_AND_LATTICES.md M4)",
+                "kernel! produced ExprNode::Buffer({}) — the language has no buffers \
+                 (docs/DENOTATION.md §11)",
                 b.0
             )
         }
@@ -836,12 +830,6 @@ impl Site for Staged {
 }
 
 /// The path naming `kind` in generated code.
-///
-/// One line per op used to live here — 40 of the 50, closing with a
-/// `_ => panic!("Unsupported OpKind for JIT")` that refused ops the arena
-/// holds and codegen emits perfectly well (`Reduce`, the integer-domain ops,
-/// `Gather`). It was the fourth independently-maintained copy of the op
-/// table, and the third one found drifting from it this week.
 ///
 /// [`OpKind::variant_name`] is generated by `op_table!`, so the identifier
 /// cannot drift from the enum and a newly added op needs no edit here.

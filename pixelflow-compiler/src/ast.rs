@@ -620,12 +620,15 @@ pub(crate) enum Literal {
 impl LiteralExpr {
     /// The `f32` this literal denotes where a value is expected.
     ///
-    /// An integer is refused unless an `f32` holds it exactly: at most
-    /// [`f32::MANTISSA_DIGITS`] significant bits. An integer's digits claim
-    /// exactness, and rustc has no rounding of its own to borrow here: it
-    /// refuses an unsuffixed integer where an `f32` is expected. `16777217`
-    /// (2²⁴ + 1) is the first integer refused; `1099511627776` (2⁴⁰) is
-    /// accepted.
+    /// An integer's digits claim exactness, and rustc has no rounding of its
+    /// own to borrow here: it refuses an unsuffixed integer where an `f32`
+    /// is expected. `16777217` (2²⁴ + 1) is the first integer refused;
+    /// `1099511627776` (2⁴⁰) is accepted.
+    ///
+    /// # Errors
+    ///
+    /// An integer an `f32` does not hold exactly: more than
+    /// [`f32::MANTISSA_DIGITS`] significant bits.
     pub(crate) fn f32_value(&self) -> syn::Result<f32> {
         match self.value {
             Literal::F32(value) => Ok(value),
@@ -652,6 +655,10 @@ impl LiteralExpr {
     /// const: an integer, at most `usize::MAX`. A `usize` is 64 bits on
     /// every target this language compiles for (x86-64 and aarch64), and
     /// the control plane is 64-bit.
+    ///
+    /// # Errors
+    ///
+    /// A float literal, or an integer past `usize::MAX`.
     pub(crate) fn usize_value(&self) -> syn::Result<u64> {
         let Literal::Int(n) = self.value else {
             return Err(syn::Error::new(

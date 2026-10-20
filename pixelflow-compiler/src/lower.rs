@@ -109,7 +109,7 @@ pub(crate) enum FoldRange {
 /// Somewhere lowering builds a term: each step of the walk, as a call.
 ///
 /// Two of them, and they differ only in *when* a step runs ([`Expansion`]
-/// now, `Staged` when the entry's host function is called) — every step is
+/// at expansion, `Staged` when the entry's host function is called) — every step is
 /// the same IR call either way, so the walk is written once, here, and a
 /// program an entry builds at load time is the one it would have built at
 /// expansion.
@@ -207,9 +207,11 @@ fn monoid(reduction: Reduction) -> Monoid {
 /// would poison whatever read it by mistake rather than pass for a number.
 const UNBOUND: f32 = f32::NAN;
 
-/// The range every open fold of a template is built over ([`Holes`]):
-/// empty, so that read as a program an open fold is its monoid's identity,
-/// never plausible pixels.
+/// The range every open fold of a template is built over ([`Holes`]): empty,
+/// because the ends of a range [`Fold::admits`] have no room for a
+/// placeholder and the stride ([`HOLE_STRIDE`]) carries it instead. Left
+/// unfilled it would read as its monoid's identity, so [`Holes::range_of`]
+/// names every open fold and emission fills each one.
 const OPEN_RANGE: Range<u32> = 0..0;
 
 /// The stride an open fold over a template's first distinct range text is
@@ -623,7 +625,6 @@ impl<S: Site> Lowering<'_, S> {
 
             Expr::Field(field) => Ok(self.lower_field(field)),
 
-            // Parentheses are transparent - just recurse into the inner expression
             Expr::Paren(inner) => self.lower(inner),
 
             Expr::Block(block) => self.lower_block(block),
@@ -838,9 +839,9 @@ impl<S: Site> Lowering<'_, S> {
     /// Bindings come first because that is what lexical scoping means. `sema`
     /// refuses a `let` named X or Y, so today the order only decides a
     /// local against a parameter it shadows; but matching `"X"` before the
-    /// locals was how `{ let X = Y; X }` came to read the coordinate, and a
+    /// locals would let `{ let X = Y; X }` read the coordinate, and a
     /// lowering that is right only because an earlier stage refused its
-    /// input is one refactor away from that bug again. For the same reason a
+    /// input is one refactor away from that bug. For the same reason a
     /// coordinate in a helper is refused here too, not only in `sema`.
     fn resolve(&mut self, ident: &Ident) -> syn::Result<S::Term> {
         let name = &Name::of(ident);
@@ -972,10 +973,9 @@ mod tests {
         lower_unanalyzed(input).expect("the body lowers")
     }
 
-    /// Probe p5, at the stage that got it wrong. `sema` now refuses
-    /// `let X`, but lowering resolves a name through its scopes before the
-    /// coordinates regardless: `{ let X = Y; X }` is the local, which is `Y`.
-    /// It was `Var(0)`.
+    /// `sema` refuses `let X`, but lowering resolves a name through its
+    /// scopes before the coordinates regardless: `{ let X = Y; X }` is the
+    /// local, which is `Y`, not `Var(0)`.
     #[test]
     fn a_binding_is_resolved_before_a_coordinate_of_the_same_name() {
         let (arena, root) = lowered(quote! { || { let X = Y; X } });

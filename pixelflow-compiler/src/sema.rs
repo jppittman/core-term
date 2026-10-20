@@ -287,7 +287,12 @@ impl AnalyzedKernel {
     }
 }
 
-/// Perform semantic analysis on a parsed kernel.
+/// Type-check a parsed block and evaluate its `const`s.
+///
+/// # Errors
+///
+/// A spanned `syn::Error` for the first name, type, call-graph, `const` or
+/// fold-bound refusal listed in the module doc.
 pub(crate) fn analyze(def: KernelDef) -> syn::Result<AnalyzedKernel> {
     let items = Items::collect(&def)?;
     let consts = evaluate_consts(def.consts(), &items.consts)?;
@@ -322,11 +327,11 @@ fn require_an_entry(fns: &[FnItem]) -> syn::Result<()> {
     Ok(())
 }
 
-/// Coordinate names a `kernel!` body may not use: they named the Z and W
-/// axes, which a lattice no longer has.
+/// Coordinate names a `kernel!` body may not use: `Z` and `W` name axes a
+/// lattice does not have.
 const RETIRED_COORDINATES: [&str; 2] = ["Z", "W"];
 
-/// The projection of the retired axis.
+/// The projection of the axis a lattice does not have.
 const RETIRED_PROJECTION: &str = "DZ";
 
 /// A `fn`'s declared types.
@@ -731,9 +736,10 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        // A `let X` would make `X` mean the local below it — and lowering
-        // used to match the coordinate names before locals, so the kernel
-        // silently read the coordinate instead (`{ let X = Y; X }` gave X).
+        // A `let X` would make `X` mean the local below it while a stage that
+        // matched the coordinate names first still read the coordinate
+        // (`{ let X = Y; X }`): refusing the binding keeps every `X` the
+        // coordinate.
         if self.symbols.is_intrinsic(&key) {
             return Err(syn::Error::new(
                 name.span(),
@@ -1006,12 +1012,10 @@ impl<'a> FnAnalyzer<'a> {
     /// Resolve an identifier reference to the innermost binding of its name
     /// in scope, or refuse it.
     ///
-    /// An unknown name used to be accepted here as a capture from the
-    /// caller's scope, which lowering then refused as `Unknown identifier` —
-    /// one stage accepting what a later one refuses, and the later one has no
-    /// span to point with. Worse, it hid an out-of-scope local: the leaked
-    /// binding lowering never popped was still there to be found, so
-    /// `{ { let a = X; a }; a }` compiled.
+    /// A name nothing here binds is refused here, with a span, rather than
+    /// accepted as a capture from the caller's scope for lowering to refuse
+    /// as `Unknown identifier` without one. That includes a local whose block
+    /// has ended: `{ { let a = X; a }; a }`.
     fn resolve_ident(&self, ident: &Ident) -> syn::Result<Ty> {
         let name = Name::of(ident);
         if let Some(symbol) = self.symbols.lookup(&name) {
@@ -1042,8 +1046,8 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        // `Z` and `W` were coordinate intrinsics until a lattice became two
-        // axes; say so, rather than that the name is missing.
+        // A lattice has two axes: say that `Z` and `W` are not coordinates,
+        // rather than that the name is missing.
         if let Some(axis) = RETIRED_COORDINATES.into_iter().find(|axis| name == **axis) {
             return Err(syn::Error::new(
                 ident.span(),
@@ -1650,6 +1654,11 @@ impl StructuralRange {
 /// an empty range is written `a..a`, and `b..a` is almost always a slip
 /// (clippy's `reversed_empty_ranges` is deny-by-default for the same
 /// reason), and the IR's own `Fold` refuses one.
+///
+/// # Errors
+///
+/// A bound that is not a constant `usize` expression, an overflow, or a range
+/// that runs backwards or reaches past [`Fold::EXACT_BOUND`].
 pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Result<Bounds> {
     let mut scope = scope;
     let lo = scope.eval_usize(&range.lo)?;
@@ -2108,8 +2117,8 @@ mod tests {
         }
     }
 
-    /// A parameter may still be *called* Z: the refusal is about the
-    /// intrinsic that is gone, not about the letter.
+    /// A parameter may still be *called* Z: the refusal is about the axis a
+    /// lattice does not have, not about the letter.
     #[test]
     fn a_parameter_named_z_is_ordinary() {
         accepted(quote! { |Z: f32| X + Z });
@@ -2121,18 +2130,10 @@ mod tests {
     }
 
     /// A name nothing in the kernel binds is refused here, with its span.
-    ///
-    /// This test used to pin the opposite — `analyze` accepted an unknown name
-    /// as a capture from the caller's scope — while documenting that the
-    /// kernel did not compile, because arena lowering has no node for a
-    /// captured Rust binding and refused it as `Unknown identifier`. That is
-    /// the shape of the `round`/`log10`/`pow` and `fract`/`hypot`/`clamp`
-    /// defects: one stage accepting what a later stage refuses. It also hid
-    /// an out-of-scope local (see the next test). A capture is still
-    /// expressible — the emitted tokens sit in the caller's scope, so it
-    /// could fold as a `Const` exactly as a parameter does — and when it is
-    /// built, it is built in both stages at once. Pass it as a parameter
-    /// meanwhile, which is what the message says.
+    /// Accepting it as a capture from the caller's scope would be one stage
+    /// accepting what a later one refuses: arena lowering has no node for a
+    /// captured Rust binding. The way out is a parameter, which is what the
+    /// message says.
     #[test]
     fn an_unknown_name_is_refused_not_captured() {
         let text = refusal(quote! { |r: f32| X * X + captured_from_env });
@@ -2142,9 +2143,8 @@ mod tests {
         );
     }
 
-    /// Probe p15. A `let` inside a block goes out of scope where the block
-    /// ends, and a use after it is an error, as rustc makes it one. Before
-    /// the fix this compiled and read the leaked binding: 3 at `X = 3`.
+    /// A `let` inside a block goes out of scope where the block ends, and a
+    /// use after it is an error, as rustc makes it one.
     #[test]
     fn a_local_used_after_its_block_ends_is_refused() {
         let err = refusal(quote! {
@@ -2170,10 +2170,9 @@ mod tests {
         assert!(err.contains("cannot find `a`"), "got: {err}");
     }
 
-    /// Probe p5. `let X` and `let Y` are refused, as a parameter named X or Y
-    /// is. Before the fix `{ let X = Y; X }` compiled and read the
-    /// coordinate X, because lowering matched the coordinate names before
-    /// locals.
+    /// `let X` and `let Y` are refused, as a parameter named X or Y is: a
+    /// binding that shadowed a coordinate would mean one thing to one stage
+    /// and another to the next.
     #[test]
     fn a_let_named_after_a_coordinate_is_refused() {
         for input in [
@@ -2190,9 +2189,7 @@ mod tests {
     }
 
     /// A parameter shadowed by a `let` in an inner block is visible again
-    /// after the block. The table used to drop the name outright when the
-    /// inner block ended; with unknown names now refused, that would have
-    /// turned a correct kernel into an error.
+    /// after the block: closing the inner scope restores what it shadowed.
     #[test]
     fn a_parameter_shadowed_in_an_inner_block_is_in_scope_after_it() {
         accepted(quote! { |r: f32| ({ let r = X; r }) + r });
@@ -2269,9 +2266,8 @@ mod tests {
 
     // ───────────────────────────── types ─────────────────────────────
 
-    /// Probe p16. `X.select(Y, 7.0)` blended a number as a mask and gave 5
-    /// at (2, 1): a value neither arm held. It is a type error now, at the
-    /// receiver.
+    /// `X.select(Y, 7.0)` would blend a number as a mask and give 5 at
+    /// (2, 1): a value neither arm held. It is a type error, at the receiver.
     #[test]
     fn a_number_used_as_a_mask_is_a_type_error() {
         let err = refusal(quote! { || X.select(Y, 7.0) });

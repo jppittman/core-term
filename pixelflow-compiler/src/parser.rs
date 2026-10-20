@@ -144,8 +144,8 @@
 //! parameter, a return type or a qualifier; type arguments on a method
 //! (`::<f32>` on `.sum` and `.product` excepted); an `as` to any type but
 //! `f32`; a path or a call from outside the block; a method the language
-//! does not have, a known one at the wrong arity, and the retired `.at()`,
-//! `.constant()` and `.collapse()`; a projection called with other than one
+//! does not have, a known one at the wrong arity, and the `Kernel` methods
+//! `.at()`, `.constant()` and `.collapse()`; a projection called with other than one
 //! argument; `%` and `!` (no IR op);
 //! a `let` whose pattern is neither a plain name nor a tuple of them (`mut`,
 //! `ref`, `@`, a record's pattern); a tuple `let` whose value is not a tuple
@@ -158,7 +158,7 @@
 //! Rust expression syntax, named in the refusal. Nothing is passed through
 //! for a later stage to refuse: the AST holds only what the language means.
 //!
-//! Parsed, and refused by `sema`: an unbound or retired name; a coordinate in
+//! Parsed, and refused by `sema`: an unbound name, `Z` and `W` among them; a coordinate in
 //! a helper; a call to an entry or to an unknown function; recursion; a
 //! type error (every expression is an `f32` or a `bool`; a `usize` is used only as `i as f32`; a record only by name);
 //! a record's field that is not an `f32` (§1.3); a
@@ -202,7 +202,13 @@ use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{Pat, Token, Type};
 
-/// Parse kernel input from token stream.
+/// Parse a `kernel!` invocation's tokens: the closure form or a block of
+/// items.
+///
+/// # Errors
+///
+/// A spanned `syn::Error` for syntax the language has no meaning for (the
+/// module doc lists them).
 pub(crate) fn parse(input: TokenStream) -> syn::Result<KernelDef> {
     syn::parse2(input)
 }
@@ -222,15 +228,10 @@ fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
 
     let mut params = Vec::new();
 
-    // Handle empty params: || body
     if !input.peek(Token![|]) {
-        // Parse parameter list manually
         loop {
-            // Parse identifier
             let ident: syn::Ident = input.parse()?;
-            // Parse colon
             input.parse::<Token![:]>()?;
-            // Parse type
             let ty: Type = input.parse()?;
             refuse_a_collection(&ty)?;
             refuse_a_kernel_in_a_closure(&ty)?;
@@ -240,10 +241,8 @@ fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
                 ty: Box::new(ty),
             });
 
-            // Check for comma or end of params
             if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
-                // Allow trailing comma before |
                 if input.peek(Token![|]) {
                     break;
                 }
@@ -255,7 +254,6 @@ fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
 
     input.parse::<Token![|]>()?;
 
-    // Parse the body expression
     let syn_expr: syn::Expr = input.parse()?;
     let body = convert_expr(syn_expr)?;
 
@@ -989,9 +987,8 @@ fn convert_method_call(mut expr_method: syn::ExprMethodCall) -> syn::Result<Expr
     }))
 }
 
-/// Method names that meant something in a tier that is gone. `.at()` warped
-/// a manifold-typed parameter, `.constant()`/`.collapse()` evaluated one to
-/// a field; a kernel composes `Kernel` values instead.
+/// Methods of `Kernel`, not of the language: a body composes by applying a
+/// kernel-typed parameter, `k(x, y)`, and the host composes `Kernel` values.
 const RETIRED_METHODS: [&str; 3] = ["at", "constant", "collapse"];
 
 /// Maximum per-character difference for a same-length method name to be
@@ -1020,11 +1017,10 @@ fn resolve_method(name: &syn::Ident, arity: usize) -> syn::Result<Method> {
 fn unknown_method(name: &syn::Ident, arity: usize) -> syn::Error {
     let text = Name::of(name).to_string();
 
-    // A recognized name at the wrong arity is not an unknown name, and
-    // sending it into the typo search below produced the useless
-    // `unknown method 'sqrt'; did you mean 'sqrt'?` — the search found
-    // the very name it had just declared unknown. Answer the question
-    // the caller actually got wrong.
+    // A recognized name at the wrong arity is not an unknown name: the typo
+    // search below would find the very name just declared unknown
+    // (`unknown method 'sqrt'; did you mean 'sqrt'?`). Say which arity the
+    // name takes.
     if let Some((_, want)) = Method::advertised().find(|(known, _)| *known == text) {
         return arity_mismatch(name.span(), &text, want, arity);
     }
@@ -1558,7 +1554,7 @@ fn binary_op(op: &syn::BinOp) -> syn::Result<BinaryOp> {
     Err(syn::Error::new_spanned(op, message))
 }
 
-/// A unary operator, or the refusal that names it. `!` has no IR op yet.
+/// A unary operator, or the refusal that names it. `!` has no IR op.
 fn unary_op(op: &syn::UnOp) -> syn::Result<UnaryOp> {
     if let Some(op) = UnaryOp::from_syn(op) {
         return Ok(op);
@@ -1595,7 +1591,6 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
             syn::Stmt::Expr(expr, semi) => {
                 let converted = convert_expr(expr)?;
                 if is_last && semi.is_none() {
-                    // Final expression without semicolon - this is the block's value
                     final_expr = Some(Box::new(converted));
                 } else {
                     stmts.push(Stmt::Expr(converted));
@@ -1655,9 +1650,9 @@ fn convert_let(local: syn::Local) -> syn::Result<Stmt> {
              help:   let dx = X - cx;",
         )
     })?;
-    // The `else` branch used to be dropped unread. It could never run — a
-    // plain name always matches, and so does a tuple of them — so accepting
-    // it would compile a branch nobody can reach, silently.
+    // A plain name always matches, and so does a tuple of them, so an `else`
+    // branch could never run: accepting one would compile a branch nobody
+    // can reach, silently.
     if let Some((else_token, _)) = &init.diverge {
         return Err(syn::Error::new_spanned(
             else_token,
@@ -1855,10 +1850,10 @@ fn literal_value(lit: &syn::Lit) -> syn::Result<Literal> {
 /// A float literal rounds once, to the nearest `f32` — the value rustc gives
 /// the same literal.
 ///
-/// It used to be parsed as `f64` and then cast, which rounds twice, and the
-/// two disagree wherever the `f64` lands exactly on the midpoint between two
-/// `f32`s and the cast breaks the tie to even: `1.00000005960464477539062500001`
-/// is `1 + 2⁻²³` rounded once and `1.0` rounded twice.
+/// Parsing through `f64` first would round twice, and the two disagree
+/// wherever the `f64` lands exactly on the midpoint between two `f32`s and
+/// the cast breaks the tie to even: `1.00000005960464477539062500001` is
+/// `1 + 2⁻²³` rounded once and `1.0` rounded twice.
 fn float_value(float: &syn::LitFloat) -> syn::Result<f32> {
     refuse_a_foreign_suffix(float.suffix(), float)?;
     rounded_once(float.base10_digits(), float)
@@ -2032,8 +2027,7 @@ mod tests {
     /// naming §1.3, since a record is read by field; a tuple as a value and
     /// a tuple's field naming Phase D (D7), since a tuple is taken apart
     /// where it is written and so is never one; a record literal naming
-    /// Phase D (D7). (They named B3 until the tuple `let` came, which is
-    /// `a_tuple_let_binds_each_name_to_its_expression`.)
+    /// Phase D (D7).
     #[test]
     fn a_record_pattern_a_tuple_value_and_a_record_literal_are_refused_naming_their_phase() {
         let cases: [(TokenStream, &str, &str); 4] = [
@@ -2735,8 +2729,7 @@ mod tests {
 
     /// `let (a, b) = (e1, e2);` is flattened: each name bound to its own
     /// expression, with its own annotation when the tuple type gives one,
-    /// in one statement that binds them all at once (D7's front half). It
-    /// used to be refused, naming B3.
+    /// in one statement that binds them all at once (D7's front half).
     #[test]
     fn a_tuple_let_binds_each_name_to_its_expression() {
         let lets = tuple_let(quote! { let (a, b) = (X, Y + 1.0) });
@@ -2888,8 +2881,7 @@ mod tests {
 
     /// A `fn` signature carries nothing the language cannot honor: an
     /// entry's generics are `const N: usize` and nothing else, and a helper
-    /// has none — it reads its entry's through its arguments. (The helper's
-    /// refusal named B3 until B3 was done without helper generics.)
+    /// has none — it reads its entry's through its arguments.
     #[test]
     fn a_fn_signature_is_plain() {
         let err = refusal(quote! {
