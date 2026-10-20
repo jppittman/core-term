@@ -177,9 +177,10 @@
 //! what rustc refuses of an `impl Fn` it moves (E0382, E0507); and a
 //! parameter, `let` or index named after a projection.
 //!
-//! Refused by lowering, where the language meets the IR's widths: a range
+//! Refused by `sema`, where the language meets the IR's widths: a range
 //! bound past 2²⁴, the last integer bound a fold's index — an `f32` lane —
-//! names exactly, and folds nested deeper than the IR has binders. A range
+//! names exactly, and folds nested deeper than the IR has binders (lowering
+//! refuses the same depth where an inlined helper's fold adds to it). A range
 //! over a structural parameter is refused the same ways when its host
 //! function is instantiated, by rustc, in a `const` block.
 //!

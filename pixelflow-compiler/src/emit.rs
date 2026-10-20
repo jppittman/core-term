@@ -883,10 +883,10 @@ mod tests {
     }
 
     /// A template's open fold takes its range from the instantiation, in a
-    /// `const` block that refuses at the instantiation what lowering refuses
+    /// `const` block that refuses at the instantiation what `sema` refuses
     /// of a known range.
     #[test]
-    fn a_template_refuses_at_instantiation_what_lowering_refuses_of_a_known_range() {
+    fn a_template_refuses_at_instantiation_what_sema_refuses_of_a_known_range() {
         let code = expansion(quote! {
             pub fn mean<const N: usize>() -> f32 {
                 (0..N).map(|i| X * (i as f32)).sum::<f32>() / (N as f32)

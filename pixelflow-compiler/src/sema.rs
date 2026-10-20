@@ -76,10 +76,11 @@ use crate::ast::{
     UnaryOp, arity_mismatch, bare_name, same_name,
 };
 use crate::symbol::{SymbolKind, SymbolTable};
-use pixelflow_ir::OpKind;
+use pixelflow_ir::{Binder, Fold, OpKind};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use syn::{Ident, Type};
 
 /// The type of a name or an expression in a kernel body.
@@ -902,6 +903,9 @@ impl<'a> FnAnalyzer<'a> {
     /// them, as a Rust closure does.
     fn type_of_fold(&mut self, fold: &FoldExpr) -> syn::Result<Ty> {
         range_bounds(&fold.range, self.range_scope())?;
+        if self.folds_open >= Binder::COUNT {
+            return Err(folds_nested_too_deep(fold.span));
+        }
         self.refuse_shadowing_an_item(&fold.binder, "a fold's index")?;
         let (term, what) = term_type(fold.reduction);
         self.symbols.push_scope();
@@ -1623,8 +1627,9 @@ trait UsizeScope {
 /// structural parameters, when its host function is instantiated.
 #[derive(Debug, Clone)]
 pub(crate) enum Bounds {
-    /// Both evaluated, and the range runs forwards.
-    Known(u64, u64),
+    /// Both evaluated, the range runs forwards, and the IR admits it
+    /// ([`Fold::admits`]).
+    Known(Range<u32>),
     /// At least one names a structural parameter.
     Structural(StructuralRange),
 }
@@ -1632,8 +1637,8 @@ pub(crate) enum Bounds {
 /// `lo..hi` as Rust `usize` expressions over literals and an entry's
 /// structural parameters: what the host function evaluates, per
 /// instantiation, in a `const` block — where rustc checks each operation,
-/// and the refusals lowering makes of a known range (backwards, past 2²⁴)
-/// are made of this one.
+/// and the refusals [`range_bounds`] makes of a known range (backwards, past
+/// 2²⁴) are made of this one.
 #[derive(Debug, Clone)]
 pub(crate) struct StructuralRange {
     pub lo: TokenStream,
@@ -1652,8 +1657,12 @@ impl StructuralRange {
 /// consts and the entry's structural parameters, and — when both are known
 /// here — the range running forwards.
 ///
-/// The one evaluation of them: `sema` checks a fold with it, and lowering
-/// reads the bounds it returns, so the two cannot disagree on a range.
+/// The one evaluation of them, and the one admission: a range is refused
+/// here when it runs backwards, or when the IR cannot hold it — its ends are
+/// `u32` today (widening them is A5 of the plan, deprioritized), and its
+/// index is an `f32` lane, exact only to [`Fold::EXACT_BOUND`], the tighter
+/// of the two. Lowering reads the range this returns, so the two stages
+/// cannot disagree on one.
 ///
 /// Ranges are constant (plan §1.5): the program's shape is known when it is
 /// compiled, and a structural parameter is part of the program. A reversed
@@ -1683,7 +1692,43 @@ pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Res
             ),
         ));
     }
-    Ok(Bounds::Known(*lo, *hi))
+    let admitted = match (u32::try_from(*lo), u32::try_from(*hi)) {
+        (Ok(lo), Ok(hi)) => Some(lo..hi),
+        _ => None,
+    };
+    admitted
+        .filter(Fold::admits)
+        .map(Bounds::Known)
+        .ok_or_else(|| {
+            let bound = Fold::EXACT_BOUND;
+            syn::Error::new(
+                range.span,
+                format!(
+                    "the range `{lo}..{hi}` reaches past {bound} (2^24): a fold's index is an \
+                     `f32` lane, which names every integer only that far, so past it indices \
+                     would round together and the fold would not be the one written \
+                     (`Fold::EXACT_BOUND`)\n\
+                     note: a fold's ends are also `u32` in the IR today (`Fold`); 64-bit fold \
+                     ends are A5 of {PLAN}, deprioritized, and would not widen the lane"
+                ),
+            )
+        })
+}
+
+/// The refusal of a fold opened with every binder of the IR already taken.
+///
+/// `sema` makes it for the folds one body nests; lowering makes it again
+/// where an inlined helper's fold nests inside a caller's, the one depth
+/// `sema` does not see.
+pub(crate) fn folds_nested_too_deep(span: Span) -> syn::Error {
+    syn::Error::new(
+        span,
+        format!(
+            "folds nested more than {} deep: the IR binds at most that many indices at once \
+             (`Binder::COUNT`)",
+            Binder::COUNT
+        ),
+    )
 }
 
 /// What a fold's bound may name: a `usize` const, already evaluated, or one
@@ -2587,6 +2632,38 @@ mod tests {
             "got: {err}"
         );
         accepted(quote! { || (3..3).map(|i| i as f32).sum() });
+    }
+
+    /// A bound is held in 64 bits here; the IR's index is an `f32` lane,
+    /// exact to 2²⁴, and its fold ends are `u32`. A bound past the lane is
+    /// refused — past `u32` too, naming the plan's A5 — and 2²⁴ itself is
+    /// the last bound accepted.
+    #[test]
+    fn a_bound_past_the_exact_index_is_refused_naming_a5() {
+        for past in [
+            quote! { || (0..16777217).map(|i| i as f32).sum() },
+            quote! { || (16777217..16777217).map(|i| i as f32).sum() },
+            quote! { || (0..4294967296).map(|i| i as f32).sum() },
+        ] {
+            let err = refusal(past);
+            assert!(
+                err.contains("past 16777216 (2^24)") && err.contains("A5") && err.contains(PLAN),
+                "got: {err}"
+            );
+        }
+        accepted(quote! { || (16777215..16777216).map(|i| i as f32).sum() });
+    }
+
+    /// Folds nest as deep as the IR has binders, and no deeper: one more is
+    /// refused, not a panic.
+    #[test]
+    fn folds_nest_as_deep_as_the_ir_has_binders() {
+        let fold = |body: TokenStream| quote! { (0..1).map(|i| #body).sum::<f32>() };
+        let nest = |depth: usize| (0..depth).fold(quote! { X }, |body, _| fold(body));
+        let (deepest, one_deeper) = (nest(Binder::COUNT), nest(Binder::COUNT + 1));
+        accepted(quote! { || #deepest });
+        let err = refusal(quote! { || #one_deeper });
+        assert!(err.contains("folds nested more than"), "got: {err}");
     }
 
     /// A range's bounds are built from `usize` consts, at the largest value a

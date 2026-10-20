@@ -19,8 +19,8 @@
 //! `Kernel`'s methods build through; the coordinates are [`Axis`]'s; a
 //! fold is opened and closed by [`ExprArena::open_fold`] and
 //! [`ExprArena::close_fold`], whose binder is chosen and placeholder renamed
-//! by [`ExprArena::close_over`], as `Kernel::over`'s are; a range is one
-//! [`Fold::admits`]; a kernel is applied by [`ExprArena::apply`]. So each
+//! by [`ExprArena::close_over`], as `Kernel::over`'s are; a range is admitted by
+//! [`Fold::admits`], in `sema`; a kernel is applied by [`ExprArena::apply`]. So each
 //! construction written here and the same one built with the builder are
 //! one program (`tests/the_library_is_the_builders.rs`,
 //! `tests/fold_is_kernel_over.rs`, `tests/kernel_typed_parameters.rs`).
@@ -66,7 +66,7 @@ use crate::ast::{
 };
 use crate::sema::{
     AnalyzedKernel, Bounds, ConstValue, Parameter, RangeScope, Scalar, StructuralRange,
-    range_bounds,
+    folds_nested_too_deep, range_bounds,
 };
 use crate::symbol::{Scopes, SymbolTable};
 use pixelflow_ir::arena::{
@@ -100,7 +100,7 @@ impl Projection {
 }
 
 /// The range a fold runs over, as lowering hands it to a [`Site`]: known
-/// here, and admitted ([`known_range`]), or naming an entry's structural
+/// here, and admitted by `sema` ([`range_bounds`]), or naming an entry's structural
 /// parameters, known when its host function is instantiated.
 #[derive(Debug, Clone)]
 pub(crate) enum FoldRange {
@@ -210,32 +210,6 @@ fn monoid(reduction: Reduction) -> Monoid {
         Reduction::Any => Monoid::ANY,
         Reduction::All => Monoid::ALL,
     }
-}
-
-/// A known fold's bounds at the IR's width, if [`Fold::admits`] them.
-///
-/// `sema` holds a bound in 64 bits, as the control plane is, and has
-/// refused a range that runs backwards. The IR narrows a bound twice: its
-/// ends are `u32` today (widening them is A5 of the plan, deprioritized),
-/// and its index is an `f32` lane, exact to [`Fold::EXACT_BOUND`]. The
-/// lane is the tighter of the two, the one A5 would not lift, and the IR's
-/// to state; lowering asks it before building the body, so the refusal
-/// names the bounds, in the words of both narrowings.
-fn known_range(lo: u64, hi: u64) -> Result<Range<u32>, String> {
-    let range = match (u32::try_from(lo), u32::try_from(hi)) {
-        (Ok(lo), Ok(hi)) => Some(lo..hi),
-        _ => None,
-    };
-    range.filter(Fold::admits).ok_or_else(|| {
-        let bound = Fold::EXACT_BOUND;
-        format!(
-            "the range `{lo}..{hi}` reaches past {bound} (2^24): a fold's index is an `f32` \
-             lane, which names every integer only that far, so past it indices would round \
-             together and the fold would not be the one written (`Fold::EXACT_BOUND`)\n\
-             note: a fold's ends are also `u32` in the IR today (`Fold`); 64-bit fold ends \
-             are A5 of {PLAN}, deprioritized, and would not widen the lane"
-        )
-    })
 }
 
 /// The default a uniform is declared with here, where no call has supplied
@@ -701,7 +675,7 @@ impl<S: Site> Lowering<'_, S> {
         };
         let bounds = range_bounds(&fold.range, scope).map_err(|e| e.to_string())?;
         let range = match bounds {
-            Bounds::Known(lo, hi) => FoldRange::Known(known_range(lo, hi)?),
+            Bounds::Known(range) => FoldRange::Known(range),
             Bounds::Structural(range) => FoldRange::Structural(range),
         };
         // One placeholder per fold open at once, the `n`th for `n` open, so a
@@ -710,11 +684,7 @@ impl<S: Site> Lowering<'_, S> {
         // where running out of placeholders would name nothing the author
         // wrote.
         if self.open_folds >= Binder::COUNT {
-            return Err(format!(
-                "folds nested more than {} deep: the IR binds at most that many indices at \
-                 once (`Binder::COUNT`)",
-                Binder::COUNT
-            ));
+            return Err(folds_nested_too_deep(fold.span).to_string());
         }
         let index = self
             .site
@@ -1107,46 +1077,35 @@ mod tests {
         assert!(err.contains("`N` is a `usize` const"), "got: {err}");
     }
 
-    /// `sema` holds a bound in 64 bits; the IR's index is an `f32` lane,
-    /// exact to 2²⁴, and its fold ends are `u32`. A bound past the lane is
-    /// refused — past `u32` too, naming the plan's A5 — and 2²⁴ itself is
-    /// the last bound accepted.
+    /// `sema` counts the folds one body nests; a helper's fold inlined into
+    /// them nests deeper than any body shows, and lowering refuses that one,
+    /// where the IR would run out of binders.
     #[test]
-    fn a_bound_past_the_exact_index_is_refused_naming_a5() {
-        for past in [
-            quote! { || (0..16777217).map(|i| i as f32).sum() },
-            quote! { || (16777217..16777217).map(|i| i as f32).sum() },
-            quote! { || (0..4294967296).map(|i| i as f32).sum() },
-        ] {
-            let Err(err) = lower_unanalyzed(past) else {
-                panic!("past 2^24 an f32 lane does not name every index");
-            };
-            assert!(
-                err.contains("past 16777216 (2^24)") && err.contains("A5") && err.contains(PLAN),
-                "got: {err}"
-            );
-        }
-        let (arena, root) = lowered(quote! { || (16777215..16777216).map(|i| i as f32).sum() });
-        let ExprNode::Reduce { fold: range, .. } = arena.node(root) else {
-            panic!("expected a fold, got {}", arena.display(root));
-        };
-        assert_eq!(range.range(), 16_777_215..16_777_216);
-    }
-
-    /// Folds nest as deep as the IR has binders, and no deeper: one more is
-    /// refused, not a panic.
-    #[test]
-    fn folds_nest_as_deep_as_the_ir_has_binders() {
+    fn a_helper_fold_nests_inside_the_callers_and_is_refused_past_the_binders() {
         use proc_macro2::TokenStream;
         let fold = |body: TokenStream| quote! { (0..1).map(|i| #body).sum::<f32>() };
-        let nest = |depth: usize| (0..depth).fold(quote! { X }, |body, _| fold(body));
-        let closure = |body: TokenStream| quote! { || #body };
-        let (arena, root) = lowered(closure(nest(Binder::COUNT)));
+        let nest =
+            |depth: usize, innermost: TokenStream| (0..depth).fold(innermost, |body, _| fold(body));
+        let program = |depth: usize| {
+            let nested = nest(depth, quote! { deepest() });
+            quote! {
+                fn deepest() -> f32 { (0..1).map(|i| 1.0).sum::<f32>() }
+                pub fn f() -> f32 { #nested }
+            }
+        };
+        let through_sema = |input| {
+            let analyzed = crate::sema::analyze(parse(input).expect("parses")).expect("analyzes");
+            let entry = analyzed.def.fns().iter().find(|f| f.role() == Role::Entry);
+            Expansion::lower(entry.expect("one entry").callable(), &analyzed)
+        };
+        let Ok(Lowered { arena, root, .. }) = through_sema(program(Binder::COUNT - 1)) else {
+            panic!("as deep as the IR has binders lowers");
+        };
         let ExprNode::Reduce { fold: outer, .. } = arena.node(root) else {
             panic!("expected a fold");
         };
         assert_eq!(usize::from(outer.binder().slot()), Binder::COUNT - 1);
-        let Err(err) = lower_unanalyzed(closure(nest(Binder::COUNT + 1))) else {
+        let Err(err) = through_sema(program(Binder::COUNT)) else {
             panic!("one binder deeper than the IR has");
         };
         assert!(err.contains("folds nested more than"), "got: {err}");
