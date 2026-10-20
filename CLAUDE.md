@@ -178,7 +178,7 @@ went with the tiers that held them. A copy is a future divergence.
 
 ## Workspace Structure
 
-Cargo workspace with 13 member crates:
+Cargo workspace with 14 member crates:
 
 | Crate | Purpose |
 |-------|---------|
@@ -195,6 +195,7 @@ Cargo workspace with 13 member crates:
 | `actor-scheduler-macros` | Procedural macros for actor system. |
 | `core-term` | Terminal application: PTY management, ANSI processing, terminal emulator, key translation. |
 | `xtask` | Build tooling: macOS app bundling (`bundle-run`), codegen tasks. |
+| `desloppify` | Review tooling: per-rule code review over a unit, the diagnosis and synthesis passes over its findings, and the model backends behind them. Not part of the rendering pipeline. |
 
 Each crate and each `mod.rs` directory carries an `intent.md`: what the module
 is, owns, never does, and is behind on (`docs/process/2026-10-15-intent-lives-with-the-module.md`).
