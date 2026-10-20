@@ -1,6 +1,6 @@
 //! Deployment of the cold-start linear Guide, and its
 //! zero-candidate-local-information control arm
-//! (`docs/plans/2026-08-31-guide-design-revision.md` §5, task 2).
+//! (`docs/archive/plans/2026-08-31-guide-design-revision.md` §5, task 2).
 //!
 //! # Why this module exists: the train/deploy skew it closes
 //!
@@ -320,7 +320,7 @@ impl core::fmt::Display for ReturnObjective {
 }
 
 /// Deploys `train_guide_r2g`'s linear return-to-go regressor as a
-/// [`SaturationGuide`] (docs/plans/2026-09-01-guide-return-to-go.md §3.3) —
+/// [`SaturationGuide`] (docs/archive/plans/2026-09-01-guide-return-to-go.md §3.3) —
 /// the same [`LinearWeights`] formula [`LinearCandidateGuide`] uses, trained
 /// against a different target (expression-centered log-regret rather than
 /// the strict load-bearing bit), so its forward pass is a **predicted

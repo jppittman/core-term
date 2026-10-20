@@ -10,7 +10,7 @@ file is new ground: no prior audit pass had mutation-tested it.
 ## Static audit: no new violations
 
 Two `Explore` sub-agents independently swept every file touched since
-`94b42f3` (`git diff 94b42f3..HEAD`) against docs/STYLE.md's "Test Public API"
+`94b42f3` (`git diff 94b42f3..HEAD`) against docs/process/STYLE.md's "Test Public API"
 rule:
 
 - **actor-scheduler**: the only substantive new/modified tests are the five
@@ -67,7 +67,7 @@ sessions). Ran it scoped to `host.rs`, the new sweep code:
 All three fixes reach the code exclusively through `actor-scheduler`'s public
 surface (`Host::new`/`adopt`/`sweep`/`is_empty`, `spsc_channel`,
 `green_channel`, `ActorScheduler::new`/`waker`) — no private-field or
-private-method access, consistent with docs/STYLE.md's testing rule.
+private-method access, consistent with docs/process/STYLE.md's testing rule.
 
 **After: 59 mutants — 0 missed, 26 caught, 29 unviable, 4 timeouts.**
 

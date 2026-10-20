@@ -11,13 +11,13 @@
 //!
 //! [`Optimizer`] is that place. Everything the research program wants to vary
 //! is a field on it that defaults to what production does today: the rule set
-//! and its [`Fingerprint`](super::Fingerprint), the [`Budget`], the cost
-//! model, an optional [`Reranker`](super::extract::Reranker), and an optional
+//! and its [`Fingerprint`], the [`Budget`], the cost
+//! model, an optional `Reranker`, and an optional
 //! [`Observer`].
 //!
 //! # Why an optional lever is safe without a correctness review
 //!
-//! The laws are audited in `docs/plans/2026-09-02-optimizer-api.md`. The one
+//! The laws are audited in `docs/archive/plans/2026-09-02-optimizer-api.md`. The one
 //! that makes this API worth having is **L4, guide neutrality**:
 //!
 //! 1. Every rewrite rule preserves denotation, so every equality in the graph
@@ -37,10 +37,9 @@
 //! What that argument does **not** cover, and the doc comment on
 //! [`Optimizer::cost`] repeats: `extract_dag` is *not* argmin under the cost
 //! model. It prices a tree rather than a DAG (sharing is never charged), it
-//! is a single DFS over graphs that saturation makes cyclic, and the cost it
-//! reports is read before a well-foundedness repair may change the term. The
-//! cost model is the objective extraction *aims at*, not a minimum it
-//! attains. [`Reranker`](super::extract::Reranker) is the seam for any
+//! is a heuristic over graphs that saturation makes cyclic, and the cost it
+//! reports is that of the returned choices. The cost model is the objective
+//! extraction *aims at*, not a minimum it attains. `Reranker` is the seam for any
 //! objective that needs a guarantee — non-additive or otherwise — because it
 //! scores whole extractions.
 
@@ -49,12 +48,14 @@ use alloc::vec::Vec;
 
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
+use super::and_or::{Frozen, Problem};
 use super::cost::CostModel;
 use super::extract::{
-    ChoiceCost, Extraction, ExtractionObjective, ExtractionReport, IncrementalExtractor, Reranker,
-    choices_to_arena,
+    ChoiceCost, ExtractionReport, IncrementalExtractor, Pricing, Reranker, Selection,
 };
-use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
+use super::graph::{
+    ApplicationMask, EGraph, FrozenGraph, Limits, Saturation, SaturationStats, SaturationStop,
+};
 use super::guided::GuidedEpisode;
 use super::node::EClassId;
 #[cfg(feature = "provenance-journal")]
@@ -112,6 +113,56 @@ impl Observer for KeepJournal {
     fn on_application(&mut self, _record: &ApplicationRecord) {}
 }
 
+/// A saturation configuration, as a value a cache can key on: the rule set's
+/// [`Fingerprint`] and the [`Budget`], and nothing else — see
+/// [`Optimizer::saturation_key`] for what is in and why.
+///
+/// A second type beside [`Fingerprint`], not a wider one: a `Fingerprint`
+/// names a rule vocabulary and is written into checkpoints, where a guide
+/// records which vocabulary it was trained against, so it must keep meaning
+/// that. Built only by [`Optimizer::saturation_key`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SaturationKey(Vec<u8>);
+
+impl SaturationKey {
+    const PRODUCTION: u8 = 0;
+    const APPLICATIONS: u8 = 1;
+    const EXPLICIT: u8 = 2;
+    const UNCAPPED: u8 = 0;
+    const CAPPED: u8 = 1;
+
+    fn of(rules: Fingerprint, budget: Budget) -> Self {
+        fn push_count(bytes: &mut Vec<u8>, count: u64) {
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        let mut bytes = rules.to_bytes().to_vec();
+        match budget {
+            Budget::Production => bytes.push(Self::PRODUCTION),
+            Budget::Applications(n) => {
+                bytes.push(Self::APPLICATIONS);
+                push_count(&mut bytes, n);
+            }
+            Budget::Explicit {
+                iterations,
+                minted,
+                applications,
+            } => {
+                bytes.push(Self::EXPLICIT);
+                push_count(&mut bytes, iterations as u64);
+                push_count(&mut bytes, minted as u64);
+                match applications {
+                    None => bytes.push(Self::UNCAPPED),
+                    Some(n) => {
+                        bytes.push(Self::CAPPED);
+                        push_count(&mut bytes, n);
+                    }
+                }
+            }
+        }
+        Self(bytes)
+    }
+}
+
 /// What stops saturation.
 ///
 /// Every variant is deterministic: the same arena under the same budget
@@ -130,7 +181,7 @@ pub enum Budget {
     /// What production does: iteration and class caps chosen from the
     /// input's sizes, exactly as
     /// [`config_for_input`](super::saturate::config_for_input) picks them
-    /// (≤10 nodes → 20 rounds / 500 classes; 11–50 → 50 / 2 000; 51+ →
+    /// (≤10 classes → 20 rounds / 500 ids; 11–50 → 50 / 2 000; 51+ →
     /// 100 rounds and a class cap of
     /// [`CLASSICAL_CLASSES_PER_INSERTED_CLASS`](super::saturate::CLASSICAL_CLASSES_PER_INSERTED_CLASS)
     /// per inserted class, clamped to 5 000..=50 000).
@@ -144,56 +195,43 @@ pub enum Budget {
     Explicit {
         /// Rewrite rounds.
         iterations: usize,
-        /// E-class ceiling.
-        classes: usize,
+        /// The most e-class ids the graph may mint.
+        minted: usize,
         /// Rule applications, if capped.
         applications: Option<u64>,
     },
 }
 
-/// The limits [`Budget`] resolves to for a given input size.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Limits {
-    /// Rewrite rounds.
-    pub iterations: usize,
-    /// E-class ceiling.
-    pub classes: usize,
-    /// Rule applications, if capped.
-    pub applications: Option<u64>,
-}
-
 impl Budget {
     /// Resolve to concrete limits.
     ///
-    /// `input` is the same rough size measure the presets have always keyed
-    /// on — AST node count for the macro tier, reachable-arena node count
-    /// for the runtime tier — with the inserted class count beside it for
-    /// the classical cap; ignored by the variants that name their limits.
+    /// `input` is the class count the term inserted to, which picks the tier
+    /// and sizes the classical cap; [`Budget::Explicit`] ignores it.
     #[must_use]
     pub fn limits(self, input: InputSize) -> Limits {
         let preset = super::saturate::config_for_input(input);
         match self {
             Self::Production => Limits {
                 iterations: preset.max_iterations,
-                classes: preset.max_classes,
+                minted: preset.max_minted,
                 // Deterministic replacement for the wall clock this used to
-                // carry (docs/plans/2026-09-01-production-budget-determinism.md):
+                // carry (docs/archive/plans/2026-09-01-production-budget-determinism.md):
                 // calibrated per tier so it binds strictly after the class
                 // cap or quiescence on every kernel measured 2026-09-01.
                 applications: Some(preset.max_applications),
             },
             Self::Applications(n) => Limits {
                 iterations: preset.max_iterations,
-                classes: preset.max_classes,
+                minted: preset.max_minted,
                 applications: Some(n),
             },
             Self::Explicit {
                 iterations,
-                classes,
+                minted,
                 applications,
             } => Limits {
                 iterations,
-                classes,
+                minted,
                 applications,
             },
         }
@@ -218,26 +256,34 @@ pub struct OptimizerStats {
     pub limits: Limits,
 }
 
-/// The result of [`Optimizer::run`]: the per-e-class extraction choices, and
-/// what the run did to get them.
+/// The result of [`Optimizer::run`]: the term the extraction selected, and
+/// what the run did to get it.
 ///
-/// Choices rather than an arena because the three tiers materialise
-/// differently — the macro tier needs `ExtractedDAG` ref counts to place
-/// let-bindings, the arena tiers need an [`ExprArena`]. [`Optimized::to_arena`]
-/// is the arena half.
+/// The term rather than an arena because the saturated graph is what a tier
+/// materializes it against ([`Optimized::to_arena`]), and the macro tier and
+/// the runtime tier link what comes out differently.
 #[derive(Clone, Debug)]
 pub struct Optimized {
-    /// One node index per canonical e-class, well-founded from the root.
+    /// The node index chosen for each canonical e-class, by class id. Under
+    /// the DP it is the settlement's record, a superset of the term (every
+    /// class the settlement drained, not only those the root reaches);
+    /// under a `Reranker`, where no settlement ran, it is the term's own
+    /// reach. [`Self::to_arena`] materializes the term, not this field;
+    /// editing it does not change what comes out.
     pub choices: Vec<Option<usize>>,
-    /// What [`Self::choices`] costs, in both the shape the extraction DP
-    /// minimizes ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
-    /// ([`ChoiceCost::dag`]). Read from the settled choices, so it describes
-    /// the term [`Self::to_arena`] materializes — including under a
-    /// [`Reranker`], whose search has its own scale and never produced this
-    /// number before.
+    /// The term: the classes the root reaches through [`Self::choices`],
+    /// well-founded and in the order it materializes in.
+    selection: Selection,
+    /// What the term costs, in both the shape the extraction DP minimizes
+    /// ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
+    /// ([`ChoiceCost::dag`]): the price of the selected term, so it holds
+    /// under a `Reranker` too, whose search has its own scale and never
+    /// produced this number before. It describes the term [`Self::to_arena`]
+    /// emits: nothing is repaired after extraction (a shift's count is a
+    /// parameter of its node, never a class a choice could get wrong).
     pub cost: ChoiceCost,
     /// Which objective chose [`Self::choices`], and what the sharing-aware
-    /// pass cost — [`ExtractionObjective::External`] under a [`Reranker`].
+    /// pass cost — `ExtractionObjective::External` under a `Reranker`.
     /// A cost quoted without this is a cost from an unknown extractor.
     pub extraction: ExtractionReport,
     /// What the run did.
@@ -247,11 +293,32 @@ pub struct Optimized {
 impl Optimized {
     /// Materialise the extracted DAG as an arena.
     ///
-    /// `egraph` and `root` must be the ones [`Optimizer::run`] was given;
-    /// the choices index that graph's classes.
+    /// `egraph` and `root` must be the ones [`Optimizer::run`] was given: the
+    /// term indexes that graph's classes and nodes.
+    ///
+    /// # Panics
+    ///
+    /// If `root` is not the class the term was extracted from, or `egraph`
+    /// no longer holds the nodes it chose.
     #[must_use]
     pub fn to_arena(&self, egraph: &EGraph, root: EClassId) -> (ExprArena, ExprId) {
-        choices_to_arena(&Extraction::from_dp(egraph, root, self.choices.clone()))
+        self.to_arena_over(egraph.as_frozen(), root)
+    }
+
+    /// [`Self::to_arena`] over a frozen graph: the runtime tier's cache, which
+    /// holds a [`FrozenGraph`] and no `EGraph`.
+    #[must_use]
+    pub(crate) fn to_arena_over(
+        &self,
+        egraph: &FrozenGraph,
+        root: EClassId,
+    ) -> (ExprArena, ExprId) {
+        assert_eq!(
+            egraph.find(root),
+            self.selection.root(),
+            "Optimized::to_arena: the term was extracted from another class than `root`"
+        );
+        self.selection.to_arena(egraph)
     }
 }
 
@@ -261,7 +328,7 @@ impl Optimized {
 /// ```ignore
 /// let mut egraph = optimizer.egraph();          // carries the rule set
 /// let root = /* insert your term */;
-/// let out = optimizer.run(&mut egraph, root, node_count);
+/// let out = optimizer.run(&mut egraph, root);
 /// let (arena, arena_root) = out.to_arena(&egraph, root);
 /// ```
 ///
@@ -294,8 +361,8 @@ pub struct Optimizer {
 /// A fixed [`core::time::Duration`] isn't enough on its own:
 /// [`Optimizer::production`]'s default ceiling must scale with the tier
 /// [`Budget::Production`] resolves to (blitz/rapid/classical carry different
-/// `safety_ceiling`s), which is only known once `node_count` reaches
-/// [`Optimizer::run`] — not at construction time, when
+/// `safety_ceiling`s), which is only known once the input has been inserted and
+/// [`Optimizer::run`] sizes it — not at construction time, when
 /// `.hard_ceiling(d)`'s fixed override *is* already known. `None` stays a
 /// third state (rather than `Fixed` with a sentinel) for non-production
 /// configurations that want no assertion at all.
@@ -309,7 +376,7 @@ enum HardCeiling {
     /// for a specific ceiling gets exactly that ceiling.
     Fixed(core::time::Duration),
     /// [`SaturationConfig::safety_ceiling`](super::saturate::SaturationConfig::safety_ceiling)
-    /// for the tier `node_count` resolves to, subject to
+    /// for the tier the input's size resolves to, subject to
     /// `PIXELFLOW_SATURATION_CEILING_MS`. [`Optimizer::production`]'s
     /// default.
     Tiered,
@@ -388,7 +455,7 @@ impl Optimizer {
             #[cfg(feature = "provenance-journal")]
             observer: None,
             // The tier's own `SaturationConfig::safety_ceiling`, resolved
-            // from `node_count` at `run()` time — every production call site
+            // from the inserted size at `run()` time — every production call site
             // gets a fail-loud ceiling without having to remember to ask for
             // one. See `HardCeiling::Tiered`.
             hard_ceiling: HardCeiling::Tiered,
@@ -424,7 +491,7 @@ impl Optimizer {
         self
     }
 
-    /// Refine the extraction with a [`Reranker`] over whole extractions.
+    /// Refine the extraction with a `Reranker` over whole extractions.
     ///
     /// This is the seam for a cost that additive DP cannot express — the
     /// schedule-cost residual — and, per the module docs, for any objective
@@ -438,7 +505,7 @@ impl Optimizer {
 
     /// Order the rewrite candidates saturation applies.
     ///
-    /// A [`SaturationGuide`](crate::nnue::guide::SaturationGuide) supplies
+    /// A [`SaturationGuide`] supplies
     /// **order only** — it never constructs a rewrite action, never unions,
     /// never sees a mutable e-graph. That is what makes law **L4** (see this
     /// module's docs) hold without a numeric-equivalence suite: every
@@ -468,7 +535,7 @@ impl Optimizer {
     /// every later application that would re-derive the same thing), so a
     /// harness can measure what that application was worth:
     /// `Δ_a = R(τ\a,B) − R(τ,B)`
-    /// (docs/plans/2026-09-01-guide-return-to-go.md §4.1).
+    /// (docs/archive/plans/2026-09-01-guide-return-to-go.md §4.1).
     ///
     /// A field, not a second saturation entry point, for the same reason
     /// [`Self::rerank`] and [`Self::guide`] are fields: withholding an
@@ -477,7 +544,7 @@ impl Optimizer {
     /// covered by L4 — a withheld application can only leave the graph
     /// holding fewer equalities, never different ones.
     ///
-    /// Read [`EGraph::last_replay_mask_skips`] afterwards rather than
+    /// Read [`Saturation::last_replay_mask_skips`] afterwards rather than
     /// assuming the mask fired: under the confluence-aware scope it can fire
     /// many times, and if its ordinal was never reached it fires not at all.
     #[must_use]
@@ -501,8 +568,8 @@ impl Optimizer {
     /// the old `hard_timeout` did.
     ///
     /// [`Optimizer::production`]'s default is *not* "none" — it is
-    /// [`config_for_node_count`](super::saturate::config_for_node_count)'s
-    /// tier-appropriate `safety_ceiling`, resolved once `node_count` is
+    /// [`config_for_input`](super::saturate::config_for_input)'s
+    /// tier-appropriate `safety_ceiling`, resolved once the input's size is
     /// known. Call this only to override that with a fixed value regardless
     /// of tier (measurement harnesses that vary the budget independently of
     /// input size); the override is exempt from
@@ -528,27 +595,47 @@ impl Optimizer {
     /// Read "aims at" literally: `extract_dag` is a heuristic, not an argmin.
     /// It sums children's costs, which prices a tree — a shared
     /// subexpression is charged once per use in the objective and once in
-    /// total in the emitted code. It is a single DFS, so on the cyclic graphs
-    /// saturation always produces (commutativity alone makes cycles) a class
-    /// whose child is still on the stack is scored at a cycle sentinel and
-    /// never revisited. Use [`Optimizer::rerank`] for an objective that needs
-    /// a guarantee.
+    /// total in the emitted code. Extraction settles classes in cost order,
+    /// so a class is admitted only after the children of the candidate it
+    /// settles on, but the sum is still taken over a tree. Use
+    /// [`Optimizer::rerank`] for an objective that needs a guarantee.
     #[must_use]
     pub fn cost(mut self, cost: CostModel) -> Self {
         self.cost = cost;
         self
     }
 
-    /// The digest of this configuration: today the rule set's content and
-    /// order.
+    /// Everything about this configuration that decides the graph a
+    /// saturation leaves behind, or `None` when the configuration cannot be
+    /// named.
     ///
     /// A cache that keys on the input expression alone would serve one
-    /// configuration's code to another the moment two configurations coexist
-    /// in a process — a warm-up compiled at one budget and steady state at
-    /// another, or some kernels reranked and some not.
+    /// configuration's graph to another the moment two configurations coexist
+    /// in a process — a warm-up at one budget and steady state at another.
+    /// The key covers the rule set (content and order: the sweep is
+    /// order-sensitive under a budget) and the [`Budget`]; the budget's
+    /// limits then follow from the class count the input inserts to. That
+    /// count is a function of the term as inserted, which the cache's
+    /// canonical key fixes only up to commutative spelling: the key is
+    /// order-free and the e-graph memo is not, so `(X + Y) * (Y + X)` keys
+    /// one subterm and inserts two classes. It leaves out what only the extraction reads — the cost model,
+    /// the lattice, the reranker — and what changes no result: the observer
+    /// and the wall-clock ceiling.
+    ///
+    /// It does not cover the [`Vocabulary`](super::Vocabulary): which terms
+    /// `insert` declines is a property of the call site's tier, not of the
+    /// optimizer, and the one cache keyed on this (the runtime tier's) always
+    /// inserts under `Vocabulary::Runtime`. A second tier sharing a cache
+    /// would have to add it.
+    ///
+    /// `None` for a guided or masked run. A [`SaturationGuide`] has no
+    /// identity to key on and reorders the sweep, and a replay mask withholds
+    /// an application: neither run is a function of the input and the rules,
+    /// so no graph it leaves may be served to another caller.
     #[must_use]
-    pub fn fingerprint(&self) -> Fingerprint {
-        self.rules.fingerprint()
+    pub fn saturation_key(&self) -> Option<SaturationKey> {
+        (self.guide.is_none() && self.mask.is_none())
+            .then(|| SaturationKey::of(self.rules.fingerprint(), self.budget))
     }
 
     /// The limits this optimizer's budget resolves to for an input of these
@@ -578,33 +665,49 @@ impl Optimizer {
         &self.rules
     }
 
-    /// An empty e-graph carrying this optimizer's rule set. Insert your term
+    /// An empty e-graph under this optimizer's rule set. Insert your term
     /// into it and hand it to [`Optimizer::run`].
+    ///
+    /// The graph keeps a mutation journal exactly when an
+    /// [`Observer`] is attached: the journal is chosen here, when the graph
+    /// is built, because a log cannot be turned on halfway through a run
+    /// without misattributing what happened before it. Production attaches
+    /// none, so a production graph records nothing.
     #[must_use]
-    pub fn egraph(&self) -> EGraph {
-        let (rules, ids) = self.rules.shared();
-        EGraph::with_shared_rules(rules, ids)
+    pub fn egraph(&self) -> Saturation {
+        let saturation = Saturation::over(self.rules.clone());
+        if self.has_observer() {
+            return saturation;
+        }
+        saturation.without_journal()
+    }
+
+    /// Whether anything is attached to hear what saturation did.
+    fn has_observer(&self) -> bool {
+        #[cfg(feature = "provenance-journal")]
+        return self.observer.is_some();
+        #[cfg(not(feature = "provenance-journal"))]
+        return false;
     }
 
     /// Saturate `egraph` from `root` under this configuration, and extract.
     ///
-    /// `node_count` is the rough size measure [`Budget::Production`] picks
-    /// its tier from — the same one the presets have always keyed on. The
-    /// classical class cap is sized from `egraph`'s class count on entry:
-    /// the input has been inserted and nothing rewritten yet, so that count
-    /// is the hash-consed input ([`InputSize::classes`]).
+    /// [`Budget::Production`] picks its tier, and sizes the classical cap,
+    /// from `egraph`'s class count on entry: the input has been inserted and
+    /// nothing rewritten yet, so that count is the hash-consed input
+    /// ([`InputSize::classes`]). To resume a graph already rewritten, name the
+    /// limits outright with [`Budget::Explicit`].
     ///
     /// # Panics
     ///
-    /// Panics if a [`hard_ceiling`](Optimizer::hard_ceiling) was set and the
-    /// run exceeded it. That is the intended behavior: a ceiling is an
+    /// Panics if a budget keyed on the input's size meets a graph that has
+    /// already been rewritten (its class count is then the grown graph's, not
+    /// the input's), or if a [`hard_ceiling`](Optimizer::hard_ceiling) was set
+    /// and the run exceeded it. That is the intended behavior: a ceiling is an
     /// assertion about the budget, and a silently truncated optimization that
     /// reports success is the failure mode this API exists to remove.
-    pub fn run(&mut self, egraph: &mut EGraph, root: EClassId, node_count: usize) -> Optimized {
-        let input = InputSize {
-            nodes: node_count,
-            classes: egraph.num_classes(),
-        };
+    pub fn run(&mut self, egraph: &mut Saturation, root: EClassId) -> Optimized {
+        let input = self.inserted_size(egraph);
         self.run_bounded(egraph, root, self.budget.limits(input), input)
     }
 
@@ -614,7 +717,7 @@ impl Optimizer {
     /// name the tier the ceiling belongs to.
     pub(crate) fn run_bounded(
         &mut self,
-        egraph: &mut EGraph,
+        egraph: &mut Saturation,
         root: EClassId,
         limits: Limits,
         input: InputSize,
@@ -632,13 +735,11 @@ impl Optimizer {
     ///
     /// # Panics
     ///
-    /// As [`Self::run`]: if a [`hard_ceiling`](Optimizer::hard_ceiling) was
-    /// set and the saturation exceeded it.
-    pub fn saturate_term(&mut self, egraph: &mut EGraph, node_count: usize) -> OptimizerStats {
-        let input = InputSize {
-            nodes: node_count,
-            classes: egraph.num_classes(),
-        };
+    /// As [`Self::run`]: if the graph was already rewritten under a budget
+    /// keyed on the input's size, or a [`hard_ceiling`](Optimizer::hard_ceiling)
+    /// was set and the saturation exceeded it.
+    pub fn saturate_term(&mut self, egraph: &mut Saturation) -> OptimizerStats {
+        let input = self.inserted_size(egraph);
         self.saturate_bounded(egraph, self.budget.limits(input), input)
     }
 
@@ -651,45 +752,113 @@ impl Optimizer {
     /// through so an [`Optimized`] reads the same whichever way it was made.
     #[must_use]
     pub fn extract(&self, egraph: &EGraph, root: EClassId, stats: OptimizerStats) -> Optimized {
-        // Both arms report the cost of the choices they RETURN — the DP's
-        // own table is read before `repair_choices_well_founded` rewrites
-        // picks and so can name a different term (#1111), and the reranker's
-        // search score is on its own scale entirely.
-        let (choices, cost, extraction) = match self.rerank.as_ref() {
-            Some(reranker) => {
-                let choices = IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
-                    .extract_choices_only(egraph, root)
-                    .1
-                    .into_choices();
-                let cost =
-                    super::extract::cost_of_choices(egraph, root, &choices, &self.cost, self.shape);
-                (choices, cost, ExtractionReport::external())
-            }
-            None => {
-                let dag = super::extract::extract_dag_scoped(egraph, root, &self.cost, self.shape);
-                let cost = dag.cost();
-                (dag.choices, cost, dag.report)
-            }
-        };
+        // A reranked extraction reads the e-graph and no extraction problem,
+        // so none is built for it.
+        match self.rerank.as_ref() {
+            Some(reranker) => self.reranked(reranker.as_ref(), egraph, root, stats),
+            None => self.extract_over(Frozen::new(egraph.as_frozen(), root).problem(), stats),
+        }
+    }
 
+    /// [`Self::extract`] over an extraction problem already read from its
+    /// graph, for an optimizer with no reranker: a cache that holds one
+    /// saturated graph for many shapes holds the problem beside it
+    /// ([`Frozen`]), so each shape adds its weights and its settlement and
+    /// nothing else.
+    #[must_use]
+    pub(crate) fn extract_over(&self, problem: Problem<'_>, stats: OptimizerStats) -> Optimized {
+        assert!(
+            self.rerank.is_none(),
+            "Optimizer::extract_over: a reranker scores an `Extraction`, which lends an `&EGraph`, and a \
+             frozen graph is not one; rerank through `Optimizer::extract`. The runtime tier's optimizer \
+             sets no reranker (`runtime_optimizer`)."
+        );
+        // Both the cost and the term are those of the settlement — the DP's
+        // table is priced after settlement rather than read off the DP
+        // (#1111) — and the term is well-founded by construction (settled in
+        // cost order).
+        let dag = super::extract::extract_dag_over(
+            problem,
+            &Pricing {
+                costs: &self.cost,
+                shape: self.shape,
+            },
+        );
+        let cost = dag.cost();
         Optimized {
-            choices,
+            choices: dag.choices,
+            selection: dag.selection,
             cost,
-            extraction,
+            extraction: dag.report,
             stats,
+        }
+    }
+
+    /// The reranker's extraction. Its search has its own scale entirely, so
+    /// its cost is read from the term it returns, as the DP's is (#1111); the
+    /// term is its [`Extraction`](super::extract::Extraction)'s, well-founded
+    /// by construction.
+    fn reranked(
+        &self,
+        reranker: &dyn Reranker,
+        egraph: &EGraph,
+        root: EClassId,
+        stats: OptimizerStats,
+    ) -> Optimized {
+        let (_, extraction) =
+            IncrementalExtractor::new(reranker, RERANK_TOP_K).extract_choices_only(egraph, root);
+        let selection = extraction.to_selection();
+        let cost = selection.price(
+            egraph.as_frozen(),
+            &Pricing {
+                costs: &self.cost,
+                shape: self.shape,
+            },
+        );
+        Optimized {
+            choices: selection.to_map(egraph.as_frozen()),
+            selection,
+            cost,
+            extraction: ExtractionReport::external(),
+            stats,
+        }
+    }
+
+    /// The size of the input `egraph` was handed, read off its class count.
+    ///
+    /// Only the first call on a graph can read it: once rules have fired the
+    /// count includes what they minted. A budget that keys on the size
+    /// therefore refuses a graph already rewritten, rather than drift to a
+    /// larger tier on each call.
+    fn inserted_size(&self, egraph: &Saturation) -> InputSize {
+        let keyed_on_size = matches!(self.budget, Budget::Production | Budget::Applications(_));
+        assert!(
+            !(keyed_on_size && egraph.application_count() > 0),
+            "this budget is keyed on the inserted class count, and this graph has already been \
+             rewritten ({} applications): resume it under `Budget::Explicit`",
+            egraph.application_count(),
+        );
+        InputSize {
+            classes: egraph.num_classes(),
         }
     }
 
     fn saturate_bounded(
         &mut self,
-        egraph: &mut EGraph,
+        egraph: &mut Saturation,
         limits: Limits,
         input: InputSize,
     ) -> OptimizerStats {
+        // Before the run, so a long research run does not discover at its end
+        // that its graph never kept the journal the observer was to hear.
+        #[cfg(feature = "provenance-journal")]
+        assert!(
+            self.observer.is_none() || egraph.provenance().is_some(),
+            "an observer needs a graph that keeps a journal: build it with \
+             `Optimizer::egraph` on the optimizer that observes",
+        );
         let started = std::time::Instant::now();
 
-        #[cfg(feature = "provenance-journal")]
-        egraph.set_provenance_recording(self.observer.is_some());
         // A fresh clone per run: the confluence-aware scope mutates its
         // captured key as the run goes, and one optimizer replaying two
         // expressions must not carry the first one's capture into the
@@ -715,7 +884,7 @@ impl Optimizer {
             assert!(
                 elapsed <= ceiling,
                 "Optimizer::run exceeded its safety ceiling: {elapsed:?} > {ceiling:?} \
-                 (tier {tier}, {nodes} nodes / {classes} inserted classes, {applications} \
+                 (tier {tier}, {classes} inserted classes, {applications} \
                  applications reached, \
                  stop: {stop:?}). A ceiling is an assertion about the budget, not a budget \
                  dimension — either the budget is wrong for this input or the machine is \
@@ -723,14 +892,16 @@ impl Optimizer {
                  `0` or `off` disables it) only for diagnosis — it can change whether this \
                  panics, never which kernel is emitted.",
                 stop = saturation.stop,
-                nodes = input.nodes,
                 classes = input.classes,
             );
         }
 
         #[cfg(feature = "provenance-journal")]
         if let Some(observer) = self.observer.as_mut() {
-            for (_id, record) in egraph.provenance().applications() {
+            let journal = egraph
+                .provenance()
+                .expect("checked on entry: the graph keeps a journal");
+            for (_id, record) in journal.applications() {
                 observer.on_application(record);
             }
         }
@@ -755,16 +926,12 @@ impl Optimizer {
     /// [`SaturationStats`], and neither can report
     /// [`SaturationStop::Timeout`] — the guided loop takes no clock either.
     /// Every mutation the guided arm makes goes through
-    /// `EGraph::apply_single_rule`, i.e. through the same
-    /// `apply_action_from_rule` the sweep uses, which is what keeps the
+    /// `Saturation::apply_single_rule`, i.e. through the same
+    /// `commit` the sweep uses, which is what keeps the
     /// application counter (the budget's denominator) meaning one thing.
-    fn saturate(&mut self, egraph: &mut EGraph, limits: Limits) -> SaturationStats {
+    fn saturate(&mut self, egraph: &mut Saturation, limits: Limits) -> SaturationStats {
         let Some(guide) = self.guide.as_ref() else {
-            return egraph.saturate_budgeted(
-                limits.iterations,
-                limits.classes,
-                limits.applications,
-            );
+            return egraph.saturate_budgeted(limits);
         };
         self.episode
             .get_or_insert_with(GuidedEpisode::default)
@@ -775,5 +942,130 @@ impl Optimizer {
 impl Default for Optimizer {
     fn default() -> Self {
         Self::production()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::egraph::extract::Extraction;
+    use crate::nnue::guide::CandidateSummary;
+
+    struct Flat;
+
+    impl SaturationGuide for Flat {
+        fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
+            vec![0.0; candidates.len()]
+        }
+    }
+
+    fn key_of(optimizer: &Optimizer) -> SaturationKey {
+        optimizer
+            .saturation_key()
+            .expect("an unguided, unmasked optimizer is cacheable")
+    }
+
+    /// The key distinguishes exactly what decides the saturated graph, and
+    /// nothing that only the extraction reads.
+    #[test]
+    fn the_saturation_key_covers_the_rules_and_the_budget() {
+        let production = key_of(&Optimizer::production());
+        assert_eq!(production, key_of(&Optimizer::production()));
+
+        let reordered = {
+            let mut rules = crate::egraph::all_rules();
+            rules.reverse();
+            Optimizer::production().rules(RuleSet::new(rules))
+        };
+        assert_ne!(production, key_of(&reordered), "rule order is part of it");
+
+        let budgets = [
+            Budget::Production,
+            Budget::Applications(100),
+            Budget::Applications(101),
+            Budget::Explicit {
+                iterations: 5,
+                minted: 500,
+                applications: None,
+            },
+            Budget::Explicit {
+                iterations: 5,
+                minted: 500,
+                applications: Some(100),
+            },
+            Budget::Explicit {
+                iterations: 5,
+                minted: 501,
+                applications: Some(100),
+            },
+        ];
+        let keys: Vec<_> = budgets
+            .iter()
+            .map(|&budget| key_of(&Optimizer::production().budget(budget)))
+            .collect();
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b, "two budgets must not share a key");
+            }
+        }
+
+        let priced_elsewhere = Optimizer::production()
+            .for_lattice(LatticeShape::new([16, 16]))
+            .cost(CostModel::default())
+            .no_ceiling();
+        assert_eq!(
+            production,
+            key_of(&priced_elsewhere),
+            "extraction's pricing is not saturation's"
+        );
+    }
+
+    /// A guided run reorders the sweep and a masked one withholds an
+    /// application: neither is a function of the input and the rules, so
+    /// neither has a key.
+    #[test]
+    fn a_guided_or_masked_run_has_no_key() {
+        let guided = Optimizer::production().guide(Some(Box::new(Flat)));
+        assert!(guided.saturation_key().is_none());
+        let masked = Optimizer::production().mask(Some(ApplicationMask::leave_one_out(0)));
+        assert!(masked.saturation_key().is_none());
+    }
+
+    /// The journal is chosen when the graph is built, so an observer cannot be
+    /// attached to a graph built without one — and is refused before the run,
+    /// not after it.
+    #[cfg(feature = "provenance-journal")]
+    #[test]
+    #[should_panic(expected = "needs a graph that keeps a journal")]
+    fn an_observer_needs_a_graph_that_keeps_a_journal() {
+        let mut egraph = Optimizer::production().egraph();
+        let root = egraph.add(crate::egraph::ENode::Var(0));
+        let mut observed = Optimizer::production()
+            .observe(Some(Box::new(KeepJournal)))
+            .no_ceiling();
+        let _optimized = observed.run(&mut egraph, root);
+    }
+
+    /// A reranker scores an `Extraction`, which lends an `&EGraph`; a problem
+    /// read from a frozen graph has none to lend. The entry that takes one
+    /// refuses an optimizer holding a reranker, rather than extract without it
+    /// and report a term the reranker never saw.
+    #[test]
+    #[should_panic(expected = "Optimizer::extract_over: a reranker")]
+    fn extracting_over_a_frozen_graph_refuses_a_reranker() {
+        struct Zero;
+
+        impl Reranker for Zero {
+            fn score(&self, _extraction: &Extraction<'_>, _arena: &ExprArena) -> f64 {
+                0.0
+            }
+        }
+
+        let mut saturation = Optimizer::production().egraph();
+        let root = saturation.add(crate::egraph::ENode::Var(0));
+        let mut optimizer = Optimizer::production().rerank(Some(Box::new(Zero)));
+        let stats = optimizer.saturate_term(&mut saturation);
+        let _optimized =
+            optimizer.extract_over(Frozen::new(saturation.as_frozen(), root).problem(), stats);
     }
 }

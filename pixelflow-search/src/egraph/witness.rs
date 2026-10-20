@@ -16,21 +16,23 @@
 //! (`Dp`, `TieBreak`, `StageRecorder`) are monomorphized so production's
 //! instantiation is byte-identical to the passes before they existed.
 //!
-//! Denotation: `docs/plans/2026-09-08-extraction-witnesses.md`.
+//! Denotation: `docs/archive/plans/2026-09-08-extraction-witnesses.md`.
 
 use std::collections::HashMap;
 
-use pixelflow_ir::{Ir, LatticeShape, Shape};
+use pixelflow_ir::{Ir, LatticeShape, Shape, ShiftCount};
 
+use super::and_or::Frozen;
 use super::cost::CostFunction;
 use super::extract::{
-    CYCLE_COST, Canonical, ChoiceCost, Dp, ExtractionObjective, Insertion,
-    SHARED_DAG_PASS_BYTE_BUDGET, StageRecorder, TieBreak, cost_of_choices,
-    repair_choices_well_founded, shared_dag_dp_pass, tree_dp_pass,
+    Canonical, ChoiceCost, Dp, DpOutcome, ExtractionObjective, Insertion, Pricing,
+    SHARED_DAG_PASS_BYTE_BUDGET, Selection, StageRecorder, TieBreak, shared_dag_dp_pass,
+    tree_dp_pass,
 };
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Vocabulary;
+use super::shift::{self, ShiftDirection};
 
 // ---------------------------------------------------------------------------
 // Recording a pass
@@ -103,14 +105,12 @@ impl StageRecorder for CandidateTable {
 // ---------------------------------------------------------------------------
 
 /// One DP pass, traced: what it priced, what it picked, and what the term it
-/// picked costs after repair.
+/// picked costs.
 #[derive(Clone, Debug)]
 pub struct PassTrace {
-    /// The pass's own choice table, before `repair_choices_well_founded`.
-    pub raw: Vec<Option<usize>>,
     /// The map production would return from this arm.
-    pub repaired: Vec<Option<usize>>,
-    /// The cost of `repaired`.
+    pub choices: Vec<Option<usize>>,
+    /// The cost of `choices`.
     pub cost: ChoiceCost,
     /// Per-candidate costs the pass computed.
     pub table: CandidateTable,
@@ -137,11 +137,8 @@ pub struct StageTrace {
 /// map — the answer to "who lost the witness here".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
-    /// The winning arm's raw DP chose it.
+    /// The winning arm's DP chose it.
     Dp,
-    /// The winning arm's raw DP chose something else and the repair pass
-    /// rewrote it.
-    Repair,
     /// Both arms were computed and the *losing* arm held the witness's node
     /// here: min-of-two threw it away.
     MinOfTwo,
@@ -172,13 +169,9 @@ impl StageTrace {
     #[must_use]
     pub fn stage_of(&self, class: EClassId, wanted: usize) -> Stage {
         let i = class.index();
-        let win = self.winner();
-        if win.raw.get(i).copied().flatten() != self.choices.get(i).copied().flatten() {
-            return Stage::Repair;
-        }
         if self
             .loser()
-            .and_then(|l| l.repaired.get(i).copied().flatten())
+            .and_then(|l| l.choices.get(i).copied().flatten())
             == Some(wanted)
         {
             return Stage::MinOfTwo;
@@ -198,16 +191,24 @@ pub fn trace<C: CostFunction>(
     shape: LatticeShape,
 ) -> StageTrace {
     let n = egraph.num_classes();
+    let frozen = Frozen::new(egraph.as_frozen(), root);
+
+    let pass_trace = |outcome: DpOutcome, table: CandidateTable| PassTrace {
+        cost: outcome
+            .selection
+            .price(egraph.as_frozen(), &Pricing { costs, shape }),
+        choices: outcome.choices,
+        table,
+    };
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
-    let tree_raw = tree_dp_pass(egraph, root, &mut dp).choices;
-    let tree = finish(egraph, root, tree_raw, dp.into_recorder(), costs, shape);
+    let tree = pass_trace(tree_dp_pass(frozen.problem(), &mut dp), dp.into_recorder());
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
-    let pass = shared_dag_dp_pass(egraph, root, &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
+    let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
     let table = dp.into_recorder();
-    let Some(raw) = pass.outcome.map(|o| o.choices) else {
-        let (choices, cost) = (tree.repaired.clone(), tree.cost);
+    let Some(shared_outcome) = pass.outcome else {
+        let (choices, cost) = (tree.choices.clone(), tree.cost);
         return StageTrace {
             tree,
             shared: None,
@@ -216,39 +217,20 @@ pub fn trace<C: CostFunction>(
             cost,
         };
     };
-    let shared = finish(egraph, root, raw, table, costs, shape);
+    let shared = pass_trace(shared_outcome, table);
 
     let (objective, winner) = if shared.cost.dag < tree.cost.dag {
         (ExtractionObjective::Shared, &shared)
     } else {
         (ExtractionObjective::TreeCheaper, &tree)
     };
-    let (choices, cost) = (winner.repaired.clone(), winner.cost);
+    let (choices, cost) = (winner.choices.clone(), winner.cost);
     StageTrace {
         tree,
         shared: Some(shared),
         objective,
         choices,
         cost,
-    }
-}
-
-fn finish<C: CostFunction>(
-    egraph: &EGraph,
-    root: EClassId,
-    raw: Vec<Option<usize>>,
-    table: CandidateTable,
-    costs: &C,
-    shape: LatticeShape,
-) -> PassTrace {
-    let mut repaired = raw.clone();
-    repair_choices_well_founded(egraph, root, &mut repaired);
-    let cost = cost_of_choices(egraph, root, &repaired, costs, shape);
-    PassTrace {
-        raw,
-        repaired,
-        cost,
-        table,
     }
 }
 
@@ -289,36 +271,26 @@ fn run_arms<C: CostFunction, T: TieBreak + Copy>(
     shape: LatticeShape,
     ties: T,
 ) -> (Vec<Option<usize>>, ChoiceCost) {
+    let frozen = Frozen::new(egraph.as_frozen(), root);
     let mut dp = Dp::new(costs, shape, ties, ());
-    let mut tree = tree_dp_pass(egraph, root, &mut dp).choices;
-    repair_choices_well_founded(egraph, root, &mut tree);
-    let tree_cost = cost_of_choices(egraph, root, &tree, costs, shape);
+    let tree = tree_dp_pass(frozen.problem(), &mut dp);
+    let tree_cost = tree
+        .selection
+        .price(egraph.as_frozen(), &Pricing { costs, shape });
 
     let mut dp = Dp::new(costs, shape, ties, ());
-    let pass = shared_dag_dp_pass(egraph, root, &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
-    let Some(mut shared) = pass.outcome.map(|o| o.choices) else {
-        return (tree, tree_cost);
+    let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
+    let Some(shared) = pass.outcome else {
+        return (tree.choices, tree_cost);
     };
-    repair_choices_well_founded(egraph, root, &mut shared);
-    let shared_cost = cost_of_choices(egraph, root, &shared, costs, shape);
+    let shared_cost = shared
+        .selection
+        .price(egraph.as_frozen(), &Pricing { costs, shape });
     if shared_cost.dag < tree_cost.dag {
-        return (shared, shared_cost);
+        return (shared.choices, shared_cost);
     }
-    (tree, tree_cost)
+    (tree.choices, tree_cost)
 }
-
-impl Clone for Insertion {
-    fn clone(&self) -> Self {
-        Insertion
-    }
-}
-impl Copy for Insertion {}
-impl Clone for Canonical {
-    fn clone(&self) -> Self {
-        Canonical
-    }
-}
-impl Copy for Canonical {}
 
 // ---------------------------------------------------------------------------
 // Mapping a term into a graph
@@ -354,10 +326,10 @@ pub struct InducedChoices {
 
 /// Look `term` up in `egraph`, node by node, without inserting anything.
 ///
-/// The table is built read-only from `class_ids()` × `nodes()` with children
-/// canonicalized by `find` — the memo's content, reached without touching
-/// the memo. A subterm that is absent is returned as a [`TermMiss`], never
-/// silently skipped.
+/// The table is built read-only from `class_ids()` × `nodes()` with operands
+/// canonicalized by `find`, a fold's body excepted — the memo's content,
+/// reached without touching the memo. A subterm that is absent is returned as
+/// a [`TermMiss`], never silently skipped.
 ///
 /// # Errors
 ///
@@ -374,10 +346,17 @@ pub fn induce<I: Ir>(
         if canonical != class {
             continue;
         }
-        for (idx, node) in egraph.nodes(canonical).iter().enumerate() {
-            table
-                .entry(canonicalized(egraph, node))
-                .or_insert((canonical, idx));
+        for (idx, node) in egraph.nodes(canonical).enumerate() {
+            // A fold's body is keyed as stored. This walk has never read it
+            // through `find`, and the miss counts in
+            // docs/results/2026-09-08-extraction-witnesses.md were measured
+            // that way; reading it would change what the bin reports, which
+            // is a decision of its own.
+            let key = match node {
+                ENode::Reduce { .. } => *node,
+                _ => egraph.canonical_node(*node),
+            };
+            table.entry(key).or_insert((canonical, idx));
         }
     }
 
@@ -398,21 +377,45 @@ pub fn induce<I: Ir>(
             Shape::Buffer(d) => ENode::Buffer(d),
             Shape::Uniform(d) => ENode::Uniform(d),
             Shape::Op(kind, children) => {
-                let Some(op) = vocab.resolve(kind) else {
+                if !vocab.admits(kind) {
                     return Err(TermMiss {
                         node: format!("{kind:?} (not in vocabulary)"),
                         mapped: memo.len(),
                     });
-                };
-                let mut operands = Vec::with_capacity(children.len());
-                for i in 0..children.len() {
-                    let c = children.get(i).expect("index < len");
-                    let class = *memo.get(&c).expect("post-order maps children first");
-                    operands.push(class);
                 }
-                ENode::Op {
-                    op,
-                    children: operands,
+                if children.len() != kind.arity() {
+                    return Err(TermMiss {
+                        node: format!("{kind:?} (applied to {} operands)", children.len()),
+                        mapped: memo.len(),
+                    });
+                }
+                match ShiftDirection::of(kind) {
+                    Some(direction) => {
+                        let Some((operand, count)) = shift::spelled(term, children) else {
+                            return Err(TermMiss {
+                                node: format!(
+                                    "{kind:?} (its count is not a literal integer in 0..{})",
+                                    ShiftCount::WORD_BITS
+                                ),
+                                mapped: memo.len(),
+                            });
+                        };
+                        let operand = *memo.get(&operand).expect("post-order maps children first");
+                        ENode::Shift {
+                            direction,
+                            count,
+                            operand,
+                        }
+                    }
+                    None => {
+                        let mut operands = Vec::with_capacity(children.len());
+                        for i in 0..children.len() {
+                            let c = children.get(i).expect("index < len");
+                            let class = *memo.get(&c).expect("post-order maps children first");
+                            operands.push(class);
+                        }
+                        ENode::apply(kind, &operands)
+                    }
                 }
             }
             Shape::Reduce { fold, body } => {
@@ -463,16 +466,6 @@ pub fn induce<I: Ir>(
     })
 }
 
-fn canonicalized(egraph: &EGraph, node: &ENode) -> ENode {
-    match node {
-        ENode::Op { op, children } => ENode::Op {
-            op: *op,
-            children: children.iter().map(|&c| egraph.find(c)).collect(),
-        },
-        other => other.clone(),
-    }
-}
-
 /// The term's nodes, children before parents, each once.
 fn post_order_term<I: Ir>(term: &I, root: I::Ref) -> Vec<I::Ref> {
     enum Task<R> {
@@ -490,9 +483,19 @@ fn post_order_term<I: Ir>(term: &I, root: I::Ref) -> Vec<I::Ref> {
                 }
                 stack.push(Task::Emit(r));
                 match term.project(r) {
-                    Shape::Op(_, children) => {
-                        for i in (0..children.len()).rev() {
-                            stack.push(Task::Visit(children.get(i).expect("index < len")));
+                    Shape::Op(kind, children) => {
+                        // A shift's count is a parameter of the node, as in
+                        // `insert`; a shift that cannot be read that way
+                        // is visited whole and missed by `induce`.
+                        let shift =
+                            ShiftDirection::of(kind).and_then(|_| shift::spelled(term, children));
+                        match shift {
+                            Some((operand, _)) => stack.push(Task::Visit(operand)),
+                            None => {
+                                for i in (0..children.len()).rev() {
+                                    stack.push(Task::Visit(children.get(i).expect("index < len")));
+                                }
+                            }
                         }
                     }
                     // A fold's one child is its body. Missing it would leave
@@ -516,8 +519,8 @@ fn post_order_term<I: Ir>(term: &I, root: I::Ref) -> Vec<I::Ref> {
 // Costing a hypothetical map
 // ---------------------------------------------------------------------------
 
-/// `cost_of_choices`, returning `None` instead of panicking when the map is
-/// cyclic or incomplete.
+/// The price of the term `choices` names, or `None` when it names none
+/// (a cyclic or incomplete map).
 ///
 /// A single swap can make a choice graph cyclic — that is a fact about the
 /// swap, not a broken invariant, so this is the form the swap search needs.
@@ -529,79 +532,25 @@ pub fn cost_if_well_founded<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> Option<ChoiceCost> {
-    if !well_founded(egraph, root, choices) {
-        return None;
-    }
-    Some(cost_of_choices(egraph, root, choices, costs, shape))
+    let term = Selection::of_map(egraph.as_frozen(), root, choices).ok()?;
+    Some(term.price(egraph.as_frozen(), &Pricing { costs, shape }))
 }
 
-/// True iff every class reachable from `root` under `choices` has a choice
-/// and no class reaches itself.
-#[must_use]
-pub fn well_founded(egraph: &EGraph, root: EClassId, choices: &[Option<usize>]) -> bool {
-    let mut color = vec![0u8; egraph.num_classes()];
-    let mut stack = vec![(egraph.find(root), false)];
-    while let Some((class, done)) = stack.pop() {
-        let i = class.index();
-        if done {
-            color[i] = 2;
-            continue;
-        }
-        match color[i] {
-            2 => continue,
-            1 => return false,
-            _ => {}
-        }
-        let Some(idx) = choices.get(i).copied().flatten() else {
-            return false;
-        };
-        let nodes = egraph.nodes(class);
-        if idx >= nodes.len() {
-            return false;
-        }
-        color[i] = 1;
-        stack.push((class, true));
-        for &c in nodes[idx].children_slice() {
-            stack.push((egraph.find(c), false));
-        }
-    }
-    true
-}
-
-/// The classes `choices` reaches from `root`, in the order a post-order walk
-/// emits them (children before parents).
+/// The classes `choices` reaches from `root`, children before parents.
+///
+/// # Panics
+///
+/// If `choices` is not well-founded from `root`.
 #[must_use]
 pub fn reachable_under(
     egraph: &EGraph,
     root: EClassId,
     choices: &[Option<usize>],
 ) -> Vec<EClassId> {
-    let mut out = Vec::new();
-    let mut seen = vec![false; egraph.num_classes()];
-    let mut stack = vec![(egraph.find(root), false)];
-    while let Some((class, done)) = stack.pop() {
-        let i = class.index();
-        if done {
-            out.push(class);
-            continue;
-        }
-        if seen[i] {
-            continue;
-        }
-        seen[i] = true;
-        stack.push((class, true));
-        let Some(idx) = choices.get(i).copied().flatten() else {
-            continue;
-        };
-        let nodes = egraph.nodes(class);
-        if idx >= nodes.len() {
-            continue;
-        }
-        for &c in nodes[idx].children_slice() {
-            stack.push((egraph.find(c), false));
-        }
-    }
-    out
+    well_founded_term(egraph, root, choices)
+        .picks()
+        .map(|(class, _)| class)
+        .collect()
 }
 
 /// Materialize a choice map as an arena — `Optimized::to_arena` for a map
@@ -614,15 +563,16 @@ pub fn reachable_under(
 pub fn arena_of(
     egraph: &EGraph,
     root: EClassId,
-    choices: Vec<Option<usize>>,
+    choices: &[Option<usize>],
 ) -> (pixelflow_ir::arena::ExprArena, pixelflow_ir::arena::ExprId) {
-    super::extract::choices_to_arena(&super::extract::Extraction::from_dp(egraph, root, choices))
+    well_founded_term(egraph, root, choices).to_arena(egraph.as_frozen())
 }
 
-/// The cycle sentinel both DP passes price an unresolved child at, exported
-/// so a harness can say "the DP never priced this node" rather than "this
-/// node was expensive".
-#[must_use]
-pub fn cycle_cost() -> usize {
-    CYCLE_COST
+fn well_founded_term(egraph: &EGraph, root: EClassId, choices: &[Option<usize>]) -> Selection {
+    Selection::of_map(egraph.as_frozen(), root, choices).unwrap_or_else(|refused| {
+        panic!(
+            "witness: the choice map is not well-founded from root {}: {refused}",
+            root.0
+        )
+    })
 }

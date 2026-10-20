@@ -6,7 +6,7 @@
 //!
 //! `#![allow(dead_code)]`: see the same note in `accumulator.rs` — every
 //! method here is exercised only by this module's characterization tests
-//! until Phase 3 (docs/plans/2026-07-07-guided-saturation-redesign.md) trains
+//! until Phase 3 (docs/compiler/2026-07-07-guided-saturation-redesign.md) trains
 //! it and a real caller reaches through [`super::Guide`].
 #![allow(dead_code)]
 
@@ -14,7 +14,6 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use libm::{log2f, logf, sqrtf};
-use pixelflow_ir::OpKind;
 
 use super::CandidateSummary;
 use super::accumulator::{GRAPH_ACC_DIM, GraphAccumulator};
@@ -62,7 +61,7 @@ pub(crate) const CANDIDATE_INPUT_DIM: usize = K + CANDIDATE_SCALAR_COUNT;
 /// # Why the tower reads all four rather than just the budget
 ///
 /// The registered comparison
-/// (`docs/plans/2026-09-02-bilinear-guide-registration.md` §4) licenses
+/// (`docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §4) licenses
 /// *exactly one* difference between the additive and bilinear arms: the
 /// functional form. A tower that saw only `budget_fraction` would differ from
 /// the additive model in the feature set as well, and a loss could then be
@@ -124,7 +123,7 @@ pub(crate) fn candidate_input(
 /// The rule encoder's 4-way concatenation
 /// `[z_LHS | z_RHS | z_LHS − z_RHS | z_LHS ⊙ z_RHS]`: what the rule MATCHES,
 /// what it PRODUCES, what CHANGED, what is SHARED
-/// (`docs/plans/2026-09-02-bilinear-guide-registration.md` §4).
+/// (`docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §4).
 #[must_use]
 pub(crate) fn rule_concat(
     z_lhs: &[f32; EMBED_DIM],
@@ -164,7 +163,7 @@ pub(crate) const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
 /// These weights are untrained noise until Phase 3 gives them a training
 /// loop. The trunk used to be shared with the extraction head's expression
 /// tower; that head's shape is gone (deleted 2026-09-01; its denotation is
-/// kept, see docs/plans/2026-09-01-schedule-cost-model-denotation.md), so
+/// kept, see docs/compiler/2026-09-01-schedule-cost-model-denotation.md), so
 /// the trunk is this head's own. The only thing still shared across the
 /// crate is [`crate::nnue::factored::OpEmbeddings`], which a
 /// [`GraphAccumulator`] is built with before it reaches this struct.
@@ -289,9 +288,7 @@ impl SaturationHead {
                 self.mask_mlp_w2[j][k] = next_f32() * scale_hidden;
             }
         }
-        for b in &mut self.mask_mlp_b2 {
-            *b = 0.0;
-        }
+        self.mask_mlp_b2.fill(0.0);
 
         // Rule Projection: RULE_CONCAT_DIM → EMBED_DIM
         for i in 0..RULE_CONCAT_DIM {
@@ -299,9 +296,7 @@ impl SaturationHead {
                 self.rule_proj_w[i][k] = next_f32() * scale_concat;
             }
         }
-        for b in &mut self.rule_proj_b {
-            *b = 0.0;
-        }
+        self.rule_proj_b.fill(0.0);
 
         // Interaction matrix: start near identity
         for i in 0..EMBED_DIM {
@@ -311,9 +306,7 @@ impl SaturationHead {
         }
 
         // Bias projection: neutral
-        for b in &mut self.mask_bias_proj {
-            *b = 0.0;
-        }
+        self.mask_bias_proj.fill(0.0);
 
         // Graph backbone: GRAPH_INPUT_DIM → HIDDEN_DIM
         for row in 0..GRAPH_INPUT_DIM {
@@ -361,18 +354,16 @@ impl SaturationHead {
                 self.trunk_w[i][j] = if i == j { 1.0 } else { 0.0 } + next_f32() * 0.01;
             }
         }
-        for b in &mut self.trunk_b {
-            *b = 0.0;
-        }
+        self.trunk_b.fill(0.0);
     }
 
     /// Apply the trunk: `HIDDEN_DIM -> HIDDEN_DIM` with ReLU.
     #[inline]
     fn apply_trunk(&self, tower_output: &[f32; HIDDEN_DIM]) -> [f32; HIDDEN_DIM] {
         let mut out = self.trunk_b;
-        for i in 0..HIDDEN_DIM {
-            for j in 0..HIDDEN_DIM {
-                out[j] += tower_output[i] * self.trunk_w[i][j];
+        for (&t, row) in tower_output.iter().zip(&self.trunk_w) {
+            for (o, &w) in out.iter_mut().zip(row) {
+                *o += t * w;
             }
         }
         for h in &mut out {
@@ -430,9 +421,9 @@ impl SaturationHead {
     #[inline]
     pub(crate) fn compute_graph_embed(&self, hidden: &[f32; HIDDEN_DIM]) -> [f32; EMBED_DIM] {
         let mut embed = self.graph_proj_b;
-        for j in 0..HIDDEN_DIM {
-            for k in 0..EMBED_DIM {
-                embed[k] += hidden[j] * self.graph_proj_w[j][k];
+        for (&h, row) in hidden.iter().zip(&self.graph_proj_w) {
+            for (e, &w) in embed.iter_mut().zip(row) {
+                *e += h * w;
             }
         }
         embed
@@ -444,19 +435,19 @@ impl SaturationHead {
     #[inline]
     pub(crate) fn compute_mask_features(&self, embed: &[f32; EMBED_DIM]) -> [f32; EMBED_DIM] {
         let mut h = self.mask_mlp_b1;
-        for i in 0..EMBED_DIM {
-            for j in 0..MLP_HIDDEN {
-                h[j] += embed[i] * self.mask_mlp_w1[i][j];
+        for (&e, row) in embed.iter().zip(&self.mask_mlp_w1) {
+            for (h, &w) in h.iter_mut().zip(row) {
+                *h += e * w;
             }
         }
-        for j in 0..MLP_HIDDEN {
-            h[j] = h[j].max(0.0);
+        for h in &mut h {
+            *h = h.max(0.0);
         }
 
         let mut out = self.mask_mlp_b2;
-        for j in 0..MLP_HIDDEN {
-            for k in 0..EMBED_DIM {
-                out[k] += h[j] * self.mask_mlp_w2[j][k];
+        for (&h, row) in h.iter().zip(&self.mask_mlp_w2) {
+            for (o, &w) in out.iter_mut().zip(row) {
+                *o += h * w;
             }
         }
         out
@@ -515,9 +506,9 @@ impl SaturationHead {
     #[inline]
     pub(crate) fn compute_candidate_embed(&self, hidden: &[f32; HIDDEN_DIM]) -> [f32; EMBED_DIM] {
         let mut embed = self.candidate_proj_b;
-        for j in 0..HIDDEN_DIM {
-            for k in 0..EMBED_DIM {
-                embed[k] += hidden[j] * self.candidate_proj_w[j][k];
+        for (&h, row) in hidden.iter().zip(&self.candidate_proj_w) {
+            for (e, &w) in embed.iter_mut().zip(row) {
+                *e += h * w;
             }
         }
         embed
@@ -567,9 +558,9 @@ impl SaturationHead {
     #[must_use]
     pub(crate) fn project_rule(&self, concat: &[f32; RULE_CONCAT_DIM]) -> [f32; EMBED_DIM] {
         let mut out = self.rule_proj_b;
-        for i in 0..RULE_CONCAT_DIM {
-            for k in 0..EMBED_DIM {
-                out[k] += concat[i] * self.rule_proj_w[i][k];
+        for (&c, row) in concat.iter().zip(&self.rule_proj_w) {
+            for (o, &w) in out.iter_mut().zip(row) {
+                *o += c * w;
             }
         }
         out
@@ -584,9 +575,9 @@ impl SaturationHead {
         rule_embed: &[f32; EMBED_DIM],
     ) -> f32 {
         let mut transformed = [0.0f32; EMBED_DIM];
-        for i in 0..EMBED_DIM {
-            for j in 0..EMBED_DIM {
-                transformed[j] += mask_features[i] * self.interaction[i][j];
+        for (&m, row) in mask_features.iter().zip(&self.interaction) {
+            for (t, &w) in transformed.iter_mut().zip(row) {
+                *t += m * w;
             }
         }
 
@@ -1057,54 +1048,44 @@ mod tests {
         let scale_proj = sqrtf(2.0 / HIDDEN_DIM as f32);
 
         let mut exp_mask_mlp_w1 = [[0.0f32; MLP_HIDDEN]; MASK_INPUT_DIM];
-        for i in 0..MASK_INPUT_DIM {
-            for j in 0..MLP_HIDDEN {
-                exp_mask_mlp_w1[i][j] = next_f32() * scale_mask_input;
-            }
+        for w in exp_mask_mlp_w1.iter_mut().flatten() {
+            *w = next_f32() * scale_mask_input;
         }
         let mut exp_mask_mlp_b1 = [0.0f32; MLP_HIDDEN];
         for b in &mut exp_mask_mlp_b1 {
             *b = next_f32().abs() * 0.1;
         }
         let mut exp_mask_mlp_w2 = [[0.0f32; EMBED_DIM]; MLP_HIDDEN];
-        for j in 0..MLP_HIDDEN {
-            for k in 0..EMBED_DIM {
-                exp_mask_mlp_w2[j][k] = next_f32() * scale_hidden;
-            }
+        for w in exp_mask_mlp_w2.iter_mut().flatten() {
+            *w = next_f32() * scale_hidden;
         }
         // mask_mlp_b2 is set to a literal 0.0 in `randomize` — no RNG consumed.
 
         let mut exp_rule_proj_w = [[0.0f32; EMBED_DIM]; RULE_CONCAT_DIM];
-        for i in 0..RULE_CONCAT_DIM {
-            for k in 0..EMBED_DIM {
-                exp_rule_proj_w[i][k] = next_f32() * scale_concat;
-            }
+        for w in exp_rule_proj_w.iter_mut().flatten() {
+            *w = next_f32() * scale_concat;
         }
         // rule_proj_b: literal 0.0, no RNG consumed.
 
         let mut exp_interaction = [[0.0f32; EMBED_DIM]; EMBED_DIM];
-        for i in 0..EMBED_DIM {
-            for j in 0..EMBED_DIM {
-                exp_interaction[i][j] = if i == j { 1.0 } else { next_f32() * 0.1 };
+        for (i, row) in exp_interaction.iter_mut().enumerate() {
+            for (j, w) in row.iter_mut().enumerate() {
+                *w = if i == j { 1.0 } else { next_f32() * 0.1 };
             }
         }
         // mask_bias_proj: literal 0.0, no RNG consumed.
 
         let mut exp_graph_w1 = [[0.0f32; HIDDEN_DIM]; GRAPH_INPUT_DIM];
-        for row in 0..GRAPH_INPUT_DIM {
-            for col in 0..HIDDEN_DIM {
-                exp_graph_w1[row][col] = next_f32() * scale_graph;
-            }
+        for w in exp_graph_w1.iter_mut().flatten() {
+            *w = next_f32() * scale_graph;
         }
         let mut exp_graph_b1 = [0.0f32; HIDDEN_DIM];
         for b in &mut exp_graph_b1 {
             *b = next_f32().abs() * 0.1;
         }
         let mut exp_graph_proj_w = [[0.0f32; EMBED_DIM]; HIDDEN_DIM];
-        for j in 0..HIDDEN_DIM {
-            for k in 0..EMBED_DIM {
-                exp_graph_proj_w[j][k] = next_f32() * scale_proj;
-            }
+        for w in exp_graph_proj_w.iter_mut().flatten() {
+            *w = next_f32() * scale_proj;
         }
         let mut exp_graph_proj_b = [0.0f32; EMBED_DIM];
         for b in &mut exp_graph_proj_b {
@@ -1112,147 +1093,74 @@ mod tests {
         }
 
         let mut exp_candidate_w1 = [[0.0f32; HIDDEN_DIM]; CANDIDATE_INPUT_DIM];
-        for row in 0..CANDIDATE_INPUT_DIM {
-            for col in 0..HIDDEN_DIM {
-                exp_candidate_w1[row][col] = next_f32() * scale_candidate;
-            }
+        for w in exp_candidate_w1.iter_mut().flatten() {
+            *w = next_f32() * scale_candidate;
         }
         let mut exp_candidate_b1 = [0.0f32; HIDDEN_DIM];
         for b in &mut exp_candidate_b1 {
             *b = next_f32().abs() * 0.1;
         }
         let mut exp_candidate_proj_w = [[0.0f32; EMBED_DIM]; HIDDEN_DIM];
-        for j in 0..HIDDEN_DIM {
-            for k in 0..EMBED_DIM {
-                exp_candidate_proj_w[j][k] = next_f32() * scale_proj;
-            }
+        for w in exp_candidate_proj_w.iter_mut().flatten() {
+            *w = next_f32() * scale_proj;
         }
         let mut exp_candidate_proj_b = [0.0f32; EMBED_DIM];
         for b in &mut exp_candidate_proj_b {
             *b = next_f32().abs() * 0.1;
         }
 
-        let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
-
-        for i in 0..MASK_INPUT_DIM {
-            for j in 0..MLP_HIDDEN {
-                assert!(
-                    close(head.mask_mlp_w1[i][j], exp_mask_mlp_w1[i][j]),
-                    "mask_mlp_w1[{i}][{j}]: got {}, expected {}",
-                    head.mask_mlp_w1[i][j],
-                    exp_mask_mlp_w1[i][j]
-                );
-            }
-        }
-        for j in 0..MLP_HIDDEN {
-            assert!(
-                close(head.mask_mlp_b1[j], exp_mask_mlp_b1[j]),
-                "mask_mlp_b1[{j}]"
-            );
-        }
-        for j in 0..MLP_HIDDEN {
-            for k in 0..EMBED_DIM {
-                assert!(
-                    close(head.mask_mlp_w2[j][k], exp_mask_mlp_w2[j][k]),
-                    "mask_mlp_w2[{j}][{k}]"
-                );
-            }
-        }
+        assert_matrix_close("mask_mlp_w1", &head.mask_mlp_w1, &exp_mask_mlp_w1);
+        assert_vector_close("mask_mlp_b1", &head.mask_mlp_b1, &exp_mask_mlp_b1);
+        assert_matrix_close("mask_mlp_w2", &head.mask_mlp_w2, &exp_mask_mlp_w2);
         // The three arrays `randomize` leaves at a literal 0.0. Asserted rather
         // than merely noted above: without these, `randomize` could start
         // writing a nonzero literal into any of them, or consume RNG while
         // populating them, and every other assertion here would still pass —
         // the reference stream would simply shift in lockstep.
-        for k in 0..EMBED_DIM {
-            assert!(
-                close(head.mask_mlp_b2[k], 0.0),
-                "mask_mlp_b2[{k}] must stay zero, got {}",
-                head.mask_mlp_b2[k]
-            );
-        }
+        assert_vector_close("mask_mlp_b2", &head.mask_mlp_b2, &[0.0; EMBED_DIM]);
 
-        for i in 0..RULE_CONCAT_DIM {
-            for k in 0..EMBED_DIM {
+        assert_matrix_close("rule_proj_w", &head.rule_proj_w, &exp_rule_proj_w);
+        assert_vector_close("rule_proj_b", &head.rule_proj_b, &[0.0; EMBED_DIM]);
+        assert_matrix_close("interaction", &head.interaction, &exp_interaction);
+        assert_vector_close("mask_bias_proj", &head.mask_bias_proj, &[0.0; EMBED_DIM]);
+        assert_matrix_close("graph_w1", &head.graph_w1, &exp_graph_w1);
+        assert_vector_close("graph_b1", &head.graph_b1, &exp_graph_b1);
+        assert_matrix_close("graph_proj_w", &head.graph_proj_w, &exp_graph_proj_w);
+        assert_vector_close("graph_proj_b", &head.graph_proj_b, &exp_graph_proj_b);
+        assert_matrix_close("candidate_w1", &head.candidate_w1, &exp_candidate_w1);
+        assert_vector_close("candidate_b1", &head.candidate_b1, &exp_candidate_b1);
+        assert_matrix_close(
+            "candidate_proj_w",
+            &head.candidate_proj_w,
+            &exp_candidate_proj_w,
+        );
+        assert_vector_close(
+            "candidate_proj_b",
+            &head.candidate_proj_b,
+            &exp_candidate_proj_b,
+        );
+    }
+
+    /// Every entry of `got` within the fixture tolerance of `want`.
+    fn assert_matrix_close<const R: usize, const C: usize>(
+        name: &str,
+        got: &[[f32; C]; R],
+        want: &[[f32; C]; R],
+    ) {
+        for (i, (got_row, want_row)) in got.iter().zip(want).enumerate() {
+            for (j, (&g, &w)) in got_row.iter().zip(want_row).enumerate() {
                 assert!(
-                    close(head.rule_proj_w[i][k], exp_rule_proj_w[i][k]),
-                    "rule_proj_w[{i}][{k}]"
+                    (g - w).abs() < 1e-6,
+                    "{name}[{i}][{j}]: got {g}, expected {w}"
                 );
             }
         }
-        for k in 0..EMBED_DIM {
-            assert!(
-                close(head.rule_proj_b[k], 0.0),
-                "rule_proj_b[{k}] must stay zero, got {}",
-                head.rule_proj_b[k]
-            );
-        }
-        for i in 0..EMBED_DIM {
-            for j in 0..EMBED_DIM {
-                assert!(
-                    close(head.interaction[i][j], exp_interaction[i][j]),
-                    "interaction[{i}][{j}]"
-                );
-            }
-        }
-        for k in 0..EMBED_DIM {
-            assert!(
-                close(head.mask_bias_proj[k], 0.0),
-                "mask_bias_proj[{k}] must stay zero, got {}",
-                head.mask_bias_proj[k]
-            );
-        }
-        for row in 0..GRAPH_INPUT_DIM {
-            for col in 0..HIDDEN_DIM {
-                assert!(
-                    close(head.graph_w1[row][col], exp_graph_w1[row][col]),
-                    "graph_w1[{row}][{col}]"
-                );
-            }
-        }
-        for j in 0..HIDDEN_DIM {
-            assert!(close(head.graph_b1[j], exp_graph_b1[j]), "graph_b1[{j}]");
-        }
-        for j in 0..HIDDEN_DIM {
-            for k in 0..EMBED_DIM {
-                assert!(
-                    close(head.graph_proj_w[j][k], exp_graph_proj_w[j][k]),
-                    "graph_proj_w[{j}][{k}]"
-                );
-            }
-        }
-        for k in 0..EMBED_DIM {
-            assert!(
-                close(head.graph_proj_b[k], exp_graph_proj_b[k]),
-                "graph_proj_b[{k}]"
-            );
-        }
-        for row in 0..CANDIDATE_INPUT_DIM {
-            for col in 0..HIDDEN_DIM {
-                assert!(
-                    close(head.candidate_w1[row][col], exp_candidate_w1[row][col]),
-                    "candidate_w1[{row}][{col}]"
-                );
-            }
-        }
-        for j in 0..HIDDEN_DIM {
-            assert!(
-                close(head.candidate_b1[j], exp_candidate_b1[j]),
-                "candidate_b1[{j}]"
-            );
-        }
-        for j in 0..HIDDEN_DIM {
-            for k in 0..EMBED_DIM {
-                assert!(
-                    close(head.candidate_proj_w[j][k], exp_candidate_proj_w[j][k]),
-                    "candidate_proj_w[{j}][{k}]"
-                );
-            }
-        }
-        for k in 0..EMBED_DIM {
-            assert!(
-                close(head.candidate_proj_b[k], exp_candidate_proj_b[k]),
-                "candidate_proj_b[{k}]"
-            );
+    }
+
+    /// Every entry of `got` within the fixture tolerance of `want`.
+    fn assert_vector_close<const N: usize>(name: &str, got: &[f32; N], want: &[f32; N]) {
+        for (k, (&g, &w)) in got.iter().zip(want).enumerate() {
+            assert!((g - w).abs() < 1e-6, "{name}[{k}]: got {g}, expected {w}");
         }
     }
 

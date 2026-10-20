@@ -1,7 +1,7 @@
 # Rule-order effect on real kernels
 
 2026-09-01. Answers JP's question directly: Round 2 v3
-(`docs/plans/2026-09-01-phase3-round2-registration-v3.md`,
+(`docs/archive/plans/2026-09-01-phase3-round2-registration-v3.md`,
 `docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.*`) found the base-62
 sweep order dominant on *synthetic classical expressions* (unguided regret at
 B=100 applications: 96.58% under production `all_rules()` order, 26–46% under
@@ -17,7 +17,7 @@ arenas core-term actually bakes at both display densities (190 kernels total,
 **Journal note (per JP's instruction):** the shader/psychedelic kernels
 (`pixelflow_pipeline::shader_bench`, and the psychedelic shader) are FINAL-tier
 kernels reserved as a publication hold-out for ordering claims
-(`docs/plans/2026-08-05-egraph-nnue-research-workflow.md` §0.2). JP explicitly
+(`docs/archive/plans/2026-08-05-egraph-nnue-research-workflow.md` §0.2). JP explicitly
 opened that set for *this* measurement. It therefore no longer serves as a
 hold-out for any future rule-order-ordering claim — a later paper/report
 claiming to validate rule order on held-out FINAL kernels must draw on a

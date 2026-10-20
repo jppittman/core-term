@@ -11,7 +11,7 @@ submodule). `mod.rs` (5,460 lines), `regalloc.rs` (2,985 lines) and
 `aarch64.rs` (2,601 lines, runtime-untestable from this x86_64 sandbox) are
 carried forward, same as every prior pass.
 
-## STYLE.md compliance: test naming
+## ../process/STYLE.md compliance: test naming
 
 `traffic.rs`'s existing tests were already compliant
 (`every_emitted_byte_is_attributed_to_exactly_one_scope`,

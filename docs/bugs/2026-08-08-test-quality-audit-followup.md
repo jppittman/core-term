@@ -13,7 +13,7 @@ lines added/removed — mostly relocation, not new logic.
 ## Static audit: two `Explore` sub-agents swept `git diff eb03ee9..HEAD`
 
 Split by area — core-term, and the `pixelflow-*` crates — against
-docs/STYLE.md's "Test Public API" rule and the "it should ..." naming
+docs/process/STYLE.md's "Test Public API" rule and the "it should ..." naming
 convention, cross-checked against every prior audit's already-accepted
 exceptions so those weren't re-flagged.
 

@@ -4,10 +4,8 @@
 // carved into both.
 //
 // Included, not compiled: `examples/byte_probe.rs` prints their bytes through
-// the host's own backend, and `tests/selection_stays_linear.rs` measures them
-// through `compile`, both over `TABLE`, the one list of rows. One definition,
-// so neither can drift into measuring different kernels under the same name.
-// Only `pixelflow_ir`'s public vocabulary is named, since an example is a
+// the host's own backend, over `TABLE`, the one list of rows. Only
+// `pixelflow_ir`'s public vocabulary is named, since an example is a
 // crate of its own.
 //
 // `deep_frame.rs`, included below, carries the helpers the kernels share.
@@ -143,7 +141,7 @@ pub fn parked_roots(terms: u64) -> (ExprArena, ExprId) {
 }
 
 /// An `If` inside a fold's body whose mask varies by lane and whose arms are
-/// each several transcendentals deep, so each is worth a branch: the guard
+/// each several transcendentals deep, so each owns work of its own: the guard
 /// the emitter puts *in the fold's own scope*, where the point-shaped
 /// `if_guard` row's is in the body's.
 ///

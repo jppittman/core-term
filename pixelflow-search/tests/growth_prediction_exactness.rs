@@ -22,7 +22,7 @@
 //! exact kernels.
 //!
 //! Whole file gated on `saturation-telemetry`: with the feature off,
-//! `EGraph::enable_growth_telemetry` does not exist, and there is nothing
+//! `Saturation::enable_growth_telemetry` does not exist, and there is nothing
 //! here to test.
 
 #![cfg(feature = "saturation-telemetry")]
@@ -135,14 +135,12 @@ fn predicted_growth_matches_measured_growth_on_real_shaders() {
         eg.enable_growth_telemetry();
         let root_class =
             insert(&arena, root, &mut eg, Vocabulary::Templates).expect("insert into e-graph");
-        let node_count = arena.len();
-        let out = optimizer.run(&mut eg, root_class, node_count);
+        let out = optimizer.run(&mut eg, root_class);
 
         let growth = eg
             .growth_telemetry()
             .expect("growth telemetry was enabled above");
-        let recorded: u64 = growth.by_rule().map(|(_, g)| g.applications()).sum::<u64>()
-            + growth.unlabeled().applications();
+        let recorded: u64 = growth.by_rule().map(|(_, g)| g.applications()).sum::<u64>();
         assert_eq!(
             recorded, out.stats.applications,
             "{name}: growth telemetry must record exactly the applications the run counted"

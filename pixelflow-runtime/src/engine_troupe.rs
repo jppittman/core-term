@@ -460,7 +460,7 @@ impl TroupeActor<Directory> for DriverActor<ActivePlatform> {
 
 impl Troupe {
     /// Create troupe, configure the engine, and bring vsync *and the render coordinator* up as
-    /// green nodes (docs/designs/actor-scheduler-mealy-transducer.md §5, and step 5c of
+    /// green nodes (docs/runtime/actor-scheduler-mealy-transducer.md §5, and step 5c of
     /// `pixelflow-runtime-engine-mesh-migration.md` §8): one "green-host" thread runs a [`Host`]
     /// hosting both [`Node`]s, stepped by its own [`GreenThread`] rather than either living on a
     /// dedicated OS thread of its own. The one thread this bootstrap still spawns for vsync is

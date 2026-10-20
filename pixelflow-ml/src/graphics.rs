@@ -8,7 +8,7 @@
 //! The SH coefficient vector and its normalization table live here rather than
 //! in pixelflow-core. They are scalar data for this experiment, and the
 //! `Field`-typed spherical-harmonic combinators they used to sit beside went
-//! with the per-batch tier (docs/plans/2026-09-06-kernel-with-a-lattice.md,
+//! with the per-batch tier (docs/archive/plans/2026-09-06-kernel-with-a-lattice.md,
 //! S4b-2).
 //!
 //! ## Linear Attention IS Harmonic Global Illumination

@@ -11,11 +11,11 @@
 //! Two training loops used to live here and are gone. The RL apparatus
 //! (self-play mask policy, REINFORCE `backward_policy`, PFTJ/PFAD trajectory
 //! export, the ES-guided corpus-growth optimizer) was removed per
-//! docs/plans/2026-07-07-guided-saturation-redesign.md. The supervised
+//! docs/compiler/2026-07-07-guided-saturation-redesign.md. The supervised
 //! extraction-head trainer that replaced it (value-head backward pass,
 //! budget-bounded episodes, the bootstrap binary) was closed as an honest
 //! negative — workshop paper on branch `claude/workshop-writeup`, PR #1072,
-//! closed without merging (see docs/plans/2026-09-01-schedule-cost-model-denotation.md)
+//! closed without merging (see docs/compiler/2026-09-01-schedule-cost-model-denotation.md)
 //! — and deleted on 2026-09-01; its history is in VCS.
 
 #[cfg(feature = "training")]

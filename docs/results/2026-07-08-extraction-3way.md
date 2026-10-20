@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L007.** Every ns number and ratio in this doc was produced by the 41.67x-underscaled timebase the 2026-08-05 harness audit found (H1-H3 all apply), and is provenance only. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L007.** Every ns number and ratio in this doc was produced by the 41.67x-underscaled timebase the 2026-08-05 harness audit found (H1-H3 all apply), and is provenance only. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 > **Provenance note (2026-08-05):** restored after deletion by commit `dc726864`
 > ("docs: remove stale performance claims"). The absolute nanosecond figures below
@@ -6,11 +6,11 @@
 > ticks on Apple Silicon; see `docs/results/2026-07-20-jit-compile-cost.md`) —
 > orderings and ratios are valid, the absolute scale is wrong. Retained as
 > provenance for the research workflow
-> (`docs/plans/2026-08-05-egraph-nnue-research-workflow.md`).
+> (`docs/archive/plans/2026-08-05-egraph-nnue-research-workflow.md`).
 
 # Extraction 3-way bench: NNUE vs static latency prior vs no-swap (2026-07-08)
 
-Phase 2 gate of `docs/plans/2026-07-07-guided-saturation-redesign.md` — the
+Phase 2 gate of `docs/compiler/2026-07-07-guided-saturation-redesign.md` — the
 deferred February 3-way experiment (HCE vs Judge vs Guided), redone with the
 freshly retrained Judge and no HCE (deleted in the April squash; NNUE vs the
 static latency prior is the closest still-buildable analogue).

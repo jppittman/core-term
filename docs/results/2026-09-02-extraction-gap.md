@@ -2,7 +2,7 @@
 
 Measurement only. Nothing in production changed: same rule set, same `Budget::Production`, same `CostModel::latency_prior()`, same `extract_dag`.
 
-Context: the defects measured here are issue #1111 and §1.L5 of `docs/plans/2026-09-02-optimizer-api.md`; the budget trades whose sequencing they decide are #1101 (numeric-first rule order), #1109 (removing the class-cap break) and #1114 (live-counted class budget). **The decision input is [§ The decision input](#the-decision-input);** everything after it is the evidence.
+Context: the defects measured here are issue #1111 and §1.L5 of `docs/archive/plans/2026-09-02-optimizer-api.md`; the budget trades whose sequencing they decide are #1101 (numeric-first rule order), #1109 (removing the class-cap break) and #1114 (live-counted class budget). **The decision input is [§ The decision input](#the-decision-input);** everything after it is the evidence.
 
 ## Headline
 
@@ -27,7 +27,7 @@ of the three defects is worth fixing first, and whether that should happen
 before or after the three budget trades already on the table — the numeric-first
 rule order (#1101), removing the class-cap break (#1109), and the live-counted
 class budget (#1114). The defects themselves are #1111 and §1.L5 of
-`docs/plans/2026-09-02-optimizer-api.md`.
+`docs/archive/plans/2026-09-02-optimizer-api.md`.
 
 ### 1. The headline gap, and what it is not
 

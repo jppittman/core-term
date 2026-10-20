@@ -8,22 +8,16 @@
 
 use super::build::{Builder, Pending};
 use super::traffic::scope_ix;
-use super::{
-    Edges, Entry, Function, IsaBackend, LaneOp, Pointer, Store, Target, Test, Value,
-    unimplemented_op,
-};
+use super::{Edges, Entry, Function, IsaBackend, LaneOp, Pointer, Store, Target, Test, Value};
 use crate::error::CompileError;
 use crate::pass::Pass;
-use crate::program::{Def, Flow, IfArm, Item, ScheduledOp, Scope, ScopedSchedule, ValueId};
+use crate::program::{
+    BinaryOp, CompareOp, Def, Flow, IfArm, Item, ScheduledOp, Scope, ScopedSchedule, ValueId, legal,
+};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use pixelflow_ir::fold::{Binder, Fold, Monoid};
-use pixelflow_ir::kind::OpKind;
-
-/// What the driver says when a backend must be asked for something it has not
-/// been taught yet: the op, named.
-const DRIVER: &str = "the selection driver";
 
 /// Selection: a scoped schedule as one machine function.
 pub(super) struct Select<B: IsaBackend>(pub(super) PhantomData<fn() -> B>);
@@ -202,15 +196,19 @@ impl<B: IsaBackend> Selector<'_, B> {
                 let (a, b) = (self.lookup(*a), self.lookup(*b));
                 self.lane(LaneOp::Binary(*op, a, b))?
             }
+            ScheduledOp::Compare(op, a, b) => {
+                let (a, b) = (self.lookup(*a), self.lookup(*b));
+                self.lane(LaneOp::Compare(*op, a, b))?
+            }
             ScheduledOp::ShiftImm(op, a, amount) => {
                 let a = self.lookup(*a);
                 self.lane(LaneOp::Shift(*op, a, *amount))?
             }
-            ScheduledOp::Ternary(OpKind::MulAdd, a, b, c) => {
+            ScheduledOp::MulAdd(a, b, c) => {
                 let (a, b, c) = (self.lookup(*a), self.lookup(*b), self.lookup(*c));
                 self.lane(LaneOp::MulAdd(a, b, c))?
             }
-            ScheduledOp::Ternary(OpKind::If, cond, if_true, if_false) => {
+            ScheduledOp::If(cond, if_true, if_false) => {
                 let (cond, if_true, if_false) = (
                     self.lookup(*cond),
                     self.lookup(*if_true),
@@ -222,7 +220,6 @@ impl<B: IsaBackend> Selector<'_, B> {
                     if_false,
                 })?
             }
-            ScheduledOp::Ternary(op, ..) => unimplemented_op(DRIVER, op),
             ScheduledOp::Context(slot) => {
                 let ctx = self.entry.ctx;
                 let pointer = B::context(&mut self.b, ctx, u64::from(*slot))?;
@@ -306,13 +303,13 @@ impl<B: IsaBackend> Selector<'_, B> {
         self.binders.pop();
 
         let accumulated = match result {
-            Some(body) => Some(self.binary(fold.combine_op(), params[1], body)?),
+            Some(body) => Some(self.binary(legal(fold.combine_op()), params[1], body)?),
             None => None,
         };
         let stride = self.constant(fold.stride() as f32)?;
-        let step = self.binary(OpKind::Add, binder, stride)?;
+        let step = self.binary(BinaryOp::Add, binder, stride)?;
         let end = self.constant(range.end as f32)?;
-        let done = self.binary(OpKind::Ge, step, end)?;
+        let done = self.lane(LaneOp::Compare(CompareOp::Ge, step, end))?;
         let exit = self.b.block(&[], parent);
         let args = [Some(step), accumulated]
             .into_iter()
@@ -374,7 +371,7 @@ impl<B: IsaBackend> Selector<'_, B> {
         self.lane(LaneOp::Const(value))
     }
 
-    fn binary(&mut self, op: OpKind, a: B::Lane, b: B::Lane) -> Result<B::Lane, CompileError> {
+    fn binary(&mut self, op: BinaryOp, a: B::Lane, b: B::Lane) -> Result<B::Lane, CompileError> {
         self.lane(LaneOp::Binary(op, a, b))
     }
 

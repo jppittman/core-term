@@ -1,7 +1,7 @@
 {
   "record": "guide_r2g_spread_first",
   "source_rev": "cf8814a8b4e83ca117bf69be2be44a3f6ddc449e",
-  "registration": "docs/plans/2026-09-01-guide-return-to-go.md",
+  "registration": "docs/archive/plans/2026-09-01-guide-return-to-go.md",
   "selection_rule": "\u00a72b.3: node band 101-1000, label budget B=100 (the five TRAIN/DEV-agreeing cells)",
   "training": {
     "checkpoint": "pixelflow-pipeline/data/guide_checkpoint_r2g_regime_v1.json",

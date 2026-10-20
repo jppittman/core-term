@@ -20,7 +20,7 @@
 //!    const or an entry's structural parameter. It is never the type of an
 //!    expression — a body names one only to convert it, `i as f32` —
 //!    because nothing in the language computes with an index
-//!    (docs/plans/2026-09-25-the-language-is-kernel.md §1.3, §1.6). A
+//!    (docs/language/2026-09-25-the-language-is-kernel.md §1.3, §1.6). A
 //!    fourth, a record, is a name for its `f32` fields: written by name,
 //!    read by field, and never computed (Phase D, D7).
 //! 4. **Calls**: a helper is called at its arity with arguments of its
@@ -53,7 +53,7 @@
 //! 5. an entry's structural parameter → a count, fixed per instantiation
 //! 6. an intrinsic (X, Y) → a coordinate `Var`, in an entry only: a helper
 //!    takes its coordinates as arguments, so that application is contramap
-//!    (docs/plans/2026-09-25-the-language-is-kernel.md §1.2)
+//!    (docs/language/2026-09-25-the-language-is-kernel.md §1.2)
 //! 7. otherwise → refused. A kernel body does not capture from the caller's
 //!    scope, so a name nothing here binds is an error here, with a span —
 //!    not a capture that lowering then refuses without one.

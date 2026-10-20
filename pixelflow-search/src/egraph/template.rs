@@ -1,7 +1,7 @@
 //! Generic template rewrite: a rule whose LHS/RHS are data (an [`ExprArena`]
 //! pattern) rather than a hand-written combinator.
 //!
-//! Round 2's mode (ii) (docs/plans/2026-09-01-phase3-round2-rule-scaling.md
+//! Round 2's mode (ii) (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md
 //! §2.2, §8) generates rules by composing two existing rules' templates at
 //! harness startup — there is no `struct` to write per composition, only a
 //! pattern discovered at runtime. [`TemplateRewrite`] is the one executor
@@ -13,12 +13,12 @@
 //! # Matching convention
 //!
 //! A pattern position is matched against either a concrete [`ENode`] (the
-//! rule's own root, handed in by the sweep — [`match_root`]) or an
+//! rule's own root, handed in by the sweep — `match_root`) or an
 //! [`EClassId`] (every other position, where the pattern may need to try
-//! more than one of that class's representatives — [`match_class`]). Both
+//! more than one of that class's representatives — `match_class`). Both
 //! read metavariables (`ExprNode::Var`) the same way every existing template
 //! does: `Var(0)` = A, `Var(1)` = B, etc. A repeated metavariable must bind
-//! to the same **canonical** class everywhere it appears — [`Bindings`]
+//! to the same **canonical** class everywhere it appears — `Bindings`
 //! enforces that via `egraph.find`.
 //!
 //! This is deliberately a single first-match search (mirroring `Factor`'s
@@ -34,8 +34,9 @@ use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::rewrite::{Rewrite, RewriteAction, TemplateArena};
+use super::rewrite::{Rewrite, RewriteAction, RootShapes};
 
+use pixelflow_ir::OpKind;
 use pixelflow_ir::expr::ExprData;
 use pixelflow_ir::{Node, Rooted};
 
@@ -75,6 +76,23 @@ fn match_root(
         | ExprData::Ref(_)
         | ExprData::Reduce(_) => false,
         ExprData::Op(_) => match_op(egraph, pat, node, bindings),
+    }
+}
+
+/// The shapes `match_root` accepts for a pattern rooted at `pat`: exactly the
+/// arms of that function that can return `true`, none for a pattern root it
+/// always refuses. The two match on `ExprData` side by side so that an arm
+/// changed in one is read against the other.
+fn root_shapes_of(pat: Node<'_, ExprData>) -> RootShapes {
+    match *pat {
+        ExprData::Const(_) => RootShapes::kind(OpKind::Const),
+        ExprData::Op(kind) => RootShapes::kind(kind),
+        ExprData::Var(_)
+        | ExprData::Param(_)
+        | ExprData::Buffer(_)
+        | ExprData::Uniform(_)
+        | ExprData::Ref(_)
+        | ExprData::Reduce(_) => RootShapes::nothing(),
     }
 }
 
@@ -120,7 +138,7 @@ fn match_op(
     let ExprData::Op(kind) = *pat else {
         return false;
     };
-    if node_op.kind() != kind {
+    if node_op != kind {
         return false;
     }
     let pat_children: Vec<Node<'_, ExprData>> = pat.children().collect();
@@ -180,6 +198,9 @@ pub struct TemplateRewrite {
     /// One past the highest metavariable index used in `lhs`/`rhs` — the
     /// fixed length every produced `bindings` vector has.
     metavar_count: u8,
+    /// The shapes `match_root` can accept (none, or the kind of `lhs`'s root),
+    /// read off `lhs`'s root once.
+    root_shapes: RootShapes,
 }
 
 impl TemplateRewrite {
@@ -215,6 +236,7 @@ impl TemplateRewrite {
             .map_or(0, |m| m + 1);
         Self {
             name: name.into(),
+            root_shapes: root_shapes_of(lhs),
             rooted: Arc::new(rooted),
             metavar_count,
         }
@@ -246,6 +268,10 @@ impl TemplateRewrite {
 impl Rewrite for TemplateRewrite {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        self.root_shapes
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -290,7 +316,7 @@ impl Rewrite for TemplateRewrite {
 }
 
 // ============================================================================
-// Composition: A∘B (docs/plans/2026-09-01-phase3-round2-rule-scaling.md §2.2)
+// Composition: A∘B (docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md §2.2)
 // ============================================================================
 //
 // The validity argument (design doc §2.2) is a theorem about substitution:
@@ -507,7 +533,7 @@ impl TemplateRewrite {
     /// RHS at `position`, then build the rule whose single application
     /// creates what `a`-then-`b` would create in two rounds. `position` is a
     /// child-index path into `a.rhs_template()` (`[]` = the whole RHS);
-    /// [`positions`] enumerates every valid one for a given `a`.
+    /// `positions` enumerates every valid one for a given `a`.
     ///
     /// Returns `None` when: either side lacks templates, `b.lhs` does not
     /// unify with `a.rhs` at `position`, `b` turns out to be a no-op there,
@@ -568,7 +594,13 @@ impl TemplateRewrite {
 mod tests {
     use super::*;
     use crate::egraph::EGraph;
+    use crate::egraph::{RuleSet, Saturation};
     use pixelflow_ir::OpKind;
+
+    /// The first node of `class`: the one a rule rooted there is shown.
+    fn first_member(eg: &EGraph, class: EClassId) -> ENode {
+        *eg.nodes(class).next().expect("a class has a first member")
+    }
 
     /// `a - b -> a + neg(b)`, hand-built as a template — should behave
     /// exactly like `math::algebra::Canonicalize::<AddNeg>`.
@@ -586,15 +618,12 @@ mod tests {
 
     #[test]
     fn matches_and_instantiates_a_two_level_pattern() {
-        let mut eg = EGraph::with_rules(vec![Box::new(sub_to_add_neg())]);
+        let mut eg = Saturation::over(RuleSet::new(vec![Box::new(sub_to_add_neg())]));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sub = eg.add(ENode::Op {
-            op: &crate::egraph::ops::Sub,
-            children: vec![x, y],
-        });
+        let sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
         let root = eg.find(sub);
-        let node = eg.nodes(root)[0].clone();
+        let node = first_member(&eg, root);
         let rule = sub_to_add_neg();
         let action = rule
             .apply(&eg, root, &node)
@@ -616,21 +645,15 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let self_sub = eg.add(ENode::Op {
-            op: &crate::egraph::ops::Sub,
-            children: vec![x, x],
-        });
-        let other_sub = eg.add(ENode::Op {
-            op: &crate::egraph::ops::Sub,
-            children: vec![x, y],
-        });
+        let self_sub = eg.add(ENode::apply(OpKind::Sub, &[x, x]));
+        let other_sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
 
         let self_root = eg.find(self_sub);
-        let self_node = eg.nodes(self_root)[0].clone();
+        let self_node = first_member(&eg, self_root);
         assert!(rule.apply(&eg, self_root, &self_node).is_some());
 
         let other_root = eg.find(other_sub);
-        let other_node = eg.nodes(other_root)[0].clone();
+        let other_node = first_member(&eg, other_root);
         assert!(
             rule.apply(&eg, other_root, &other_node).is_none(),
             "repeated metavariable must refuse two different classes"
@@ -653,12 +676,9 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sub = eg.add(ENode::Op {
-            op: &crate::egraph::ops::Sub,
-            children: vec![x, y],
-        });
+        let sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
         let sub_root = eg.find(sub);
-        let sub_node = eg.nodes(sub_root)[0].clone();
+        let sub_node = first_member(&eg, sub_root);
         let action = rule.apply(&eg, sub_root, &sub_node).expect("must match");
         matches!(action, RewriteAction::Instantiate { .. });
     }

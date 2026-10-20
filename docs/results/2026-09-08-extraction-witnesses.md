@@ -1,7 +1,7 @@
 # Extraction witnesses: the extractor walks past terms it provably holds
 
 **Date:** 2026-09-08
-**Denotation:** `docs/plans/2026-09-08-extraction-witnesses.md` — written
+**Denotation:** `docs/archive/plans/2026-09-08-extraction-witnesses.md` — written
 before the instrument; nothing in it was revised after the run.
 **Instrument:** `pixelflow-pipeline`'s `extraction_witnesses` bin over
 `pixelflow-search`'s `egraph::witness` (feature-gated on
@@ -69,7 +69,7 @@ loss** (§4). It helps the shaders by 0.5–1.7 % and costs the glyphs
 The e-graph was *expected* to be monotone: a run at a larger class cap
 performs every application the smaller run performed and then more, so the
 larger graph represents a superset of the terms (L2,
-`docs/plans/2026-09-02-optimizer-api.md`). §1b is what happened to that
+`docs/archive/plans/2026-09-02-optimizer-api.md`). §1b is what happened to that
 assumption. Where it does hold — checked, not assumed — the extractor's own
 cheaper output at the smaller cap is a term present in the bigger graph that
 the extractor walked past. The
@@ -91,7 +91,7 @@ apart.
 
 ## 1b. A finding that arrived before any classification: **the e-graph is not monotone in the class cap**
 
-The whole method rests on L2 (`docs/plans/2026-09-02-optimizer-api.md`): a
+The whole method rests on L2 (`docs/archive/plans/2026-09-02-optimizer-api.md`): a
 bigger budget yields a graph that represents a superset of the terms. The
 instrument does not assume it — it looks each subterm up and fails loudly on
 a miss — and it **found misses**.
@@ -126,7 +126,7 @@ Two consequences, both load-bearing:
   a fixed cap*, which is a much weaker and probably true claim) or made
   true. Right now the class cap is a budget dimension that silently changes
   the answer's *shape*, not only its quality — which is the same class of
-  problem `docs/plans/2026-09-01-production-budget-determinism.md` closed for
+  problem `docs/archive/plans/2026-09-01-production-budget-determinism.md` closed for
   wall clock.
 
 ## 2. The shader family: the ladder
@@ -247,6 +247,12 @@ inserted. It is the same DP otherwise, and `Ties::Insertion` is pinned
 byte-identical to production by
 `insertion_tie_break_is_productions_extraction`.
 
+*Note (CL8c).* The A/B below was measured under that key. `Canonical` now
+orders by `ENode`'s derived `Ord` over the canonicalized node, so its ties
+fall differently (a fold by field order, `Buffer` and `Uniform` by declaration
+rather than all tied, a shift as its own variant), and re-running the bin
+measures that order, not this one. `Insertion`, production, is unchanged.
+
 The A/B, per family × cap, Σ `dag_cost` over every kernel in the family
 (`n` kernels; `better` / `worse` count kernels, not classes):
 
@@ -337,7 +343,7 @@ bake.
 - An `UNPRICED` label exists for a frontier class the winning arm's table has
   no entry for; it never fired.
 - This measures `dag_cost` and the extraction objective, **not** the emitted
-  kernel's wall clock. `docs/plans/2026-09-07-benchmark-correction.md` is
+  kernel's wall clock. `docs/compiler/2026-09-07-benchmark-correction.md` is
   where a clock claim would come from, and none is made here.
 - The `seconds` column in the budget CSV was taken on a shared box under
   load averages between 9 and 168, including a concurrent `cargo test

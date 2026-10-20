@@ -1,24 +1,27 @@
-//! x86-64 leaf encoders: what the AVX2 and AVX-512 tiers share below the
-//! vector width.
+//! x86-64 leaf encoders: what the AVX2 and AVX-512 tiers share.
 //!
 //! What is here is the *architecture's*: [`Gp`], the general-register
 //! instructions the loop nest and the store's address arithmetic are made
 //! of (branches, the pointer class's loads and stores and the frame among
-//! them), the memory-operand tail (`Mem`, `Disp`) every vector encoder's
-//! ModRM/SIB is built from, and the vector operations both tiers name ([`Alu`]
-//! and its kin, whose bytes are each tier's). Nothing here names a vector
-//! width: the `ymm`/`zmm` encodings live in `avx2.rs` and `avx512.rs`, and the
-//! 128-bit tier that used to sit in this file is gone
-//! (docs/plans/2026-09-22-the-isa-is-decided-at-startup.md §7).
+//! them), the memory-operand tail (`Mem`, `Disp`), and the vector encoder
+//! ([`Opcode`]) both tiers are written with: VEX and EVEX are two prefixes
+//! ([`Scheme`]) on one instruction set, so the instructions and their operand
+//! forms are named here once. So are the selection rules the tiers agree on
+//! (`impl IsaBackend for` every [`X86`]): a tier chooses a prefix, the
+//! instructions only it has, and the few hooks where it selects differently;
+//! the vector width is the tier's, not this file's.
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller, defined};
-use super::regalloc::resource::FrameSlot;
+use super::build::{Builder, Def, Spiller};
+use super::regalloc::resource::{FrameSlot, In, InOut, Out};
+use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
-    Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label, Placed,
-    Pointer, Rebind, STACK_PAGE, Selected, Spill, Stage, Target, Value,
+    Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
+    LaneOp, Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName,
+    Vector, frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
+use crate::program::{BinaryOp, CompareOp, ShiftOp, UnaryOp};
 use alloc::vec::Vec;
 
 // =============================================================================
@@ -31,22 +34,6 @@ pub(super) const PTR_BYTES: i32 = 8;
 // =============================================================================
 // General-purpose registers
 // =============================================================================
-
-/// The registers the ABI fixes, by hardware number: the collapse kernel's
-/// three arguments, and the stack pointer. Every other register is the
-/// allocator's choice.
-pub(super) mod gpr {
-    /// 3rd integer argument: the pitch.
-    pub(in crate::emit) const RDX: u8 = 2;
-    /// The stack pointer.
-    pub(in crate::emit) const RSP: u8 = 4;
-    /// 2nd integer argument: the output plane.
-    pub(in crate::emit) const RSI: u8 = 6;
-    /// 1st integer argument: the context pointer — the array of bound buffer
-    /// bases, then the uniform and origin blocks. Read-only for the whole
-    /// kernel.
-    pub(in crate::emit) const RDI: u8 = 7;
-}
 
 /// An x86-64 general-register instruction.
 ///
@@ -261,95 +248,75 @@ impl Gp<Selected> {
     }
 }
 
-impl<S: Placed> Gp<S> {
+impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
     fn encode(&self) -> EncodedInst {
         let mut inst = EncodedInst::new();
         match self {
             Gp::Mov { dst, src } => {
-                inst.extend(&rr(0x89, S::write::<Pointer>(dst), S::read::<Pointer>(src)));
+                inst.extend(&rr(0x89, dst, src));
             }
             Gp::MovInt { dst, src } => {
-                inst.extend(&rr(0x89, S::write::<Integer>(dst), S::read::<Integer>(src)));
+                inst.extend(&rr(0x89, dst, src));
             }
             Gp::MovImm32 { dst, imm } => {
-                let dst = S::write::<Integer>(dst);
-                if dst >= 8 {
+                if bit(dst, 3) == 1 {
                     inst.push(0x41);
                 }
-                inst.push(0xB8 | (dst & 7));
+                inst.push(0xB8 | low3(dst));
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Movabs { dst, imm } => {
-                let dst = S::write::<Integer>(dst);
-                inst.push(0x48 | ((dst >> 3) & 1));
-                inst.push(0xB8 | (dst & 7));
+                inst.push(0x48 | bit(dst, 3));
+                inst.push(0xB8 | low3(dst));
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Imul { dst, src, .. } => {
-                let (dst, src) = (S::tie::<Integer>(dst), S::read::<Integer>(src));
                 inst.extend(&[rex_w(dst, src), 0x0F, 0xAF, modrm_rr(dst, src)]);
             }
             Gp::Add { dst, src, .. } => {
-                inst.extend(&rr(0x01, S::tie::<Integer>(dst), S::read::<Integer>(src)));
+                inst.extend(&rr(0x01, dst, src));
             }
-            // `rbp`/`r13` have no `mod = 00` form as a SIB base (that
-            // encoding means "no base"), so those two take `mod = 01` with a
-            // zero `disp8`.
             Gp::Lea4 { dst, base, index } => {
-                let (dst, base, index) = (
-                    S::write::<Pointer>(dst),
-                    S::read::<Pointer>(base),
-                    S::read::<Integer>(index),
-                );
-                debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
-                let disp8_form = base & 7 == RM_RIP_AT_MOD0;
-                inst.push(
-                    0x48 | (((dst >> 3) & 1) << 2) | (((index >> 3) & 1) << 1) | ((base >> 3) & 1),
-                );
+                debug_assert!(low3(index) != RM_SIB, "rsp/r12 cannot index a SIB");
+                inst.push(0x48 | (bit(dst, 3) << 2) | (bit(index, 3) << 1) | bit(base, 3));
                 inst.push(0x8D);
-                inst.push(if disp8_form { 0x40 } else { 0x00 } | ((dst & 7) << 3) | RM_SIB);
-                inst.push((0b10 << 6) | ((index & 7) << 3) | (base & 7));
-                if disp8_form {
-                    inst.push(0);
-                }
+                scaled4_operand_into(&mut inst, dst, base, index);
             }
             Gp::MovLoad { dst, src } => {
-                let (dst, base) = (S::write::<Pointer>(dst), S::read::<Pointer>(&src.base));
-                inst.push(rex_w(dst, base));
+                inst.push(rex_w(dst, &src.base));
                 inst.push(0x8B);
-                mem_operand_into(&mut inst, dst, base, src.disp);
+                mem_operand_into(&mut inst, dst, &src.base, src.disp);
             }
             Gp::SpillPtr { src, slot } => {
-                spill_into(&mut inst, S::read::<Pointer>(src), Imm32(S::slot(slot)));
+                spill_into(&mut inst, src, *slot);
             }
             Gp::SpillInt { src, slot } => {
-                spill_into(&mut inst, S::read::<Integer>(src), Imm32(S::slot(slot)));
+                spill_into(&mut inst, src, *slot);
             }
             Gp::ReloadPtr { dst, slot } => {
-                reload_into(&mut inst, S::write::<Pointer>(dst), Imm32(S::slot(slot)));
+                reload_into(&mut inst, dst, *slot);
             }
             Gp::ReloadInt { dst, slot } => {
-                reload_into(&mut inst, S::write::<Integer>(dst), Imm32(S::slot(slot)));
+                reload_into(&mut inst, dst, *slot);
             }
             Gp::Test { src, .. } => {
-                let src = S::read::<Integer>(src);
-                if src >= 8 {
+                if bit(src, 3) == 1 {
                     inst.push(0x45);
                 }
                 inst.push(0x85);
                 inst.push(modrm_rr(src, src));
             }
             Gp::CmpByte { src, imm, .. } => {
-                match S::read::<Integer>(src) {
+                match (bit(src, 3), low3(src)) {
                     // The accumulator has a short form.
-                    0 => inst.push(0x3C),
-                    n => {
+                    (0, 0) => inst.push(0x3C),
+                    (high, low) => {
                         // Without a REX prefix 4-7 name `ah`..`bh`, not `spl`..`dil`.
-                        if n >= 4 {
-                            inst.push(0x40 | ((n >> 3) & 1));
+                        if high == 1 || low >= 4 {
+                            inst.push(0x40 | high);
                         }
                         inst.push(0x80);
-                        inst.push(modrm_rr(7, n));
+                        inst.push(modrm_rr(Digit::CMP, src));
                     }
                 }
                 inst.push(*imm);
@@ -357,14 +324,13 @@ impl<S: Placed> Gp<S> {
             Gp::Jcc { cond, .. } => inst.extend(&[0x0F, 0x80 | *cond as u8, 0, 0, 0, 0]),
             Gp::Jmp { .. } => inst.extend(&[0xE9, 0, 0, 0, 0]),
             Gp::Fallthrough { .. } => {}
-            Gp::Enter { size, .. } => inst = sub_rsp(S::frame_size(size)),
+            Gp::Enter { size, .. } => inst = sub_rsp(frame_bytes(size)),
             Gp::Ret { size, .. } => {
-                inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(0, gpr::RSP)]);
-                inst.extend(&S::frame_size(size).to_le_bytes());
+                inst = add_rsp(frame_bytes(size));
                 // `vzeroupper`: `VEX.128.0F.WIG 77`, zeroing bits 128 and up of
                 // vector registers 0–15, the sixteen a legacy-SSE instruction
-                // can name. The same three bytes on every tier.
-                inst.extend(&[0xC5, 0xF8, 0x77]);
+                // can name. VEX on every tier.
+                inst.extend(Vex::m0f(0x77).xmm().bare().as_bytes());
                 inst.push(0xC3);
             }
         }
@@ -373,10 +339,10 @@ impl<S: Placed> Gp<S> {
 
     /// The label field the instruction carries: its offset in the bytes, and
     /// the target it reaches. The one statement of which instructions have one.
-    fn label_field(&self) -> Option<(usize, &S::Target)> {
+    fn label_field(&self) -> Option<(usize, Label)> {
         match self {
-            Gp::Jmp { to } => Some((JMP_DISP, to)),
-            Gp::Jcc { taken, .. } => Some((JCC_DISP, taken)),
+            Gp::Jmp { to } => Some((JMP_DISP, *to)),
+            Gp::Jcc { taken, .. } => Some((JCC_DISP, *taken)),
             _ => None,
         }
     }
@@ -384,15 +350,15 @@ impl<S: Placed> Gp<S> {
     /// The instruction's bytes, and the label fields in them.
     pub(super) fn assemble(&self, out: &mut Encoding<'_>) {
         if let Gp::Enter { size, .. } = self {
-            return enter_probing(S::frame_size(size), out);
+            return enter_probing(frame_bytes(size), out);
         }
         out.bytes(self.encode().as_bytes());
         if let Some((at, to)) = self.label_field() {
-            out.field(at, S::target(to), patch_rel32);
+            out.field(at, to, patch_rel32);
         }
         match self {
-            Gp::Jcc { next, .. } => out.falls_through(S::target(next)),
-            Gp::Fallthrough { to } => out.falls_through(S::target(to)),
+            Gp::Jcc { next, .. } => out.falls_through(*next),
+            Gp::Fallthrough { to } => out.falls_through(*to),
             _ => {}
         }
     }
@@ -407,10 +373,229 @@ impl<S: Placed> Gp<S> {
 /// prologue, and `rsp` is the frame's.
 pub(super) const GENERAL: &[u8] = &[0, 1, 2, 6, 7, 8, 9, 10, 11];
 
-/// An x86 backend: its instructions are its vector ones and these.
-pub(super) trait X86: IsaBackend {
-    /// `inst` as this backend's instruction.
-    fn general(inst: Gp<Selected>) -> Self::Inst<Selected>;
+/// An x86 tier: its instructions are [`Op`], the shared vector ones
+/// ([`Inst`]) and the general-register ones ([`Gp`]), and every [`IsaBackend`]
+/// rule the two tiers agree on is written once, below, over the hooks here.
+///
+/// What a tier says is what the two differ in: the prefix its vector
+/// instructions carry, the instructions only it has, how it spells all-ones
+/// and a sign mask, how it holds a comparison, and what it does with a lane
+/// where the other does not. A tier cannot select the other's instruction
+/// because it is not a variant of its [`X86::Extra`].
+pub(super) trait X86: Sized + 'static {
+    /// The prefix scheme of its vector instructions.
+    type Prefix: Scheme;
+    /// The vector instructions only this tier has.
+    type Extra<S: Stage>;
+    /// One IR lane value as this tier holds it ([`IsaBackend::Lane`]).
+    type Held: Copy;
+    /// The allocatable vector registers, by number.
+    const VECTORS: &'static [u8];
+    /// The allocatable opmask registers, by number: none unless the tier has a
+    /// mask file.
+    const OPMASKS: &'static [u8] = &[];
+    /// Bytes per vector register and per vector frame slot.
+    const VECTOR_BYTES: u64;
+
+    /// All-ones in register `dst`, whatever it held.
+    fn ones(dst: impl RegField) -> EncodedInst;
+    /// The mask `Neg` xors and `Abs` ands: the sign bit, or all that is below
+    /// it.
+    fn sign_mask(b: &mut Builder<Self>, sign: Sign) -> Result<Value<Vector>, CompileError>;
+    /// [`Inst::walk`] for an instruction only this tier has.
+    fn walk_extra<To: Stage>(
+        extra: &Self::Extra<Selected>,
+        f: &mut impl Rebind<To>,
+    ) -> Self::Extra<To>;
+    /// [`Inst::encode`] for an instruction only this tier has.
+    fn encode_extra(extra: &Self::Extra<Bound<'_, Self>>) -> EncodedInst;
+    /// Whether the allocator may place `extra` again where a read needs it:
+    /// an idiom of this tier that has no effect and reads nothing.
+    fn rematerializable_extra(_extra: &Self::Extra<Selected>) -> bool {
+        false
+    }
+
+    /// [`IsaBackend::lane`].
+    fn lane(b: &mut Builder<Self>, op: LaneOp<Self>) -> Result<Self::Held, CompileError>;
+    /// [`IsaBackend::lane_name`].
+    fn lane_name(lane: Self::Held) -> ValueName;
+    /// [`IsaBackend::param_lane`].
+    fn param_lane(param: ValueName) -> Self::Held;
+    /// [`IsaBackend::store`].
+    fn store(b: &mut Builder<Self>, store: Store<Self>);
+    /// [`IsaBackend::branch`].
+    fn branch(b: &mut Builder<Self>, test: Test<Self>, edges: Edges);
+    /// [`IsaBackend::copy`] of a class neither the general nor the vector file
+    /// holds: a tier with no such file refuses it.
+    fn copy_other(_b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        unreachable!("this tier has no {:?} to copy", src.class)
+    }
+    /// [`IsaBackend::spill`] of such a class.
+    fn spill_other(_b: &mut Spiller<'_, Self>, src: ValueName, _slot: FrameSlot) {
+        unreachable!("this tier has no {:?} to spill", src.class)
+    }
+    /// [`IsaBackend::reload`] of such a class.
+    fn reload_other(_b: &mut Spiller<'_, Self>, class: ClassId, _slot: FrameSlot) -> ValueName {
+        unreachable!("this tier has no {class:?} to reload")
+    }
+}
+
+/// Every x86 tier is a backend: the rules are the architecture's, and the
+/// tier supplies the hooks.
+impl<B: X86> IsaBackend for B {
+    type Inst<S: Stage> = Op<S, B>;
+    type Constant = u32;
+    type Anchors = ();
+    type Lane = B::Held;
+
+    // SysV has no callee-saved vector registers and the collapse ABI passes
+    // no vector, so every vector register is the allocator's. The arguments
+    // arrive in `rdi`, `rsi` and `rdx`.
+    const FILE: RegisterFile = RegisterFile::new(
+        Members {
+            vector: B::VECTORS,
+            general: GENERAL,
+            opmask: B::OPMASKS,
+            flags: &[0],
+        },
+        EntryRegisters {
+            ctx: 7,
+            out: 6,
+            pitch: 2,
+        },
+        B::VECTOR_BYTES,
+    );
+    const POOL_REACH: u64 = i32::MAX as u64 / 4;
+
+    fn lane(b: &mut Builder<Self>, op: LaneOp<Self>) -> Result<B::Held, CompileError> {
+        B::lane(b, op)
+    }
+
+    fn lane_name(lane: B::Held) -> ValueName {
+        B::lane_name(lane)
+    }
+
+    fn param_lane(param: ValueName) -> B::Held {
+        B::param_lane(param)
+    }
+
+    /// `mov p, [ctx + 8·slot]`.
+    fn context(
+        b: &mut Builder<Self>,
+        ctx: Value<Pointer>,
+        slot: u64,
+    ) -> Result<Value<Pointer>, CompileError> {
+        let disp = displacement(slot, PTR_BYTES as u64)?;
+        Ok(define(b, |dst| Gp::MovLoad {
+            dst,
+            src: Mem { base: ctx, disp },
+        }))
+    }
+
+    fn store(b: &mut Builder<Self>, store: Store<Self>) {
+        B::store(b, store);
+    }
+
+    fn branch(b: &mut Builder<Self>, test: Test<Self>, edges: Edges) {
+        B::branch(b, test, edges);
+    }
+
+    /// `jmp` to `to`, or nothing when `to` is the next block.
+    fn jump(b: &mut Builder<Self>, to: Target, next: Label) {
+        b.push(Op::General(if to.label == next {
+            Gp::Fallthrough { to }
+        } else {
+            Gp::Jmp { to }
+        }));
+    }
+
+    /// `sub rsp, frame`: the function's entry.
+    fn enter(b: &mut Builder<Self>) {
+        let flags = b.def();
+        b.push(Op::General(Gp::Enter {
+            size: FrameSize,
+            flags,
+        }));
+    }
+
+    /// `add rsp, frame; vzeroupper; ret`: the function's one exit.
+    fn ret(b: &mut Builder<Self>) {
+        let flags = b.def();
+        b.push(Op::General(Gp::Ret {
+            size: FrameSize,
+            flags,
+        }));
+    }
+
+    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        match src.class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::Mov {
+                    dst,
+                    src: src.typed(),
+                })
+            }),
+            ClassId::Pointer | ClassId::Integer => copy_general(b, src),
+            ClassId::Opmask | ClassId::Flags => B::copy_other(b, src),
+        }
+    }
+
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: FrameSlot) {
+        match src.class {
+            ClassId::Vector => b.push(Op::Vector(Inst::SpillVector {
+                src: src.typed(),
+                slot: slot.name(),
+            })),
+            ClassId::Pointer | ClassId::Integer => spill_general(b, src, slot),
+            ClassId::Opmask | ClassId::Flags => B::spill_other(b, src, slot),
+        }
+    }
+
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: FrameSlot) -> ValueName {
+        match class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::ReloadVector {
+                    dst,
+                    slot: slot.name(),
+                })
+            }),
+            ClassId::Pointer | ClassId::Integer => reload_general(b, class, slot),
+            ClassId::Opmask | ClassId::Flags => B::reload_other(b, class, slot),
+        }
+    }
+
+    fn rematerializable(inst: &Op<Selected, B>) -> bool {
+        match inst {
+            Op::Vector(Inst::LoadConst { .. } | Inst::Zero { .. } | Inst::Ones { .. }) => true,
+            Op::Vector(Inst::Extra(extra)) => B::rematerializable_extra(extra),
+            _ => false,
+        }
+    }
+
+    fn reads_pool<S: Stage>(inst: &Op<S, B>) -> bool {
+        matches!(inst, Op::Vector(Inst::LoadConst { .. }))
+    }
+
+    fn walk<T: Stage>(inst: &Op<Selected, B>, f: &mut impl Rebind<T>) -> Op<T, B> {
+        inst.walk(f)
+    }
+
+    fn encode(inst: &Op<Bound<'_, B>, B>, out: &mut Encoding<'_>) {
+        inst.assemble(out);
+    }
+
+    fn constant_bytes(constant: u32) -> Vec<u8> {
+        constant.to_le_bytes().to_vec()
+    }
+}
+
+/// The sign bit and its complement: the constants `Neg` xors and `Abs` ands.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum Sign {
+    /// `0x8000_0000`
+    Negate,
+    /// `0x7FFF_FFFF`
+    Magnitude,
 }
 
 /// Define a value of class `C` with `make`, which builds the
@@ -421,41 +606,30 @@ pub(super) fn define<B: X86, C: Class>(
 ) -> Value<C> {
     let dst = b.def();
     let value = dst.value();
-    b.push(B::general(make(dst)));
+    b.push(Op::General(make(dst)));
     value
 }
 
-/// `mov p, [ctx + 8·slot]`.
-pub(super) fn context<B: X86>(
-    b: &mut Builder<B>,
-    ctx: Value<Pointer>,
-    slot: u64,
-) -> Result<Value<Pointer>, CompileError> {
-    let disp = displacement(slot, PTR_BYTES as u64)?;
-    Ok(define(b, |dst| Gp::MovLoad {
-        dst,
-        src: Mem { base: ctx, disp },
-    }))
-}
-
-/// `out + 4·(row·pitch + col)`: where the lattice's store writes, from the
-/// two indices as integers.
+/// `out + 4·(row·pitch + col)`: where the lattice's store writes. Each index
+/// is lane 0 of its binder, truncated.
 pub(super) fn element_address<B: X86>(
     b: &mut Builder<B>,
     out: Value<Pointer>,
     pitch: Value<Integer>,
-    (row, col): (Value<Integer>, Value<Integer>),
+    (row, col): (Value<Vector>, Value<Vector>),
 ) -> Value<Pointer> {
+    let row = emit(b, |dst| Inst::Cvtt { dst, src: row });
+    let col = emit(b, |dst| Inst::Cvtt { dst, src: col });
     let (scaled, flags) = (b.tie(row), b.def());
     let row_pitch = scaled.write();
-    b.push(B::general(Gp::Imul {
+    b.push(Op::General(Gp::Imul {
         dst: scaled,
         src: pitch,
         flags,
     }));
     let (summed, flags) = (b.tie(row_pitch), b.def());
     let index = summed.write();
-    b.push(B::general(Gp::Add {
+    b.push(Op::General(Gp::Add {
         dst: summed,
         src: col,
         flags,
@@ -467,6 +641,192 @@ pub(super) fn element_address<B: X86>(
     })
 }
 
+// =============================================================================
+// Selection: the vector rules both tiers share
+// =============================================================================
+
+/// Define a value of class `C` with `make`, which builds the vector
+/// instruction that writes it.
+pub(super) fn emit<B: X86, C: Class>(
+    b: &mut Builder<B>,
+    make: impl FnOnce(Def<C>) -> Inst<Selected, B>,
+) -> Value<C> {
+    let dst = b.def();
+    let value = dst.value();
+    b.push(Op::Vector(make(dst)));
+    value
+}
+
+/// `value` splatted: the zero and all-ones idioms, else one pool entry.
+pub(super) fn constant<B: X86>(
+    b: &mut Builder<B>,
+    value: f32,
+) -> Result<Value<Vector>, CompileError> {
+    Ok(match value.to_bits() {
+        0 => emit(b, |dst| Inst::Zero { dst }),
+        u32::MAX => emit(b, |dst| Inst::Ones { dst }),
+        bits => {
+            let at = b.constant(bits)?.label;
+            emit(b, |dst| Inst::LoadConst { dst, at })
+        }
+    })
+}
+
+/// The bytes in `packed`'s low lanes, widened to dwords and converted: the
+/// iota.
+pub(super) fn iota<B: X86>(b: &mut Builder<B>, packed: Value<Vector>) -> Value<Vector> {
+    let widened = emit(b, |dst| Inst::Unary {
+        op: Lanewise::WidenBytes,
+        dst,
+        src: packed,
+    });
+    emit(b, |dst| Inst::Unary {
+        op: Lanewise::FromInt,
+        dst,
+        src: widened,
+    })
+}
+
+/// The one instruction a unary op is.
+pub(super) fn unary<B: X86>(
+    b: &mut Builder<B>,
+    op: UnaryOp,
+    src: Value<Vector>,
+) -> Result<Value<Vector>, CompileError> {
+    let lanewise = match op {
+        UnaryOp::Neg => return signed(b, Sign::Negate, src),
+        UnaryOp::Abs => return signed(b, Sign::Magnitude, src),
+        UnaryOp::Floor => return Ok(round(b, Rounding::Floor, src)),
+        UnaryOp::Ceil => return Ok(round(b, Rounding::Ceil, src)),
+        UnaryOp::Round => return Ok(round(b, Rounding::Nearest, src)),
+        UnaryOp::Sqrt => Lanewise::Sqrt,
+        UnaryOp::Rsqrt => Lanewise::Rsqrt,
+        UnaryOp::Recip => Lanewise::Recip,
+        // Int/float domain crossings, exactly the hardware's cvttps2dq /
+        // cvtdq2ps — the primitives exp/log lower to.
+        UnaryOp::TruncToInt => Lanewise::ToInt,
+        UnaryOp::IntToFloat => Lanewise::FromInt,
+    };
+    Ok(emit(b, |dst| Inst::Unary {
+        op: lanewise,
+        dst,
+        src,
+    }))
+}
+
+fn round<B: X86>(b: &mut Builder<B>, mode: Rounding, src: Value<Vector>) -> Value<Vector> {
+    emit(b, |dst| Inst::Round { mode, dst, src })
+}
+
+/// `Neg` and `Abs`: xor or and the sign bit, which is a constant to hold in a
+/// register first.
+fn signed<B: X86>(
+    b: &mut Builder<B>,
+    sign: Sign,
+    src: Value<Vector>,
+) -> Result<Value<Vector>, CompileError> {
+    let mask = B::sign_mask(b, sign)?;
+    let op = match sign {
+        Sign::Negate => Alu::Xor,
+        Sign::Magnitude => Alu::And,
+    };
+    Ok(emit(b, |dst| Inst::Alu {
+        op,
+        dst,
+        a: src,
+        b: mask,
+    }))
+}
+
+impl From<CompareOp> for Pred {
+    /// The `vcmpps` predicate of a comparison op.
+    fn from(op: CompareOp) -> Self {
+        match op {
+            CompareOp::Eq => Pred::Eq,
+            CompareOp::Ne => Pred::Ne,
+            CompareOp::Lt => Pred::Lt,
+            CompareOp::Le => Pred::Le,
+            CompareOp::Gt => Pred::Nle,
+            CompareOp::Ge => Pred::Ge,
+        }
+    }
+}
+
+/// The vector ALU instruction of a binary op.
+pub(super) fn arithmetic<B: X86>(
+    b: &mut Builder<B>,
+    op: BinaryOp,
+    (a, c): (Value<Vector>, Value<Vector>),
+) -> Value<Vector> {
+    let op = match op {
+        BinaryOp::Add => Alu::Add,
+        BinaryOp::Sub => Alu::Sub,
+        BinaryOp::Mul => Alu::Mul,
+        BinaryOp::Div => Alu::Div,
+        BinaryOp::Min => Alu::Min,
+        BinaryOp::Max => Alu::Max,
+        BinaryOp::BitAnd => Alu::And,
+        BinaryOp::BitOr => Alu::Or,
+        // Integer add on lane bit patterns (exp/log exponent arithmetic).
+        BinaryOp::IAdd => Alu::IAdd,
+    };
+    emit(b, |dst| Inst::Alu { op, dst, a, b: c })
+}
+
+/// `a·b + c`, one rounding: `c` is the accumulator the result overwrites.
+pub(super) fn mul_add<B: X86>(
+    b: &mut Builder<B>,
+    (x, y): (Value<Vector>, Value<Vector>),
+    addend: Value<Vector>,
+) -> Value<Vector> {
+    let acc = b.tie(addend);
+    let result = acc.write();
+    b.push(Op::Vector(Inst::Fma231 { acc, a: x, b: y }));
+    result
+}
+
+/// `src` shifted by an immediate.
+pub(super) fn shift<B: X86>(
+    b: &mut Builder<B>,
+    op: ShiftOp,
+    src: Value<Vector>,
+    amount: u8,
+) -> Value<Vector> {
+    let direction = match op {
+        ShiftOp::Shl => Direction::Left,
+        ShiftOp::Shr => Direction::Right,
+    };
+    emit(b, |dst| Inst::Shift {
+        direction,
+        dst,
+        src,
+        amount,
+    })
+}
+
+/// `vbroadcastss dst, [block + 4·element]`.
+pub(super) fn uniform<B: X86>(
+    b: &mut Builder<B>,
+    base: Value<Pointer>,
+    element: u64,
+) -> Result<Value<Vector>, CompileError> {
+    let disp = displacement(element, F32_BYTES)?;
+    Ok(emit(b, |dst| Inst::Broadcast {
+        dst,
+        src: Mem { base, disp },
+    }))
+}
+
+/// One element, the same in every lane: the index is lane 0, truncated.
+pub(super) fn broadcast<B: X86>(
+    b: &mut Builder<B>,
+    base: Value<Pointer>,
+    index: Value<Vector>,
+) -> Value<Vector> {
+    let index = emit(b, |dst| Inst::Cvtt { dst, src: index });
+    emit(b, |dst| Inst::BroadcastIndexed { dst, base, index })
+}
+
 /// End the block: `jcc` to `edges.taken` when `flags` meet `cond`, else fall
 /// through to `edges.next`.
 pub(super) fn branch<B: X86>(b: &mut Builder<B>, cond: Cond, flags: Value<Flags>, edges: Edges) {
@@ -474,7 +834,7 @@ pub(super) fn branch<B: X86>(b: &mut Builder<B>, cond: Cond, flags: Value<Flags>
         label: edges.next,
         args: Vec::new(),
     };
-    b.push(B::general(Gp::Jcc {
+    b.push(Op::General(Gp::Jcc {
         cond,
         flags,
         taken: edges.taken,
@@ -482,70 +842,35 @@ pub(super) fn branch<B: X86>(b: &mut Builder<B>, cond: Cond, flags: Value<Flags>
     }));
 }
 
-/// End the block: go to `to`. A `Fallthrough` when `to` is `next`.
-pub(super) fn jump<B: X86>(b: &mut Builder<B>, to: Target, next: Label) {
-    b.push(B::general(if to.label == next {
-        Gp::Fallthrough { to }
-    } else {
-        Gp::Jmp { to }
-    }));
-}
-
-/// `sub rsp, frame`: the function's entry.
-pub(super) fn enter<B: X86>(b: &mut Builder<B>) {
-    let flags = b.def();
-    b.push(B::general(Gp::Enter {
-        size: FrameSize,
-        flags,
-    }));
-}
-
-/// `add rsp, frame; vzeroupper; ret`: the function's one exit.
-pub(super) fn ret<B: X86>(b: &mut Builder<B>) {
-    let flags = b.def();
-    b.push(B::general(Gp::Ret {
-        size: FrameSize,
-        flags,
-    }));
-}
-
 /// `mov` of an address or an integer between general registers.
-pub(super) fn copy_general<B: X86, C: Spill>(b: &mut Spiller<'_, B>, src: Value<C>) -> Value<C> {
-    match C::ID {
-        ClassId::Pointer => {
-            let (dst, copy) = defined::<C, Pointer>(b);
-            b.push(B::general(Gp::Mov {
+pub(super) fn copy_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName) -> ValueName {
+    match src.class {
+        ClassId::Pointer => b.define::<Pointer>(|dst| {
+            Op::General(Gp::Mov {
                 dst,
-                src: src.name().typed(),
-            }));
-            copy
-        }
-        ClassId::Integer => {
-            let (dst, copy) = defined::<C, Integer>(b);
-            b.push(B::general(Gp::MovInt {
+                src: src.typed(),
+            })
+        }),
+        ClassId::Integer => b.define::<Integer>(|dst| {
+            Op::General(Gp::MovInt {
                 dst,
-                src: src.name().typed(),
-            }));
-            copy
-        }
+                src: src.typed(),
+            })
+        }),
         class => unreachable!("{class:?} is not held in a general register"),
     }
 }
 
 /// `mov [rsp + slot], src` of an address or an integer.
-pub(super) fn spill_general<B: X86, C: Spill>(
-    b: &mut Spiller<'_, B>,
-    src: Value<C>,
-    slot: &FrameSlot,
-) {
+pub(super) fn spill_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName, slot: FrameSlot) {
     let slot = slot.name();
-    b.push(B::general(match C::ID {
+    b.push(Op::General(match src.class {
         ClassId::Pointer => Gp::SpillPtr {
-            src: src.name().typed(),
+            src: src.typed(),
             slot,
         },
         ClassId::Integer => Gp::SpillInt {
-            src: src.name().typed(),
+            src: src.typed(),
             slot,
         },
         class => unreachable!("{class:?} is not held in a general register"),
@@ -553,22 +878,15 @@ pub(super) fn spill_general<B: X86, C: Spill>(
 }
 
 /// `mov dst, [rsp + slot]` of an address or an integer.
-pub(super) fn reload_general<B: X86, C: Spill>(
+pub(super) fn reload_general<B: X86>(
     b: &mut Spiller<'_, B>,
-    slot: &FrameSlot,
-) -> Value<C> {
+    class: ClassId,
+    slot: FrameSlot,
+) -> ValueName {
     let slot = slot.name();
-    match C::ID {
-        ClassId::Pointer => {
-            let (dst, reloaded) = defined::<C, Pointer>(b);
-            b.push(B::general(Gp::ReloadPtr { dst, slot }));
-            reloaded
-        }
-        ClassId::Integer => {
-            let (dst, reloaded) = defined::<C, Integer>(b);
-            b.push(B::general(Gp::ReloadInt { dst, slot }));
-            reloaded
-        }
+    match class {
+        ClassId::Pointer => b.define::<Pointer>(|dst| Op::General(Gp::ReloadPtr { dst, slot })),
+        ClassId::Integer => b.define::<Integer>(|dst| Op::General(Gp::ReloadInt { dst, slot })),
         class => unreachable!("{class:?} is not held in a general register"),
     }
 }
@@ -581,21 +899,108 @@ pub(super) struct Imm8(pub(super) i8);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Imm32(pub(super) i32);
 
+/// An opcode extension: the `/digit` an instruction carries in ModRM.reg where
+/// another form of it names a register. Not a register's token, so
+/// `modrm_rr(5, rsp)` is not a thing.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) struct Digit(u8);
+
+impl Digit {
+    /// `81 /0`: `add r/m64, imm32`.
+    const ADD: Self = Self(0);
+    /// `81 /5`: `sub r/m64, imm32`.
+    const SUB: Self = Self(5);
+    /// `80 /7`: `cmp r/m8, imm8`.
+    const CMP: Self = Self(7);
+}
+
+/// What a register field holds: a register, as the token an operand borrows
+/// from the allocator's lease, or in ModRM.reg the opcode's [`Digit`]. The one
+/// place a backend turns a token into the bits it assembles, so the helpers
+/// below (`bit`, `low3`, `nibble`) are the only readers of a number.
+pub(super) trait RegField: Copy {
+    fn field(self) -> u8;
+}
+
+impl<B: IsaBackend, C: Class> RegField for &In<'_, B, C> {
+    fn field(self) -> u8 {
+        self.number()
+    }
+}
+
+impl<B: IsaBackend, C: Class> RegField for &Out<'_, B, C> {
+    fn field(self) -> u8 {
+        self.number()
+    }
+}
+
+impl<B: IsaBackend, C: Class> RegField for &InOut<'_, B, C> {
+    fn field(self) -> u8 {
+        self.number()
+    }
+}
+
+impl RegField for Digit {
+    fn field(self) -> u8 {
+        self.0
+    }
+}
+
+/// One bit of a register number, as 0 or 1.
+fn bit(register: impl RegField, at: u8) -> u8 {
+    (register.field() >> at) & 1
+}
+
+/// The low three bits of a register number: the part ModRM and SIB hold.
+fn low3(register: impl RegField) -> u8 {
+    register.field() & 7
+}
+
+/// The low four bits of a register number: what VEX's and EVEX's `vvvv` hold.
+fn nibble(register: impl RegField) -> u8 {
+    register.field() & 0xF
+}
+
+/// `REX.W` with no extension bit set.
+const REX_W: u8 = 0x48;
+
 /// `REX.W` plus the extension bits for a two-register form.
 ///
 /// `R` extends the ModRM.reg field (the source here), `B` extends ModRM.rm
 /// (the destination).
 #[inline(always)]
-const fn rex_w(reg: u8, rm: u8) -> u8 {
-    0x48 | (((reg >> 3) & 1) << 2) | ((rm >> 3) & 1)
+fn rex_w(reg: impl RegField, rm: impl RegField) -> u8 {
+    REX_W | (bit(reg, 3) << 2) | bit(rm, 3)
+}
+
+/// `REX.W` plus `R` for the frame form, whose base needs no `B`: `rsp` is
+/// below 8.
+#[inline(always)]
+fn rex_w_frame(reg: impl RegField) -> u8 {
+    REX_W | (bit(reg, 3) << 2)
+}
+
+/// `rsp` in a register-direct ModRM: `mod = 11`, `rm = 100`. The stack pointer
+/// is the frame's, in no file, and this is the one word that names it as a
+/// register operand, `add`/`sub rsp, imm32`.
+const MODRM_RSP: u8 = 0xC0 | RM_SIB;
+
+/// `rsp` moved by `bytes`: `81 /digit id`, whose `/digit` says add or sub.
+fn rsp_imm32(digit: Digit, bytes: u32) -> EncodedInst {
+    let mut inst = EncodedInst::new();
+    inst.extend(&[REX_W, 0x81, MODRM_RSP | (low3(digit) << 3)]);
+    inst.extend(&bytes.to_le_bytes());
+    inst
+}
+
+/// `add rsp, imm32`.
+fn add_rsp(bytes: u32) -> EncodedInst {
+    rsp_imm32(Digit::ADD, bytes)
 }
 
 /// `sub rsp, imm32`.
 fn sub_rsp(bytes: u32) -> EncodedInst {
-    let mut inst = EncodedInst::new();
-    inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(5, gpr::RSP)]);
-    inst.extend(&bytes.to_le_bytes());
-    inst
+    rsp_imm32(Digit::SUB, bytes)
 }
 
 /// `mov dword [rsp], 0`: `C7 /0 id` at the SIB form `rsp` always takes.
@@ -620,28 +1025,28 @@ fn enter_probing(size: u32, out: &mut Encoding<'_>) {
 
 /// ModRM for the register-direct form: `mod = 11`.
 #[inline(always)]
-const fn modrm_rr(reg: u8, rm: u8) -> u8 {
-    0xC0 | ((reg & 7) << 3) | (rm & 7)
+fn modrm_rr(reg: impl RegField, rm: impl RegField) -> u8 {
+    0xC0 | (low3(reg) << 3) | low3(rm)
 }
 
 /// `REX.W opcode /r` with both operands in registers.
 #[inline(always)]
-const fn rr(opcode: u8, dst: u8, src: u8) -> [u8; 3] {
+fn rr(opcode: u8, dst: impl RegField, src: impl RegField) -> [u8; 3] {
     [rex_w(src, dst), opcode, modrm_rr(src, dst)]
 }
 
 /// `mov [rsp + slot], src`.
-fn spill_into(inst: &mut EncodedInst, src: u8, slot: Imm32) {
-    inst.push(rex_w(src, gpr::RSP));
+fn spill_into(inst: &mut EncodedInst, src: impl RegField, slot: FrameSlot) {
+    inst.push(rex_w_frame(src));
     inst.push(0x89);
-    mem_operand_into(inst, src, gpr::RSP, slot);
+    frame_operand_into(inst, src, slot);
 }
 
 /// `mov dst, [rsp + slot]`.
-fn reload_into(inst: &mut EncodedInst, dst: u8, slot: Imm32) {
-    inst.push(rex_w(dst, gpr::RSP));
+fn reload_into(inst: &mut EncodedInst, dst: impl RegField, slot: FrameSlot) {
+    inst.push(rex_w_frame(dst));
     inst.push(0x8B);
-    mem_operand_into(inst, dst, gpr::RSP, slot);
+    frame_operand_into(inst, dst, slot);
 }
 
 /// The 4-bit condition an x86 `jcc` tests: the conditions the emitter
@@ -680,8 +1085,8 @@ pub(super) fn patch_rel32(code: &mut [u8], pos: usize, target: usize) {
 // The vector operations both tiers encode
 // =============================================================================
 
-// What an operation *is* is the architecture's; the bytes that say it are the
-// tier's, so `avx2.rs` and `avx512.rs` each give these a `vex()` or `evex()`.
+// What an operation *is* is the architecture's, and so is the opcode that says
+// it ([`Opcode::alu`], [`Opcode::lanewise`]); a tier only picks the prefix.
 
 /// A three-operand arithmetic or bitwise instruction: `op dst, a, b`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -735,12 +1140,709 @@ pub(super) enum Rounding {
     Ceil = 2,
 }
 
-/// The direction of an integer shift by an immediate: the `/digit` of its
-/// opcode.
+/// The direction of an integer shift by an immediate, which is the `/digit` of
+/// its opcode ([`Direction::digit`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Direction {
-    Left = 6,
-    Right = 2,
+    Left,
+    Right,
+}
+
+impl Direction {
+    /// `0F 72 /6` is `pslld`, `/2` is `psrld`.
+    const fn digit(self) -> Digit {
+        match self {
+            Direction::Left => Digit(6),
+            Direction::Right => Digit(2),
+        }
+    }
+}
+
+// =============================================================================
+// The vector encoder: one instruction set, two prefixes
+// =============================================================================
+
+// VEX and EVEX are two prefixes on the same instructions. The opcode map, the
+// implied legacy prefix, `W`, the opcode byte and the ModRM/SIB tail are the
+// instruction's and are written once, by [`Opcode`]; what the prefix adds is
+// where the registers' high bits go, which is [`Scheme`]'s alone.
+
+/// The opcode map an instruction lives in: the field Intel calls `mmmmm` (VEX)
+/// or `mm` (EVEX), a map *selector*, nothing more.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Map {
+    /// `0F`
+    M0F = 1,
+    /// `0F38`
+    M0F38 = 2,
+    /// `0F3A`
+    M0F3A = 3,
+}
+
+/// The legacy prefix the instruction implies (`pp`).
+#[derive(Clone, Copy)]
+pub(super) enum Pp {
+    /// No implied prefix.
+    None = 0,
+    /// `66`
+    P66 = 1,
+    /// `F3`
+    F3 = 2,
+}
+
+/// The register bits one instruction's prefix carries, uninverted: what a
+/// [`Scheme`] folds into its prefix.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Ext {
+    /// `R`: bit 3 of ModRM.reg (or of the `/digit`).
+    r: u8,
+    /// EVEX's `R'`: bit 4 of ModRM.reg.
+    r4: u8,
+    /// `X`: bit 3 of the SIB index, or, where `rm` is a register, bit 4 of it,
+    /// which only EVEX has the room to say.
+    x: u8,
+    /// `B`: bit 3 of ModRM.rm, or of the base.
+    b: u8,
+    /// `vvvv`: the low four bits of the second source, or `None` where the
+    /// instruction has none and the field must read `1111`.
+    vvvv: Option<u8>,
+    /// EVEX's `V'`: bit 4 of the `vvvv` source, or of a VSIB index.
+    v: u8,
+}
+
+impl Ext {
+    /// The bits ModRM.reg contributes.
+    fn reg(reg: impl RegField) -> Self {
+        Self {
+            r: bit(reg, 3),
+            r4: bit(reg, 4),
+            ..Self::default()
+        }
+    }
+
+    /// With `source` as the `vvvv` operand.
+    fn vvvv(self, source: impl RegField) -> Self {
+        Self {
+            vvvv: Some(nibble(source)),
+            v: bit(source, 4),
+            ..self
+        }
+    }
+}
+
+/// A prefix encoding for the vector instructions: [`VexPrefix`] or
+/// [`EvexPrefix`].
+pub(super) trait Scheme: Copy {
+    /// The prefix at the tier's full vector width.
+    const FULL: Self;
+    /// `rsqrtps` and `rcpps` are VEX's, `vrsqrt14ps` and `vrcp14ps` EVEX's: EVEX
+    /// has no `0F 52`/`0F 53`, and ~2^-14 relative error matches `Recip`'s
+    /// "approximate reciprocal" contract on every other backend.
+    const RSQRT: Opcode<Self>;
+    const RECIP: Opcode<Self>;
+    /// The 128-bit form: for the few `xmm`-only instructions (`vmovq`,
+    /// `vextractps`, the `k` family), which `#UD` at the wider length.
+    fn xmm(self) -> Self;
+    /// Write the prefix and the opcode byte.
+    fn write(op: &Opcode<Self>, ext: Ext, inst: &mut EncodedInst);
+}
+
+/// A prefix stores the register-extension bits inverted.
+const fn inverted(bit: u8) -> u8 {
+    bit ^ 1
+}
+
+/// VEX: sixteen registers, 128 or 256 bits wide.
+#[derive(Clone, Copy)]
+pub(super) struct VexPrefix {
+    /// `VEX.L`.
+    l256: bool,
+}
+
+impl Scheme for VexPrefix {
+    const FULL: Self = Self { l256: true };
+    const RSQRT: Opcode<Self> = Opcode::m0f(0x52);
+    const RECIP: Opcode<Self> = Opcode::m0f(0x53);
+
+    fn xmm(self) -> Self {
+        Self { l256: false }
+    }
+
+    /// The two-byte form where it can say everything (map `0F`, `W0`, no `X`
+    /// or `B`), else the three-byte one.
+    fn write(op: &Opcode<Self>, e: Ext, inst: &mut EncodedInst) {
+        let rest =
+            ((!e.vvvv.unwrap_or(0) & 0xF) << 3) | ((op.scheme.l256 as u8) << 2) | op.pp as u8;
+        let r = inverted(e.r) << 7;
+        if op.map == Map::M0F && !op.w && e.x | e.b == 0 {
+            inst.extend(&[0xC5, r | rest]);
+        } else {
+            inst.extend(&[
+                0xC4,
+                r | (inverted(e.x) << 6) | (inverted(e.b) << 5) | op.map as u8,
+                ((op.w as u8) << 7) | rest,
+            ]);
+        }
+        inst.push(op.byte);
+    }
+}
+
+/// EVEX: thirty-two registers, 128 to 512 bits wide, and a writemask.
+#[derive(Clone, Copy)]
+pub(super) struct EvexPrefix {
+    /// `EVEX.L'L`: `10` for the `zmm` form, `00` for `xmm`.
+    ll: u8,
+    /// `EVEX.aaa`: the writemask register's number, or none (`aaa = 0`, a
+    /// field the encoding fixes: `k0` is in no file). Merge-masking (`z = 0`),
+    /// which for a store means the masked-off lanes are left in memory
+    /// untouched.
+    aaa: Option<u8>,
+}
+
+impl Scheme for EvexPrefix {
+    const FULL: Self = Self {
+        ll: 0b10,
+        aaa: None,
+    };
+    const RSQRT: Opcode<Self> = Opcode::m0f38_66(0x4E);
+    const RECIP: Opcode<Self> = Opcode::m0f38_66(0x4C);
+
+    fn xmm(self) -> Self {
+        Self { ll: 0, ..self }
+    }
+
+    fn write(op: &Opcode<Self>, e: Ext, inst: &mut EncodedInst) {
+        let vvvv = !e.vvvv.unwrap_or(0) & 0xF;
+        let aaa = op.scheme.aaa.unwrap_or(0);
+        inst.extend(&[
+            0x62,
+            (inverted(e.r) << 7)
+                | (inverted(e.x) << 6)
+                | (inverted(e.b) << 5)
+                | (inverted(e.r4) << 4)
+                | op.map as u8,
+            ((op.w as u8) << 7) | (vvvv << 3) | (1 << 2) | op.pp as u8,
+            // z = 0 (merge), L'L, b(roadcast) = 0, V', aaa.
+            (op.scheme.ll << 5) | (inverted(e.v) << 3) | aaa,
+            op.byte,
+        ]);
+    }
+}
+
+/// A displacement the prefix scheme `S` reads as written. EVEX scales an
+/// 8-bit one by the operand size (`disp8*N`), so [`Imm8`] is not one of its
+/// displacements: it would encode a different address than it names.
+pub(super) trait DispIn<S>: Disp {}
+
+impl<S> DispIn<S> for NoDisp {}
+impl<S> DispIn<S> for Imm32 {}
+impl DispIn<VexPrefix> for Imm8 {}
+
+/// The identity of one vector instruction: opcode map, implied legacy prefix,
+/// `W` bit, opcode byte, and the vector length and (EVEX) writemask the prefix
+/// scheme carries. This is *which instruction* — constant per mnemonic, so each
+/// mnemonic states it once and the operand form (`rrr`, `rm`, ...) supplies the
+/// per-call registers.
+#[derive(Clone, Copy)]
+pub(super) struct Opcode<S> {
+    map: Map,
+    pp: Pp,
+    w: bool,
+    byte: u8,
+    /// The imm8 that follows the operands: a `vcmpps` predicate, a rounding
+    /// mode, a shift count, a lane index, a `vpternlogd` truth table.
+    imm: Option<u8>,
+    scheme: S,
+}
+
+/// A VEX-encoded instruction.
+pub(super) type Vex = Opcode<VexPrefix>;
+/// An EVEX-encoded instruction.
+pub(super) type Evex = Opcode<EvexPrefix>;
+
+impl<S: Scheme> Opcode<S> {
+    const fn new(map: Map, pp: Pp, byte: u8) -> Self {
+        Self {
+            map,
+            pp,
+            w: false,
+            byte,
+            imm: None,
+            scheme: S::FULL,
+        }
+    }
+    /// Map `0F`, no prefix — the packed-single family.
+    pub(super) const fn m0f(byte: u8) -> Self {
+        Self::new(Map::M0F, Pp::None, byte)
+    }
+    /// Map `0F`, `66` — the integer-domain family.
+    pub(super) const fn m0f_66(byte: u8) -> Self {
+        Self::new(Map::M0F, Pp::P66, byte)
+    }
+    /// Map `0F`, `F3`.
+    pub(super) const fn m0f_f3(byte: u8) -> Self {
+        Self::new(Map::M0F, Pp::F3, byte)
+    }
+    /// Map `0F38`, `66`.
+    pub(super) const fn m0f38_66(byte: u8) -> Self {
+        Self::new(Map::M0F38, Pp::P66, byte)
+    }
+    /// Map `0F38`, `F3` — the mask-to-vector widening family.
+    pub(super) const fn m0f38_f3(byte: u8) -> Self {
+        Self::new(Map::M0F38, Pp::F3, byte)
+    }
+    /// Map `0F3A`, `66` — the imm8 family (round, insert/extract, ternlog).
+    pub(super) const fn m0f3a_66(byte: u8) -> Self {
+        Self::new(Map::M0F3A, Pp::P66, byte)
+    }
+
+    /// The 64-bit-operand (`W = 1`) form of this instruction.
+    pub(super) const fn w1(self) -> Self {
+        Self { w: true, ..self }
+    }
+    /// The 128-bit form of this instruction.
+    pub(super) fn xmm(self) -> Self {
+        Self {
+            scheme: self.scheme.xmm(),
+            ..self
+        }
+    }
+    /// This instruction with its imm8, which every operand form emits last.
+    pub(super) const fn imm(self, imm: u8) -> Self {
+        Self {
+            imm: Some(imm),
+            ..self
+        }
+    }
+
+    /// The instruction a three-operand [`Alu`] op is.
+    pub(super) const fn alu(op: Alu) -> Self {
+        match op {
+            Alu::Add => Self::m0f(0x58),
+            Alu::Sub => Self::m0f(0x5C),
+            Alu::Mul => Self::m0f(0x59),
+            Alu::Div => Self::m0f(0x5E),
+            Alu::Min => Self::m0f(0x5D),
+            Alu::Max => Self::m0f(0x5F),
+            Alu::And => Self::m0f(0x54),
+            Alu::AndNot => Self::m0f(0x55),
+            Alu::Or => Self::m0f(0x56),
+            Alu::Xor => Self::m0f(0x57),
+            Alu::IAdd => Self::m0f_66(0xFE),
+        }
+    }
+
+    /// The instruction a one-source [`Lanewise`] op is.
+    pub(super) const fn lanewise(op: Lanewise) -> Self {
+        match op {
+            Lanewise::Sqrt => Self::m0f(0x51),
+            Lanewise::Rsqrt => S::RSQRT,
+            Lanewise::Recip => S::RECIP,
+            Lanewise::ToInt => Self::m0f_f3(0x5B),
+            Lanewise::FromInt => Self::m0f(0x5B),
+            Lanewise::WidenBytes => Self::m0f38_66(0x31),
+        }
+    }
+
+    /// The prefix and opcode, then `tail` (ModRM and what follows it), then the
+    /// imm8.
+    fn encode(self, ext: Ext, tail: impl FnOnce(&mut EncodedInst)) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        S::write(&self, ext, &mut inst);
+        tail(&mut inst);
+        if let Some(imm) = self.imm {
+            inst.push(imm);
+        }
+        inst
+    }
+
+    /// `op reg, vvvv, rm` with `rm` a register: the three-operand form.
+    pub(super) fn rrr(
+        self,
+        reg: impl RegField,
+        vvvv: impl RegField,
+        rm: impl RegField,
+    ) -> EncodedInst {
+        self.registers(Ext::reg(reg).vvvv(vvvv), reg, rm)
+    }
+
+    /// `op reg, rm` with no `vvvv` source.
+    pub(super) fn rr(self, reg: impl RegField, rm: impl RegField) -> EncodedInst {
+        self.registers(Ext::reg(reg), reg, rm)
+    }
+
+    fn registers(self, ext: Ext, reg: impl RegField, rm: impl RegField) -> EncodedInst {
+        let ext = Ext {
+            x: bit(rm, 4),
+            b: bit(rm, 3),
+            ..ext
+        };
+        self.encode(ext, |inst| inst.push(modrm_rr(reg, rm)))
+    }
+
+    /// An instruction with no operands.
+    pub(super) fn bare(self) -> EncodedInst {
+        self.encode(Ext::default(), |_| {})
+    }
+
+    /// `op reg, [base + disp]`: the memory-operand form, for any base and any
+    /// displacement the scheme reads as written.
+    pub(super) fn rm<D: DispIn<S>>(
+        self,
+        reg: impl RegField,
+        base: impl RegField,
+        disp: D,
+    ) -> EncodedInst {
+        let ext = Ext {
+            b: bit(base, 3),
+            ..Ext::reg(reg)
+        };
+        self.encode(ext, |inst| mem_operand_into(inst, reg, base, disp))
+    }
+
+    /// `op reg, [rsp + slot]`: the frame form ([`frame_operand_into`]). The
+    /// stack pointer is no operand, so there is no `B` to extend.
+    pub(super) fn frame(self, reg: impl RegField, slot: FrameSlot) -> EncodedInst {
+        self.encode(Ext::reg(reg), |inst| frame_operand_into(inst, reg, slot))
+    }
+
+    /// `op reg, [rip + disp32]`: the displacement is the last four bytes, a
+    /// label field.
+    pub(super) fn rip(self, reg: impl RegField) -> EncodedInst {
+        debug_assert!(self.imm.is_none(), "an imm8 would follow the label field");
+        self.encode(Ext::reg(reg), |inst| rip_operand_into(inst, reg))
+    }
+
+    /// `op reg, [base + index*4]` — the SIB form with a scaled index, which a
+    /// broadcast load reads one element of a plane through.
+    pub(super) fn rm_scaled4(
+        self,
+        reg: impl RegField,
+        base: impl RegField,
+        index: impl RegField,
+    ) -> EncodedInst {
+        debug_assert!(low3(index) != RM_SIB, "rsp/r12 cannot index a SIB");
+        let ext = Ext {
+            x: bit(index, 3),
+            b: bit(base, 3),
+            ..Ext::reg(reg)
+        };
+        self.encode(ext, |inst| scaled4_operand_into(inst, reg, base, index))
+    }
+
+    /// `op reg, [base + vecINDEX*4]` — the VSIB form, whose index is a
+    /// *vector* register: one address per lane, scale 4, no displacement. The
+    /// SIB bytes are a GPR index's, but as a vector number `100` is
+    /// `ymm4`/`ymm12`, which a gather may perfectly well be indexed by. The
+    /// EVEX gather's mask is in `aaa`, and `vvvv` reads `1111`.
+    pub(super) fn vsib_scaled4(
+        self,
+        reg: impl RegField,
+        base: impl RegField,
+        index: impl RegField,
+    ) -> EncodedInst {
+        self.vsib(Ext::reg(reg), reg, base, index)
+    }
+
+    /// [`Opcode::vsib_scaled4`] with `vvvv`, which is the VEX gather's mask.
+    pub(super) fn vsib_scaled4_masked(
+        self,
+        reg: impl RegField,
+        mask: impl RegField,
+        base: impl RegField,
+        index: impl RegField,
+    ) -> EncodedInst {
+        self.vsib(Ext::reg(reg).vvvv(mask), reg, base, index)
+    }
+
+    fn vsib(
+        self,
+        ext: Ext,
+        reg: impl RegField,
+        base: impl RegField,
+        index: impl RegField,
+    ) -> EncodedInst {
+        let ext = Ext {
+            x: bit(index, 3),
+            b: bit(base, 3),
+            v: bit(index, 4),
+            ..ext
+        };
+        self.encode(ext, |inst| scaled4_operand_into(inst, reg, base, index))
+    }
+}
+
+impl Evex {
+    /// This instruction under the writemask register `k`.
+    pub(super) fn masked(self, k: impl RegField) -> Self {
+        Self {
+            scheme: EvexPrefix {
+                aaa: Some(k.field()),
+                ..self.scheme
+            },
+            ..self
+        }
+    }
+}
+
+// =============================================================================
+// The vector instructions both tiers share
+// =============================================================================
+
+/// The opcode of tier `T`'s prefix scheme.
+type Code<T> = Opcode<<T as X86>::Prefix>;
+
+/// An x86 vector instruction, generic over what its operands are ([`Stage`]),
+/// like [`Gp`], and over the tier that selects it. VEX and EVEX are both
+/// three-operand and non-destructive, so no destination is tied to a source
+/// unless it says so with a `Tie`, and an operand may be the register the
+/// result is written to.
+///
+/// The variants are the instructions both tiers have; an instruction only one
+/// has is a variant of that tier's [`X86::Extra`], which the other tier's
+/// type does not contain.
+pub(super) enum Inst<S: Stage, T: X86> {
+    /// `op dst, a, b`
+    Alu {
+        op: Alu,
+        dst: S::Write<Vector>,
+        a: S::Read<Vector>,
+        b: S::Read<Vector>,
+    },
+    /// `op dst, src`
+    Unary {
+        op: Lanewise,
+        dst: S::Write<Vector>,
+        src: S::Read<Vector>,
+    },
+    /// `vroundps`/`vrndscaleps dst, src, mode`: scale 0, so an integer.
+    /// (Opcode `08` is packed-single; `09` is packed-double and needs `W1`.)
+    Round {
+        mode: Rounding,
+        dst: S::Write<Vector>,
+        src: S::Read<Vector>,
+    },
+    /// `vpslld`/`vpsrld dst, src, amount`
+    Shift {
+        direction: Direction,
+        dst: S::Write<Vector>,
+        src: S::Read<Vector>,
+        amount: u8,
+    },
+    /// `vfmadd231ps acc, a, b`: `acc = a·b + acc`, one rounding. FMA3 is not
+    /// implied by AVX2 in CPUID, which is why `crate::isa`'s x86-64 probe asks
+    /// for both before either tier can be selected.
+    Fma231 {
+        acc: S::Tie<Vector>,
+        a: S::Read<Vector>,
+        b: S::Read<Vector>,
+    },
+    /// All-ones, whatever `dst` held ([`X86::ones`]). Its reads are not
+    /// operands, because the result does not depend on them.
+    Ones { dst: S::Write<Vector> },
+    /// `vxorps dst, dst, dst`: zero, whatever `dst` held. Its reads are not
+    /// operands, because the result does not depend on them.
+    Zero { dst: S::Write<Vector> },
+    /// `vmovaps dst, src`
+    Mov {
+        dst: S::Write<Vector>,
+        src: S::Read<Vector>,
+    },
+    /// `vbroadcastss dst, [rip + at]`: one pool entry, whose label the
+    /// kernel's constants bind.
+    LoadConst { dst: S::Write<Vector>, at: Label },
+    /// `vmovups [rsp + slot], src`: the allocator's spill.
+    SpillVector { src: S::Read<Vector>, slot: S::Slot },
+    /// `vmovups dst, [rsp + slot]`: the allocator's reload.
+    ReloadVector {
+        dst: S::Write<Vector>,
+        slot: S::Slot,
+    },
+    /// `vcvttss2si dst, src`: lane 0, truncated to a 64-bit integer. EVEX
+    /// where the tier is AVX-512, so the source may be `zmm16..31`.
+    Cvtt {
+        dst: S::Write<Integer>,
+        src: S::Read<Vector>,
+    },
+    /// `vmovq dst, src`: eight bytes into the low lanes, the rest zeroed.
+    Movq {
+        dst: S::Write<Vector>,
+        src: S::Read<Integer>,
+    },
+    /// `vmovups [dst], src` with no displacement: a whole batch to the
+    /// address the store's arithmetic computed.
+    StoreBatch {
+        dst: Mem<S, NoDisp>,
+        src: S::Read<Vector>,
+    },
+    /// `vbroadcastss dst, [src]`: one `f32`, a pool entry or a uniform, into
+    /// every lane. A full `disp32`, never EVEX's compressed `disp8`, which
+    /// scales the byte by the tuple's element size.
+    Broadcast {
+        dst: S::Write<Vector>,
+        src: Mem<S, Imm32>,
+    },
+    /// `vbroadcastss dst, [base + index*4]`: one element of a plane.
+    BroadcastIndexed {
+        dst: S::Write<Vector>,
+        base: S::Read<Pointer>,
+        index: S::Read<Integer>,
+    },
+    /// An instruction only tier `T` has.
+    Extra(T::Extra<S>),
+}
+
+impl<T: X86> Inst<Selected, T> {
+    /// Rebuild at stage `To`, visiting each operand once, in field order.
+    fn walk<To: Stage>(&self, f: &mut impl Rebind<To>) -> Inst<To, T> {
+        match self {
+            Inst::Alu { op, dst, a, b } => Inst::Alu {
+                op: *op,
+                dst: f.write(dst),
+                a: f.read(*a),
+                b: f.read(*b),
+            },
+            Inst::Unary { op, dst, src } => Inst::Unary {
+                op: *op,
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::Round { mode, dst, src } => Inst::Round {
+                mode: *mode,
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::Shift {
+                direction,
+                dst,
+                src,
+                amount,
+            } => Inst::Shift {
+                direction: *direction,
+                dst: f.write(dst),
+                src: f.read(*src),
+                amount: *amount,
+            },
+            Inst::Fma231 { acc, a, b } => Inst::Fma231 {
+                acc: f.tie(acc),
+                a: f.read(*a),
+                b: f.read(*b),
+            },
+            Inst::Ones { dst } => Inst::Ones { dst: f.write(dst) },
+            Inst::Zero { dst } => Inst::Zero { dst: f.write(dst) },
+            Inst::Mov { dst, src } => Inst::Mov {
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::LoadConst { dst, at } => Inst::LoadConst {
+                dst: f.write(dst),
+                at: *at,
+            },
+            Inst::SpillVector { src, slot } => Inst::SpillVector {
+                src: f.read(*src),
+                slot: f.slot(*slot),
+            },
+            Inst::ReloadVector { dst, slot } => Inst::ReloadVector {
+                dst: f.write(dst),
+                slot: f.slot(*slot),
+            },
+            Inst::Cvtt { dst, src } => Inst::Cvtt {
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::Movq { dst, src } => Inst::Movq {
+                dst: f.write(dst),
+                src: f.read(*src),
+            },
+            Inst::StoreBatch { dst, src } => Inst::StoreBatch {
+                dst: dst.walk(f),
+                src: f.read(*src),
+            },
+            Inst::Broadcast { dst, src } => Inst::Broadcast {
+                dst: f.write(dst),
+                src: src.walk(f),
+            },
+            Inst::BroadcastIndexed { dst, base, index } => Inst::BroadcastIndexed {
+                dst: f.write(dst),
+                base: f.read(*base),
+                index: f.read(*index),
+            },
+            Inst::Extra(extra) => Inst::Extra(T::walk_extra(extra, f)),
+        }
+    }
+}
+
+impl<'m, T: X86> Inst<Bound<'m, T>, T> {
+    fn encode(&self) -> EncodedInst {
+        match self {
+            Inst::Alu { op, dst, a, b } => Code::<T>::alu(*op).rrr(dst, a, b),
+            Inst::Unary { op, dst, src } => Code::<T>::lanewise(*op).rr(dst, src),
+            Inst::Round { mode, dst, src } => {
+                Code::<T>::m0f3a_66(0x08).imm(*mode as u8).rr(dst, src)
+            }
+            // The destination is `vvvv` and the `/digit` is `reg`.
+            Inst::Shift {
+                direction,
+                dst,
+                src,
+                amount,
+            } => Code::<T>::m0f_66(0x72)
+                .imm(*amount)
+                .rrr(direction.digit(), dst, src),
+            Inst::Fma231 { acc, a, b } => Code::<T>::m0f38_66(0xB8).rrr(acc, a, b),
+            Inst::Ones { dst } => T::ones(dst),
+            Inst::Zero { dst } => Code::<T>::alu(Alu::Xor).rrr(dst, dst, dst),
+            Inst::Mov { dst, src } => Code::<T>::m0f(0x28).rr(dst, src),
+            Inst::LoadConst { dst, .. } => Code::<T>::m0f38_66(0x18).rip(dst),
+            Inst::SpillVector { src, slot } => Code::<T>::m0f(0x11).frame(src, *slot),
+            Inst::ReloadVector { dst, slot } => Code::<T>::m0f(0x10).frame(dst, *slot),
+            Inst::Cvtt { dst, src } => Code::<T>::m0f_f3(0x2C).w1().rr(dst, src),
+            Inst::Movq { dst, src } => Code::<T>::m0f_66(0x6E).w1().xmm().rr(dst, src),
+            Inst::StoreBatch { dst, src } => Code::<T>::m0f(0x11).rm(src, &dst.base, dst.disp),
+            Inst::Broadcast { dst, src } => Code::<T>::m0f38_66(0x18).rm(dst, &src.base, src.disp),
+            Inst::BroadcastIndexed { dst, base, index } => {
+                Code::<T>::m0f38_66(0x18).rm_scaled4(dst, base, index)
+            }
+            Inst::Extra(extra) => T::encode_extra(extra),
+        }
+    }
+
+    /// The instruction's bytes, and the label fields in them.
+    fn assemble(&self, out: &mut Encoding<'_>) {
+        let inst = self.encode();
+        out.bytes(inst.as_bytes());
+        if let Inst::LoadConst { at, .. } = self {
+            // The displacement is the instruction's last four bytes.
+            out.field(inst.as_bytes().len() - 4, *at, patch_rel32);
+        }
+    }
+}
+
+/// What the selection pipeline builds for tier `T`: a vector instruction or a
+/// general-register one (the loop nest's, and the store's address
+/// arithmetic). One type so a block holds both; no derives, because a
+/// selected instruction owns its definitions.
+pub(super) enum Op<S: Stage, T: X86> {
+    Vector(Inst<S, T>),
+    General(Gp<S>),
+}
+
+impl<T: X86> Op<Selected, T> {
+    pub(super) fn walk<To: Stage>(&self, f: &mut impl Rebind<To>) -> Op<To, T> {
+        match self {
+            Op::Vector(inst) => Op::Vector(inst.walk(f)),
+            Op::General(gp) => Op::General(gp.walk(f)),
+        }
+    }
+}
+
+impl<'m, T: X86> Op<Bound<'m, T>, T> {
+    pub(super) fn assemble(&self, out: &mut Encoding<'_>) {
+        match self {
+            Op::Vector(inst) => inst.assemble(out),
+            Op::General(gp) => gp.assemble(out),
+        }
+    }
 }
 
 // =============================================================================
@@ -781,7 +1883,7 @@ pub(super) fn displacement(index: u64, size: u64) -> Result<Imm32, CompileError>
 /// they cost a different number of bytes, and `mod = 00` is not "a
 /// displacement of zero" (see [`NoDisp`]). So the width is picked by the
 /// operand's TYPE — never by the caller reaching for a differently-named
-/// function, which is where that choice used to live.
+/// function.
 pub(super) trait Disp: Copy {
     /// The ModRM `mod` field this displacement implies.
     const MOD: u8;
@@ -822,9 +1924,10 @@ impl Disp for Imm32 {
 
 /// An address spelled `[base + disp]`.
 ///
-/// The base being a `Pointer` is the point: `rsp` is a value here. It used
-/// to be the `_rsp` and `_base` suffixes of five separate functions that all
-/// encoded the same `movups`, where nothing could check it.
+/// The base being a `Pointer` is the point: an address is a value, so one
+/// encoder serves every base. `rsp` is in no class (the frame's, see
+/// `regalloc::resource::Frame`), so a frame slot is not a `Mem`: it is the
+/// frame form, [`frame_operand_into`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Mem<S: Stage, D> {
     /// The register the displacement is measured from.
@@ -855,53 +1958,58 @@ const RM_RIP_AT_MOD0: u8 = 0b101;
 const SIB_BASE_ONLY: u8 = 0x24;
 
 /// Write the ModRM/SIB tail for `[base + index*4]` into an `EncodedInst`:
-/// `mod = 00`, a SIB with scale 4 and no displacement — the element of a
-/// plane of `f32`s, addressed in one instruction. The tail is the
-/// architecture's, not the prefix's, so the VEX and EVEX tiers share it the
-/// way they share [`mem_operand_into`]. Registers are hardware numbers.
-pub(super) fn scaled4_operand_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
-    debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
-    sib4_tail_into(inst, reg, base, index);
-}
-
-/// [`scaled4_operand_into`] with a *vector* index — the VSIB a gather
-/// addresses through, `[base + ymm*4]`. Same bytes; the one rule that does
-/// not carry over is the GPR one, because SIB index `100` means "no index"
-/// only when the index is a general register: as a vector number it is
-/// `ymm4`/`ymm12`, which a gather may perfectly well be indexed by. The
-/// prefix's X bit carries the index's high bit either way.
-pub(super) fn vsib4_operand_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
-    sib4_tail_into(inst, reg, base, index);
-}
-
-/// The ModRM/SIB bytes both scaled-index forms share.
-fn sib4_tail_into(inst: &mut EncodedInst, reg: u8, base: u8, index: u8) {
+/// `mod = 00`, a SIB with scale 4 and no displacement — the element of a plane
+/// of `f32`s, addressed in one instruction, or a gather's VSIB. The tail is the
+/// architecture's, not the prefix's, so VEX and EVEX share it the way they
+/// share [`mem_operand_into`].
+fn scaled4_operand_into(
+    inst: &mut EncodedInst,
+    reg: impl RegField,
+    base: impl RegField,
+    index: impl RegField,
+) {
     assert!(
-        base & 7 != RM_RIP_AT_MOD0,
-        "[r{base} + index*4] has no mod=00 form: rbp/r13 as a SIB base means no base"
+        low3(base) != RM_RIP_AT_MOD0,
+        "[base + index*4] has no mod=00 form: rbp/r13 as a SIB base means no base"
     );
-    inst.push(((reg & 7) << 3) | RM_SIB);
-    inst.push((0b10 << 6) | ((index & 7) << 3) | (base & 7));
+    inst.push((low3(reg) << 3) | RM_SIB);
+    inst.push((0b10 << 6) | (low3(index) << 3) | low3(base));
 }
 
 /// Write the ModRM/SIB/disp tail of `[base + disp]` into an `EncodedInst`.
-pub(super) fn mem_operand_into<D: Disp>(inst: &mut EncodedInst, reg: u8, base: u8, disp: D) {
-    let rm = base & 7;
+fn mem_operand_into<D: Disp>(
+    inst: &mut EncodedInst,
+    reg: impl RegField,
+    base: impl RegField,
+    disp: D,
+) {
+    let rm = low3(base);
     debug_assert!(
         D::MOD != NoDisp::MOD || rm != RM_RIP_AT_MOD0,
         "[rbp]/[r13] has no mod=00 form: that encoding is RIP-relative"
     );
-    inst.push(D::MOD | ((reg & 7) << 3) | rm);
+    inst.push(D::MOD | (low3(reg) << 3) | rm);
     if rm == RM_SIB {
         inst.push(SIB_BASE_ONLY);
     }
     disp.emit_inst(inst);
 }
 
+/// Write the ModRM/SIB/disp32 tail of `[rsp + slot]` into an `EncodedInst`:
+/// the frame form. The stack pointer is the frame's and in no file, so it is
+/// not an operand here but the bits the SIB form spells it with: `rm = 100`
+/// ([`RM_SIB`], which is also its low three bits) and a SIB whose base field
+/// is those bits again ([`SIB_BASE_ONLY`]), under a full `disp32`.
+fn frame_operand_into(inst: &mut EncodedInst, reg: impl RegField, slot: FrameSlot) {
+    inst.push(Imm32::MOD | (low3(reg) << 3) | RM_SIB);
+    inst.push(SIB_BASE_ONLY);
+    Imm32(slot_disp(slot)).emit_inst(inst);
+}
+
 /// The ModRM and `disp32` of `[rip + label]`: the displacement is a label
 /// field, the last four bytes of the instruction.
-pub(super) fn rip_operand_into(inst: &mut EncodedInst, reg: u8) {
-    inst.push(((reg & 7) << 3) | RM_RIP_AT_MOD0);
+fn rip_operand_into(inst: &mut EncodedInst, reg: impl RegField) {
+    inst.push((low3(reg) << 3) | RM_RIP_AT_MOD0);
     inst.extend(&[0, 0, 0, 0]);
 }
 
@@ -913,23 +2021,23 @@ mod tests {
     /// An instruction's bytes, and the label field in them if it has one.
     type Word = (EncodedInst, Option<(usize, Label)>);
 
+    fn word(bytes: &[u8]) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        inst.extend(bytes);
+        inst
+    }
+
     /// `jmp rel32` with its label field, as the assembler is handed it.
     fn jmp(to: Label) -> Item<Word> {
-        Item::Inst((
-            EncodedInst::from_slice(&[0xE9, 0, 0, 0, 0]),
-            Some((JMP_DISP, to)),
-        ))
+        Item::Inst((word(&[0xE9, 0, 0, 0, 0]), Some((JMP_DISP, to))))
     }
 
     fn jb(to: Label) -> Item<Word> {
-        Item::Inst((
-            EncodedInst::from_slice(&[0x0F, 0x82, 0, 0, 0, 0]),
-            Some((JCC_DISP, to)),
-        ))
+        Item::Inst((word(&[0x0F, 0x82, 0, 0, 0, 0]), Some((JCC_DISP, to))))
     }
 
     fn plain(bytes: &[u8]) -> Item<Word> {
-        Item::Inst((EncodedInst::from_slice(bytes), None))
+        Item::Inst((word(bytes), None))
     }
 
     fn ret() -> Item<Word> {
@@ -1041,68 +2149,5 @@ mod tests {
         let twice = labels.mint();
         let code = assembled(vec![Item::Bind(twice), Item::Bind(twice)], labels);
         unreachable!("assembled {} bytes around a label bound twice", code.len());
-    }
-
-    /// A vehicle for the memory-operand tail: `movups [base + disp], xmm`
-    /// (`0F 11 /r`), the simplest legacy instruction that takes a memory
-    /// operand. Test-only — no tier emits it — so what is under test is
-    /// [`mem_operand_into`] and the REX bits, not a 128-bit store.
-    fn movups_store<D: Disp>(src: u8, base: u8, disp: D) -> Vec<u8> {
-        let mut inst = EncodedInst::new();
-        let rex = 0x40 | (u8::from(src >= 8) << 2) | u8::from(base >= 8);
-        if rex != 0x40 {
-            inst.push(rex);
-        }
-        inst.push(0x0F);
-        inst.push(0x11);
-        mem_operand_into(&mut inst, src, base, disp);
-        inst.as_bytes().to_vec()
-    }
-
-    /// REX extends each side of a memory operand independently: R for the
-    /// register, B for the base, both, or neither.
-    #[test]
-    fn a_memory_operands_rex_bits_follow_its_two_registers() {
-        let store = |reg, base| movups_store(reg, base, NoDisp);
-        assert_eq!(store(3, 3), [0x0F, 0x11, ((3 & 7) << 3) | 3]);
-        assert_eq!(store(9, 3), [0x44, 0x0F, 0x11, ((9 & 7) << 3) | 3]);
-        assert_eq!(store(2, 11), [0x41, 0x0F, 0x11, ((2 & 7) << 3) | (11 & 7)]);
-        assert_eq!(
-            store(11, 14),
-            [0x45, 0x0F, 0x11, ((11 & 7) << 3) | (14 & 7)]
-        );
-    }
-
-    /// One instruction, three bases: `[rsp+8]`, `[rax+8]` and `[r10+8]`
-    /// differ only in ModRM.rm (plus the SIB `rsp` implies and the REX.B `r10`
-    /// does). That is why the base is an operand and not a name suffix.
-    #[test]
-    fn the_base_register_is_an_operand() {
-        let store = |base| movups_store(1, base, Imm8(8));
-        // 0F 11 /r, mod=01: rsp takes a SIB byte, rax and r10 do not.
-        assert_eq!(store(4), [0x0F, 0x11, 0x4C, 0x24, 0x08]);
-        assert_eq!(store(0), [0x0F, 0x11, 0x48, 0x08]);
-        assert_eq!(store(10), [0x41, 0x0F, 0x11, 0x4A, 0x08]);
-    }
-
-    /// The displacement's *type* picks the encoding, so the same address at the
-    /// same offset is a 5-byte or an 8-byte instruction depending on which
-    /// operand the caller built — and `NoDisp` is a third, shorter mode, not
-    /// `Imm8(0)`.
-    #[test]
-    fn the_displacement_type_picks_the_encoding() {
-        let d8 = movups_store(0, 4, Imm8(16));
-        let d32 = movups_store(0, 4, Imm32(16));
-        assert_eq!(d8, [0x0F, 0x11, 0x44, 0x24, 0x10], "mod=01, disp8");
-        assert_eq!(
-            d32,
-            [0x0F, 0x11, 0x84, 0x24, 0x10, 0x00, 0x00, 0x00],
-            "mod=10, disp32"
-        );
-
-        let bare = movups_store(0, 6, NoDisp);
-        let zero = movups_store(0, 6, Imm8(0));
-        assert_eq!(bare, [0x0F, 0x11, 0x06], "mod=00 is its own mode");
-        assert_eq!(zero, [0x0F, 0x11, 0x46, 0x00], "and a byte longer than it");
     }
 }

@@ -1,7 +1,7 @@
 //! The feature-quotient structural key of an arena expression.
 //!
 //! One key per expression DAG, shared by every stage that must agree on
-//! "the model has already seen this" (docs/plans/2026-08-17-cost-model-domain.md,
+//! "the model has already seen this" (docs/archive/plans/2026-08-17-cost-model-domain.md,
 //! J8 / P1(d)): `gen_bench_corpus`'s cross-tier dedup ledger today, and any
 //! trainer's holdout fence tomorrow. Keeping the key in one place is the
 //! point: two divergent notions of "the same expression" would re-open

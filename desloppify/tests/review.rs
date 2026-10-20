@@ -704,6 +704,52 @@ async fn a_module_root_rule_shows_the_root_outline_as_context_and_a_root_file_al
 }
 
 #[tokio::test]
+async fn a_module_intent_rule_shows_the_nearest_intent_within_the_crate() {
+    let tree = Tree::new(
+        "intent",
+        &[(
+            "contract",
+            r#"{"unit": "file", "levels": {"decide": 1, "explain": 1}, "context": "module_intent",
+                "question": "q", "fine": {"f": "f"}, "violations": {"v": "v"}}"#,
+        )],
+        &[
+            ("Cargo.toml", "[package]\nname = \"x\"\n"),
+            ("intent.md", "# x\n\n**Is.** The crate.\n"),
+            ("src/lib.rs", "mod m;\nmod top;\n"),
+            ("src/top.rs", "fn top() {}\n"),
+            ("src/m/mod.rs", "mod leaf;\n"),
+            ("src/m/leaf.rs", "fn leaf() {}\n"),
+            ("src/m/intent.md", "# x/src/m\n\n**Is.** The module.\n"),
+        ],
+    );
+    let reviewers = reviewers(Scripted::new(|_| Ok(UNSURE.into())), decide::none());
+    run(&tree, &["src/m/leaf.rs", "src/top.rs"], &reviewers).await;
+
+    let asked = reviewers.ask.asked();
+    let leaf = asked
+        .iter()
+        .find(|a| a.prompt.contains("leaf.rs\n"))
+        .unwrap();
+    assert!(
+        leaf.prompt.contains("its module's intent"),
+        "{}",
+        leaf.prompt
+    );
+    assert!(leaf.prompt.contains("    3 | **Is.** The module.\n"));
+    assert!(!leaf.prompt.contains("The crate."));
+    assert!(leaf.prompt.contains("the outline of its module root"));
+    let top = asked
+        .iter()
+        .find(|a| a.prompt.contains("top.rs\n"))
+        .unwrap();
+    assert!(
+        top.prompt.contains("    3 | **Is.** The crate.\n"),
+        "{}",
+        top.prompt
+    );
+}
+
+#[tokio::test]
 async fn files_in_no_known_language_or_outside_a_rules_paths_are_never_shown() {
     let tree = Tree::new(
         "plan",

@@ -20,7 +20,7 @@
   reason expired and the split stayed" (one-pipeline §2).
 - **Lives:** `.claude/skills/denotational-diagnosis/SKILL.md` (step 7,
   "Refuse exceptions", and the section "Signs it is not");
-  `docs/plans/2026-09-01-register-allocation-escape-hatches.md` ("a list of
+  `docs/archive/plans/2026-09-01-register-allocation-escape-hatches.md` ("a list of
   invariants a person maintains that a type could maintain instead");
   `desloppify/rules/carve-out.json`. Exceptions known to be live today:
   - Effects (`Write`, `Seq`) as `Def`s that define no value.
@@ -70,9 +70,12 @@
     `Binder(u8)` (`pixelflow-ir/src/fold.rs`).
   - `LatticeShape([u32; _])` (`pixelflow-ir/src/variance.rs`).
   - The DAG's `Id(u32)` and `DagIdentity(u32)` (`pixelflow-ir/src/dag.rs`).
-  - `EClassId(pub(crate) u32)` (`pixelflow-search/src/egraph/node.rs`).
   - `ScheduledOp::Context(u16)` (`pixelflow-codegen/src/program/mod.rs`).
   - The string `Label` (`pixelflow-codegen/src/emit/mod.rs`).
+
+  Narrower than 64 bits *with* a profiler reason, written in the type's own
+  doc as the rule asks: `EClassId(pub(crate) u32)`
+  (`pixelflow-search/src/egraph/node.rs`; the doc carries the measurement).
 
   `ExprNode`'s own doc still says the assertion "guarantees <= 16 bytes",
   while the assertion reads `<= 32`.
@@ -93,6 +96,6 @@
   taken. `Box<dyn Trait>` pays the dispatch on every call. Thirty walkers
   that each match a case to read one property should call one method.
 - **Lives:** CLAUDE.md, "Fold before you dispatch" and "New implementation
-  of an existing category → trait first"; `docs/STYLE.md` (Code Structure
-  rule 3). `docs/STYLE.md` and `AGENTS.md` call the branch around an `If` "not
+  of an existing category → trait first"; `docs/process/STYLE.md` (Code Structure
+  rule 3). `docs/process/STYLE.md` and `AGENTS.md` call the branch around an `If` "not
   a violation": it changes the work done, never the value.

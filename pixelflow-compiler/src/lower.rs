@@ -31,7 +31,7 @@
 //! `PeelFold`), when the kernel is baked.
 //!
 //! An entry's parameters are its uniforms
-//! (docs/plans/2026-09-25-the-language-is-kernel.md §1.4): each scalar — an
+//! (docs/language/2026-09-25-the-language-is-kernel.md §1.4): each scalar — an
 //! `f32` parameter, or one field of a record parameter — is declared as a
 //! uniform, in [`AnalyzedKernel::parameters`]' order, and read through its
 //! `Uniform` leaf. Nothing a call passes is a constant of the program, so

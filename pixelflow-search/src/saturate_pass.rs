@@ -1,16 +1,17 @@
-//! Equality saturation as an [`Optimize`] value.
+//! Equality saturation as an `Optimize` value.
 //!
-//! [`Optimizer`] decides *how* saturation runs — rule set, budget, cost model,
+//! `Optimizer` decides *how* saturation runs — rule set, budget, cost model,
 //! extractor. [`Saturate`] is the endomorphism that runs it: insert the term,
 //! saturate, extract, materialise. Those are different things, and until
-//! [`Optimize`] existed only the first had a name, so every tier wrote the
+//! `Optimize` existed only the first had a name, so every tier wrote the
 //! second out by hand.
 
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::optimize::{Optimize, Rewritten};
 
-use crate::egraph::{Optimizer, RuleSet, Vocabulary, insert, reachable_count};
+use crate::egraph::{Optimizer, RuleSet, Vocabulary, insert};
+#[cfg(feature = "saturation-telemetry")]
 use crate::tier::Tier;
 
 /// Rewrite a term by equality saturation under `optimizer`.
@@ -21,6 +22,10 @@ use crate::tier::Tier;
 pub struct Saturate {
     optimizer: Optimizer,
     vocab: Vocabulary,
+    // Whose stderr the record goes to is a fact about the process, not about
+    // the vocabulary: `Vocabulary::Templates` also serves Dwrt expansion in
+    // ordinary processes. Only the telemetry record reads it.
+    #[cfg(feature = "saturation-telemetry")]
     tier: Tier,
 }
 
@@ -36,6 +41,7 @@ impl Saturate {
                 .rules(RuleSet::runtime())
                 .for_lattice(shape),
             vocab: Vocabulary::Runtime,
+            #[cfg(feature = "saturation-telemetry")]
             tier: Tier::Runtime,
         }
     }
@@ -47,7 +53,7 @@ impl Saturate {
     /// Sits here beside [`Self::runtime`] rather than in the compiler crate
     /// because the two are one decision: what differs between the tiers is
     /// this, and it should be readable in one place. It also carries
-    /// [`Tier::Macro`], which is not bookkeeping — a macro-tier saturation
+    /// `Tier::Macro`, which is not bookkeeping — a macro-tier saturation
     /// writes to rustc's stderr, and telemetry has to prefix its record so
     /// cargo's `--message-format=json` parser does not read it as a compiler
     /// message.
@@ -56,18 +62,8 @@ impl Saturate {
         Self {
             optimizer: Optimizer::production(),
             vocab: Vocabulary::Templates,
+            #[cfg(feature = "saturation-telemetry")]
             tier: Tier::Macro,
-        }
-    }
-
-    /// Saturation under an explicitly chosen policy and vocabulary, for
-    /// harnesses that vary one and hold the rest.
-    #[must_use]
-    pub fn with(optimizer: Optimizer, vocab: Vocabulary, tier: Tier) -> Self {
-        Self {
-            optimizer,
-            vocab,
-            tier,
         }
     }
 }
@@ -79,18 +75,16 @@ impl Optimize for Saturate {
             return Rewritten::Declined;
         };
 
-        let node_count = reachable_count(arena, root);
         #[cfg(feature = "saturation-telemetry")]
         let inserted_classes = egraph.num_classes();
         #[cfg(feature = "saturation-telemetry")]
         let telemetry_start = std::time::Instant::now();
-        let optimized = self.optimizer.run(&mut egraph, root_class, node_count);
+        let optimized = self.optimizer.run(&mut egraph, root_class);
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
 
         #[cfg(feature = "saturation-telemetry")]
         crate::telemetry::record(crate::telemetry::SaturationInvocation {
             tier: self.tier,
-            node_count,
             inserted_classes,
             extraction: optimized.extraction,
             stats: &optimized.stats,

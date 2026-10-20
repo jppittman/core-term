@@ -86,8 +86,8 @@ let features = Lattice::index(128);
 - The resulting `DiscreteManifold` owns an `f32` buffer and reads back into the language as a
   gather (`DiscreteManifold::kernel`) or a 4-tap blend (`BilinearSampler`).
 
-See [`KERNELS_AND_LATTICES.md`](../docs/designs/KERNELS_AND_LATTICES.md) and
-[`2026-07-24-totality-and-the-cost-model.md`](../docs/designs/2026-07-24-totality-and-the-cost-model.md).
+See [`KERNELS_AND_LATTICES.md`](../docs/archive/designs/KERNELS_AND_LATTICES.md) and
+[`2026-07-24-totality-and-the-cost-model.md`](../docs/language/2026-07-24-totality-and-the-cost-model.md).
 
 ## What is not here
 
@@ -104,7 +104,7 @@ never constructs one.
 (`X * X + Y * Y`) monomorphized into a fused kernel and evaluated one SIMD batch at a time,
 over `Field`, `Jet2` or `Jet3` domains. That tier is retired: the compiler beat it, and the
 per-batch call boundary was most of why. Derivatives are symbolic (`Kernel::dx`), not jets.
-See [`2026-09-06-kernel-with-a-lattice.md`](../docs/plans/2026-09-06-kernel-with-a-lattice.md).
+See [`2026-09-06-kernel-with-a-lattice.md`](../docs/archive/plans/2026-09-06-kernel-with-a-lattice.md).
 
 ## Constraints
 

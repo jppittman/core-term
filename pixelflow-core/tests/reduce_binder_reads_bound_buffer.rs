@@ -1,4 +1,4 @@
-//! S0 of `docs/plans/2026-09-09-glyph-as-a-fold-execution.md` — U1/U2.
+//! S0 of `docs/graphics/2026-09-09-glyph-as-a-fold-execution.md` — U1/U2.
 //!
 //! The glyph-as-a-fold rewrite wants a `Kernel` that reads a host-built table
 //! at exact integer indices where the ROW index is a `Kernel::over` reduce
@@ -184,7 +184,7 @@ fn binder_weighted_sum_over_reads_every_column_exactly() {
 /// not depend on its extent.
 ///
 /// This test used to assert the opposite, and the inversion is the whole of
-/// stage 2c (docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md).
+/// stage 2c (docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md).
 /// `legalize` unrolled every `Reduce` unconditionally, so a `Reduce` became
 /// `extent` inlined copies of its body — each with the binder substituted as
 /// a distinct `Const`, which is what let the following `expand_gather` see a

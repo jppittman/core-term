@@ -2,7 +2,7 @@
 
 What the emitter branches over, measured on the tree before the
 `emit-should-just-emit` series moves any of it
-(`docs/plans/2026-09-12-emit-should-just-emit.md`). Every later step of that
+(`docs/archive/plans/2026-09-12-emit-should-just-emit.md`). Every later step of that
 series is gated on these numbers being equal, per fixture, not on a total.
 
 ## What is counted
@@ -70,7 +70,7 @@ As of 2026-10-11. `EmitTraffic::branches`, `BranchTraffic` and
 The scene and glyph byte pins that replaced them
 (`render::packed::tests::the_scenes_emit_their_pinned_code` and
 `tests/glyph_branches.rs`: `(bytes, fnv1a64)` per tier) are deleted too: goldens
-are images, not binaries (docs/plans/2026-10-08-selection-is-a-phase.md §0.11).
+are images, not binaries (docs/archive/plans/2026-10-08-selection-is-a-phase.md §0.11).
 What remains:
 
 | pin | what it holds |

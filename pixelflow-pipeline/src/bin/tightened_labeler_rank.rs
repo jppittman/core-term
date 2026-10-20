@@ -1,4 +1,4 @@
-//! Tightened-labeler re-measurement for Phase 3 (`docs/plans/2026-08-31-guide-design-revision.md`
+//! Tightened-labeler re-measurement for Phase 3 (`docs/archive/plans/2026-08-31-guide-design-revision.md`
 //! §3, option 3, stage-2 prep).
 //!
 //! `guide_headroom` already measures two points on the over-approximation
@@ -21,7 +21,7 @@
 //! refinement will matter for Phase 3 training)?
 //!
 //! For every measured expression this runs the identical pipeline
-//! `guide_headroom` uses (`EGraph::saturate_with_limits` with the same
+//! `guide_headroom` uses (`Saturation::saturate_budgeted` with the same
 //! generous, non-binding safety ceiling, `CostModel::latency_prior()`
 //! extraction) and computes all three labelers —
 //! [`EpisodeLabels::compute`] (loose), [`EpisodeLabels::compute_tight`]
@@ -66,12 +66,12 @@ use clap::Parser;
 use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_search::egraph::{
-    CostModel, EGraph, EpisodeLabels, RuleId, RuleSet, SaturationStop, extract_dag,
+    CostModel, EpisodeLabels, Limits, RuleId, RuleSet, Saturation, SaturationStop, extract_dag,
 };
 use pixelflow_search::math::all_rules;
 
 /// The canonical label of `id` within `rules` — see
-/// docs/plans/2026-09-02-phase3-forward-port.md §2.2 for why every rule-keyed
+/// docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2 for why every rule-keyed
 /// table in this binary is keyed by [`RuleId`] and never by a position in
 /// `all_rules()`.
 fn label_of(rules: &RuleSet, id: RuleId) -> String {
@@ -117,8 +117,7 @@ struct Args {
 /// Identical to `guide_headroom`'s budget — same corpus, same pipeline, so
 /// the two measurements' per-expression rows are directly comparable.
 const SATURATE_MAX_ITERS: usize = 100;
-const SATURATE_MAX_CLASSES: usize = 10_000;
-const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const SATURATE_MAX_MINTED: usize = 10_000;
 
 /// Rule names §2.1 of the design doc names as the structural/congruence
 /// class (labeler 63-84%, strict ~0% in the original headroom measurement).
@@ -359,7 +358,7 @@ fn main() {
     let mut non_quiescent = 0usize;
 
     for (i, (name, arena, root)) in entries.iter().enumerate() {
-        let mut egraph = EGraph::with_rules(all_rules());
+        let mut egraph = Saturation::over(RuleSet::new(all_rules()));
         let root_class = pixelflow_search::egraph::insert(
             arena,
             *root,
@@ -367,17 +366,14 @@ fn main() {
             pixelflow_search::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        let saturate_started = std::time::Instant::now();
-        let sat_stats =
-            egraph.saturate_with_limits(SATURATE_MAX_ITERS, SATURATE_MAX_CLASSES, SATURATE_TIMEOUT);
-        let saturate_elapsed = saturate_started.elapsed();
-        assert!(
-            saturate_elapsed < SATURATE_TIMEOUT,
-            "tightened_labeler_rank: expression '{name}' hit the {SATURATE_TIMEOUT:?} safety \
-             ceiling — expected to never bind at this corpus's scale; fail loud rather than \
-             silently report a truncated sample as converged"
-        );
-        // A run that stopped at the class cap or the iteration ceiling was
+        // No clock: the run is bounded by its iteration and minted-id limits,
+        // both deterministic, so a sample cannot be truncated by machine load.
+        let sat_stats = egraph.saturate_budgeted(Limits {
+            iterations: SATURATE_MAX_ITERS,
+            minted: SATURATE_MAX_MINTED,
+            applications: None,
+        });
+        // A run that stopped at the minted-id cap or the iteration ceiling was
         // cut wherever the safety limit happened to land: its available
         // applications, its extracted path and all three label ratios then
         // describe that truncation, not the rule library. Excluded and
@@ -414,19 +410,13 @@ fn main() {
             tight.load_bearing.len()
         );
 
-        let total_applications = egraph.provenance().recorded_count() as u64;
-        for (app_id, record) in egraph.provenance().applications() {
+        let total_applications = egraph.journal().recorded_count() as u64;
+        for (app_id, record) in egraph.journal().applications() {
             let is_loose = loose.load_bearing.contains(&app_id);
             let is_tight = tight.load_bearing.contains(&app_id);
             let is_strict = strict.load_bearing.contains(&app_id);
 
-            let rule = record.rule.unwrap_or_else(|| {
-                panic!(
-                    "tightened_labeler_rank: application {app_id:?} carries no RuleId — the \
-                     graph was built without rule ids, and every table here is keyed by \
-                     identity"
-                )
-            });
+            let rule = record.rule;
             let agg = rule_agg.entry(rule).or_default();
             agg.fired += 1;
             agg.loose_lb += u64::from(is_loose);

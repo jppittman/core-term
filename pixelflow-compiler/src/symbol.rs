@@ -36,7 +36,7 @@
 //! ## Parameter Symbols
 //!
 //! An entry's parameters are its uniforms
-//! (docs/plans/2026-09-25-the-language-is-kernel.md §1.4): `|cx: f32, cy:
+//! (docs/language/2026-09-25-the-language-is-kernel.md §1.4): `|cx: f32, cy:
 //! f32|` produces `move |cx: f32, cy: f32| -> Kernel`, whose kernel declares
 //! one uniform per parameter with the call's value as its default, and a
 //! reference in the body is that uniform's `Uniform` leaf. A record

@@ -2,7 +2,7 @@
 //! supervised training labels for the future Guide (match scorer).
 //!
 //! This is Phase 1's final piece (see
-//! `docs/plans/2026-07-07-guided-saturation-redesign.md`): the e-graph is an
+//! `docs/compiler/2026-07-07-guided-saturation-redesign.md`): the e-graph is an
 //! audit log, and after an episode the winning extraction's derivation DAG
 //! gives every fired rewrite an exact, observed label — *load-bearing* (it
 //! contributed to the chosen extraction) or *wasted* (it fired but the
@@ -42,7 +42,7 @@
 //! `derivation_ancestors` — a narrower, still-safe over-approximation (see
 //! that function's doc comment for exactly which axes are narrowed). It
 //! exists **alongside** `compute`, not in place of it
-//! (`docs/plans/2026-08-31-guide-design-revision.md` §3, option 3): both can
+//! (`docs/archive/plans/2026-08-31-guide-design-revision.md` §3, option 3): both can
 //! be run on the same episode so the tightened labels can be compared
 //! directly against the original ones, and `compute`'s existing behavior and
 //! tests are untouched.
@@ -65,11 +65,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::cost::CostModel;
-use super::extract::{self, ExtractedDAG};
-use super::graph::EGraph;
-use super::node::{EClassId, ENode};
+use super::extract::{self, ExtractedDAG, Selection};
+use super::graph::{EGraph, Saturation};
+use super::node::EClassId;
 use super::provenance::{ApplicationId, ENodeId, Origin};
 use super::rewrite::Rewrite;
+use super::rules::{RuleIdx, RuleSet};
 use super::saturate::SaturationConfig;
 
 /// Binary hindsight label for one recorded rewrite application.
@@ -133,7 +134,7 @@ pub struct EpisodeLabels {
     pub labels: BTreeMap<ApplicationId, Label>,
     /// Per-rule aggregates, keyed by `rule_idx` (index into the e-graph's
     /// rule list at episode time).
-    pub rule_stats: BTreeMap<usize, RuleStats>,
+    pub rule_stats: BTreeMap<RuleIdx, RuleStats>,
 }
 
 impl EpisodeLabels {
@@ -146,7 +147,7 @@ impl EpisodeLabels {
     ///
     /// Panics if `choices` is missing an entry (or has an out-of-range node
     /// index) for a class actually reachable from `root` via the chosen
-    /// nodes — the same invariant `choices_to_arena` enforces, and for the
+    /// nodes, or is cyclic — the invariant `Selection::of_map` enforces, and for the
     /// same reason: silently defaulting to node 0 here would fabricate a
     /// label for a node that was never really "chosen," corrupting the
     /// training signal instead of surfacing the extractor bug that produced
@@ -197,9 +198,9 @@ impl EpisodeLabels {
     /// anything except which applications they credit.
     fn from_load_bearing(egraph: &EGraph, load_bearing: BTreeSet<ApplicationId>) -> Self {
         let mut labels = BTreeMap::new();
-        let mut rule_stats: BTreeMap<usize, RuleStats> = BTreeMap::new();
+        let mut rule_stats: BTreeMap<RuleIdx, RuleStats> = BTreeMap::new();
 
-        for (app_id, record) in egraph.provenance().applications() {
+        for (app_id, record) in egraph.journal().applications() {
             let label = if load_bearing.contains(&app_id) {
                 Label::LoadBearing
             } else {
@@ -225,24 +226,14 @@ impl EpisodeLabels {
     /// one row per rule that fired at least once, ordered by descending
     /// `load_bearing_ratio` (ties broken by `rule_idx` for determinism).
     ///
-    /// Rule names are resolved via `egraph.rule(idx).name()`. If a rule
-    /// index has no resolvable name against the given e-graph (e.g. the
-    /// rule list changed since the episode ran), the row falls back to
-    /// printing the raw index in `<rule N>` form rather than panicking or
-    /// silently dropping the row.
-    pub fn format_rule_report(&self, egraph: &EGraph) -> String {
+    /// Rule names are resolved through the rule set the episode ran under.
+    pub fn format_rule_report(&self, rules: &RuleSet) -> String {
         use std::fmt::Write;
 
-        let mut rows: Vec<(usize, String, RuleStats)> = self
+        let mut rows: Vec<(RuleIdx, String, RuleStats)> = self
             .rule_stats
             .iter()
-            .map(|(&rule_idx, &stats)| {
-                let name = egraph
-                    .rule(rule_idx)
-                    .map(|r| r.name().to_string())
-                    .unwrap_or_else(|| format!("<rule {rule_idx}>"));
-                (rule_idx, name, stats)
-            })
+            .map(|(&rule_idx, &stats)| (rule_idx, rules.rule(rule_idx).name().to_string(), stats))
             .collect();
 
         rows.sort_by(|a, b| {
@@ -292,63 +283,34 @@ fn strict_load_bearing(
 ) -> BTreeSet<ApplicationId> {
     let mut result = BTreeSet::new();
     for &(_, tag) in chosen_nodes {
-        if let Some(Origin::Rule(app_id)) = egraph.provenance().origin(tag) {
+        if let Some(Origin::Rule(app_id)) = egraph.journal().origin(tag) {
             result.insert(app_id);
         }
     }
     result
 }
 
-/// Walk the chosen extraction from `root`, following only the chosen node's
-/// children at each class (unlike blindly reading every `Some` entry out of
-/// `choices` — the DP that fills `choices` computes costs for every class
-/// reachable via *any* candidate node while scoring alternatives, so most
-/// `choices` vectors have many `Some` entries for classes never actually
-/// used by the winning extraction). Returns the `(EClassId, ENodeId)` pairs
-/// [`EGraph::derivation_ancestors`] expects.
+/// The `(EClassId, ENodeId)` pairs [`EGraph::derivation_ancestors`] expects:
+/// the node chosen for each class the extraction's term reaches from `root`.
+///
+/// Reading every `Some` entry out of `choices` would be wrong — the DP that
+/// fills it computes costs for every class reachable via *any* candidate
+/// while scoring alternatives, so most `choices` vectors have many `Some`
+/// entries for classes the winning extraction never uses. The term's own
+/// reach is the [`Selection`]. The ancestry walks consume the pairs as a set,
+/// so the selection's order is immaterial.
 fn chosen_tagged_nodes(
     egraph: &EGraph,
     root: EClassId,
     choices: &[Option<usize>],
 ) -> Vec<(EClassId, ENodeId)> {
-    let mut visited: BTreeSet<EClassId> = BTreeSet::new();
-    let mut stack: Vec<EClassId> = vec![root];
-    let mut result = Vec::new();
-
-    while let Some(class) = stack.pop() {
-        let canonical = egraph.find(class);
-        if !visited.insert(canonical) {
-            continue;
-        }
-
-        let idx = canonical.index();
-        let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or_else(|| {
-            panic!(
-                "chosen_tagged_nodes: e-class {} is reachable from root {} via the chosen \
-                 extraction but has no recorded choice — `choices` must guarantee every \
-                 class reachable via chosen nodes has Some(idx)",
-                idx,
-                root.index()
-            )
-        });
-
-        let nodes = egraph.nodes(canonical);
-        assert!(
-            node_idx < nodes.len(),
-            "chosen_tagged_nodes: node_idx {} out of bounds ({}) for e-class {}",
-            node_idx,
-            nodes.len(),
-            idx
-        );
-        let tags = egraph.tags(canonical);
-        result.push((canonical, tags[node_idx]));
-
-        for &child in nodes[node_idx].children_slice() {
-            stack.push(child);
-        }
-    }
-
-    result
+    let term = Selection::of_map(egraph.as_frozen(), root, choices).unwrap_or_else(|refused| {
+        panic!(
+            "chosen_tagged_nodes: `choices` names no term from root {}: {refused}",
+            root.index()
+        )
+    });
+    term.picks().collect()
 }
 
 /// Result of running the full episode pipeline once: the extraction the
@@ -356,14 +318,13 @@ fn chosen_tagged_nodes(
 /// itself (kept around so callers can further inspect provenance — e.g.
 /// `format_derivation_trace` on specific nodes of interest — after the fact).
 ///
-/// No `Debug` derive: [`EGraph`] itself does not implement `Debug` (it holds
+/// No `Debug` derive: [`Saturation`] does not implement `Debug` (its [`RuleSet`] holds
 /// `dyn Rewrite` trait objects), so this type can't either without a manual
 /// impl that skips `egraph` — not worth it for a struct callers can already
 /// inspect field-by-field.
-#[derive(Clone)]
 pub struct EpisodeResult {
     /// The saturated, provenance-tracked e-graph.
-    pub egraph: EGraph,
+    pub egraph: Saturation,
     /// The extraction chosen from it (latency-prior cost model).
     pub extraction: ExtractedDAG,
     /// Hindsight labels derived from `extraction` over `egraph`.
@@ -375,14 +336,14 @@ pub struct EpisodeResult {
 ///
 /// Kept deliberately simple and synchronous — this is the seed of the
 /// future episode collector, not the collector itself. Callers supply the
-/// rule set explicitly (mirroring [`EGraph::with_rules`] everywhere else in
+/// rule set explicitly (mirroring [`RuleSet::new`] everywhere else in
 /// this crate); use [`super::all_rules`] for the full library.
 pub fn run_episode(
     arena: &pixelflow_ir::ExprArena,
     root: pixelflow_ir::ExprId,
     rules: Vec<Box<dyn Rewrite>>,
 ) -> EpisodeResult {
-    let mut egraph = EGraph::with_rules(rules);
+    let mut egraph = Saturation::over(RuleSet::new(rules));
     let root_class = crate::egraph::insert(
         arena,
         root,
@@ -406,24 +367,24 @@ pub fn run_episode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::ops;
+    use crate::egraph::graph::Limits;
+    use crate::egraph::node::ENode;
     use crate::egraph::provenance::Origin;
     use crate::math::algebra::Commutative;
+    use pixelflow_ir::OpKind;
 
     /// Minimal rule set for hand-derivable tests: just commutativity of Add,
     /// so every application in these tests is unambiguous.
-    fn egraph_with_commutative() -> EGraph {
-        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
-        EGraph::with_rules(rules)
+    fn egraph_with_commutative() -> Saturation {
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(OpKind::Add)];
+        Saturation::over(RuleSet::new(rules))
     }
 
     /// Find the tag (within `class`) whose origin is `Origin::Rule(app_id)`.
     fn tag_created_by(egraph: &EGraph, class: EClassId, app_id: ApplicationId) -> ENodeId {
         egraph
             .tags(class)
-            .iter()
-            .copied()
-            .find(|&t| egraph.provenance().origin(t) == Some(Origin::Rule(app_id)))
+            .find(|&t| egraph.journal().origin(t) == Some(Origin::Rule(app_id)))
             .unwrap_or_else(|| panic!("no node in class {class:?} was created by {app_id:?}"))
     }
 
@@ -438,10 +399,7 @@ mod tests {
         // Chosen side: x + y, then commute to y + x — this IS the extraction.
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let target = eg
             .find_rewrite_matches()
             .into_iter()
@@ -454,10 +412,7 @@ mod tests {
         // chosen root (`sum`) or any of its (transitive) children.
         let z = eg.add(ENode::Var(2));
         let w = eg.add(ENode::Var(3));
-        let other_sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![z, w],
-        });
+        let other_sum = eg.add(ENode::apply(OpKind::Add, &[z, w]));
         let other_target = eg
             .find_rewrite_matches()
             .into_iter()
@@ -469,7 +424,7 @@ mod tests {
             other_target.tag
         ));
         let app_wasted = ApplicationId(1);
-        assert_eq!(eg.provenance().recorded_count(), 2);
+        assert_eq!(eg.journal().recorded_count(), 2);
 
         // Build the chosen extraction by hand: root = sum's class, choosing
         // the rule-created (commuted) node for `sum`, and node 0 (the only
@@ -478,11 +433,7 @@ mod tests {
         // need them.
         let sum_class = eg.find(sum);
         let commuted_tag = tag_created_by(&eg, sum_class, app_load_bearing);
-        let commuted_idx = eg
-            .tags(sum_class)
-            .iter()
-            .position(|&t| t == commuted_tag)
-            .unwrap();
+        let commuted_idx = eg.tags(sum_class).position(|t| t == commuted_tag).unwrap();
 
         let mut choices: Vec<Option<usize>> = vec![None; eg.num_classes()];
         choices[eg.find(x).index()] = Some(0);
@@ -500,7 +451,7 @@ mod tests {
         assert_eq!(stats.load_bearing, 1);
         assert_eq!(stats.wasted(), 1);
 
-        let report = labels.format_rule_report(&eg);
+        let report = labels.format_rule_report(eg.rules());
         assert!(report.contains("commutative"));
     }
 
@@ -514,14 +465,8 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
-        let inner = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        }); // x + y
-        let outer = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![inner, z],
-        }); // (x + y) + z
+        let inner = eg.add(ENode::apply(OpKind::Add, &[x, y])); // x + y
+        let outer = eg.add(ENode::apply(OpKind::Add, &[inner, z])); // (x + y) + z
 
         // Rule A: commute the inner sum.
         let target_a = eg
@@ -542,15 +487,14 @@ mod tests {
             .expect("commutative should match (x + y) + z");
         assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
-        assert_eq!(eg.provenance().recorded_count(), 2);
+        assert_eq!(eg.journal().recorded_count(), 2);
 
         let outer_class = eg.find(outer);
         let inner_class = eg.find(inner);
         let b_product_tag = tag_created_by(&eg, outer_class, app_b);
         let b_product_idx = eg
             .tags(outer_class)
-            .iter()
-            .position(|&t| t == b_product_tag)
+            .position(|t| t == b_product_tag)
             .unwrap();
 
         // B's product is `z + (x + y)`: its children are z and inner's
@@ -560,8 +504,7 @@ mod tests {
         let a_product_tag = tag_created_by(&eg, inner_class, app_a);
         let a_product_idx = eg
             .tags(inner_class)
-            .iter()
-            .position(|&t| t == a_product_tag)
+            .position(|t| t == a_product_tag)
             .unwrap();
 
         let mut choices: Vec<Option<usize>> = vec![None; eg.num_classes()];
@@ -608,7 +551,7 @@ mod tests {
             .map(|s| s.load_bearing)
             .sum();
 
-        assert_eq!(total_fired, result.egraph.provenance().recorded_count());
+        assert_eq!(total_fired, result.egraph.journal().recorded_count());
         assert_eq!(total_fired, result.labels.labels.len());
         assert_eq!(
             total_load_bearing,
@@ -629,7 +572,7 @@ mod tests {
         }
 
         // Report renders without panicking and lists every rule that fired.
-        let report = result.labels.format_rule_report(&result.egraph);
+        let report = result.labels.format_rule_report(result.egraph.rules());
         assert_eq!(report.lines().count(), 1 + result.labels.rule_stats.len());
     }
 
@@ -643,10 +586,7 @@ mod tests {
 
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let target = eg
             .find_rewrite_matches()
             .into_iter()
@@ -659,8 +599,7 @@ mod tests {
         let commuted_tag = tag_created_by(&eg, sum_class, app0);
         let commuted_idx = eg
             .tags(sum_class)
-            .iter()
-            .position(|&t| t == commuted_tag)
+            .position(|t| t == commuted_tag)
             .expect("the commuted node is in the class it was created in");
 
         let mut choices: Vec<Option<usize>> = vec![None; eg.num_classes()];
@@ -691,7 +630,7 @@ mod tests {
         let doubled = arena.push_binary(pixelflow_ir::OpKind::Mul, sum, sum);
         let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
 
-        let mut egraph = EGraph::with_rules(crate::egraph::all_rules());
+        let mut egraph = Saturation::over(RuleSet::new(crate::egraph::all_rules()));
         let root_class = crate::egraph::insert(
             &arena,
             root,
@@ -699,7 +638,11 @@ mod tests {
             crate::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        egraph.saturate_budgeted(30, 2_000, None);
+        egraph.saturate_budgeted(Limits {
+            iterations: 30,
+            minted: 2_000,
+            applications: None,
+        });
 
         let costs = CostModel::latency_prior();
         let extraction = extract::extract_dag(&egraph, root_class, &costs);
@@ -710,7 +653,7 @@ mod tests {
         for (name, labels) in [("loose", &loose), ("tight", &tight), ("strict", &strict)] {
             let total_fired: usize = labels.rule_stats.values().map(|s| s.fired).sum();
             let total_lb: usize = labels.rule_stats.values().map(|s| s.load_bearing).sum();
-            assert_eq!(total_fired, egraph.provenance().recorded_count(), "{name}");
+            assert_eq!(total_fired, egraph.journal().recorded_count(), "{name}");
             assert_eq!(total_fired, labels.labels.len(), "{name}");
             assert_eq!(
                 total_lb,

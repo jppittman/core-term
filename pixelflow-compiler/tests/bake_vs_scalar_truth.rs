@@ -6,7 +6,7 @@
 //! combinator ZST evaluated by this test's own loop, once through the arena
 //! tier's `Lattice::bake` — against ground truth, because the two tiers no
 //! longer shared a value. The combinator tier is gone
-//! (docs/plans/2026-09-06-kernel-with-a-lattice.md, S4b-2), so what is left is
+//! (docs/archive/plans/2026-09-06-kernel-with-a-lattice.md, S4b-2), so what is left is
 //! the half that was ever the point: **truth**, not agreement between two
 //! implementations of it.
 //!

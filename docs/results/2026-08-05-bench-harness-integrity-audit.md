@@ -7,7 +7,7 @@
 **Threat model:** the e-graph extractor + NNUE is *selected* on numbers this harness produces
 (bootstrap labels, episode speedups, the 3-way gate verdict). Anywhere the harness diverges
 from real cost, gradient descent will find it. Companion plan:
-`docs/plans/2026-08-05-egraph-nnue-research-workflow.md` (Phase 0.3 tracks the fixes).
+`docs/archive/plans/2026-08-05-egraph-nnue-research-workflow.md` (Phase 0.3 tracks the fixes).
 
 ---
 

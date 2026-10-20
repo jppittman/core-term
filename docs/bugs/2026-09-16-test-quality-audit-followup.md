@@ -11,7 +11,7 @@ where `mod.rs` is orchestration glue. `aarch64.rs` (737 mutants, runtime-untesta
 from this x86_64 sandbox at the execution level) and `pixelflow-core/src/backend/arm.rs`
 remain carried forward, same as every prior pass.
 
-Also did a supplementary STYLE.md naming/scope pass over `core-term`'s test
+Also did a supplementary ../process/STYLE.md naming/scope pass over `core-term`'s test
 suite, prompted by this run's task description explicitly calling out test
 naming and scope discipline. `core-term` had its own dedicated
 mutation-testing pass three days ago (`caf99b7`, #1259 — 1374 mutants, not
@@ -180,7 +180,7 @@ treating any "one step later" placement assertion in this file with
 suspicion, and worth doing generally: a test that passes against both the
 real code and the mutant it was written for isn't testing anything.
 
-## STYLE.md compliance: test naming and scope (`core-term`)
+## ../process/STYLE.md compliance: test naming and scope (`core-term`)
 
 Ten test names across `keys.rs`, `io/pty_tests.rs`, and `term/tests.rs`
 described a scenario or the mechanism under test rather than the expected

@@ -1,9 +1,9 @@
-> **Retracted/Superseded (2026-09-07), ledger L047.** The H_form-null verdict was taken with a tree-objective extractor on generator families; it is re-taken under #1192 only if the linear Guide is non-null at the real regime (re-validation item 5), and the finding that guidance of any kind is a net cost on trig-structured kernels at B <= 200 is the reason to expect a null. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L047.** The H_form-null verdict was taken with a tree-objective extractor on generator families; it is re-taken under #1192 only if the linear Guide is non-null at the real regime (re-validation item 5), and the finding that guidance of any kind is a net cost on trig-structured kernels at B <= 200 is the reason to expect a null. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # The bilinear Guide: does a rule-by-context interaction buy a domain-conditional advantage?
 
 **Date:** 2026-09-02  
-**Registration:** `docs/plans/2026-09-02-bilinear-guide-registration.md` (frozen; §11 deliberately left unedited — this document is the appendix it names)  
+**Registration:** `docs/archive/plans/2026-09-02-bilinear-guide-registration.md` (frozen; §11 deliberately left unedited — this document is the appendix it names)  
 **Rows:** `docs/results/2026-09-02-bilinear-guide.jsonl`  
 **Cost:** `ExtractedDAG::dag_cost` under `CostModel::latency_prior()`. No wall clock in any number.  
 **Grid (every arm):** [25, 50, 100, 200, 400, 800] recorded rule applications.
@@ -158,11 +158,11 @@ Each expression's first really-scored candidate is held fixed as the context `x`
     800
   ],
   "inherited": [
-    "docs/plans/2026-09-01-phase3-registration.md",
-    "docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md"
+    "docs/archive/plans/2026-09-01-phase3-registration.md",
+    "docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md"
   ],
   "linear_checkpoint": "pixelflow-pipeline/data/guide_checkpoint_strict_remint.json",
-  "registration": "docs/plans/2026-09-02-bilinear-guide-registration.md",
+  "registration": "docs/archive/plans/2026-09-02-bilinear-guide-registration.md",
   "source_rev": "b0bcc898932850746c21b7d89c33f0034a3f4d2e",
   "train_guide_report": "docs/results/2026-09-01-train-guide-report.json",
   "uptime_at_end": "19:02  up 52 days,  9:35, 2 users, load averages: 4.83 6.49 5.82",

@@ -45,7 +45,7 @@ use pixelflow_search::egraph::{
 use pixelflow_search::nnue::guide::SaturationGuide;
 use pixelflow_search::nnue::guide::linear::PerRuleRateGuide;
 
-/// The registered guided grid (docs/plans/2026-09-01-phase3-registration.md).
+/// The registered guided grid (docs/archive/plans/2026-09-01-phase3-registration.md).
 const GRID: &[usize] = &[25, 50, 100, 200, 400, 800];
 const SWEEP_SAFETY_CEILING: usize = 10_000;
 const SAFETY_TIMEOUT: Duration = Duration::from_secs(1800);
@@ -115,7 +115,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "iteration_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -136,7 +136,7 @@ fn arm_optimizer(
         .observe(Some(Box::new(KeepJournal)))
         .budget(Budget::Explicit {
             iterations: SWEEP_SAFETY_CEILING,
-            classes: class_cap,
+            minted: class_cap,
             applications: None,
         })
         .hard_ceiling(SAFETY_TIMEOUT)
@@ -318,7 +318,7 @@ fn main() {
             continue;
         }
         let node_count = arena.len();
-        let class_cap = config_for_node_count(node_count).max_classes;
+        let class_cap = config_for_node_count(node_count).max_minted;
         let started = Instant::now();
 
         let mut arms = BTreeMap::new();

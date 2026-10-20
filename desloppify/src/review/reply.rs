@@ -181,5 +181,12 @@ pub(super) fn prompt(call: &Call) -> String {
             root.text
         ));
     }
+    if let Some(intent) = &call.intent {
+        prompt.push_str(&format!(
+            "\nFor context only, not under review — its module's intent, {}:\n\n{}",
+            intent.path.display(),
+            intent.text
+        ));
+    }
     prompt
 }

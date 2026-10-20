@@ -38,7 +38,7 @@ use pixelflow_pipeline::shader_bench::{NAMED_KERNEL_NAMES, SHADERTOY_KERNEL_NAME
 use pixelflow_pipeline::training::{bezier_family, sh_family};
 use pixelflow_search::egraph::{
     Budget, CostModel, InputSize, KeepJournal, Optimizer, RuleSet, Vocabulary,
-    collect_rule_templates, insert, reachable_count,
+    collect_rule_templates, insert,
 };
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 
@@ -716,9 +716,9 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
     .expect("fmt");
 
     // ---- construction ----
-    let nodes_reachable = reachable_count(&k.arena, k.root);
+    let nodes_reachable = reach_set(&k.arena, k.root).len();
     let (hc, hc_root) = hash_cons(&k.arena, k.root);
-    let nodes_hashcons = reachable_count(&hc, hc_root);
+    let nodes_hashcons = reach_set(&hc, hc_root).len();
     let (tree_nodes, _) = tree_figures(&k.arena, k.root, &costs);
     write!(
         row,
@@ -752,12 +752,12 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
     // ---- saturation: LowerDwrt, then Optimizer::production() (runtime.rs lowers after) ----
     let (lowered, lowered_root) = pixelflow_ir::passes::lower_dwrt_owned(&k.arena, k.root)
         .unwrap_or_else(|e| panic!("{}: lower_dwrt failed: {e}", k.name));
-    let node_count = reachable_count(&lowered, lowered_root);
+    let node_count = reach_set(&lowered, lowered_root).len();
     // Costs are priced on the LOWERED term — what the e-graph is handed —
     // so the input and extracted columns share units (`Dwrt` is expanded
     // by lowering; pricing it as one op would make the pair incomparable).
     let (lhc, lhc_root) = hash_cons(&lowered, lowered_root);
-    let nodes_lowered_hc = reachable_count(&lhc, lhc_root);
+    let nodes_lowered_hc = reach_set(&lhc, lhc_root).len();
     let (_, input_tree_cost) = tree_figures(&lowered, lowered_root, &costs);
     let input_dag_cost = dag_cost(&lhc, lhc_root, &costs);
     let mut optimizer = Optimizer::production()
@@ -767,11 +767,10 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
     let root_class = insert(&lowered, lowered_root, &mut egraph, Vocabulary::Runtime)
         .unwrap_or_else(|_| panic!("{}: not e-graph representable", k.name));
     let limits = Budget::Production.limits(InputSize {
-        nodes: node_count,
         classes: egraph.num_classes(),
     });
     let started = Instant::now();
-    let optimized = optimizer.run(&mut egraph, root_class, node_count);
+    let optimized = optimizer.run(&mut egraph, root_class);
     let opt_ms = started.elapsed().as_secs_f64() * 1e3;
     let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
     let s = &optimized.stats;
@@ -779,11 +778,11 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
         row,
         ",{node_count},{nodes_lowered_hc},{input_dag_cost},{input_tree_cost},{:.3},{},{},{:?},{},{},{},{},{:.1}",
         if input_dag_cost == 0 { 1.0 } else { input_tree_cost as f64 / input_dag_cost as f64 },
-        limits.iterations, limits.classes, s.stop, s.iterations, s.applications, s.unions, s.classes, opt_ms
+        limits.iterations, limits.minted, s.stop, s.iterations, s.applications, s.unions, s.classes, opt_ms
     )
     .expect("fmt");
 
-    let ext_nodes = reachable_count(&extracted, extracted_root);
+    let ext_nodes = reach_set(&extracted, extracted_root).len();
     let ext_census = census(&extracted, extracted_root);
     // `ChoiceCost` is the objective the DP minimized — trip-weighted by the
     // lattice shape since `for_lattice` — so its tree/dag pair is reported as
@@ -818,8 +817,8 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
 
     // Per-rule firing histogram from the provenance journal.
     let mut fires: HashMap<usize, u64> = HashMap::new();
-    for (_, rec) in egraph.provenance().applications() {
-        *fires.entry(rec.rule_idx).or_default() += 1;
+    for (_, rec) in egraph.journal().applications() {
+        *fires.entry(rec.rule_idx.get()).or_default() += 1;
     }
     let mut fires: Vec<(usize, u64)> = fires.into_iter().collect();
     fires.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));

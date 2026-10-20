@@ -4,7 +4,7 @@
 Reads the per-expression, per-checkpoint curve CSVs written by
 `phase3_round2_unguided_curves` (modes i/ii) and `phase3_round2_new_rules`
 (mode iii) and computes every number the Register document
-(`docs/plans/2026-09-01-phase3-round2-registration.md`) fixes:
+(`docs/archive/plans/2026-09-01-phase3-round2-registration.md`) fixes:
 
   U(|R|)   median unguided regret at B against the unguided-only
            closure-aware reference AT THAT |R| (min over all checkpoints

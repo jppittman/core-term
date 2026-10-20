@@ -107,9 +107,9 @@ impl Activations {
         let embed = head.compute_candidate_embed(&h2);
 
         let mut g = head.mask_mlp_b1;
-        for i in 0..EMBED_DIM {
-            for j in 0..MLP_HIDDEN {
-                g[j] += embed[i] * head.mask_mlp_w1[i][j];
+        for (&e, row) in embed.iter().zip(&head.mask_mlp_w1) {
+            for (v, &w) in g.iter_mut().zip(row) {
+                *v += e * w;
             }
         }
         for v in &mut g {
@@ -117,16 +117,16 @@ impl Activations {
         }
 
         let mut mask_features = head.mask_mlp_b2;
-        for j in 0..MLP_HIDDEN {
-            for k in 0..EMBED_DIM {
-                mask_features[k] += g[j] * head.mask_mlp_w2[j][k];
+        for (&gj, row) in g.iter().zip(&head.mask_mlp_w2) {
+            for (m, &w) in mask_features.iter_mut().zip(row) {
+                *m += gj * w;
             }
         }
 
         let mut transformed = [0.0f32; EMBED_DIM];
-        for i in 0..EMBED_DIM {
-            for j in 0..EMBED_DIM {
-                transformed[j] += mask_features[i] * head.interaction[i][j];
+        for (&m, row) in mask_features.iter().zip(&head.interaction) {
+            for (t, &w) in transformed.iter_mut().zip(row) {
+                *t += m * w;
             }
         }
 
@@ -367,18 +367,48 @@ impl HeadGradients {
         concat: &[f32; RULE_CONCAT_DIM],
         d_rule_embed: &[f32; EMBED_DIM],
     ) {
-        for k in 0..EMBED_DIM {
-            self.rule_proj_b[k] += d_rule_embed[k];
+        for (b, &d) in self.rule_proj_b.iter_mut().zip(d_rule_embed) {
+            *b += d;
         }
-        for i in 0..RULE_CONCAT_DIM {
-            let c = concat[i];
+        for (&c, row) in concat.iter().zip(&mut self.rule_proj_w) {
             if c == 0.0 {
                 continue;
             }
-            for k in 0..EMBED_DIM {
-                self.rule_proj_w[i][k] += c * d_rule_embed[k];
+            for (w, &d) in row.iter_mut().zip(d_rule_embed) {
+                *w += c * d;
             }
         }
+    }
+}
+
+/// What reaches one input lane of a dense layer in the backward pass: the
+/// lane's activation `x` and the gradient arriving at the layer's outputs.
+#[derive(Clone, Copy)]
+struct Lane<'a, const N: usize> {
+    x: f32,
+    d_out: &'a [f32; N],
+}
+
+/// One input lane of a dense layer's backward pass: accumulate `x * d_out`
+/// into the lane's row of weight gradients, and return `Σ_j w[j] * d_out[j]`,
+/// the gradient with respect to `x` before its activation's derivative.
+fn backward_row<const N: usize>(
+    lane: Lane<'_, N>,
+    grad_row: &mut [f32; N],
+    weight_row: &[f32; N],
+) -> f32 {
+    let mut acc = 0.0f32;
+    for ((g, &w), &d) in grad_row.iter_mut().zip(weight_row).zip(lane.d_out) {
+        *g += lane.x * d;
+        acc += w * d;
+    }
+    acc
+}
+
+/// `into[k] += from[k]`: a bias gradient is its layer's output gradient.
+fn add_assign<const N: usize>(into: &mut [f32; N], from: &[f32; N]) {
+    for (i, &f) in into.iter_mut().zip(from) {
+        *i += f;
     }
 }
 
@@ -407,89 +437,89 @@ impl SaturationHead {
 
         // transformed[j] = Σ_i mask_features[i] * interaction[i][j]
         let mut d_mask = [0.0f32; EMBED_DIM];
-        for i in 0..EMBED_DIM {
-            let mi = acts.mask_features[i];
-            let mut acc = 0.0f32;
-            for j in 0..EMBED_DIM {
-                grads.interaction[i][j] += mi * d_transformed[j];
-                acc += self.interaction[i][j] * d_transformed[j];
-            }
-            d_mask[i] = acc;
+        for (i, d) in d_mask.iter_mut().enumerate() {
+            *d = backward_row(
+                Lane {
+                    x: acts.mask_features[i],
+                    d_out: &d_transformed,
+                },
+                &mut grads.interaction[i],
+                &self.interaction[i],
+            );
         }
 
         // mask_features[k] = mask_mlp_b2[k] + Σ_j g[j] * mask_mlp_w2[j][k]
-        for k in 0..EMBED_DIM {
-            grads.mask_mlp_b2[k] += d_mask[k];
-        }
+        add_assign(&mut grads.mask_mlp_b2, &d_mask);
         let mut d_g = [0.0f32; MLP_HIDDEN];
-        for j in 0..MLP_HIDDEN {
+        for (j, d) in d_g.iter_mut().enumerate() {
             let gj = acts.g[j];
-            let mut acc = 0.0f32;
-            for k in 0..EMBED_DIM {
-                grads.mask_mlp_w2[j][k] += gj * d_mask[k];
-                acc += self.mask_mlp_w2[j][k] * d_mask[k];
-            }
+            let acc = backward_row(
+                Lane {
+                    x: gj,
+                    d_out: &d_mask,
+                },
+                &mut grads.mask_mlp_w2[j],
+                &self.mask_mlp_w2[j],
+            );
             // ReLU: the pre-activation was positive exactly when g[j] > 0.
-            d_g[j] = if gj > 0.0 { acc } else { 0.0 };
+            *d = if gj > 0.0 { acc } else { 0.0 };
         }
 
         // g = relu(mask_mlp_b1 + embedᵀ mask_mlp_w1)
-        for j in 0..MLP_HIDDEN {
-            grads.mask_mlp_b1[j] += d_g[j];
-        }
+        add_assign(&mut grads.mask_mlp_b1, &d_g);
         let mut d_embed = [0.0f32; EMBED_DIM];
-        for i in 0..EMBED_DIM {
-            let ei = acts.embed[i];
-            let mut acc = 0.0f32;
-            for j in 0..MLP_HIDDEN {
-                grads.mask_mlp_w1[i][j] += ei * d_g[j];
-                acc += self.mask_mlp_w1[i][j] * d_g[j];
-            }
-            d_embed[i] = acc;
+        for (i, d) in d_embed.iter_mut().enumerate() {
+            *d = backward_row(
+                Lane {
+                    x: acts.embed[i],
+                    d_out: &d_g,
+                },
+                &mut grads.mask_mlp_w1[i],
+                &self.mask_mlp_w1[i],
+            );
         }
 
         // embed = candidate_proj_b + h2ᵀ candidate_proj_w
-        for k in 0..EMBED_DIM {
-            grads.candidate_proj_b[k] += d_embed[k];
-        }
+        add_assign(&mut grads.candidate_proj_b, &d_embed);
         let mut d_h2 = [0.0f32; HIDDEN_DIM];
-        for j in 0..HIDDEN_DIM {
+        for (j, d) in d_h2.iter_mut().enumerate() {
             let hj = acts.h2[j];
-            let mut acc = 0.0f32;
-            for k in 0..EMBED_DIM {
-                grads.candidate_proj_w[j][k] += hj * d_embed[k];
-                acc += self.candidate_proj_w[j][k] * d_embed[k];
-            }
-            d_h2[j] = if hj > 0.0 { acc } else { 0.0 };
+            let acc = backward_row(
+                Lane {
+                    x: hj,
+                    d_out: &d_embed,
+                },
+                &mut grads.candidate_proj_w[j],
+                &self.candidate_proj_w[j],
+            );
+            *d = if hj > 0.0 { acc } else { 0.0 };
         }
 
         // h2 = relu(trunk_b + h1ᵀ trunk_w)
-        for j in 0..HIDDEN_DIM {
-            grads.trunk_b[j] += d_h2[j];
-        }
+        add_assign(&mut grads.trunk_b, &d_h2);
         let mut d_h1 = [0.0f32; HIDDEN_DIM];
-        for i in 0..HIDDEN_DIM {
+        for (i, d) in d_h1.iter_mut().enumerate() {
             let hi = acts.h1[i];
-            let mut acc = 0.0f32;
-            for j in 0..HIDDEN_DIM {
-                grads.trunk_w[i][j] += hi * d_h2[j];
-                acc += self.trunk_w[i][j] * d_h2[j];
-            }
-            d_h1[i] = if hi > 0.0 { acc } else { 0.0 };
+            let acc = backward_row(
+                Lane {
+                    x: hi,
+                    d_out: &d_h2,
+                },
+                &mut grads.trunk_w[i],
+                &self.trunk_w[i],
+            );
+            *d = if hi > 0.0 { acc } else { 0.0 };
         }
 
         // h1 = relu(candidate_b1 + inputᵀ candidate_w1); `input` is a
         // function of the FROZEN op embeddings, so the chain stops here.
-        for j in 0..HIDDEN_DIM {
-            grads.candidate_b1[j] += d_h1[j];
-        }
-        for i in 0..CANDIDATE_INPUT_DIM {
-            let x = acts.input[i];
+        add_assign(&mut grads.candidate_b1, &d_h1);
+        for (&x, row) in acts.input.iter().zip(&mut grads.candidate_w1) {
             if x == 0.0 {
                 continue;
             }
-            for j in 0..HIDDEN_DIM {
-                grads.candidate_w1[i][j] += x * d_h1[j];
+            for (g, &d) in row.iter_mut().zip(&d_h1) {
+                *g += x * d;
             }
         }
 

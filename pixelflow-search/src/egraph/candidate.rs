@@ -1,5 +1,5 @@
 //! Candidate-local features for the saturation Guide
-//! (`docs/plans/2026-08-31-guide-design-revision.md` §4, Phase 3 task 1).
+//! (`docs/archive/plans/2026-08-31-guide-design-revision.md` §4, Phase 3 task 1).
 //!
 //! The strict extracted-path label itself lives in
 //! [`super::labeler::EpisodeLabels::compute_strict`] (alongside the loose
@@ -52,20 +52,18 @@
 //! and [`Firing::registered_budget`], both supplied by the caller from
 //! [`super::provenance::ApplicationId`]/[`super::provenance::ApplicationRecord`]
 //! — exact regardless of when `observe` is called. Per the design's binding
-//! budget-only framing (`docs/plans/2026-07-07-guided-saturation-redesign.md`
+//! budget-only framing (`docs/compiler/2026-07-07-guided-saturation-redesign.md`
 //! §0): denominated in rule-application ordinal only, never an
 //! iteration/sweep counter and never wall-clock.
 
-use pixelflow_ir::arena::{BufferDecl, UniformDecl};
-use pixelflow_ir::fold::Fold;
-use pixelflow_ir::{KernelKey, OpKind};
+use pixelflow_ir::OpKind;
 
-use super::graph::EGraph;
+use super::graph::{EGraph, FrozenGraph};
 use super::node::{EClassId, ENode};
 use super::rules::RuleId;
 
 /// The pre-registered Phase 3 primary budget tier B for the classical band
-/// (`docs/plans/2026-09-01-phase3-registration.md` §4: "classical: B = 100
+/// (`docs/archive/plans/2026-09-01-phase3-registration.md` §4: "classical: B = 100
 /// (primary), B = 200 (secondary)"). This is the ONE denominator
 /// [`Firing::registered_budget`]/[`CandidateFeatures::budget_fraction`] means
 /// when the design doc talks about "budget spent, in units of B": both the
@@ -85,66 +83,6 @@ use super::rules::RuleId;
 /// ever went," not a unit change.
 pub const REGISTERED_PRIMARY_BUDGET_APPLICATIONS: usize = 100;
 
-/// One node's shape, canonicalized against the current union-find so two
-/// structurally-equal nodes compare equal regardless of which class holds
-/// them or where they sit in that class's node vector.
-///
-/// Deliberately NOT `ENode` itself: `ENode::Op` carries a `&'static dyn Op`
-/// pointer, which has no `Hash`/`Ord` impl (`node.rs`'s own `PartialEq`
-/// impl already compares by `OpKind` for the same reason — see its comment).
-/// `NodeShape` is the same content, compared the same way, made hashable.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum NodeShape {
-    Var(u8),
-    Const(u32),
-    Buffer(BufferDecl),
-    Uniform(UniformDecl),
-    Param(u8),
-    Op(OpKind, Vec<u32>),
-    /// A fold's shape is its metadata plus its body's class — the metadata
-    /// is part of the node's identity, so it is part of its shape.
-    Reduce(Fold, u32),
-    /// A unit is its name: the same key is the same referent.
-    Ref(KernelKey),
-}
-
-impl NodeShape {
-    fn of(egraph: &EGraph, node: &ENode) -> Self {
-        match node {
-            ENode::Var(v) => NodeShape::Var(*v),
-            ENode::Const(bits) => NodeShape::Const(*bits),
-            ENode::Buffer(decl) => NodeShape::Buffer(*decl),
-            ENode::Uniform(decl) => NodeShape::Uniform(*decl),
-            ENode::Param(i) => NodeShape::Param(*i),
-            ENode::Op { op, children } => NodeShape::Op(
-                op.kind(),
-                children
-                    .iter()
-                    .map(|&c| egraph.find(c).index() as u32)
-                    .collect(),
-            ),
-            ENode::Reduce { fold, body } => {
-                NodeShape::Reduce(*fold, egraph.find(*body).index() as u32)
-            }
-            ENode::Ref { key, .. } => NodeShape::Ref(*key),
-        }
-    }
-
-    /// Deterministic sort key. Any deterministic total order suffices here —
-    /// this is used only to canonicalize the order of a content vector that
-    /// is otherwise sensitive to `EGraph`'s internal node-vector layout
-    /// (`rebuild_budgeted`'s take/canonicalize/extend cycle reorders it), not
-    /// to give `NodeShape` a meaningful `Ord`. Hashing avoids requiring
-    /// `Ord` on `OpKind`'s `Vec<u32>` payload or on `BufferDecl`, neither of
-    /// which derive it.
-    fn sort_key(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
-    }
-}
-
 /// A canonical, order-independent fingerprint of an e-class's content — the
 /// "canonical class content" half of [`CandidateKey`].
 ///
@@ -153,14 +91,26 @@ impl NodeShape {
 /// property `EGraph`'s own memo table (`ENode` + `Hash`, hash-consing on
 /// `add()`) already relies on for a single node; this extends it to a whole
 /// class's node set, which is what a rewrite rule actually matches against.
+///
+/// The key holds the class's nodes themselves, operands canonicalized through
+/// `find` and sorted by `ENode`'s own order. The order is exact, so two keys
+/// are equal precisely when the two canonical node multisets are, and no
+/// collision can let the order of a class's members (which
+/// `rebuild_budgeted` rearranges) leak into the comparison. A multiset because
+/// a class can hold two members whose canonical forms coincide, before a
+/// rebuild or after one (rebuild deduplicates nothing), and the key keeps
+/// both. A `Ref` node is
+/// only its key, so two classes holding the same unit compare equal; what the
+/// unit varies as is the graph's record of it (`admit_unit` admits one
+/// variance per referent), not part of the content.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ClassContentKey(Vec<NodeShape>);
+pub struct ClassContentKey(Vec<ENode>);
 
 impl ClassContentKey {
-    /// Number of distinct node shapes recorded in this class. Because
-    /// `EGraph::add` hash-conses globally (not per-class), a class can never
-    /// hold two nodes with the same `NodeShape` — this is exactly
-    /// `egraph.nodes(class).len()` for the class this key was built from.
+    /// Number of nodes recorded in this class: exactly how many
+    /// `egraph.nodes(class)` yields for the class this key was built from.
+    /// Two of them can be equal, on a rebuilt graph too (rebuild
+    /// deduplicates nothing), and both count.
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.0.len()
@@ -172,14 +122,13 @@ impl ClassContentKey {
     /// the application it is about to skip — it must be THE key that
     /// application matched, read at that instant, not a caller's second
     /// computation against a different graph state.
-    pub(crate) fn of(egraph: &EGraph, canonical: EClassId) -> Self {
-        let mut shapes: Vec<NodeShape> = egraph
+    pub(crate) fn of(egraph: &FrozenGraph, canonical: EClassId) -> Self {
+        let mut nodes: Vec<ENode> = egraph
             .nodes(canonical)
-            .iter()
-            .map(|n| NodeShape::of(egraph, n))
+            .map(|&node| egraph.canonical_node(node))
             .collect();
-        shapes.sort_by_key(NodeShape::sort_key);
-        ClassContentKey(shapes)
+        nodes.sort();
+        ClassContentKey(nodes)
     }
 }
 
@@ -213,7 +162,7 @@ pub struct CandidateKey {
 #[derive(Clone, Copy, Debug)]
 pub struct Firing {
     /// Which rewrite rule fired, by stable identity
-    /// (`ApplicationRecord::rule`, or `EGraph::rule_id(idx)` for a caller
+    /// (`ApplicationRecord::rule`, or `RuleSet::id(idx)` for a caller
     /// holding a positional index).
     pub rule: RuleId,
     /// The e-class the rule matched against (`ApplicationRecord::match_root`).
@@ -263,7 +212,7 @@ impl CandidateFeatures {
     #[must_use]
     pub fn observe(egraph: &EGraph, firing: &Firing) -> Self {
         let canonical = egraph.find(firing.match_root);
-        let content = ClassContentKey::of(egraph, canonical);
+        let content = ClassContentKey::of(egraph.as_frozen(), canonical);
         let neighborhood_ops = neighborhood_ops(egraph, canonical);
         let key = CandidateKey {
             rule: firing.rule,
@@ -302,8 +251,8 @@ fn neighborhood_ops(egraph: &EGraph, canonical: EClassId) -> Vec<OpKind> {
         for &child in node.children_slice() {
             let child_canonical = egraph.find(child);
             for child_node in egraph.nodes(child_canonical) {
-                if let ENode::Op { op, .. } = child_node {
-                    ops.push(op.kind());
+                if let Some(op) = child_node.op() {
+                    ops.push(op);
                 }
             }
         }
@@ -315,20 +264,23 @@ fn neighborhood_ops(egraph: &EGraph, canonical: EClassId) -> Vec<OpKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::ops;
     use crate::egraph::rewrite::Rewrite;
+    use crate::egraph::{Limits, RuleSet, Saturation};
     use crate::math::algebra::Commutative;
 
-    fn egraph_with_commutative() -> EGraph {
-        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
-        EGraph::with_rules(rules)
+    fn egraph_with_commutative() -> Saturation {
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(OpKind::Add)];
+        Saturation::over(RuleSet::new(rules))
     }
 
     /// The id of the rule at `idx` in `eg`'s own table — the translation
     /// every caller holding a positional match makes.
-    fn rule_id_at(eg: &EGraph, idx: usize) -> RuleId {
-        eg.rule_id(idx)
-            .expect("rule index within the graph's table")
+    fn rule_id_at(eg: &Saturation, idx: usize) -> RuleId {
+        let rules = eg.rules();
+        rules.id(rules
+            .indices()
+            .nth(idx)
+            .expect("rule index within the graph's table"))
     }
 
     #[test]
@@ -336,12 +288,9 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
-        let a = ClassContentKey::of(&eg, eg.find(sum));
-        let b = ClassContentKey::of(&eg, eg.find(sum));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let a = ClassContentKey::of(eg.as_frozen(), eg.find(sum));
+        let b = ClassContentKey::of(eg.as_frozen(), eg.find(sum));
         assert_eq!(
             a, b,
             "recomputing the key against an unchanged class must be stable"
@@ -349,16 +298,36 @@ mod tests {
         assert_eq!(a.node_count(), 1);
     }
 
+    /// A key reads its operands through `find`: two classes holding the same
+    /// operation over operands that have since been merged are one content,
+    /// though the graph has not been rebuilt to say so.
+    #[test]
+    fn class_content_key_names_operands_by_their_surviving_class() {
+        let mut eg = egraph_with_commutative();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let z = eg.add(ENode::Var(2));
+        let with_y = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let with_z = eg.add(ENode::apply(OpKind::Add, &[x, z]));
+        assert_ne!(
+            ClassContentKey::of(eg.as_frozen(), eg.find(with_y)),
+            ClassContentKey::of(eg.as_frozen(), eg.find(with_z)),
+            "different operands are different content"
+        );
+        eg.union(y, z);
+        assert_eq!(
+            ClassContentKey::of(eg.as_frozen(), eg.find(with_y)),
+            ClassContentKey::of(eg.as_frozen(), eg.find(with_z)),
+        );
+    }
+
     #[test]
     fn class_content_key_changes_when_a_rule_adds_a_node() {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
-        let before = ClassContentKey::of(&eg, eg.find(sum));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let before = ClassContentKey::of(eg.as_frozen(), eg.find(sum));
 
         let target = eg
             .find_rewrite_matches()
@@ -367,7 +336,7 @@ mod tests {
             .expect("commutative should match x + y");
         assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.tag));
 
-        let after = ClassContentKey::of(&eg, eg.find(sum));
+        let after = ClassContentKey::of(eg.as_frozen(), eg.find(sum));
         assert_ne!(
             before, after,
             "adding a node to the class must change its content key"
@@ -380,10 +349,7 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let sum_class = eg.find(sum);
         let rule = RuleId::from_label("some-rule(Add)");
         let firing = Firing {
@@ -406,10 +372,7 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let firing = Firing {
             rule: rule_id_at(&eg, 0),
             match_root: eg.find(sum),
@@ -425,10 +388,7 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let firing = Firing {
             rule: rule_id_at(&eg, 0),
             match_root: eg.find(sum),
@@ -453,7 +413,7 @@ mod tests {
         let sum = arena.push_binary(pixelflow_ir::OpKind::Add, x, y);
         let root = arena.push_binary(pixelflow_ir::OpKind::Mul, sum, sum);
 
-        let mut egraph = EGraph::with_rules(crate::egraph::all_rules());
+        let mut egraph = Saturation::over(RuleSet::new(crate::egraph::all_rules()));
         let root_class = crate::egraph::insert(
             &arena,
             root,
@@ -461,7 +421,11 @@ mod tests {
             crate::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        egraph.saturate_budgeted(30, 5_000, None);
+        egraph.saturate_budgeted(Limits {
+            iterations: 30,
+            minted: 5_000,
+            applications: None,
+        });
 
         // The denominator is the run's own application count, read off the
         // unconditional budget counter rather than the journal — the two
@@ -471,12 +435,10 @@ mod tests {
         let mut seen: std::collections::HashSet<CandidateKey> = std::collections::HashSet::new();
         let mut repeats = 0usize;
         let firings: Vec<Firing> = egraph
-            .provenance()
+            .journal()
             .applications()
             .map(|(app_id, record)| Firing {
-                rule: record
-                    .rule
-                    .expect("a recorded application names the rule that fired"),
+                rule: record.rule,
                 match_root: record.match_root,
                 application_ordinal: app_id.as_u64(),
                 registered_budget,

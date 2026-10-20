@@ -44,7 +44,7 @@ set -euo pipefail
 # that contract -- and say where the contract is written down.
 #
 #   docs/results/journal.jsonl
-#     "append-only", docs/plans/2026-08-05-egraph-nnue-research-workflow.md:295
+#     "append-only", docs/archive/plans/2026-08-05-egraph-nnue-research-workflow.md:295
 APPEND_ONLY=(
   "docs/results/journal.jsonl"
 )

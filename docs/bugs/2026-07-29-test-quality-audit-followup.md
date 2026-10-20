@@ -10,7 +10,7 @@ backpressure refactor (`GreenSender::send`), and unrelated JIT/e-graph work
 ## Static audit: no new violations
 
 An `Explore` sub-agent swept all 19 test files that changed in this diff range against
-docs/STYLE.md's "Test Public API" rule and the Comments section's ban on historical/change-
+docs/process/STYLE.md's "Test Public API" rule and the Comments section's ban on historical/change-
 summary narration. Result: every change in that set is either a pure `rustfmt` reflow, an
 import reorder, or a new test built exclusively from its crate's public surface
 (`NixPty::spawn_with_config`, `TerminalEmulator::interpret_input`, `compile_collapse`/

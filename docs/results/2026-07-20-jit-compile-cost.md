@@ -3,7 +3,7 @@
 > 41.67x timebase bug itself; pre-fix absolute ns figures elsewhere (including the
 > 2026-07-08 extraction-3way results) have valid orderings but wrong scale. Retained
 > as provenance for the research workflow
-> (`docs/plans/2026-08-05-egraph-nnue-research-workflow.md`).
+> (`docs/archive/plans/2026-08-05-egraph-nnue-research-workflow.md`).
 
 # JIT compile cost: gate G0 for per-kernel JIT (2026-07-20)
 

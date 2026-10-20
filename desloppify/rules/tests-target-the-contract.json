@@ -4,24 +4,18 @@
     "decide": 1,
     "explain": 2
   },
-  "paths": [
-    "**/tests/**",
-    "**/benches/**",
-    "**/examples/**",
-    "**/tests.rs",
-    "**/*_tests.rs"
-  ],
   "skills": [
     "behavioral-contracts"
   ],
-  "question": "Does every test here check its behavior by driving the production API — what the crate's real callers use — and observing that API's output?",
+  "question": "Does every test in this file (in `tests/`, or in a `#[cfg(test)]` module) assert only the contract a caller relies on — the as-if rule: observable behaviour, never how it was produced?",
   "fine": {
-    "black_box": "Every test drives the production API and observes its outputs, returned effects or observable state."
+    "no_tests": "The file holds no tests.",
+    "contract_only": "Every test asserts the contract: output values against an independent oracle (within a documented tolerance), refusals by name, no crash, the documented public API, a law the module's own rustdoc states, or an external specification (an image golden, one instruction's encoding against the ISA manual)."
   },
   "violations": {
-    "reaches_inside": "A test touches `pub(super)` fields or private helpers, constructs internal state directly, or calls an implementation type's internal methods.",
-    "asserts_internals": "A test asserts on intermediate internals rather than the production API's output.",
-    "uses_test_only_api": "A test uses something no production caller needs: a `#[cfg(test)]` item, an accessor, recorder, counter, mock or fixture the crate exports for tests, a `for_test` variant, or any public item only tests call. Injecting a dependency the production constructor takes (a clock, a seed, a backend trait) is not this."
+    "asserts_mechanism": "A test asserts how the code did its job rather than what it promised: instruction, load, store, spill or remat counts, code size, frame size, what was hoisted, which instruction or register was chosen, compiled bytes or their hash, bit-identical output across compilations (only agreement within tolerance is promised), cache pointer identity, or the shape of an intermediate structure (a schedule, scope, region, block layout) that no documented law states.",
+    "same_form_oracle": "A test compares the code against an oracle that shares its definition (the same expansion, the same helper), so a shared bug would agree with itself.",
+    "test_only_api": "A test needs something no production caller does: a `#[cfg(test)]` item, an accessor, counter, recorder or fixture made for tests, or visibility widened so a test can reach it."
   },
-  "guidance": "Name the production entry point and the output the behavior shows up in: which input to feed, which output changes. If no production output can change when the tested code changes, that code is dead or a no-op: say what to delete. Never propose widening an interface, exporting a helper or adding a hook so a test can reach something. Where several tests repeat a check every implementation of a trait should pass, suggest a generic contract test."
+  "guidance": "For each, name the test and say which: delete it (it guards nothing a caller relies on), strip the named assertions (the rest checks the contract), or replace it with the contract property it stood in for (say which property: a value differential, a range law, a refusal, determinism). Performance is measured by benchmarks, never asserted in a test; do not propose a count or a bound as a replacement. Never propose widening an interface or adding a hook so a test can reach something."
 }

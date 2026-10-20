@@ -6,7 +6,7 @@
 //! constant because the quantity they optimized was not time, and a model with
 //! more parameters than the data supports would repeat that failure with more
 //! machinery (the extraction-head workshop paper is the same lesson one layer
-//! up; see `docs/plans/2026-09-01-schedule-cost-model-denotation.md`). What
+//! up; see `docs/compiler/2026-09-01-schedule-cost-model-denotation.md`). What
 //! is wanted first is whether *any* simple, inspectable
 //! quantity tracks the clock on both tiers.
 //!

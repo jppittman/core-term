@@ -31,7 +31,7 @@ impl Ir for ExprArena {
             // `self.children(r)` is the general accessor; an `Nary` node's
             // arm is always `ExprChildren::Nary`, so this recovers the slice
             // `Shape::Op`'s `Children::Many` needs without naming the n-ary
-            // slab's offsets here (docs/plans/2026-09-09-exprarena-on-dag.md,
+            // slab's offsets here (docs/archive/plans/2026-09-09-exprarena-on-dag.md,
             // Stage A).
             ExprNode::Nary(op, ..) => {
                 let ExprChildren::Nary(slice) = self.children(r) else {

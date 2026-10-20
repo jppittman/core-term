@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L042.** V3 showed the |R| effect reported here is an order confound, and the regret is a tree cost besides. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L042.** V3 showed the |R| effect reported here is an order confound, and the regret is a tree cost besides. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Round 2 v2 Register run: unguided regret vs rule count, interleaved order
 
@@ -16,7 +16,7 @@ expressions × 14 checkpoints). Companion JSON (per-expression curves, machine-r
 `2026-09-01-round2-unguided-vs-rulecount-v2.json`. Aggregate statistics JSON (this document's
 tables, plus `_regrets` per-expression arrays used for the bootstrap):
 `2026-09-01-phase3-round2-registration-v2.json`. Design/registration document:
-`docs/plans/2026-09-01-phase3-round2-registration-v2.md` (§0–§3 mechanism and conventions, filled
+`docs/archive/plans/2026-09-01-phase3-round2-registration-v2.md` (§0–§3 mechanism and conventions, filled
 here).
 
 **Machine:** shared; `uptime` at the start of this run: `18:17 up 51 days, 8:50, 2 users, load

@@ -9,7 +9,7 @@
 ### Core Philosophy
 1.  **Pull-based Rendering:** Pixels are sampled, not pushed. The system asks "what color is this pixel?", eliminating overdraw and complex rasterization state.
 2.  **SIMD as Algebra:** there is no vector type in the language or in `pixelflow-core`; the JIT's ISA tier (AVX2+FMA or AVX-512 on x86-64, NEON on aarch64) is decided at process startup by the CPU. Users write algebraic equations as `Kernel` values; the compiler owns the loop nest and emits vectorized assembly.
-3.  **The Kernel/Lattice Abstraction:** A `Kernel` is an immutable handle to an `ExprArena` fragment — the language's one runtime value, JIT-first from the start. `Manifold::compile` specializes a `Kernel` at a lattice's shape, and `Lattice::collapse` is the one verb that produces numbers. There is no type-level combinator tier to write by hand any more — that tier (manifolds as zero-sized expression templates evaluated one SIMD batch at a time) was retired by [A Kernel with a Lattice](docs/plans/2026-09-06-kernel-with-a-lattice.md). The intended way to write PixelFlow code is the `kernel!` macro, which compiles expressions through an e-graph optimizer and codegen pipeline.
+3.  **The Kernel/Lattice Abstraction:** A `Kernel` is an immutable handle to an `ExprArena` fragment — the language's one runtime value, JIT-first from the start. `Manifold::compile` specializes a `Kernel` at a lattice's shape, and `Lattice::collapse` is the one verb that produces numbers. There is no type-level combinator tier to write by hand any more — that tier (manifolds as zero-sized expression templates evaluated one SIMD batch at a time) was retired by [A Kernel with a Lattice](docs/archive/plans/2026-09-06-kernel-with-a-lattice.md). The intended way to write PixelFlow code is the `kernel!` macro, which compiles expressions through an e-graph optimizer and codegen pipeline.
 4.  **Zero Allocations:** The rendering loop is designed to have zero heap allocations per frame.
 
 ## Workspace Structure
@@ -46,7 +46,7 @@ The project is a Rust workspace with the following key members:
 *   **Benchmarks:** `cargo bench -p pixelflow-core`
 
 ### Build Profiles
-*   **`dev`**: `opt-level = 0`, `panic = "abort"`. The former opt-level 1-2 workaround for deeply nested expression-template types is obsolete: the JIT-first `Kernel`/`ExprArena` architecture superseded that layer (see `docs/plans/2026-07-20-kernel-unification.md`).
+*   **`dev`**: `opt-level = 0`, `panic = "abort"`. The former opt-level 1-2 workaround for deeply nested expression-template types is obsolete: the JIT-first `Kernel`/`ExprArena` architecture superseded that layer (see `docs/language/2026-07-20-kernel-unification.md`).
 *   **`release`**: `opt-level = 3`, `panic = "abort"`.
 *   **`bench`**: `lto = true`, `codegen-units = 1`.
 *   **`dist`**: inherits `release`, adds `lto = true`, `codegen-units = 1`, `strip = true`.
@@ -61,7 +61,7 @@ The project is a Rust workspace with the following key members:
 
 ### Coding Style
 
-[`docs/STYLE.md`](docs/STYLE.md) is the canonical style guide. Make all style
+[`docs/process/STYLE.md`](docs/process/STYLE.md) is the canonical style guide. Make all style
 changes there so contributors and automated agents follow a single source of
 truth.
 

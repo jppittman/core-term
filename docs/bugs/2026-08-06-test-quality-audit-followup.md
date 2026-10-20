@@ -13,7 +13,7 @@ scrollback/cursor damage-tracking feature in `core-term`
 (`last_snapshot_view`, `last_cursor_mark`, `scrollback_generation`) and a
 `pixelflow-search`/`pixelflow-pipeline` cost-model refactor.
 
-## Static audit: STYLE.md "Test Public API" rule
+## Static audit: ../process/STYLE.md "Test Public API" rule
 
 Delegated to an `Explore` sub-agent scoped to `git diff eb03ee9f..a2cf8f8a`
 (this pass's actual cutoff, pinned explicitly rather than as `HEAD` — this

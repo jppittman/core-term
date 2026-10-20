@@ -1,4 +1,4 @@
-//! The four-arm at-budget evaluation of `docs/plans/2026-09-02-bilinear-guide-registration.md`.
+//! The four-arm at-budget evaluation of `docs/archive/plans/2026-09-02-bilinear-guide-registration.md`.
 //!
 //! Answers exactly one registered question: does giving the Guide a
 //! rule-by-context **interaction** — `m(x)ᵀ W r + bᵀ r`, whose rule-pair
@@ -87,7 +87,7 @@ use pixelflow_search::nnue::guide::{CandidateSummary, SaturationGuide};
 
 // ---------------------------------------------------------------------------
 // Registered constants. Frozen by
-// docs/plans/2026-09-02-bilinear-guide-registration.md §3.2/§6 and by the
+// docs/archive/plans/2026-09-02-bilinear-guide-registration.md §3.2/§6 and by the
 // round-1b registration it inherits from; restated here so the report is
 // self-checking rather than trusting a flag.
 // ---------------------------------------------------------------------------
@@ -354,7 +354,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "iteration_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -396,16 +396,11 @@ fn prefix_diag(
 ) -> PrefixDiag {
     let mut strict_positive = 0usize;
     let mut by_rule: BTreeMap<String, RuleFiring> = BTreeMap::new();
-    for (id, rec) in out.egraph.provenance().applications() {
+    for (id, rec) in out.egraph.journal().applications() {
         if id.as_u64() as usize >= applications {
             continue;
         }
-        let rule = rec.rule.unwrap_or_else(|| {
-            panic!(
-                "phase3_bilinear_eval: an application carries no RuleId — the graph was built \
-                 without rule ids, and every table here is keyed by identity"
-            )
-        });
+        let rule = rec.rule;
         let positive = positives.contains(&id);
         if positive {
             strict_positive += 1;
@@ -558,7 +553,7 @@ fn arm_optimizer(input: &CurveInput<'_>, guide: Option<Box<dyn SaturationGuide>>
         .observe(Some(Box::new(KeepJournal)))
         .budget(Budget::Explicit {
             iterations: SWEEP_SAFETY_CEILING,
-            classes: input.class_cap,
+            minted: input.class_cap,
             applications: None,
         })
         .hard_ceiling(SAFETY_TIMEOUT)
@@ -634,7 +629,7 @@ fn evaluate_expression(
                 prefix_diag(out, arm.apps_at(b), arm.rounds_at(b), &positives, rules),
             );
         }
-        let total = out.egraph.provenance().applications().count();
+        let total = out.egraph.journal().applications().count();
         let last_rounds = *arm.rounds.last().expect("non-empty curve");
         full_run.insert(
             arm_name.to_string(),
@@ -1214,7 +1209,7 @@ fn main() {
             let input = CurveInput {
                 arena,
                 root: *root,
-                class_cap: config_for_node_count(arena.len()).max_classes,
+                class_cap: config_for_node_count(arena.len()).max_minted,
                 costs: &costs,
             };
             let mut row = evaluate_expression(&args.set, name, &input, &guides, &rules);
@@ -1380,10 +1375,10 @@ fn main() {
 
     let report = Report {
         context: serde_json::json!({
-            "registration": "docs/plans/2026-09-02-bilinear-guide-registration.md",
+            "registration": "docs/archive/plans/2026-09-02-bilinear-guide-registration.md",
             "inherited": [
-                "docs/plans/2026-09-01-phase3-registration.md",
-                "docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md",
+                "docs/archive/plans/2026-09-01-phase3-registration.md",
+                "docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md",
             ],
             "source_rev": git_rev(),
             "cost": "ExtractedDAG::dag_cost (ChoiceCost::dag, #1117) under CostModel::latency_prior()",
@@ -1422,7 +1417,7 @@ fn main() {
         &serde_json::json!({
             "date": "2026-09-02",
             "kind": "phase3_bilinear_eval",
-            "registration": "docs/plans/2026-09-02-bilinear-guide-registration.md",
+            "registration": "docs/archive/plans/2026-09-02-bilinear-guide-registration.md",
             "source_rev": git_rev(),
             "sets": report.set_counts,
             "verdicts": report.verdicts.iter().map(|v| (v.b, v.verdict.clone())).collect::<Vec<_>>(),
@@ -1477,7 +1472,7 @@ fn write_markdown(report: &Report, path: &Path, jsonl: &str) {
     let mut md = String::new();
     md.push_str("# The bilinear Guide: does a rule-by-context interaction buy a domain-conditional advantage?\n\n");
     md.push_str("**Date:** 2026-09-02  \n");
-    md.push_str("**Registration:** `docs/plans/2026-09-02-bilinear-guide-registration.md` (frozen; §11 deliberately left unedited — this document is the appendix it names)  \n");
+    md.push_str("**Registration:** `docs/archive/plans/2026-09-02-bilinear-guide-registration.md` (frozen; §11 deliberately left unedited — this document is the appendix it names)  \n");
     md.push_str(&format!("**Rows:** `{jsonl}`  \n"));
     md.push_str(&format!(
         "**Cost:** `ExtractedDAG::dag_cost` under `CostModel::latency_prior()`. No wall clock in any number.  \n**Grid (every arm):** {GUIDED_GRID:?} recorded rule applications.\n\n"

@@ -1,5 +1,5 @@
 //! Per-rule growth distribution over real kernels — the measurement
-//! `docs/plans/2026-08-31-guide-design-revision.md` §4.1 calls for before
+//! `docs/archive/plans/2026-08-31-guide-design-revision.md` §4.1 calls for before
 //! anyone gates a rewrite on "will this grow the graph and give me
 //! nothing": how many e-nodes does each rule actually add, per application,
 //! under full production saturation?
@@ -118,7 +118,7 @@ fn main() {
         let root_class =
             insert(&arena, root, &mut eg, Vocabulary::Templates).expect("insert into e-graph");
         let node_count = arena.len();
-        let out = optimizer.run(&mut eg, root_class, node_count);
+        let out = optimizer.run(&mut eg, root_class);
 
         let growth = eg
             .growth_telemetry()
@@ -170,17 +170,5 @@ fn main() {
 
     for (label, _id, apps, med, max, zero_pct, noop_pct) in &rows {
         println!("{label:<28} {apps:>7} {med:>9} {max:>9} {zero_pct:>8.1}% {noop_pct:>8.1}%");
-    }
-
-    let unlabeled = total.unlabeled();
-    if unlabeled.applications() > 0 {
-        println!(
-            "<unlabeled>                  {:>7} {:>9} {:>9} {:>8.1}% {:>8.1}%",
-            unlabeled.applications(),
-            unlabeled.median_nodes_added(),
-            unlabeled.max_nodes_added(),
-            unlabeled.zero_growth_fraction() * 100.0,
-            unlabeled.no_op_fraction() * 100.0,
-        );
     }
 }

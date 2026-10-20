@@ -27,11 +27,11 @@
 //!
 //! Every rule here answers with a [`Plan`]: the nodes its right-hand side
 //! adds, in build order, over classes the graph already holds. A plan
-//! rather than an [`ExprArena`] template because a rebuilt body is a copy
+//! rather than an `ExprArena` template because a rebuilt body is a copy
 //! of a term the graph holds, and may contain any op the graph holds (a
 //! `Gather`, a mask),
-//! while a template resolves its ops through [`ops::op_from_kind`], which
-//! deliberately admits only what a *rule* may name. One action, replayed by
+//! while a template may name only what [`template_may_name`](super::ops::template_may_name) admits,
+//! which is deliberately what a *rule* may name. One action, replayed by
 //! one function in the graph, so predicting a rule's growth and applying it
 //! run the same code.
 //!
@@ -66,12 +66,12 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::{Binder, ExprArena, ExprId, ExprNode, Fold, Monoid};
+use pixelflow_ir::{Binder, Fold, Monoid, OpKind, ShiftCount};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::ops;
-use super::rewrite::{Rewrite, RewriteAction};
+use super::rewrite::{Rewrite, RewriteAction, RootShapes};
+use super::shift::ShiftDirection;
 
 /// What a [`HeadNode`]'s child is: an earlier entry in the same plan, or an
 /// e-class that already exists.
@@ -86,19 +86,25 @@ pub enum HeadRef {
 
 /// One node of a [`Plan`], in build order.
 ///
-/// Carrying the `&'static dyn Op` from the node it was copied from needs no
-/// resolver at all, and cannot disagree with the one `insert` used.
+/// Carries the `OpKind` of the node it was copied from, so a plan can hold any
+/// op the graph holds (`Gather`, the masks), not only those a template may name.
 #[derive(Clone, Debug)]
 pub enum HeadNode {
     /// A literal, by bit pattern.
     Const(u32),
     Op {
-        op: &'static dyn ops::Op,
+        op: OpKind,
         children: Vec<HeadRef>,
     },
     Reduce {
         fold: Fold,
         body: HeadRef,
+    },
+    /// A shift, its count carried as the parameter it is.
+    Shift {
+        direction: ShiftDirection,
+        count: ShiftCount,
+        operand: HeadRef,
     },
 }
 
@@ -141,7 +147,7 @@ impl PlanBuilder {
     }
 
     /// An operation over earlier entries or existing classes.
-    fn op(&mut self, op: &'static dyn ops::Op, children: Vec<HeadRef>) -> HeadRef {
+    fn op(&mut self, op: OpKind, children: Vec<HeadRef>) -> HeadRef {
         self.push(HeadNode::Op { op, children })
     }
 
@@ -234,7 +240,7 @@ impl PlanBuilder {
                     }
                 }
                 Task::Build(class) => {
-                    let node = representative(egraph, class)?.clone();
+                    let node = *representative(egraph, class)?;
                     let arity = node.children_slice().len();
                     let start = built.len().checked_sub(arity)?;
                     let kids: Vec<Done> = built.drain(start..).collect();
@@ -266,7 +272,7 @@ impl PlanBuilder {
 /// The node a substitution rebuilds `class` through: its first. See the
 /// module doc.
 fn representative(egraph: &EGraph, class: EClassId) -> Option<&ENode> {
-    egraph.nodes(class).first()
+    egraph.nodes(class).next()
 }
 
 /// `⊕_{[lo,hi) step s} f = ⊕_{[lo,hi-s) step s} f ⊕ f(hi-s)`.
@@ -277,7 +283,7 @@ fn representative(egraph: &EGraph, class: EClassId) -> Option<&ENode> {
 /// 23–42% more emitted nodes on production glyphs, because the graph then has
 /// to reassociate an n-deep chain to reach the shape the cost model and the
 /// fusion rules were tuned on, and spends its class budget doing it. See
-/// docs/plans/2026-09-09-a-fold-is-a-node.md §9.
+/// docs/archive/plans/2026-09-09-a-fold-is-a-node.md §9.
 ///
 /// [`HalveFold`]'s epilogue for an odd trip count, at whatever level of the
 /// halving recursion it arises — declines outright on a fold
@@ -368,6 +374,10 @@ impl Rewrite for PeelFold {
         "peel-fold"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Reduce { fold, body } = node else {
             return None;
@@ -379,9 +389,9 @@ impl Rewrite for PeelFold {
             return None;
         }
         let (rest, last) = fold.peel_back()?;
-        // The combiner must be nameable as an `Op` before any work is done:
-        // declining early costs one lookup, declining late costs a walk of
-        // the whole body.
+        // The fold must have a combiner before any work is done: declining
+        // early costs one lookup, declining late costs a walk of the whole
+        // body.
         let combiner = combiner_op(fold.monoid())?;
         let mut plan = PlanBuilder::default();
         let head = plan.substitute(
@@ -403,6 +413,10 @@ impl Rewrite for PeelFold {
 impl Rewrite for HalveFold {
     fn name(&self) -> &str {
         "halve-fold"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -427,7 +441,7 @@ impl Rewrite for HalveFold {
                 binder: fold.binder(),
                 leaf: |plan: &mut PlanBuilder, class| {
                     let amount = plan.constant(stride as f32);
-                    plan.op(&ops::Add, alloc::vec![HeadRef::Class(class), amount])
+                    plan.op(OpKind::Add, alloc::vec![HeadRef::Class(class), amount])
                 },
             },
         )?;
@@ -444,6 +458,10 @@ impl Rewrite for EmptyFold {
         "empty-fold"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Reduce { fold, .. } = node else {
             return None;
@@ -458,6 +476,10 @@ impl Rewrite for FactorFold {
         "factor-fold"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Reduce { fold, body } = node else {
             return None;
@@ -469,7 +491,6 @@ impl Rewrite for FactorFold {
         let binder = fold.binder();
         let [factor, rest] = egraph
             .nodes(*body)
-            .iter()
             .find_map(|spelling| factored(egraph, spelling, distributor, binder))?;
         let mut plan = PlanBuilder::default();
         let folded = plan.reduce(*fold, HeadRef::Class(rest));
@@ -485,7 +506,7 @@ impl Rewrite for FactorFold {
 fn factored(
     egraph: &EGraph,
     spelling: &ENode,
-    distributor: &'static dyn ops::Op,
+    distributor: OpKind,
     binder: Binder,
 ) -> Option<[EClassId; 2]> {
     let [left, right] = binary(spelling, distributor)?.map(|class| egraph.find(class));
@@ -498,14 +519,14 @@ fn factored(
 }
 
 /// `node`'s two operands, when it is a binary `op`.
-fn binary(node: &ENode, op: &'static dyn ops::Op) -> Option<[EClassId; 2]> {
-    let ENode::Op { op: own, children } = node else {
+fn binary(node: &ENode, op: OpKind) -> Option<[EClassId; 2]> {
+    let &ENode::Op { op: own, children } = node else {
         return None;
     };
-    if own.kind() != op.kind() {
+    if own != op {
         return None;
     }
-    let &[left, right] = children.as_slice() else {
+    let [left, right] = children[..] else {
         return None;
     };
     Some([left, right])
@@ -517,10 +538,10 @@ fn binary(node: &ENode, op: &'static dyn ops::Op) -> Option<[EClassId; 2]> {
 /// `PRODUCT` has no distributor that holds everywhere (`Π_i f^c = (Π_i f)^c`
 /// fails for a negative base). The mask quantifiers have theirs — `BitAnd`
 /// over `ANY`, `BitOr` over `ALL` — and wait on a kernel that needs them.
-fn distributor(monoid: Monoid) -> Option<&'static dyn ops::Op> {
+fn distributor(monoid: Monoid) -> Option<OpKind> {
     match monoid {
-        Monoid::SUM => Some(&ops::Mul),
-        Monoid::MIN | Monoid::MAX => Some(&ops::Add),
+        Monoid::SUM => Some(OpKind::Mul),
+        Monoid::MIN | Monoid::MAX => Some(OpKind::Add),
         _ => None,
     }
 }
@@ -540,21 +561,20 @@ pub fn fold_rules() -> Vec<Box<dyn Rewrite>> {
     ]
 }
 
-/// The `Op` that combines a fold's terms.
+/// The op that combines a fold's terms, the mask algebras (`ANY`, `ALL`)
+/// included.
 ///
-/// Local rather than [`ops::op_from_kind`] because it must cover the two mask
-/// algebras, whose ops are deliberately *not* globally registered: doing that
-/// would hand them to the AOT macro tier, where a `Dwrt` travelling with a
-/// mask resolves before composition and miscompiles under a warp. Here the
-/// caller has already named an algebra, so there is no opcode to leak.
-pub(crate) fn combiner_op(monoid: Monoid) -> Option<&'static dyn ops::Op> {
+/// `None` for an algebra with no value-level combiner, `SEQ` among them: its
+/// combine is "then", not a value operation. Pricing reads the `None` as the
+/// unpriceable sentinel, and `PeelFold` and `HalveFold` decline on it.
+pub(crate) fn combiner_op(monoid: Monoid) -> Option<OpKind> {
     match monoid {
-        Monoid::SUM => Some(&ops::Add),
-        Monoid::PRODUCT => Some(&ops::Mul),
-        Monoid::MIN => Some(&ops::Min),
-        Monoid::MAX => Some(&ops::Max),
-        Monoid::ANY => Some(ops::mask_or()),
-        Monoid::ALL => Some(ops::mask_and()),
+        Monoid::SUM => Some(OpKind::Add),
+        Monoid::PRODUCT => Some(OpKind::Mul),
+        Monoid::MIN => Some(OpKind::Min),
+        Monoid::MAX => Some(OpKind::Max),
+        Monoid::ANY => Some(OpKind::BitOr),
+        Monoid::ALL => Some(OpKind::BitAnd),
         _ => None,
     }
 }
@@ -593,6 +613,13 @@ fn rebuild(node: &ENode, kids: &[Done]) -> Option<HeadNode> {
             op: *op,
             children: kids.iter().map(|k| k.at).collect(),
         }),
+        ENode::Shift {
+            direction, count, ..
+        } => Some(HeadNode::Shift {
+            direction: *direction,
+            count: *count,
+            operand: kids.first()?.at,
+        }),
         // Leaves never reach here: `Task::Build` is scheduled only for a node
         // with children.
         _ => None,
@@ -602,31 +629,13 @@ fn rebuild(node: &ENode, kids: &[Done]) -> Option<HeadNode> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::CostModel;
-    use crate::egraph::extract::extract;
     use crate::egraph::saturate::SaturationConfig;
+    use crate::egraph::{RuleSet, Saturation};
     use crate::egraph::{Vocabulary, insert};
-    use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
+    use pixelflow_ir::{ExprArena, OpKind};
 
     fn binder(slot: u8) -> Binder {
         Binder::from_slot(slot).expect("a live binder")
-    }
-
-    /// Saturate with the fold rules alone and extract. Isolating them keeps
-    /// the assertion about *these* rules rather than about whatever the whole
-    /// algebra does to the residue afterwards.
-    fn unroll_by_rule(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
-        let mut eg = EGraph::with_rules(fold_rules());
-        let class = insert(arena, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        SaturationConfig::compatibility(60).run(&mut eg);
-        let (out, out_root, _cost) = extract(&eg, class, &CostModel::latency_prior());
-        (out, out_root)
-    }
-
-    fn has_fold(arena: &ExprArena) -> bool {
-        arena
-            .nodes()
-            .any(|(_, n)| matches!(n, ExprNode::Reduce { .. }))
     }
 
     /// **A peel moves the range, not the body.** `Σ_{[0,3)} X` has a body
@@ -640,9 +649,9 @@ mod tests {
         let x = a.push_var(0);
         let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..3), x);
 
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        let body_class = match eg.nodes(class).first() {
+        let body_class = match eg.nodes(class).next() {
             Some(ENode::Reduce { body, .. }) => eg.find(*body),
             other => panic!("expected a fold, got {other:?}"),
         };
@@ -652,9 +661,8 @@ mod tests {
 
         let sum = eg
             .nodes(class)
-            .iter()
             .find_map(|n| match n {
-                ENode::Op { op, children } if op.kind() == OpKind::Add => Some(children.clone()),
+                ENode::Op { op, children } if *op == OpKind::Add => Some(*children),
                 _ => None,
             })
             .expect("the class must now also hold the peeled sum");
@@ -668,11 +676,11 @@ mod tests {
              body never reads is the identity, and hash-consing says so"
         );
         let rest_class = eg.find(sum[0]);
-        match eg.nodes(rest_class).iter().find_map(ENode::fold) {
+        match eg.nodes(rest_class).find_map(ENode::fold) {
             Some(rest) => {
                 assert_eq!(rest.range(), 0..2, "the rest is the shorter range");
                 assert_eq!(
-                    eg.find(match eg.nodes(rest_class).first() {
+                    eg.find(match eg.nodes(rest_class).next() {
                         Some(ENode::Reduce { body, .. }) => *body,
                         other => panic!("expected a fold, got {other:?}"),
                     }),
@@ -698,9 +706,9 @@ mod tests {
         let x = a.push_var(0);
 
         let even = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..8), x);
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, even, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        let ENode::Reduce { fold, body } = eg.nodes(class).first().cloned().expect("a fold") else {
+        let ENode::Reduce { fold, body } = eg.nodes(class).next().cloned().expect("a fold") else {
             panic!("expected a fold");
         };
         assert!(
@@ -711,12 +719,12 @@ mod tests {
         );
 
         let odd = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..7), x);
-        let mut eg2 = EGraph::with_rules(fold_rules());
+        let mut eg2 = Saturation::over(RuleSet::new(fold_rules()));
         let class2 = insert(&a, odd, &mut eg2, Vocabulary::Runtime).expect("a fold inserts");
         let ENode::Reduce {
             fold: fold2,
             body: body2,
-        } = eg2.nodes(class2).first().cloned().expect("a fold")
+        } = eg2.nodes(class2).next().cloned().expect("a fold")
         else {
             panic!("expected a fold");
         };
@@ -745,9 +753,9 @@ mod tests {
         let x = a.push_var(0);
         let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..8), x);
 
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        let body_class = match eg.nodes(class).first() {
+        let body_class = match eg.nodes(class).next() {
             Some(ENode::Reduce { body, .. }) => eg.find(*body),
             other => panic!("expected a fold, got {other:?}"),
         };
@@ -763,7 +771,6 @@ mod tests {
         // which would just return whichever comes first.
         let (doubled_fold, new_body_class) = eg
             .nodes(class)
-            .iter()
             .find_map(|n| match n {
                 ENode::Reduce { fold, body } if fold.stride() > 1 => Some((*fold, eg.find(*body))),
                 _ => None,
@@ -777,9 +784,8 @@ mod tests {
         );
         let sum = eg
             .nodes(new_body_class)
-            .iter()
             .find_map(|n| match n {
-                ENode::Op { op, children } if op.kind() == OpKind::Add => Some(children.clone()),
+                ENode::Op { op, children } if *op == OpKind::Add => Some(*children),
                 _ => None,
             })
             .expect("the doubled body's class must hold the Add combining it with its shift");
@@ -789,6 +795,81 @@ mod tests {
             "the unshifted half is the body itself: a binder the body never reads shifts to \
              the identity, and hash-consing says so — `body` first, matching `b ⊕ b[binder:=binder+s]`"
         );
+    }
+
+    /// **A shift in a fold body is copied with its direction and count.** The
+    /// body reads the binder, so a peel and a halving both rebuild the shift
+    /// over the substituted operand: the copy is a shift node of the same
+    /// direction by the same count, over a new operand class, never the
+    /// original operand and never another count. Nothing else notices a wrong
+    /// count here: it is as valid a [`ShiftCount`] as the right one.
+    #[test]
+    fn a_shift_in_a_fold_body_is_copied_with_its_direction_and_count() {
+        const COUNT: u32 = 3;
+        for direction in [ShiftDirection::Left, ShiftDirection::Right] {
+            for (range, rule) in [
+                (0..3, &PeelFold as &dyn Rewrite),
+                (0..4, &HalveFold as &dyn Rewrite),
+            ] {
+                let mut a = ExprArena::new();
+                let (x, i) = (a.push_var(0), a.push_var(binder(0).var()));
+                let count = a.push_const(COUNT as f32);
+                let sum = a.push_binary(OpKind::Add, x, i);
+                let shifted = a.push_binary(direction.op(), sum, count);
+                let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), range.clone()), shifted);
+
+                let mut eg = Saturation::over(RuleSet::new(fold_rules()));
+                let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
+                let node = *eg.nodes(class).next().expect("a fold");
+
+                let Some(RewriteAction::Plan(plan)) = rule.apply(&eg, class, &node) else {
+                    panic!("{direction:?} {range:?}: {} did not plan", rule.name());
+                };
+                let copies: Vec<_> = plan
+                    .nodes
+                    .iter()
+                    .filter_map(|n| match n {
+                        HeadNode::Shift {
+                            direction,
+                            count,
+                            operand,
+                        } => Some((*direction, count.bits(), *operand)),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    matches!(
+                        copies.as_slice(),
+                        [(d, COUNT, HeadRef::Plan(_))] if *d == direction
+                    ),
+                    "{direction:?} {range:?}: {} planned {copies:?}",
+                    rule.name()
+                );
+
+                // Applied: every shift the graph now holds is that shift, over
+                // two operands — the original's and the copy's.
+                SaturationConfig::compatibility(1).run(&mut eg);
+                let mut operands = BTreeSet::new();
+                for class in eg.class_ids() {
+                    for node in eg.nodes(class) {
+                        if let ENode::Shift {
+                            direction: d,
+                            count,
+                            operand,
+                        } = node
+                        {
+                            assert_eq!((*d, count.bits()), (direction, COUNT));
+                            operands.insert(eg.find(*operand));
+                        }
+                    }
+                }
+                assert_eq!(
+                    operands.len(),
+                    2,
+                    "{direction:?} {range:?}: the original shift and its copy"
+                );
+            }
+        }
     }
 
     /// `combiner_op` is total over every [`Monoid`] constructible outside
@@ -821,34 +902,20 @@ mod tests {
     /// The pieces of a factoring test, built directly as e-nodes so the
     /// body's shape is exactly the one written.
     struct Factorable {
-        eg: EGraph,
+        eg: Saturation,
         /// The fold's class.
         class: EClassId,
         /// The fold node itself, as a rule is handed it.
         node: ENode,
     }
 
-    fn op1(op: &'static dyn ops::Op, a: EClassId) -> ENode {
-        ENode::Op {
-            op,
-            children: alloc::vec![a],
-        }
-    }
-
-    fn op2(op: &'static dyn ops::Op, a: EClassId, b: EClassId) -> ENode {
-        ENode::Op {
-            op,
-            children: alloc::vec![a, b],
-        }
-    }
-
     /// `sin(X·0.1 + i)`: reads both the lattice and the binder.
     fn wave(eg: &mut EGraph, i: EClassId) -> EClassId {
         let x = eg.add(ENode::Var(0));
         let tenth = eg.add(ENode::constant(0.1));
-        let x_scaled = eg.add(op2(&ops::Mul, x, tenth));
-        let phase = eg.add(op2(&ops::Add, x_scaled, i));
-        eg.add(op1(&ops::Sin, phase))
+        let x_scaled = eg.add(ENode::apply(OpKind::Mul, &[x, tenth]));
+        let phase = eg.add(ENode::apply(OpKind::Add, &[x_scaled, i]));
+        eg.add(ENode::apply(OpKind::Sin, &[phase]))
     }
 
     /// A fold over slot 0.
@@ -862,11 +929,11 @@ mod tests {
         fold: Fold,
         body: impl FnOnce(&mut EGraph, EClassId) -> EClassId,
     ) -> Factorable {
-        let mut eg = EGraph::with_rules(rules);
+        let mut eg = Saturation::over(RuleSet::new(rules));
         let i = eg.add(ENode::Var(fold.binder().var()));
         let body = body(&mut eg, i);
         let node = ENode::Reduce { fold, body };
-        let class = eg.add(node.clone());
+        let class = eg.add(node);
         Factorable { eg, class, node }
     }
 
@@ -906,7 +973,7 @@ mod tests {
             panic!("the distributor's right operand is the fold: {plan:?}")
         };
         Factoring {
-            distributor: op.kind(),
+            distributor: op,
             factor: class(*factor),
             fold,
             rest: class(body),
@@ -932,17 +999,17 @@ mod tests {
     /// `factor ⊗ ⊕_{fold} rest`, for a factoring of one class by one class.
     fn holds(eg: &EGraph, class: EClassId, factoring: &Factoring) -> bool {
         let folds_rest = |c: EClassId| {
-            eg.nodes(c).iter().any(|n| {
+            eg.nodes(c).any(|n| {
                 matches!(n, ENode::Reduce { fold, body }
                     if *fold == factoring.fold && eg.find(*body) == eg.find(factoring.rest))
             })
         };
-        eg.nodes(class).iter().any(|n| match n {
-            ENode::Op { op, children } if op.kind() == factoring.distributor => {
-                let [factor, folded] = children.as_slice() else {
+        eg.nodes(class).any(|n| match n {
+            ENode::Op { op, children } if *op == factoring.distributor => {
+                let [factor, folded] = children[..] else {
                     return false;
                 };
-                eg.find(*factor) == eg.find(factoring.factor) && folds_rest(*folded)
+                eg.find(factor) == eg.find(factoring.factor) && folds_rest(folded)
             }
             _ => false,
         })
@@ -959,15 +1026,17 @@ mod tests {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
             built = Some((y, w));
-            eg.add(op2(&ops::Mul, y, w))
+            eg.add(ENode::apply(OpKind::Mul, &[y, w]))
         });
         assert_eq!(operands(&f), built);
 
         let fired = factoring(&f).expect("Y is invariant");
         assert_eq!(fired.distributor, OpKind::Mul);
         assert_eq!(Some(fired.fold), f.node.fold(), "the fold is unchanged");
-        let growth =
-            f.eg.predicted_growth(&RewriteAction::Plan(fired.plan.clone()));
+        let growth = f.eg.predicted_growth(
+            &RewriteAction::Plan(fired.plan.clone()),
+            &mut Default::default(),
+        );
         let before = f.eg.num_classes();
         SaturationConfig::compatibility(1).run(&mut f.eg);
         assert_eq!(
@@ -990,7 +1059,7 @@ mod tests {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
             built = Some((y, w));
-            eg.add(op2(&ops::Mul, w, y))
+            eg.add(ENode::apply(OpKind::Mul, &[w, y]))
         });
         assert_eq!(operands(&f), built);
     }
@@ -1004,12 +1073,12 @@ mod tests {
             let mut f = folded(factor_only(), over(monoid, 0..5), |eg, i| {
                 let y = eg.add(ENode::Var(1));
                 let half = eg.add(ENode::constant(0.5));
-                let offset = eg.add(op2(&ops::Mul, y, half));
+                let offset = eg.add(ENode::apply(OpKind::Mul, &[y, half]));
                 let x = eg.add(ENode::Var(0));
-                let phase = eg.add(op2(&ops::Add, x, i));
-                let cos = eg.add(op1(&ops::Cos, phase));
+                let phase = eg.add(ENode::apply(OpKind::Add, &[x, i]));
+                let cos = eg.add(ENode::apply(OpKind::Cos, &[phase]));
                 built = Some((offset, cos));
-                eg.add(op2(&ops::Add, offset, cos))
+                eg.add(ENode::apply(OpKind::Add, &[offset, cos]))
             });
             assert_eq!(operands(&f), built, "{monoid:?}");
             let fired = factoring(&f).expect("Y·0.5 is invariant");
@@ -1028,7 +1097,7 @@ mod tests {
     fn factor_fold_declines_when_both_operands_read_the_binder() {
         let f = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, i| {
             let w = wave(eg, i);
-            eg.add(op2(&ops::Mul, i, w))
+            eg.add(ENode::apply(OpKind::Mul, &[i, w]))
         });
         assert_eq!(operands(&f), None);
     }
@@ -1042,7 +1111,7 @@ mod tests {
         let f = folded(factor_only(), empty, |eg, i| {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
-            eg.add(op2(&ops::Mul, y, w))
+            eg.add(ENode::apply(OpKind::Mul, &[y, w]))
         });
         assert_eq!(operands(&f), None);
     }
@@ -1054,14 +1123,14 @@ mod tests {
         let product = folded(factor_only(), over(Monoid::PRODUCT, 0..8), |eg, i| {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
-            eg.add(op2(&ops::Mul, y, w))
+            eg.add(ENode::apply(OpKind::Mul, &[y, w]))
         });
         assert_eq!(operands(&product), None, "Mul does not distribute over Π");
 
         let sum_of_sums = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, i| {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
-            eg.add(op2(&ops::Add, y, w))
+            eg.add(ENode::apply(OpKind::Add, &[y, w]))
         });
         assert_eq!(
             operands(&sum_of_sums),
@@ -1077,10 +1146,10 @@ mod tests {
     fn factor_fold_reads_the_class_fact_not_the_representative() {
         let mut zeroish = None;
         let mut f = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, i| {
-            let i_minus_i = eg.add(op2(&ops::Sub, i, i));
+            let i_minus_i = eg.add(ENode::apply(OpKind::Sub, &[i, i]));
             let w = wave(eg, i);
             zeroish = Some(i_minus_i);
-            eg.add(op2(&ops::Mul, i_minus_i, w))
+            eg.add(ENode::apply(OpKind::Mul, &[i_minus_i, w]))
         });
         assert_eq!(operands(&f), None, "before the graph knows, it declines");
 
@@ -1100,10 +1169,10 @@ mod tests {
     fn a_peel_names_a_class_the_fact_clears() {
         let mut zeroish = None;
         let mut f = folded(fold_rules(), over(Monoid::SUM, 0..3), |eg, i| {
-            let i_minus_i = eg.add(op2(&ops::Sub, i, i));
+            let i_minus_i = eg.add(ENode::apply(OpKind::Sub, &[i, i]));
             let x = eg.add(ENode::Var(0));
             zeroish = Some(i_minus_i);
-            eg.add(op2(&ops::Add, i_minus_i, x))
+            eg.add(ENode::apply(OpKind::Add, &[i_minus_i, x]))
         });
         let zero = f.eg.add(ENode::constant(0.0));
         f.eg.union(zeroish.expect("built"), zero);
@@ -1141,13 +1210,13 @@ mod tests {
         let inner = Fold::new(Monoid::MAX, binder(0), 0..5);
         let f = folded(fold_rules(), over(Monoid::SUM, 0..3), |eg, i| {
             let x = eg.add(ENode::Var(0));
-            let ix = eg.add(op2(&ops::Mul, i, x));
+            let ix = eg.add(ENode::apply(OpKind::Mul, &[i, x]));
             let max = eg.add(ENode::Reduce {
                 fold: inner,
                 body: ix,
             });
             shadowing = Some(max);
-            eg.add(op2(&ops::Add, max, i))
+            eg.add(ENode::apply(OpKind::Add, &[max, i]))
         });
         let shadowing = f.eg.find(shadowing.expect("built"));
         match PeelFold.apply(&f.eg, f.class, &f.node) {
@@ -1188,9 +1257,9 @@ mod tests {
         let f = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, i| {
             let (x, y) = (eg.add(ENode::Var(0)), eg.add(ENode::Var(1)));
             let w = wave(eg, i);
-            let xw = eg.add(op2(&ops::Mul, x, w));
+            let xw = eg.add(ENode::apply(OpKind::Mul, &[x, w]));
             built = Some((y, xw));
-            eg.add(op2(&ops::Mul, y, xw))
+            eg.add(ENode::apply(OpKind::Mul, &[y, xw]))
         });
         assert_eq!(operands(&f), built);
     }
@@ -1203,7 +1272,7 @@ mod tests {
         let f = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, _i| {
             let (x, y) = (eg.add(ENode::Var(0)), eg.add(ENode::Var(1)));
             parts = Some((y, x));
-            eg.add(op2(&ops::Mul, y, x))
+            eg.add(ENode::apply(OpKind::Mul, &[y, x]))
         });
         assert_eq!(operands(&f), parts);
     }
@@ -1212,14 +1281,44 @@ mod tests {
 #[cfg(test)]
 mod production_shape_tests {
     use super::*;
-    use crate::egraph::extract::extract;
+    use crate::egraph::extract::extract_dag;
     use crate::egraph::saturate::SaturationConfig;
-    use crate::egraph::{CostModel, Vocabulary, insert};
+    use crate::egraph::{CostFunction, CostModel, ENode, Vocabulary, insert};
+    use crate::egraph::{RuleSet, Saturation};
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
     use pixelflow_ir::{ExprArena, ExprNode, OpKind};
 
     fn binder(slot: u8) -> Binder {
         Binder::from_slot(slot).expect("a live binder")
+    }
+
+    /// What a loop costs [`LoopsCostMore`] beyond the latency prior: more than
+    /// any unrolling these tests build.
+    const LOOP_PENALTY: usize = 1 << 24;
+
+    /// The latency prior with every `Reduce` priced out, so extraction takes
+    /// an unrolled form whenever the class holds one.
+    ///
+    /// Under the plain prior this crate's table-reading fold is cheaper as a
+    /// loop than unrolled (the unrolled form pays the gather and the multiply
+    /// at every term), so whether the graph *can* unroll the fold cannot be
+    /// asked of the production prior: its answer is the loop, which
+    /// `production_keeps_the_loop_over_a_table_fold` pins. Pricing loops out
+    /// is how extraction is made to report the graph's content. It mirrors
+    /// `pixelflow-codegen/tests/halve_fold_jit.rs`'s device of the same name,
+    /// which cannot share this one while `CostModel` has no loop price and no
+    /// public materializer takes a `CostFunction`; they fold together when
+    /// that is decided. See also docs/BACKLOG.md E6.
+    struct LoopsCostMore(CostModel);
+
+    impl CostFunction for LoopsCostMore {
+        fn node_cost(&self, node: &ENode, parent: Option<OpKind>) -> usize {
+            let own = self.0.node_cost(node, parent);
+            match node {
+                ENode::Reduce { .. } => own.saturating_add(LOOP_PENALTY),
+                _ => own,
+            }
+        }
     }
 
     fn has_fold(arena: &ExprArena) -> bool {
@@ -1234,8 +1333,9 @@ mod production_shape_tests {
     ///
     /// Extent 40 rather than 4, too: a fold long enough that peeling it is
     /// real work is where "the graph unrolls it" stops being obvious.
-    #[test]
-    fn a_table_reading_fold_unrolls() {
+    /// Returns the saturated graph, the fold's class, and the saturation
+    /// stats.
+    fn saturated_table_fold() -> (Saturation, crate::egraph::EClassId, impl core::fmt::Debug) {
         let mut a = ExprArena::new();
         let buf = a.declare_buffer(BufferDecl {
             id: BufferIdentity::mint(),
@@ -1249,18 +1349,46 @@ mod production_shape_tests {
         let body = a.push_binary(OpKind::Mul, read, x);
         let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..40), body);
 
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let stats = SaturationConfig::compatibility(200).run(&mut eg);
-        let (out, out_root, _cost) = extract(&eg, class, &CostModel::latency_prior());
+        (eg, class, stats)
+    }
+
+    /// The saturated graph holds a `Reduce`-free form of the 40-term table
+    /// fold: with loops priced out, extraction returns it. This pins the
+    /// graph's content, not what production extracts.
+    #[test]
+    fn a_table_reading_fold_unrolls() {
+        let (eg, class, stats) = saturated_table_fold();
+        let dag = extract_dag(&eg, class, &LoopsCostMore(CostModel::latency_prior()));
+        let (out, _out_root) = dag.to_arena(&eg);
 
         assert!(
             !has_fold(&out),
-            "40 terms over a bound table must unroll, not survive \
+            "with loops priced out, the 40-term table fold must unroll \
              (saturation {stats:?}); extracted: {} nodes",
             out.len()
         );
         assert!(out.len() > 40, "and the unrolled form is 40 terms wide");
+    }
+
+    /// What production does with the same graph: under the latency prior the
+    /// loop is the cheaper term, so the extractor keeps it. A prior change
+    /// that makes production unroll table folds (the glyph's shape) fails
+    /// here rather than moving every kernel's bytes unannounced.
+    #[test]
+    fn production_keeps_the_loop_over_a_table_fold() {
+        let (eg, class, stats) = saturated_table_fold();
+        let dag = extract_dag(&eg, class, &CostModel::latency_prior());
+        let (out, _out_root) = dag.to_arena(&eg);
+
+        assert!(
+            has_fold(&out),
+            "under the latency prior the loop is cheaper than its unrolling \
+             (saturation {stats:?}); extracted: {} nodes",
+            out.len()
+        );
     }
 
     /// **The same fold, priced at a real lattice.**
@@ -1294,7 +1422,7 @@ mod production_shape_tests {
         let body = a.push_binary(OpKind::Mul, read, x);
         let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..40), body);
 
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         SaturationConfig::compatibility(200).run(&mut eg);
 

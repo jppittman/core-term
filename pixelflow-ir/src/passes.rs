@@ -18,7 +18,7 @@
 //! everything; a derivative is taken with respect to `X` before `collapse`
 //! substitutes `X` away, and a read's address arithmetic is built
 //! over the lattice's binders after it, so the two lattice passes sit between
-//! (docs/plans/2026-09-16-collapse-is-a-fold.md §2.3). Every pass is
+//! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.3). Every pass is
 //! idempotent and has an identity fast-path, so running one that has nothing
 //! to do is free — except the two lattice passes, which always wrap: after
 //! them no coordinate `Var` exists and the root is a `Reduce` over the unit
@@ -211,7 +211,7 @@ where
 ///
 /// `source` is `node`'s own id — needed only for the `Nary` arm, to read its
 /// children through [`ExprArena::children`] rather than the n-ary slab's raw
-/// offsets (docs/plans/2026-09-09-exprarena-on-dag.md, Stage A).
+/// offsets (docs/archive/plans/2026-09-09-exprarena-on-dag.md, Stage A).
 fn copy_node(
     arena: &mut ExprArena,
     source: ExprId,
@@ -259,7 +259,7 @@ fn copy_node(
 /// memory keeps naming the same memory. The runtime tier links each body as
 /// *optimized* instead, through [`link`] itself: the store is where a unit's
 /// body is found, not the only thing a name may be linked to
-/// (docs/plans/2026-09-25-the-language-is-kernel.md §4, O1).
+/// (docs/language/2026-09-25-the-language-is-kernel.md §4, O1).
 ///
 /// Recursive: a referent may itself hold references, and each is expanded
 /// before its body is spliced. That terminates because references form a DAG
@@ -297,7 +297,7 @@ pub fn expand_refs(arena: &mut ExprArena, root: ExprId) -> ExprId {
 /// tier is it over each unit's body as *optimized* — a unit is saturated
 /// and extracted by itself, its own references held as opaque leaves, and
 /// linked here after extraction and before legalization, so the emitter
-/// sees one program (docs/plans/2026-09-25-the-language-is-kernel.md §4,
+/// sees one program (docs/language/2026-09-25-the-language-is-kernel.md §4,
 /// O1). A body may hold references of its own, and each is linked through
 /// `bodies` before the body is spliced. A name is spliced once per key, as
 /// in [`expand_refs`].
@@ -634,7 +634,7 @@ impl Rules<'_> {
     ///
     /// An index that does move is still refused: differentiating through it
     /// needs the code the tabulation replaced, and a bound buffer does not
-    /// carry it (docs/plans/2026-09-09-the-graph-differentiates.md §3).
+    /// carry it (docs/archive/plans/2026-09-09-the-graph-differentiates.md §3).
     fn tabulation(&self, arena: &mut ExprArena, index: &[ExprId]) -> Result<ExprId, &'static str> {
         let moves = index.iter().any(|id| {
             !self
@@ -1157,8 +1157,8 @@ fn expand_atan2(arena: &mut ExprArena, y: ExprId, x: ExprId) -> ExprId {
 
 /// `2^x` as a primitive subgraph.
 ///
-/// Split `x = xi + xf` (xi integer, xf ∈ [0,1)); approximate `2^xf` by a
-/// degree-5 minimax polynomial; reconstruct `2^xi` by writing the IEEE-754
+/// Split `x = xi + xf` (xi integer, xf ∈ [0,1)); approximate `2^xf` by the
+/// degree-5 Taylor polynomial [`EXP2_POLY`]; reconstruct `2^xi` by writing the IEEE-754
 /// exponent field directly: `2^xi = bitcast((int(xi) + 127) << 23)`. Built from
 /// the bit-manip primitives (`TruncToInt`/`IntToFloat`/`IAdd`/`Shl`) — these are
 /// the float↔int conversions a backend cannot avoid for exp/log.
@@ -1184,7 +1184,7 @@ fn expand_exp2(arena: &mut ExprArena, arg_x: ExprId) -> ExprId {
     let xi_int = arena.push_unary(OpKind::TruncToInt, xi);
     let bias = arena.push_const(f32::from_bits(127)); // integer 127 as lane bits
     let biased = arena.push_binary(OpKind::IAdd, xi_int, bias);
-    // Shift amount is read by value (`v as u32 as u8`), so it is a plain 23.0.
+    // A literal `ShiftCount::from_literal` accepts, so the emitter takes it as written.
     let shift = arena.push_const(23.0);
     let pow2i = arena.push_binary(OpKind::Shl, biased, shift); // bitcast result
 
@@ -1310,14 +1310,11 @@ pub const SIN_CHEB: [f32; 6] = [
     -0.005_990_654,
 ];
 
-/// `2^f` on `f ∈ [0, 1)`, degree-5 minimax, ascending degree.
+/// `2^f` on `f ∈ [0, 1)`: the degree-5 Taylor polynomial about 0, whose
+/// coefficients are `ln(2)^k / k!`, ascending degree. Its truncation error on
+/// `[0, 1)` is below `ln(2)^6 / 6!` ≈ 1.6e-4 relative.
 ///
-/// THE definition of the exp2 polynomial. `pixelflow-core`'s backends evaluate
-/// this same table so the JIT tier, the `eval_scalar` oracle and the combinator
-/// tier cannot disagree about what `exp2` is — the divergence this replaced had
-/// the backends on a degree-4 fit with different coefficients entirely, which
-/// made `exp`, `ln`, `log10` and `pow` compute measurably different functions
-/// depending on which tier ran them.
+/// THE definition of the exp2 polynomial; nothing else restates it.
 pub const EXP2_POLY: [f32; 6] = [
     1.0,
     core::f32::consts::LN_2,

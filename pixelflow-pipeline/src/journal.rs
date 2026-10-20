@@ -7,7 +7,7 @@
 //! to one JSON line, create the parent directory if it's missing, refuse to
 //! corrupt an unsmudged Git LFS pointer, append-or-panic. That mechanism was
 //! two copies (one of them missing the LFS guard) before this module
-//! (docs/plans/2026-08-17-cost-model-domain.md, J15) — a fix to one could
+//! (docs/archive/plans/2026-08-17-cost-model-domain.md, J15) — a fix to one could
 //! silently fail to reach the other, the same NO-SILENT-FAILURES class as
 //! J14's `run_scalar`.
 //!
@@ -20,7 +20,7 @@
 //! at all — two runs of it against different corpora or different commits
 //! were indistinguishable.
 //! [`ConfigHash`], [`ArtifactId`], and [`JournalEntry`] below are that shared
-//! shape (docs/plans/2026-08-17-cost-model-domain.md, J15): every
+//! shape (docs/archive/plans/2026-08-17-cost-model-domain.md, J15): every
 //! journal-writing binary composes a `ConfigHash` the same way, names its
 //! weights the same way, and wraps its own metrics in the same envelope, so
 //! two binaries can no longer diverge on what "this run's provenance" means.
@@ -319,7 +319,7 @@ pub struct ConfigHash {
     /// benchmark mode, epoch count, ...) that are not artifacts but still
     /// define the experiment. Free text, since the two binaries' protocols
     /// differ and forcing one shape onto both would be artificial
-    /// commonality (docs/plans/2026-08-17-cost-model-domain.md, journal.rs
+    /// commonality (docs/archive/plans/2026-08-17-cost-model-domain.md, journal.rs
     /// module doc: "each with its own record schema... that stays").
     pub protocol: String,
     /// FNV-1a 64 hex over every field above, concatenated in declaration
@@ -359,7 +359,7 @@ impl ConfigHash {
 /// metrics. Two binaries hand-rolling this envelope independently, so a fix
 /// or a new provenance field in one could silently fail to reach the other,
 /// is exactly the structurally-divergent-journal-line risk this type exists
-/// to close (docs/plans/2026-08-17-cost-model-domain.md, J15): the shape a
+/// to close (docs/archive/plans/2026-08-17-cost-model-domain.md, J15): the shape a
 /// caller can even attempt to serialize is fixed here, once.
 #[derive(Serialize)]
 pub struct JournalEntry<T: Serialize> {

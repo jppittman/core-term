@@ -1,6 +1,6 @@
 # Guide cold-start training report (strict-v1 labels)
 
-> Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = 100 (docs/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), imported by both gen_strict_labels and saturate_guided_until_applications so budget_fraction means the same thing at mint time and at deploy time. The first mint/train pass of this round (2026-09-01) used a 195-application placeholder (this round's measured median application count, before B was registered) — a train/deploy denominator skew, caught and fixed before this checkpoint (see git history for the placeholder-era numbers).
+> Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = 100 (docs/archive/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), imported by both gen_strict_labels and saturate_guided_until_applications so budget_fraction means the same thing at mint time and at deploy time. The first mint/train pass of this round (2026-09-01) used a 195-application placeholder (this round's measured median application count, before B was registered) — a train/deploy denominator skew, caught and fixed before this checkpoint (see git history for the placeholder-era numbers).
 
 TRAIN: 22697 samples, 217 families, positive rate 12.4069%.
 

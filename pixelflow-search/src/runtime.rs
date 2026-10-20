@@ -3,12 +3,12 @@
 //! `kernel!` already runs full saturation at macro-expansion
 //! time: `pixelflow-compiler::optimize` builds an e-graph from the parsed
 //! AST, saturates, and extracts before ever touching an
-//! [`ExprArena`](pixelflow_ir::ExprArena). Anything stamped by those macros
+//! [`ExprArena`]. Anything stamped by those macros
 //! reaches `pixelflow_codegen::jit_cache` already optimized.
 //!
 //! `Kernel` values composed directly at runtime — `Kernel::over`, `.at()`,
 //! `.select()`, arithmetic — never go through that macro, so their arenas hit
-//! [`pixelflow_codegen::jit_cache::compile`] raw:
+//! `pixelflow_codegen::jit_cache::compile` raw:
 //! no CSE, no FMA fusion, no algebraic simplification. [`optimize_runtime_arena`]
 //! is the same pipeline applied to an arena directly, for exactly that gap —
 //! today's highest-volume instance is the font glyph bake
@@ -17,7 +17,7 @@
 //!
 //! `pixelflow-ir` itself must stay free of a `pixelflow-search` dependency
 //! (the suckless constraint from
-//! docs/plans/2026-07-20-kernel-unification.md), so this cannot live inside
+//! docs/language/2026-07-20-kernel-unification.md), so this cannot live inside
 //! `jit_cache`. Callers that want optimized runtime kernels — today,
 //! `pixelflow-core`'s `Lattice::bake` — call this function before handing the
 //! arena to `jit_cache`.
@@ -28,11 +28,11 @@
 //! **unit**: it is saturated and extracted by itself, held in the term that
 //! reads it as an opaque leaf, and linked back in after extraction. That is
 //! how a program too big for one e-graph — a font, about 160k classes
-//! inserted before any rule fires, over [`HARD_CLASS_LIMIT`] — is optimized
-//! a glyph at a time (docs/plans/2026-09-25-the-language-is-kernel.md §1.8,
+//! inserted before any rule fires, over [`HARD_MINTED_LIMIT`] — is optimized
+//! a glyph at a time (docs/language/2026-09-25-the-language-is-kernel.md §1.8,
 //! §4 O1).
 //!
-//! [`HARD_CLASS_LIMIT`]: crate::egraph::HARD_CLASS_LIMIT
+//! [`HARD_MINTED_LIMIT`]: crate::egraph::HARD_MINTED_LIMIT
 //!
 //! ```text
 //! P(k, s, t) = emit_t ∘ legalize_t ∘ lower_dwrt ∘ L_s (k)
@@ -47,7 +47,7 @@
 //!    children and no constant fact, so the one thing a rule reads off it is
 //!    its variance — `FactorFold`'s side condition, and the binder
 //!    substitution `PeelFold`/`HalveFold` skip a binder-free class by — and
-//!    the leaf carries its referent's ([`ENode::Ref`]). Every conditioned
+//!    the leaf carries its referent's (`ENode::Ref`). Every conditioned
 //!    rewrite is the one it would be with the body inlined.
 //! 2. The context cannot change what a unit reads. A unit is **closed**: its
 //!    variance names the coordinates and nothing else, which the unit walk
@@ -89,7 +89,7 @@
 //! the result does not depend on how many there are: each unit's output is a
 //! function of its structure, the optimizer's fingerprint and the shape (the
 //! cache already relies on that, and the budget counts applications, never
-//! time — docs/plans/2026-09-01-production-budget-determinism.md), results
+//! time — docs/archive/plans/2026-09-01-production-budget-determinism.md), results
 //! land by index, and the link walks in the term's own order.
 //!
 //! # Saturation telemetry
@@ -104,9 +104,9 @@
 //! `PIXELFLOW_SATURATION_TELEMETRY=/path/to/log.jsonl cargo run --features saturation-telemetry`,
 //! or leave it unset to see records on stderr.
 
+use crate::egraph::and_or::Frozen;
 use crate::egraph::{
-    Declined, EClassId, EGraph, Optimizer, OptimizerStats, RuleSet, Vocabulary, insert,
-    reachable_count,
+    Declined, FrozenGraph, Optimizer, OptimizerStats, RuleSet, SaturationKey, Vocabulary, insert,
 };
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
@@ -142,16 +142,24 @@ use std::sync::{Arc, Mutex, OnceLock};
 ///
 /// - `RawGather` — produced by lowering, after the e-graph's place in the
 ///   pipeline; reaching one here means the arena is already lowered.
-/// - `Nary` other than `Reduce` (`Tuple`) — not modelled.
+/// - `Tuple` — no vocabulary admits an op of no fixed arity
+///   (`Declined::Op`).
+/// - An admitted op applied to other than its arity's worth of operands,
+///   which `push_nary` permits — a node holds exactly that many inline
+///   (`Declined::Arity`).
 /// - `Param` — a `pixelflow-compiler` macro-parameter slot that should never
 ///   reach a runtime-built `Kernel` in the first place.
+/// - A `Shl`/`Shr` whose count is not a `Const` holding a
+///   [`ShiftCount`](pixelflow_ir::ShiftCount) (`Declined::ShiftCount`). The
+///   count is a parameter of the shift's node, so the graph cannot hold
+///   anything else; the emitter refuses the term as written.
 ///
 /// `Reduce` itself *is* modelled (`ENode::Reduce`) — the graph reasons about
 /// the monoidal form directly (`egraph::fold_rules`: peeling, halving), and
 /// whether the surviving extraction keeps the fold or the extractor's DP
 /// unrolled it is a cost/tie-break question for extraction, not something
 /// this function decides (stage 2c,
-/// docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md).
+/// docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md).
 ///
 /// `Uniform` leaves are representable like `Buffer`: opaque to every rule,
 /// hash-consed by identity, redeclared by extraction. Nothing folds one.
@@ -192,9 +200,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// identity), so a term *around* units shares a saturation only with a term
 /// around the same units. The units themselves are keyed like any term.
 ///
-/// [`saturation_count`] counts the saturations this process has run, for a
-/// test that wants to assert the second shape did not pay one.
-///
 /// # Saturation telemetry
 ///
 /// With `--features saturation-telemetry`, one record per *saturation* —
@@ -213,6 +218,7 @@ pub fn optimize_runtime_arena(
 /// [`optimize_runtime_arena`] with the cache bypassed: a fresh saturation
 /// whatever this process has seen, for a measurement that must not report a
 /// cached answer as its own.
+#[cfg(test)]
 fn optimize_runtime_arena_uncached(
     arena: &ExprArena,
     root: ExprId,
@@ -220,17 +226,6 @@ fn optimize_runtime_arena_uncached(
 ) -> Option<(ExprArena, ExprId)> {
     Program::of(arena, root).optimize(Run::new(shape, saturate_fresh))
 }
-
-/// How many terms this process has saturated.
-///
-/// The cache's own measure, for a test: a second shape, or a second
-/// composition, of a structure already saturated leaves it unchanged.
-#[must_use]
-pub fn saturation_count() -> usize {
-    SATURATIONS.load(Ordering::Relaxed)
-}
-
-static SATURATIONS: AtomicUsize = AtomicUsize::new(0);
 
 // ──────────────────────────────── the unit walk ──────────────────────────────
 
@@ -453,8 +448,10 @@ impl Job<'_> {
     /// telemetry records.
     fn optimize(&self, run: Run) -> Option<(ExprArena, ExprId)> {
         let canon = canonical(self.arena, self.root);
-        let saturated = match (run.saturate)(self, &canon, run.shape) {
-            Ok(saturated) => saturated,
+        // One optimizer per job: it keys the cache, saturates, and extracts.
+        let mut optimizer = runtime_optimizer(run.shape);
+        let obtained = match (run.saturate)(self, &canon, &mut optimizer) {
+            Ok(obtained) => obtained,
             Err(declined) => {
                 #[cfg(feature = "saturation-telemetry")]
                 crate::telemetry::record_decline(crate::tier::Tier::Runtime, declined);
@@ -463,7 +460,50 @@ impl Job<'_> {
                 return None;
             }
         };
-        Some(extract_for(&saturated, &canon, self.arena, run.shape))
+        Some(self.extract(&obtained, &canon, &optimizer))
+    }
+
+    /// Extract the graph `obtained` under `optimizer`'s lattice and hand the
+    /// term back in this job's own names and slot order — unlowered: a unit
+    /// is linked before `lower_dwrt` runs, once, over the whole program.
+    ///
+    /// With `saturation-telemetry`, the caller whose call ran the saturation
+    /// also writes its record, from the extraction production is making: a
+    /// caller that found the graph cached saturated nothing, so it records
+    /// nothing, and the record is always priced at the saturating caller's
+    /// shape.
+    fn extract(
+        &self,
+        obtained: &Obtained,
+        canon: &Canonical,
+        optimizer: &Optimizer,
+    ) -> (ExprArena, ExprId) {
+        let saturated = &obtained.saturated;
+        let problem = saturated.frozen.problem();
+        let optimized = optimizer.extract_over(problem, saturated.stats.clone());
+        let (extracted, extracted_root) = optimized.to_arena_over(problem.egraph(), problem.root());
+        #[cfg(feature = "saturation-telemetry")]
+        if let Some(facts) = &obtained.ran_here {
+            crate::telemetry::record(crate::telemetry::SaturationInvocation {
+                tier: crate::tier::Tier::Runtime,
+                inserted_classes: facts.inserted_classes,
+                extraction: optimized.extraction,
+                stats: &optimized.stats,
+                union_count: optimized.stats.unions,
+                extracted_arena: &extracted,
+                extracted_root,
+                wall_clock: facts.started.elapsed(),
+                kernel_label: None,
+            });
+        }
+
+        // Names. The graph's are the saturating composition's, in extraction
+        // order; this caller's go in their slots, in this caller's own order.
+        let (in_canonical_order, extracted_root) =
+            extracted.relink(extracted_root, &saturated.buffers, &saturated.uniforms);
+        in_canonical_order
+            .with_tables(canon.buffers.clone(), canon.uniforms.clone())
+            .relink(extracted_root, self.arena.buffers(), self.arena.uniforms())
     }
 }
 
@@ -478,7 +518,7 @@ struct Run {
 }
 
 /// Where a run gets a term's saturated graph.
-type Saturate = fn(&Job<'_>, &Canonical, LatticeShape) -> Result<Arc<Saturated>, Declined>;
+type Saturate = fn(&Job<'_>, &Canonical, &mut Optimizer) -> Result<Obtained, Declined>;
 
 impl Run {
     /// A run with as many workers as the host has threads — one where the
@@ -527,38 +567,60 @@ impl Run {
     }
 }
 
-/// Extract `saturated` for `shape` and hand the term back in `arena`'s own
-/// names and slot order — unlowered: a unit is linked before `lower_dwrt`
-/// runs, once, over the whole program.
-fn extract_for(
-    saturated: &Saturated,
-    canon: &Canonical,
-    arena: &ExprArena,
-    shape: LatticeShape,
-) -> (ExprArena, ExprId) {
-    let optimizer = runtime_optimizer(shape);
-    let optimized = optimizer.extract(&saturated.egraph, saturated.root, saturated.stats.clone());
-    let (extracted, extracted_root) = optimized.to_arena(&saturated.egraph, saturated.root);
-
-    // Names. The graph's are the saturating composition's, in extraction
-    // order; this caller's go in their slots, in this caller's own order.
-    let (in_canonical_order, extracted_root) =
-        extracted.relink(extracted_root, &saturated.buffers, &saturated.uniforms);
-    in_canonical_order
-        .with_tables(canon.buffers.clone(), canon.uniforms.clone())
-        .relink(extracted_root, arena.buffers(), arena.uniforms())
-}
-
 /// A term saturated once, for every lattice it is later extracted at.
 struct Saturated {
-    egraph: EGraph,
-    root: EClassId,
+    /// The saturated graph beside what extraction needs of it that no lattice
+    /// changes — the classes the root reaches, their candidates and who
+    /// depends on whom — read off once here, so each shape's extraction adds
+    /// only its weights and its settlement. The graph is frozen: its memo and
+    /// saturation-only columns are gone, and it cannot be added to.
+    frozen: Frozen<FrozenGraph>,
     stats: OptimizerStats,
     /// The saturating composition's declarations in canonical slot order:
     /// what an extraction's leaves — which carry that composition's names —
     /// relink to, before another composition's take the slots.
     buffers: Vec<BufferDecl>,
     uniforms: Vec<UniformDecl>,
+    #[cfg(feature = "saturation-telemetry")]
+    facts: SaturationFacts,
+}
+
+/// A saturated graph as one caller got it.
+struct Obtained {
+    saturated: Arc<Saturated>,
+    /// Present only for the caller whose call ran the saturation, so the
+    /// record is written once per saturation, by the caller that paid for it,
+    /// and shared state never decides who that is.
+    #[cfg(feature = "saturation-telemetry")]
+    ran_here: Option<SaturationFacts>,
+}
+
+impl Obtained {
+    /// The graph some other call saturated.
+    fn cached(saturated: Arc<Saturated>) -> Self {
+        Self {
+            saturated,
+            #[cfg(feature = "saturation-telemetry")]
+            ran_here: None,
+        }
+    }
+
+    /// The graph this call saturated.
+    fn fresh(saturated: Arc<Saturated>) -> Self {
+        Self {
+            #[cfg(feature = "saturation-telemetry")]
+            ran_here: Some(saturated.facts),
+            saturated,
+        }
+    }
+}
+
+/// The telemetry record's saturation-side fields.
+#[cfg(feature = "saturation-telemetry")]
+#[derive(Clone, Copy)]
+struct SaturationFacts {
+    inserted_classes: usize,
+    started: std::time::Instant,
 }
 
 /// The runtime tier's optimizer: production policy over the runtime
@@ -573,6 +635,10 @@ fn runtime_optimizer(shape: LatticeShape) -> Optimizer {
 /// asks for it.
 type Slot = Arc<OnceLock<Result<Arc<Saturated>, Declined>>>;
 
+/// What the saturation cache keys on: a term's canonical structure and the
+/// configuration that saturated it.
+type CacheKey = (Vec<u8>, SaturationKey);
+
 /// The saturated graph for `canon`'s structure, saturating `job`'s term if
 /// this process has not seen the structure before. The decline is memoized
 /// like a result.
@@ -584,19 +650,26 @@ type Slot = Arc<OnceLock<Result<Arc<Saturated>, Declined>>>;
 fn saturated_for(
     job: &Job<'_>,
     canon: &Canonical,
-    shape: LatticeShape,
-) -> Result<Arc<Saturated>, Declined> {
-    static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Slot>>> = OnceLock::new();
+    optimizer: &mut Optimizer,
+) -> Result<Obtained, Declined> {
+    static CACHE: OnceLock<Mutex<HashMap<CacheKey, Slot>>> = OnceLock::new();
 
-    let mut key = canon.key.clone();
     // Saturation is a deterministic function of the structure and the
     // *optimizer configuration* — and the second term was once missing, so
     // the claim that the first suffices became false the moment two
     // configurations coexisted in a process (a warm-up at one budget and
-    // steady state at another, some kernels reranked and some not). It is a
-    // constant today because production names exactly one configuration;
-    // keying on it is what keeps that from being load-bearing.
-    key.extend_from_slice(&runtime_optimizer(shape).fingerprint().to_bytes());
+    // steady state at another). It is a constant today because production
+    // names exactly one configuration; keying on it is what keeps that from
+    // being load-bearing. The tier is cacheable because it asks for nothing
+    // a key cannot name: no guide, no mask.
+    // A pair, not a concatenation: the canonical key is variable length, so
+    // appending to it would leave the two parts' boundary to luck.
+    let key = (
+        canon.key.clone(),
+        optimizer
+            .saturation_key()
+            .expect("the runtime tier's optimizer is cacheable: it sets no guide and no mask"),
+    );
 
     let slot: Slot = Arc::clone(
         CACHE
@@ -608,66 +681,57 @@ fn saturated_for(
     );
     // Outside the map's lock, so distinct structures saturate concurrently;
     // inside the slot's, so one structure saturates once.
-    slot.get_or_init(|| saturate(job, canon, shape).map(Arc::new))
-        .clone()
+    let mut ran_here = false;
+    let saturated = slot
+        .get_or_init(|| {
+            ran_here = true;
+            saturate(job, canon, optimizer).map(Arc::new)
+        })
+        .clone()?;
+    Ok(match ran_here {
+        true => Obtained::fresh(saturated),
+        false => Obtained::cached(saturated),
+    })
 }
 
 /// [`saturate`], uncached: the [`Saturate`] a measurement runs.
+#[cfg(test)]
 fn saturate_fresh(
     job: &Job<'_>,
     canon: &Canonical,
-    shape: LatticeShape,
-) -> Result<Arc<Saturated>, Declined> {
-    saturate(job, canon, shape).map(Arc::new)
+    optimizer: &mut Optimizer,
+) -> Result<Obtained, Declined> {
+    saturate(job, canon, optimizer).map(|saturated| Obtained::fresh(Arc::new(saturated)))
 }
 
-/// Insert `job`'s term and saturate it under the runtime tier's
-/// configuration, its units admitted as leaves.
-///
-/// `shape` is not what saturation depends on; it prices the one extraction
-/// the telemetry record carries, the extraction this saturation was asked
-/// for.
-fn saturate(job: &Job<'_>, canon: &Canonical, shape: LatticeShape) -> Result<Saturated, Declined> {
-    let mut optimizer = runtime_optimizer(shape);
+/// Insert `job`'s term and saturate it under `optimizer`'s configuration,
+/// its units admitted as leaves.
+fn saturate(
+    job: &Job<'_>,
+    canon: &Canonical,
+    optimizer: &mut Optimizer,
+) -> Result<Saturated, Declined> {
     let mut egraph = optimizer.egraph();
     for (&key, &variance) in job.leaves {
         egraph.admit_unit(key, variance);
     }
     let root_class = insert(job.arena, job.root, &mut egraph, Vocabulary::Runtime)?;
-    let node_count = reachable_count(job.arena, job.root);
     #[cfg(feature = "saturation-telemetry")]
     let inserted_classes = egraph.num_classes();
     #[cfg(feature = "saturation-telemetry")]
-    let telemetry_start = std::time::Instant::now();
-    let stats = optimizer.saturate_term(&mut egraph, node_count);
-    SATURATIONS.fetch_add(1, Ordering::Relaxed);
-
-    #[cfg(feature = "saturation-telemetry")]
-    {
-        let optimized = optimizer.extract(&egraph, root_class, stats.clone());
-        let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
-        crate::telemetry::record(crate::telemetry::SaturationInvocation {
-            tier: crate::tier::Tier::Runtime,
-            node_count,
-            inserted_classes,
-            extraction: optimized.extraction,
-            stats: &optimized.stats,
-            union_count: optimized.stats.unions,
-            extracted_arena: &extracted,
-            extracted_root,
-            wall_clock: telemetry_start.elapsed(),
-            kernel_label: None,
-        });
-    }
-    #[cfg(not(feature = "saturation-telemetry"))]
-    let _ = node_count;
+    let started = std::time::Instant::now();
+    let stats = optimizer.saturate_term(&mut egraph);
 
     Ok(Saturated {
-        egraph,
-        root: root_class,
+        frozen: Frozen::new(egraph.into_graph().freeze(), root_class),
         stats,
         buffers: canon.buffers.clone(),
         uniforms: canon.uniforms.clone(),
+        #[cfg(feature = "saturation-telemetry")]
+        facts: SaturationFacts {
+            inserted_classes,
+            started,
+        },
     })
 }
 
@@ -677,7 +741,25 @@ fn saturate(job: &Job<'_>, canon: &Canonical, shape: LatticeShape) -> Result<Sat
 /// [`Vocabulary::Runtime`](crate::egraph::Vocabulary).
 #[must_use]
 pub fn is_egraph_representable(kind: OpKind) -> bool {
-    crate::egraph::Vocabulary::Runtime.resolve(kind).is_some()
+    crate::egraph::Vocabulary::Runtime.admits(kind)
+}
+
+/// Ids of every node reachable from `root`, discovery order: the arena's own
+/// size, which is not [`crate::egraph::inserted_class_count`] (that is the
+/// classes the graph would hold, and leaves out a shift's count literal).
+#[cfg(test)]
+fn reachable_ids(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
+    let mut seen = vec![false; arena.len()];
+    let mut stack = vec![root];
+    let mut out = Vec::new();
+    while let Some(id) = stack.pop() {
+        if core::mem::replace(&mut seen[id.0 as usize], true) {
+            continue;
+        }
+        out.push(id);
+        stack.extend(arena.children(id));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -685,7 +767,6 @@ mod tests {
     use super::*;
     use pixelflow_ir::OpKind;
     use pixelflow_ir::arena::BufferDecl;
-    use pixelflow_ir::fold::{Binder, Fold, Monoid};
 
     #[test]
     fn repeated_bake_of_the_same_kernel_hits_the_cache() {
@@ -746,28 +827,6 @@ mod tests {
         );
     }
 
-    /// Ids of every node reachable from `root`, discovery order.
-    fn reachable_ids(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
-        let mut seen = vec![false; arena.len()];
-        let mut stack = vec![root];
-        let mut out = Vec::new();
-        while let Some(id) = stack.pop() {
-            if core::mem::replace(&mut seen[id.0 as usize], true) {
-                continue;
-            }
-            out.push(id);
-            stack.extend(arena.children(id));
-        }
-        out
-    }
-
-    fn count_gathers(arena: &ExprArena, root: ExprId) -> usize {
-        reachable_ids(arena, root)
-            .iter()
-            .filter(|&&id| matches!(arena.node(id), ExprNode::Ternary(OpKind::Gather, ..)))
-            .count()
-    }
-
     /// Identities of buffers referenced by reachable `Buffer` leaves.
     fn reachable_buffer_identities(
         arena: &ExprArena,
@@ -814,12 +873,55 @@ mod tests {
         assert_eq!(input, output, "slot order must survive optimization");
     }
 
+    /// **A shift by anything but a literal `ShiftCount` is declined here,
+    /// not optimized.** The graph holds a count as the shift's parameter, so
+    /// it cannot hold the rest; the caller compiles the arena as written and
+    /// the emitter refuses it there. A valid count beside them is the control:
+    /// the same shape optimizes. Asked twice, because a decline is memoized.
+    #[test]
+    fn a_shift_by_no_literal_count_is_declined_and_a_valid_one_optimizes() {
+        let shape = pixelflow_ir::LatticeShape::POINT;
+        for op in [OpKind::Shl, OpKind::Shr] {
+            let shifted_by = |count: &dyn Fn(&mut ExprArena) -> ExprId| {
+                let mut a = ExprArena::new();
+                let x = a.push_var(0);
+                let count = count(&mut a);
+                let root = a.push_binary(op, x, count);
+                (a, root)
+            };
+            let declined: [(&str, (ExprArena, ExprId)); 4] = [
+                ("32", shifted_by(&|a| a.push_const(32.0))),
+                ("0.5", shifted_by(&|a| a.push_const(0.5))),
+                ("1 + 2", {
+                    shifted_by(&|a| {
+                        let (one, two) = (a.push_const(1.0), a.push_const(2.0));
+                        a.push_binary(OpKind::Add, one, two)
+                    })
+                }),
+                ("Y", shifted_by(&|a| a.push_var(1))),
+            ];
+            for (count, (arena, root)) in &declined {
+                for ask in ["first", "memoized"] {
+                    assert!(
+                        optimize_runtime_arena(arena, *root, shape).is_none(),
+                        "{op:?} by {count}, {ask} ask: the term must be left as written"
+                    );
+                }
+            }
+
+            let (arena, root) = shifted_by(&|a| a.push_const(3.0));
+            assert!(
+                optimize_runtime_arena(&arena, root, shape).is_some(),
+                "{op:?} by 3 is a shift the graph holds"
+            );
+        }
+    }
+
     /// One structure, two compositions: fresh buffer identities, and a
-    /// uniform with a different default in each. The second saturates
-    /// nothing (the count is process-global, so `one_compile_per_shape`
-    /// asserts it alone in its own binary) and gets the term back in its
-    /// *own* names — its identities, its slot order, its default — never the
-    /// first composition's, whose names are what the shared graph carries.
+    /// uniform with a different default in each. The second gets the term
+    /// back in its *own* names — its identities, its slot order, its default —
+    /// never the first composition's, whose names are what the shared graph
+    /// carries.
     #[test]
     fn a_second_composition_of_one_structure_keeps_its_own_names() {
         use pixelflow_ir::arena::{BufferIdentity, UniformIdentity};
@@ -1037,8 +1139,8 @@ mod tests {
             })
     }
 
-    /// **A unit is hoisted out of a fold it does not read**, because its
-    /// leaf carries its referent's variance: `Σ_{i<8} u·i`, with `u` a named
+    /// **A unit is hoisted out of a fold it does not read**, because the
+    /// graph knows its referent's variance: `Σ_{i<8} u·i`, with `u` a named
     /// kernel of `X`, factors to `u·Σ i` and the fold no longer reads `X`.
     /// The leaf is priced 0 (`CostModel::node_op_cost`), so the hoist is
     /// chosen for the multiplications it saves, not for the unit's own
@@ -1097,24 +1199,6 @@ mod tests {
             out.display(*out_root)
         );
     }
-
-    /// Whether a binder survives to the optimized arena. Named for what it
-    /// asks rather than for the node shape it used to look for: a fold is
-    /// `ExprNode::Reduce` now, not an `Nary`.
-    fn reaches_a_binder(arena: &ExprArena, root: ExprId) -> bool {
-        let mut seen = vec![false; arena.len()];
-        let mut stack = vec![root];
-        while let Some(id) = stack.pop() {
-            if core::mem::replace(&mut seen[id.0 as usize], true) {
-                continue;
-            }
-            if matches!(arena.node(id), ExprNode::Nary(..) | ExprNode::Reduce { .. }) {
-                return true;
-            }
-            stack.extend(arena.children(id));
-        }
-        false
-    }
 }
 
 /// Read-only probe for issue #1106: how much congruence does the production
@@ -1133,19 +1217,19 @@ mod congruence_gap_probe {
     use super::*;
     use crate::arena_corpus::{category_of, load_arena_dump, median, percentile};
     use crate::egraph::rule_order::{RuleOrder, build_rule_set};
-    use crate::egraph::{CostModel, ENode, RuleSet, SaturationStop, choices_to_arena};
+    use crate::egraph::{CostModel, EClassId, EGraph, ENode, RuleSet, SaturationStop};
     use crate::nnue::{BwdGenConfig, BwdGenerator};
     use std::path::{Path, PathBuf};
 
     /// Number of canonical (live) e-classes: `find(i) == i`. Distinct from
-    /// `SaturationResult::classes_after`, which is `EGraph::classes.len()` —
+    /// `SaturationResult::classes_after`, which is `EGraph::num_classes()` —
     /// the raw allocation count, which never shrinks on `union` (the
     /// production 5,000-class cap is checked against THIS raw count, not the
-    /// live count — see `EGraph::saturate_with_limits`,
-    /// `self.classes.len() > max_classes`).
+    /// live count — see `Saturation::saturate_with_limits`,
+    /// `num_classes() > max_minted`).
     fn live_class_count(egraph: &EGraph) -> usize {
-        (0..egraph.classes.len())
-            .filter(|&i| egraph.find(EClassId(i as u32)) == EClassId(i as u32))
+        (0..egraph.num_classes())
+            .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
             .count()
     }
 
@@ -1165,27 +1249,31 @@ mod congruence_gap_probe {
         const MAX_PASSES: usize = 20_000;
         let mut total_unions = 0usize;
         for _pass in 0..MAX_PASSES {
-            let n = egraph.classes.len();
+            let n = egraph.num_classes();
             let mut local_memo: HashMap<ENode, EClassId> = HashMap::new();
             let mut pending: Vec<(EClassId, EClassId)> = Vec::new();
             for idx in 0..n {
-                let id = EClassId(idx as u32);
+                let id = EClassId::from_index(idx);
                 let canon = egraph.find(id);
                 if canon != id {
-                    // Merged-away class: `union`'s mem::take already moved
-                    // its nodes onto the surviving parent, so its own node
-                    // vector is empty and re-scanning it would be a no-op.
+                    // Merged-away class: `union` moved its members to the
+                    // survivor, which this loop visits under its own id.
                     continue;
                 }
-                let nodes = egraph.classes[idx].nodes.clone();
-                for node in nodes {
-                    let cnode = match &node {
-                        ENode::Op { op, children } => ENode::Op {
-                            op: *op,
-                            children: children.iter().map(|c| egraph.find(*c)).collect(),
-                        },
-                        other => other.clone(),
-                    };
+                for node in egraph.nodes(id).copied() {
+                    // Not `EGraph::canonical_node`: this probe has always left
+                    // a fold's body as stored, and the gap it counted in
+                    // docs/results was measured that way.
+                    let mut cnode = node;
+                    match &mut cnode {
+                        ENode::Op { children, .. } => {
+                            for class in children.iter_mut() {
+                                *class = egraph.find(*class);
+                            }
+                        }
+                        ENode::Shift { operand, .. } => *operand = egraph.find(*operand),
+                        _ => {}
+                    }
                     match local_memo.get(&cnode) {
                         Some(&existing) => {
                             let existing_canon = egraph.find(existing);
@@ -1255,7 +1343,7 @@ mod congruence_gap_probe {
         category: &'static str,
         rule_order: String,
         node_count: usize,
-        max_classes: usize,
+        max_minted: usize,
         stop: String,
         hit_class_cap: bool,
         live_before: usize,
@@ -1298,7 +1386,7 @@ mod congruence_gap_probe {
         egraph: EGraph,
         root_class: EClassId,
         node_count: usize,
-        max_classes: usize,
+        max_minted: usize,
         stop: SaturationStop,
         /// `arena_static_cost` of the extraction production would actually
         /// emit for this kernel.
@@ -1334,7 +1422,7 @@ mod congruence_gap_probe {
         // more (stage 2c): the graph reasons about it directly and a
         // surviving one is legal all the way to codegen.
         let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
-        let node_count = crate::egraph::reachable_count(&arena, root);
+        let node_count = crate::egraph::inserted_class_count(&arena, root);
 
         // THE production regime, through the one entry point
         // `optimize_runtime_arena_uncached` itself now calls
@@ -1356,19 +1444,19 @@ mod congruence_gap_probe {
         )
         .unwrap_or_else(|e| panic!("{name}: insert declined ({e:?})"));
 
-        let optimized = optimizer.run(&mut egraph, root_class, node_count);
-        let max_classes = optimized.stats.limits.classes;
+        let optimized = optimizer.run(&mut egraph, root_class);
+        let max_minted = optimized.stats.limits.minted;
 
         let model = CostModel::latency_prior();
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
         let cost = arena_static_cost(&model, &extracted, extracted_root);
-        let extracted_nodes = crate::egraph::reachable_count(&extracted, extracted_root);
+        let extracted_nodes = reachable_ids(&extracted, extracted_root).len();
 
         ProductionRun {
-            egraph,
+            egraph: egraph.into_graph(),
             root_class,
             node_count,
-            max_classes,
+            max_minted,
             stop: optimized.stats.stop,
             cost,
             extracted_nodes,
@@ -1388,12 +1476,12 @@ mod congruence_gap_probe {
             egraph,
             root_class,
             node_count,
-            max_classes,
+            max_minted,
             stop,
             cost: cost_before,
             ..
         } = run_production(name, order, arena, root);
-        let hit_class_cap = stop == SaturationStop::ClassCap;
+        let hit_class_cap = stop == SaturationStop::MintedCap;
         let live_before = live_class_count(&egraph);
         let model = CostModel::latency_prior();
 
@@ -1410,12 +1498,7 @@ mod congruence_gap_probe {
             &model,
             LatticeShape::POINT,
         );
-        let extraction_after = crate::egraph::Extraction::from_dp(
-            &closure_graph,
-            root_class_closed,
-            dag_after.choices,
-        );
-        let (extracted_after, extracted_after_root) = choices_to_arena(&extraction_after);
+        let (extracted_after, extracted_after_root) = dag_after.to_arena(&closure_graph);
         let cost_after = arena_static_cost(&model, &extracted_after, extracted_after_root);
 
         let reduction_frac = if live_before > 0 {
@@ -1428,14 +1511,14 @@ mod congruence_gap_probe {
         } else {
             0.0
         };
-        let would_avoid_cap = hit_class_cap && live_after < max_classes;
+        let would_avoid_cap = hit_class_cap && live_after < max_minted;
 
         CongruenceRow {
             name: name.to_string(),
             category,
             rule_order: order.to_string(),
             node_count,
-            max_classes,
+            max_minted,
             stop: format!("{stop:?}"),
             hit_class_cap,
             live_before,
@@ -1600,13 +1683,13 @@ mod congruence_gap_probe {
             rows.len()
         );
         eprintln!(
-            "(5a) ClassCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
+            "(5a) MintedCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
             median(&mut capped_reduction) * 100.0,
             median(&mut capped_cost_change) * 100.0,
             cap_hit_count
         );
         eprintln!(
-            "(5b) not ClassCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
+            "(5b) not MintedCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
             median(&mut uncapped_reduction) * 100.0,
             median(&mut uncapped_cost_change) * 100.0,
             rows.len() - cap_hit_count
@@ -1690,25 +1773,20 @@ mod congruence_gap_probe {
         extracted_nodes: usize,
     }
 
-    /// Count e-nodes sitting in slots `find` no longer routes to.
-    ///
-    /// `union` empties a merged-away class with `mem::take`, so in a healthy
-    /// graph every non-canonical slot is empty and this is 0. A non-zero
-    /// count means something wrote to a class after it stopped being
-    /// canonical — which is exactly the `rebuild_budgeted` write-back bug.
+    /// E-nodes counted by `node_count` (minted and not retired) that no
+    /// canonical class lists. 0 is the membership law, which the member store
+    /// keeps by writing back only to the class an item is in now
+    /// (`Columns::write_back`).
     fn orphaned_node_count(egraph: &EGraph) -> usize {
-        (0..egraph.classes.len())
-            .filter(|&i| egraph.find(EClassId(i as u32)) != EClassId(i as u32))
-            .map(|i| egraph.classes[i].nodes.len())
-            .sum()
+        egraph.node_count() - reachable_node_count(egraph)
     }
 
     /// Sum of e-nodes over canonical classes — everything still reachable
     /// through the public `nodes()`/`tags()` API.
     fn reachable_node_count(egraph: &EGraph) -> usize {
-        (0..egraph.classes.len())
-            .filter(|&i| egraph.find(EClassId(i as u32)) == EClassId(i as u32))
-            .map(|i| egraph.classes[i].nodes.len())
+        (0..egraph.num_classes())
+            .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
+            .map(|i| egraph.nodes(EClassId::from_index(i)).count())
             .sum()
     }
 
@@ -1746,7 +1824,7 @@ mod congruence_gap_probe {
                 category,
                 node_count: run.node_count,
                 stop: format!("{:?}", run.stop),
-                classes_raw: run.egraph.classes.len(),
+                classes_raw: run.egraph.num_classes(),
                 live_classes: live_class_count(&run.egraph),
                 reachable_nodes: reachable_node_count(&run.egraph),
                 orphaned_nodes: orphaned_node_count(&run.egraph),
@@ -1803,8 +1881,8 @@ mod congruence_gap_probe {
     /// The invariant the write-back fix restores, asserted on the real
     /// corpus rather than on a hand-built graph: after production
     /// saturation, no e-node may sit in a class `find` no longer routes to.
-    /// `union` empties a merged-away class with `mem::take`, so the only way
-    /// to strand one is to write to a slot after it stopped being canonical.
+    /// Every node is a member of `find` of its id or retired, so this holds by
+    /// construction; the test checks it at corpus scale.
     ///
     /// This is the corpus-scale complement to
     /// `rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away`:
@@ -1843,7 +1921,7 @@ mod congruence_gap_probe {
                 r.category,
                 r.rule_order,
                 r.node_count,
-                r.max_classes,
+                r.max_minted,
                 r.stop,
                 r.hit_class_cap,
                 r.live_before,
@@ -1883,7 +1961,7 @@ mod congruence_gap_probe {
             r.category,
             r.rule_order,
             r.node_count,
-            r.max_classes,
+            r.max_minted,
             r.stop,
             r.hit_class_cap,
             r.live_before,
@@ -2008,7 +2086,7 @@ mod congruence_gap_probe {
         )
         .unwrap();
 
-        writeln!(out, "\n## Split by ClassCap-stopped\n").unwrap();
+        writeln!(out, "\n## Split by MintedCap-stopped\n").unwrap();
         writeln!(out, "| | n | median class reduction | median cost change |").unwrap();
         writeln!(out, "|---|---|---|---|").unwrap();
         let cap_rows: Vec<&CongruenceRow> = rows.iter().filter(|r| r.hit_class_cap).collect();
@@ -2019,7 +2097,7 @@ mod congruence_gap_probe {
         let mut noncap_cost: Vec<f64> = noncap_rows.iter().map(|r| r.cost_change_frac).collect();
         writeln!(
             out,
-            "| ClassCap-stopped | {} | {:.2}% | {:.3}% |",
+            "| MintedCap-stopped | {} | {:.2}% | {:.3}% |",
             cap_rows.len(),
             median(&mut cap_red) * 100.0,
             median(&mut cap_cost) * 100.0
@@ -2027,7 +2105,7 @@ mod congruence_gap_probe {
         .unwrap();
         writeln!(
             out,
-            "| not ClassCap-stopped | {} | {:.2}% | {:.3}% |",
+            "| not MintedCap-stopped | {} | {:.2}% | {:.3}% |",
             noncap_rows.len(),
             median(&mut noncap_red) * 100.0,
             median(&mut noncap_cost) * 100.0
@@ -2144,7 +2222,7 @@ pub(crate) mod production_telemetry {
     /// pixelflow-graphics/tests/production_glyph_arena_dump.rs): replays
     /// reachable nodes in original id order through the public `push_*`
     /// API, which never hash-conses, so the rebuilt arena has exactly the
-    /// dumped node multiset and `reachable_count` is preserved. Buffer
+    /// dumped node multiset and `inserted_class_count` is preserved. Buffer
     /// identities are re-minted per distinct dumped ordinal, preserving the
     /// equality structure (two slots naming one buffer still share an
     /// identity) without depending on the dumping process's counter.
@@ -2307,7 +2385,7 @@ pub(crate) mod production_telemetry {
         arena: &ExprArena,
         root: ExprId,
         max_iterations: usize,
-        max_classes: usize,
+        max_minted: usize,
         timeout: Duration,
     ) -> Run {
         // Driven through `Optimizer` — the one entry point production itself
@@ -2323,9 +2401,12 @@ pub(crate) mod production_telemetry {
         let mut optimizer = Optimizer::production()
             .budget(Budget::Explicit {
                 iterations: max_iterations,
-                classes: max_classes,
+                minted: max_minted,
                 applications: None,
             })
+            // The journal is chosen when the graph is built, and this harness
+            // reports its union count: it asks for one.
+            .observe(Some(Box::new(crate::egraph::KeepJournal)))
             .hard_ceiling(timeout);
 
         let mut egraph = optimizer.egraph();
@@ -2334,11 +2415,7 @@ pub(crate) mod production_telemetry {
                 .expect("production arena must be e-graph representable (no Param/Nary)");
 
         let started = Instant::now();
-        let optimized = optimizer.run(
-            &mut egraph,
-            root_class,
-            crate::egraph::reachable_count(arena, root),
-        );
+        let optimized = optimizer.run(&mut egraph, root_class);
         let elapsed = started.elapsed();
 
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
@@ -2347,10 +2424,10 @@ pub(crate) mod production_telemetry {
         // The DP's own objective value for the term it returned: a TREE cost,
         // so sharing is not priced and the number is not comparable with
         // `arena_cost` below (which is the DAG cost the kernel pays). Since
-        // #1111 the optimizer reports it directly from the settled choices,
+        // #1111 the optimizer reports it directly from the settled term,
         // so this column no longer needs a second extraction to recover it —
-        // and no longer carries the pre-repair/`CYCLE_COST` inflation that
-        // made it describe a term other than the one extracted.
+        // and no longer carries the pre-repair inflation that made it
+        // describe a term other than the one extracted.
         let dp_cost = optimized.cost.tree;
 
         Run {
@@ -2359,11 +2436,11 @@ pub(crate) mod production_telemetry {
             total_unions: optimized.stats.unions,
             classes_after: optimized.stats.classes,
             applications: optimized.stats.applications as usize,
-            journal_unions: egraph.provenance().union_count(),
+            journal_unions: egraph.journal().union_count(),
             elapsed,
             cost: arena_cost(&extracted, extracted_root, &costs),
             dp_cost,
-            extracted_nodes: crate::egraph::reachable_count(&extracted, extracted_root),
+            extracted_nodes: reachable_ids(&extracted, extracted_root).len(),
         }
     }
 
@@ -2491,14 +2568,14 @@ pub(crate) mod production_telemetry {
             let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(&raw_arena, raw_root)
                 .unwrap_or_else(|e| panic!("{name}: lower_dwrt failed: {e:?}"));
             // runtime.rs:126-127
-            let node_count = crate::egraph::reachable_count(&arena, root);
+            let node_count = crate::egraph::inserted_class_count(&arena, root);
             let config = crate::egraph::saturate::config_for_node_count(node_count);
 
             let prod = run(
                 &arena,
                 root,
                 config.max_iterations,
-                config.max_classes,
+                config.max_minted,
                 config.safety_ceiling,
             );
 
@@ -2507,8 +2584,8 @@ pub(crate) mod production_telemetry {
             // clock (so its loss is the clock's bite alone); `lifted` lifts
             // the class cap too (the whole budget's bite).
             let ref_iters = config.max_iterations * mult;
-            let lifted_classes = config.max_classes * mult;
-            let refr = run(&arena, root, ref_iters, config.max_classes, ceiling);
+            let lifted_classes = config.max_minted * mult;
+            let refr = run(&arena, root, ref_iters, config.max_minted, ceiling);
             let remaining = ceiling.saturating_sub(refr.elapsed);
             let lifted = run(&arena, root, ref_iters, lifted_classes, remaining);
 
@@ -2520,7 +2597,7 @@ pub(crate) mod production_telemetry {
             let mut fatal = false;
             let clock_did_not_decide = matches!(
                 prod.stop,
-                SaturationStop::Quiesced | SaturationStop::ClassCap
+                SaturationStop::Quiesced | SaturationStop::MintedCap
             );
             if clock_did_not_decide
                 && refr.stop != SaturationStop::Timeout
@@ -2581,7 +2658,7 @@ pub(crate) mod production_telemetry {
                 prod.iterations,
                 config.max_iterations,
                 prod.classes_after,
-                config.max_classes,
+                config.max_minted,
                 prod.applications,
                 prod.total_unions,
                 prod.journal_unions,
@@ -2678,13 +2755,13 @@ pub(crate) mod production_telemetry {
                 sel.len(),
                 count(SaturationStop::Quiesced),
                 count(SaturationStop::IterationCeiling),
-                count(SaturationStop::ClassCap),
+                count(SaturationStop::MintedCap),
                 count(SaturationStop::Timeout),
                 sel.iter()
-                    .filter(|r| r.ref_stop == SaturationStop::ClassCap)
+                    .filter(|r| r.ref_stop == SaturationStop::MintedCap)
                     .count(),
                 sel.iter()
-                    .filter(|r| r.lifted_stop == SaturationStop::ClassCap)
+                    .filter(|r| r.lifted_stop == SaturationStop::MintedCap)
                     .count(),
                 lr.len(),
                 q(&lr),
@@ -2750,7 +2827,7 @@ pub(crate) mod production_telemetry {
 /// [`Optimizer::mask`](crate::egraph::Optimizer::mask)) are all
 /// `Option`s that [`Optimizer::production`](crate::egraph::Optimizer::production)
 /// leaves `None`, so adding one may not move a single production byte. L4
-/// (`docs/plans/2026-09-02-optimizer-api.md`) says a lever cannot change
+/// (`docs/archive/plans/2026-09-02-optimizer-api.md`) says a lever cannot change
 /// *meaning*; this says the stronger thing a port needs — that it did not
 /// change the *term*, either.
 ///
@@ -2794,12 +2871,10 @@ mod production_equivalence {
             writeln!(text, "{idx} {:?}", arena.node(ExprId(idx as u32))).expect("fmt");
         }
         writeln!(text, "root {}", root.0).expect("fmt");
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in text.as_bytes() {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        format!("{h:016x}\t{nodes}")
+        format!(
+            "{:016x}\t{nodes}",
+            pixelflow_ir::key::fnv1a64(text.as_bytes())
+        )
     }
 
     #[test]

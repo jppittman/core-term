@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L028.** The per-rule labeler-vs-strict correlation (Spearman 0.35) is withdrawn as a constant - two draws give 0.35 and 0.19 - and the headroom and structural-rule rows (L027, L029) were never taken on a shipped kernel. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L028.** The per-rule labeler-vs-strict correlation (Spearman 0.35) is withdrawn as a constant - two draws give 0.35 and 0.19 - and the headroom and structural-rule rows (L027, L029) were never taken on a shipped kernel. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Phase 3 oracle headroom at corpus scale (2026-08-30)
 
@@ -265,7 +265,7 @@ here rather than duplicated:
   incrementality argument (the reason NNUE-style accumulators are cheap) applies to the Guide's
   *state* representation (the e-graph as it grows during saturation), as distinct from the
   extraction-head program's negative finding for *extraction candidates*
-  (`docs/plans/2026-08-17-egraph-vsa-nnue-research-notes.md`: ~2x, not ~98x, because sibling
+  (`docs/archive/plans/2026-08-17-egraph-vsa-nnue-research-notes.md`: ~2x, not ~98x, because sibling
   extraction candidates differ by median 44.9% of their edge multiset). Measured against the real
   production (batched) saturation algorithm: 91.1% of all recorded rule applications are
   idempotent re-fires that create zero new nodes/edges (an even stronger form of incrementality

@@ -1,16 +1,16 @@
 //! Round 2, mode (iii): genuinely new rewrite rules.
 //!
-//! `docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3 — the fidelity
+//! `docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3 — the fidelity
 //! arm of Phase 3 Round 2 ("does the Guide's advantage grow with the rule
-//! count?"). This module is **harness-only**: [`experimental_rules`] is not
-//! called by [`super::all_rules`] or [`super::all_math_rules`], and nothing
+//! count?"). This module is **harness-only**: `experimental_rules` is not
+//! called by `super::all_rules` or `super::all_math_rules`, and nothing
 //! here changes production behavior. Adoption of any rule into production is
 //! JP's decision, made after the Round 2 measurement, on its own PR.
 //!
 //! ## The algebraic-validity contract
 //!
 //! Every rule below is a theorem over the reals on the *documented domain*
-//! of the ops it touches (`docs/plans/2026-08-05-egraph-nnue-research-workflow.md`
+//! of the ops it touches (`docs/archive/plans/2026-08-05-egraph-nnue-research-workflow.md`
 //! §0.4; CLAUDE.md "Precision is on the table; range is not"). No domain
 //! guard is added to make an identity "safer" than the ops it is built from
 //! — divergence outside a documented domain (e.g. `sqrt` of a negative
@@ -39,7 +39,7 @@
 use alloc::sync::Arc;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, TemplatePattern, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes, TemplatePattern};
 use core::f32::consts::{LN_2, LOG2_E, LOG10_2};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
@@ -83,16 +83,17 @@ fn instantiate_rhs(rule: &dyn Rewrite, bindings: Vec<EClassId>) -> RewriteAction
 
 /// Extract the constant value held by an e-class, if any node in it is one.
 fn eclass_const(egraph: &EGraph, id: EClassId) -> Option<f32> {
-    egraph.nodes(id).iter().find_map(ENode::as_f32)
+    egraph.nodes(id).find_map(ENode::as_f32)
 }
 
 /// If any node in `class` is `Op(kind)` with exactly one child, return it.
 fn extract_unary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<EClassId> {
     for node in egraph.nodes(class) {
-        if let ENode::Op { op, children } = node {
-            if op.kind() == kind && children.len() == 1 {
-                return Some(children[0]);
-            }
+        if let &ENode::Op { op, children } = node
+            && op == kind
+            && children.len() == 1
+        {
+            return Some(children[0]);
         }
     }
     None
@@ -101,10 +102,11 @@ fn extract_unary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<EClas
 /// If any node in `class` is `Op(kind)` with exactly two children, return them.
 fn extract_binary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<(EClassId, EClassId)> {
     for node in egraph.nodes(class) {
-        if let ENode::Op { op, children } = node {
-            if op.kind() == kind && children.len() == 2 {
-                return Some((children[0], children[1]));
-            }
+        if let &ENode::Op { op, children } = node
+            && op == kind
+            && children.len() == 2
+        {
+            return Some((children[0], children[1]));
         }
     }
     None
@@ -132,11 +134,15 @@ impl Rewrite for MinMaxDuality {
         self.name
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.from)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != self.from || children.len() != 2 {
+        if op != self.from || children.len() != 2 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0], children[1]]))
@@ -184,11 +190,15 @@ impl Rewrite for MinMaxAbsorption {
         self.name
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.outer)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != self.outer || children.len() != 2 {
+        if op != self.outer || children.len() != 2 {
             return None;
         }
         for (candidate_a, other) in [(children[0], children[1]), (children[1], children[0])] {
@@ -242,23 +252,25 @@ impl Rewrite for MinMaxTranslate {
         self.name
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Add)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Add || children.len() != 2 {
+        if op != OpKind::Add || children.len() != 2 {
             return None;
         }
         for (inner_cand, c) in [(children[0], children[1]), (children[1], children[0])] {
             if let Some((a, b)) = extract_binary(egraph, inner_cand, self.minmax) {
-                let minmax_op = ops::op_from_kind(self.minmax)
-                    .unwrap_or_else(|| panic!("MinMaxTranslate: {:?} has no Op", self.minmax));
                 // Distribute{outer=Add, inner=minmax, a=c, b=a, c=b} builds
                 // minmax(Add(c,a), Add(c,b)) = minmax(a+c, b+c) up to Add's
                 // commutativity (which the e-graph already carries).
                 return Some(RewriteAction::Distribute {
-                    outer: &ops::Add,
-                    inner: minmax_op,
+                    outer: OpKind::Add,
+                    inner: self.minmax,
                     a: c,
                     b: a,
                     c: b,
@@ -308,11 +320,15 @@ impl Rewrite for MinScaledByNonnegLiteral {
         "min-scaled-by-nonneg-literal"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         for (k_cand, other) in [(children[0], children[1]), (children[1], children[0])] {
@@ -324,8 +340,8 @@ impl Rewrite for MinScaledByNonnegLiteral {
             }
             if let Some((a, b)) = extract_binary(egraph, other, OpKind::Min) {
                 return Some(RewriteAction::Distribute {
-                    outer: &ops::Mul,
-                    inner: &ops::Min,
+                    outer: OpKind::Mul,
+                    inner: OpKind::Min,
                     a: k_cand,
                     b: a,
                     c: b,
@@ -358,18 +374,22 @@ impl Rewrite for MinMaxDistributive {
         "min-max-distributive"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Min)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Min || children.len() != 2 {
+        if op != OpKind::Min || children.len() != 2 {
             return None;
         }
         for (a, other) in [(children[0], children[1]), (children[1], children[0])] {
             if let Some((b, c)) = extract_binary(egraph, other, OpKind::Max) {
                 return Some(RewriteAction::Distribute {
-                    outer: &ops::Min,
-                    inner: &ops::Max,
+                    outer: OpKind::Min,
+                    inner: OpKind::Max,
                     a,
                     b,
                     c,
@@ -402,11 +422,15 @@ impl Rewrite for AbsAsMax {
         "abs-as-max"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Abs)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Abs || children.len() != 1 {
+        if op != OpKind::Abs || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -429,21 +453,22 @@ impl Rewrite for MaxSelfNegAsAbs {
         "max-self-neg-as-abs"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Max)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Max || children.len() != 2 {
+        if op != OpKind::Max || children.len() != 2 {
             return None;
         }
         for (x, other) in [(children[0], children[1]), (children[1], children[0])] {
-            if let Some(negated) = extract_unary(egraph, other, OpKind::Neg) {
-                if egraph.find(negated) == egraph.find(x) {
-                    return Some(RewriteAction::Create(ENode::Op {
-                        op: &ops::Abs,
-                        children: vec![x],
-                    }));
-                }
+            if let Some(negated) = extract_unary(egraph, other, OpKind::Neg)
+                && egraph.find(negated) == egraph.find(x)
+            {
+                return Some(RewriteAction::Create(ENode::apply(OpKind::Abs, &[x])));
             }
         }
         None
@@ -472,15 +497,19 @@ impl Rewrite for IfSameBranch {
         // strict-label datasets and `rule_set_fingerprint` (a frozen registered
         // constant, registration-v2 §2) all hash it — so it keeps the spelling
         // the method `.select` has until Phase B of
-        // docs/plans/2026-09-25-the-language-is-kernel.md renames both.
+        // docs/language/2026-09-25-the-language-is-kernel.md renames both.
         "select-same-branch"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::If)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::If || children.len() != 3 {
+        if op != OpKind::If || children.len() != 3 {
             return None;
         }
         let (a, b) = (children[1], children[2]);
@@ -514,20 +543,21 @@ impl Rewrite for IfLtToMin {
         "select-lt-to-min"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::If)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::If || children.len() != 3 {
+        if op != OpKind::If || children.len() != 3 {
             return None;
         }
         let (m, x, y) = (children[0], children[1], children[2]);
         let (a, b) = extract_binary(egraph, m, OpKind::Lt)?;
         if egraph.find(a) == egraph.find(x) && egraph.find(b) == egraph.find(y) {
-            return Some(RewriteAction::Create(ENode::Op {
-                op: &ops::Min,
-                children: vec![x, y],
-            }));
+            return Some(RewriteAction::Create(ENode::apply(OpKind::Min, &[x, y])));
         }
         None
     }
@@ -549,21 +579,22 @@ impl Rewrite for IfLtToMax {
         "select-lt-to-max"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::If)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::If || children.len() != 3 {
+        if op != OpKind::If || children.len() != 3 {
             return None;
         }
         let (m, x, y) = (children[0], children[1], children[2]);
         let (a, b) = extract_binary(egraph, m, OpKind::Lt)?;
         // select(lt(a,b), b, a): x should be b, y should be a.
         if egraph.find(a) == egraph.find(y) && egraph.find(b) == egraph.find(x) {
-            return Some(RewriteAction::Create(ENode::Op {
-                op: &ops::Max,
-                children: vec![x, y],
-            }));
+            return Some(RewriteAction::Create(ENode::apply(OpKind::Max, &[x, y])));
         }
         None
     }
@@ -595,11 +626,15 @@ impl Rewrite for IfHoistUnary {
         self.name
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::If)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::If || children.len() != 3 {
+        if op != OpKind::If || children.len() != 3 {
             return None;
         }
         let (m, x, y) = (children[0], children[1], children[2]);
@@ -651,17 +686,19 @@ impl Rewrite for CompareFlipLt {
         "compare-flip-lt"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Lt)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Lt || children.len() != 2 {
+        if op != OpKind::Lt || children.len() != 2 {
             return None;
         }
-        Some(RewriteAction::Create(ENode::Op {
-            op: &ops::Gt,
-            children: vec![children[1], children[0]],
-        }))
+        let node = ENode::apply(OpKind::Gt, &[children[1], children[0]]);
+        Some(RewriteAction::Create(node))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -687,11 +724,15 @@ impl Rewrite for TanDefinition {
         "tan-definition"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Tan)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Tan || children.len() != 1 {
+        if op != OpKind::Tan || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -715,11 +756,15 @@ impl Rewrite for TanFusion {
         "tan-fusion"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         for (sin_side, recip_side) in [(children[0], children[1]), (children[1], children[0])] {
@@ -733,10 +778,7 @@ impl Rewrite for TanFusion {
                 continue;
             };
             if egraph.find(x1) == egraph.find(x2) {
-                return Some(RewriteAction::Create(ENode::Op {
-                    op: &ops::Tan,
-                    children: vec![x1],
-                }));
+                return Some(RewriteAction::Create(ENode::apply(OpKind::Tan, &[x1])));
             }
         }
         None
@@ -769,11 +811,15 @@ impl Rewrite for ExpAsExp2 {
         "exp-as-exp2"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Exp)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Exp || children.len() != 1 {
+        if op != OpKind::Exp || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -796,11 +842,15 @@ impl Rewrite for LnAsLog2 {
         "ln-as-log2"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Ln)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Ln || children.len() != 1 {
+        if op != OpKind::Ln || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -823,11 +873,15 @@ impl Rewrite for Log10AsLog2 {
         "log10-as-log2"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Log10)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Log10 || children.len() != 1 {
+        if op != OpKind::Log10 || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -857,11 +911,15 @@ impl Rewrite for SqrtProduct {
         "sqrt-product"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         let x = extract_unary(egraph, children[0], OpKind::Sqrt)?;
@@ -894,11 +952,15 @@ impl Rewrite for RsqrtSquareAsRecip {
         "rsqrt-square-as-recip"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         let a = extract_unary(egraph, children[0], OpKind::Rsqrt)?;
@@ -906,10 +968,7 @@ impl Rewrite for RsqrtSquareAsRecip {
         if egraph.find(a) != egraph.find(b) {
             return None;
         }
-        Some(RewriteAction::Create(ENode::Op {
-            op: &ops::Recip,
-            children: vec![a],
-        }))
+        Some(RewriteAction::Create(ENode::apply(OpKind::Recip, &[a])))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -933,21 +992,22 @@ impl Rewrite for NormalizeAsSqrt {
         "normalize-as-sqrt"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         for (x_cand, rsqrt_side) in [(children[0], children[1]), (children[1], children[0])] {
-            if let Some(x2) = extract_unary(egraph, rsqrt_side, OpKind::Rsqrt) {
-                if egraph.find(x_cand) == egraph.find(x2) {
-                    return Some(RewriteAction::Create(ENode::Op {
-                        op: &ops::Sqrt,
-                        children: vec![x_cand],
-                    }));
-                }
+            if let Some(x2) = extract_unary(egraph, rsqrt_side, OpKind::Rsqrt)
+                && egraph.find(x_cand) == egraph.find(x2)
+            {
+                return Some(RewriteAction::Create(ENode::apply(OpKind::Sqrt, &[x_cand])));
             }
         }
         None
@@ -975,11 +1035,15 @@ impl Rewrite for RecipProduct {
         "recip-product"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         let x = extract_unary(egraph, children[0], OpKind::Recip)?;
@@ -1009,11 +1073,15 @@ impl Rewrite for RecipOfProduct {
         "recip-of-product"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Recip)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Recip || children.len() != 1 {
+        if op != OpKind::Recip || children.len() != 1 {
             return None;
         }
         let (a, b) = extract_binary(egraph, children[0], OpKind::Mul)?;
@@ -1046,11 +1114,15 @@ impl Rewrite for FmaUnfuse {
         "fma-unfuse"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::MulAdd)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::MulAdd || children.len() != 3 {
+        if op != OpKind::MulAdd || children.len() != 3 {
             return None;
         }
         Some(instantiate_rhs(
@@ -1076,21 +1148,23 @@ impl Rewrite for FmaMulIdentity {
         "fma-mul-identity"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::MulAdd)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::MulAdd || children.len() != 3 {
+        if op != OpKind::MulAdd || children.len() != 3 {
             return None;
         }
         let b_val = eclass_const(egraph, children[1])?;
         if b_val != 1.0 {
             return None;
         }
-        Some(RewriteAction::Create(ENode::Op {
-            op: &ops::Add,
-            children: vec![children[0], children[2]],
-        }))
+        let node = ENode::apply(OpKind::Add, &[children[0], children[2]]);
+        Some(RewriteAction::Create(node))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -1110,21 +1184,23 @@ impl Rewrite for FmaAddIdentity {
         "fma-add-identity"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::MulAdd)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::MulAdd || children.len() != 3 {
+        if op != OpKind::MulAdd || children.len() != 3 {
             return None;
         }
         let c_val = eclass_const(egraph, children[2])?;
         if c_val != 0.0 {
             return None;
         }
-        Some(RewriteAction::Create(ENode::Op {
-            op: &ops::Mul,
-            children: vec![children[0], children[1]],
-        }))
+        let node = ENode::apply(OpKind::Mul, &[children[0], children[1]]);
+        Some(RewriteAction::Create(node))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -1148,11 +1224,15 @@ impl Rewrite for NegDistributesAdd {
         "neg-distributes-add"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Neg)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Neg || children.len() != 1 {
+        if op != OpKind::Neg || children.len() != 1 {
             return None;
         }
         let (a, b) = extract_binary(egraph, children[0], OpKind::Add)?;
@@ -1176,11 +1256,15 @@ impl Rewrite for NegDistributesMul {
         "neg-distributes-mul"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Neg)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Neg || children.len() != 1 {
+        if op != OpKind::Neg || children.len() != 1 {
             return None;
         }
         let (a, b) = extract_binary(egraph, children[0], OpKind::Mul)?;
@@ -1216,11 +1300,15 @@ impl Rewrite for DivByLiteral {
         "div-by-literal"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Div)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Div || children.len() != 2 {
+        if op != OpKind::Div || children.len() != 2 {
             return None;
         }
         let k = eclass_const(egraph, children[1])?;
@@ -1255,7 +1343,7 @@ impl Rewrite for DivByLiteral {
 // ============================================================================
 
 /// The Round 2 mode-(iii) batch: genuinely new rules the production 62 lack
-/// (`docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3).
+/// (`docs/archive/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3).
 ///
 /// **Harness-only.** Not called by [`super::all_rules`] or
 /// [`super::all_math_rules`]; nothing in production behavior changes by this
@@ -1301,81 +1389,7 @@ pub fn experimental_rules() -> Vec<Box<dyn Rewrite>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_ir::Uniform;
-
-    /// Well-conditioned sample points, seeded and fixed: finite, moderate
-    /// magnitude, no zeros (avoids `Recip`/`Rsqrt` poles), all-positive
-    /// available separately for domain-restricted rules (`sqrt`, `ln`,
-    /// `log10`, `rsqrt`, N23).
-    fn general_points() -> Vec<[f32; 4]> {
-        vec![
-            [1.3, 0.7, 2.1, -0.9],
-            [-2.4, 3.1, -0.5, 1.8],
-            [0.6, -1.7, 4.2, 2.9],
-            [5.5, -3.3, 1.1, -4.4],
-            [0.25, 0.75, -1.25, 3.75],
-        ]
-    }
-
-    /// All-positive points: for rules whose domain excludes zero/negative
-    /// (`sqrt`, `ln`, `log10`, `rsqrt`, `recip`-of-min/max compositions).
-    fn positive_points() -> Vec<[f32; 4]> {
-        vec![
-            [1.3, 0.7, 2.1, 0.9],
-            [2.4, 3.1, 0.5, 1.8],
-            [0.6, 1.7, 4.2, 2.9],
-            [5.5, 3.3, 1.1, 4.4],
-            [0.25, 0.75, 1.25, 3.75],
-        ]
-    }
-
-    /// Points for rules whose `Var(0)` metavariable names a `select` mask
-    /// (N14): a mask is a bit pattern, never a number (CLAUDE.md), so
-    /// `Var(0)` must be bound to a genuine all-ones/all-zero pattern, not an
-    /// arbitrary float — using an arbitrary float there is off-label (no
-    /// rule in the language ever constructs `If` with a non-mask first
-    /// argument) and produces meaningless partial-bit blends on both sides
-    /// alike, which is a test-harness bug, not a rule counterexample. Other
-    /// slots are well-conditioned positive floats (N14c hoists `Sqrt`).
-    fn if_mask_points() -> Vec<[f32; 4]> {
-        let t = f32::from_bits(u32::MAX);
-        let f = 0.0_f32;
-        vec![
-            [t, 1.3, 2.7, 4.1],
-            [f, 1.3, 2.7, 4.1],
-            [t, 4.2, 0.5, 1.9],
-            [f, 4.2, 0.5, 1.9],
-        ]
-    }
-
-    /// Replace every metavariable past the coordinate axes with one of
-    /// `args`, declared in this arena. `Var(2)`/`Var(3)` are not coordinates
-    /// — a lattice has two axes — and a value invariant across the lattice is
-    /// exactly what an arbitrary subterm's stand-in should be.
-    fn bind_metavars_past_the_axes(
-        arena: &mut ExprArena,
-        root: ExprId,
-        args: &[Uniform],
-    ) -> ExprId {
-        let subs: Vec<(u8, ExprId)> = args
-            .iter()
-            .enumerate()
-            .map(|(i, u)| {
-                let slot = arena.declare_uniform(u.decl());
-                let axis = pixelflow_ir::arena::COORD_AXES as u8 + i as u8;
-                (axis, arena.push_uniform(slot))
-            })
-            .collect();
-        arena.substitute_vars_with(root, &subs)
-    }
-
-    const TIGHT: f32 = 1e-4;
-    /// `Recip`/`Rsqrt` are hardware estimates in the JIT, but `eval_scalar`
-    /// computes them exactly (`1.0/x`, `1.0/sqrt(x)`) — see kind.rs
-    /// `eval_unary`. The oracle here therefore checks the *exact* identity;
-    /// the loose tolerance exists only for float rounding across the two
-    /// independently-built expression trees, not for estimate error.
-    const LOOSE: f32 = 1e-3;
+    use crate::egraph::{RuleSet, Saturation};
 
     /// Sanity: the batch is harness-only, and its count matches the doc
     /// comment on [`experimental_rules`] (guards against silent drift if a
@@ -1401,7 +1415,7 @@ mod tests {
     #[test]
     fn experimental_rules_saturate_without_panicking() {
         use crate::egraph::{
-            CostModel, EGraph, ENode, config_for_node_count, extract, saturate_with_full_budget,
+            CostModel, EGraph, ENode, config_for_node_count, extract_dag, saturate_with_full_budget,
         };
         use std::time::Duration;
 
@@ -1411,31 +1425,16 @@ mod tests {
         let build_min_max = |eg: &mut EGraph| {
             let x = eg.add(ENode::Var(0));
             let y = eg.add(ENode::Var(1));
-            let max_xy = eg.add(ENode::Op {
-                op: &ops::Max,
-                children: vec![x, y],
-            });
-            eg.add(ENode::Op {
-                op: &ops::Min,
-                children: vec![x, max_xy],
-            })
+            let max_xy = eg.add(ENode::apply(OpKind::Max, &[x, y]));
+            eg.add(ENode::apply(OpKind::Min, &[x, max_xy]))
         };
 
         // tan(x) * cos(x) — tan/exp/log rules all apply somewhere in here.
         let build_tan_cos = |eg: &mut EGraph| {
             let x = eg.add(ENode::Var(0));
-            let tan_x = eg.add(ENode::Op {
-                op: &ops::Tan,
-                children: vec![x],
-            });
-            let cos_x = eg.add(ENode::Op {
-                op: &ops::Cos,
-                children: vec![x],
-            });
-            eg.add(ENode::Op {
-                op: &ops::Mul,
-                children: vec![tan_x, cos_x],
-            })
+            let tan_x = eg.add(ENode::apply(OpKind::Tan, &[x]));
+            let cos_x = eg.add(ENode::apply(OpKind::Cos, &[x]));
+            eg.add(ENode::apply(OpKind::Mul, &[tan_x, cos_x]))
         };
 
         // fma(x, y, x/2) — fma unfuse/identities + div-by-literal.
@@ -1443,14 +1442,8 @@ mod tests {
             let x = eg.add(ENode::Var(0));
             let y = eg.add(ENode::Var(1));
             let two = eg.add(ENode::constant(2.0));
-            let x_half = eg.add(ENode::Op {
-                op: &ops::Div,
-                children: vec![x, two],
-            });
-            eg.add(ENode::Op {
-                op: &ops::MulAdd,
-                children: vec![x, y, x_half],
-            })
+            let x_half = eg.add(ENode::apply(OpKind::Div, &[x, two]));
+            eg.add(ENode::apply(OpKind::MulAdd, &[x, y, x_half]))
         };
 
         // EGraph::with_rules takes ownership, so build one egraph per case
@@ -1465,16 +1458,17 @@ mod tests {
         for (case_name, build) in cases {
             let mut rules = crate::math::all_rules();
             rules.extend(experimental_rules());
-            let mut eg = EGraph::with_rules(rules);
+            let mut eg = Saturation::over(RuleSet::new(rules));
             let root = build(&mut eg);
-            let class_cap = config_for_node_count(8).max_classes;
+            let class_cap = config_for_node_count(8).max_minted;
             let _ = saturate_with_full_budget(&mut eg, 200, class_cap, Duration::from_secs(10));
             // The point of this test is that saturate+extract complete
             // without panicking under the full 62+experimental rule set; a
             // cost of exactly 0 is a legitimate outcome (e.g. min-max
             // absorption reducing the whole expression to a bare Var, whose
             // latency_prior cost is 0), not a failure.
-            let (arena, id, _cost) = extract(&eg, eg.find(root), &costs);
+            let dag = extract_dag(&eg, eg.find(root), &costs);
+            let (arena, id) = dag.to_arena(&eg);
             assert!(
                 !format!("{}", arena.display(id)).is_empty(),
                 "{case_name}: extraction produced an empty expression"

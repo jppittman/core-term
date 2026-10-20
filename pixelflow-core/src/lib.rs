@@ -43,7 +43,7 @@
 //!
 //! **No expression templates.** Manifolds were once zero-sized types that
 //! monomorphized into a fused kernel and evaluated one SIMD batch at a time.
-//! That tier is gone (docs/plans/2026-09-06-kernel-with-a-lattice.md): the
+//! That tier is gone (docs/archive/plans/2026-09-06-kernel-with-a-lattice.md): the
 //! compiler already beat it, and the per-batch call boundary was most of why.
 //!
 //! ## Key modules

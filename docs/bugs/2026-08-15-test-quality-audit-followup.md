@@ -7,7 +7,7 @@ reduction that survives large arguments" (#992).
 
 ## Delta audit: `084d3ef`'s new/changed tests
 
-Reviewed every test the sin fix added or touched for STYLE.md compliance:
+Reviewed every test the sin fix added or touched for ../process/STYLE.md compliance:
 
 - `pixelflow-ir/tests/trig_range.rs` (new, 421 lines) — builds kernels
   through `ExprArena::push_var`/`push_unary`/`push_binary` and evaluates with

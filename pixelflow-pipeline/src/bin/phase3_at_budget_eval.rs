@@ -1,7 +1,7 @@
 //! The at-budget evaluation of the Phase 3 registered claim, on DEV.
 //!
-//! Implements `docs/plans/2026-08-31-guide-design-revision.md` §5 against the
-//! committed registration `docs/plans/2026-09-01-phase3-registration.md`
+//! Implements `docs/archive/plans/2026-08-31-guide-design-revision.md` §5 against the
+//! committed registration `docs/archive/plans/2026-09-01-phase3-registration.md`
 //! (nothing in that document is revised here). Every arm of the ablation
 //! ladder goes through the ONE anytime-curve definition
 //! ([`pixelflow_search::egraph::anytime`]); the arms differ only in how the
@@ -51,7 +51,7 @@
 //!
 //! Reads `corpus_dev.bin` by default, or a `--corpus` file of DEV-only
 //! out-of-distribution families (round 1b:
-//! `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md`,
+//! `docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md`,
 //! `corpus_dev_ood.bin`, one family selected with `--name-prefix`). Whatever
 //! is loaded is fence-checked against `corpus_train.bin` (a structural
 //! collision with TRAIN is a hard error); `corpus_final.bin` is never opened
@@ -90,7 +90,7 @@ use std::time::Duration;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
+use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind, ShiftCount};
 use pixelflow_pipeline::journal::append_record;
 use pixelflow_pipeline::schema::fnv1a64_hex;
 use pixelflow_pipeline::training::corpus::read_corpus;
@@ -102,7 +102,7 @@ use pixelflow_pipeline::training::structural::FenceKey;
 use pixelflow_search::egraph::{
     APP_CHECKPOINT_GRID, AnytimeCurveOutput, ApplicationId, Budget, CostModel, EClassId, EGraph,
     ENode, ENodeId, EpisodeLabels, KeepJournal, Optimizer, Origin, RuleId, RuleSet, SaturationStop,
-    config_for_node_count, run_anytime_curve,
+    ShiftDirection, config_for_node_count, run_anytime_curve,
 };
 use pixelflow_search::nnue::guide::linear::{
     LinearCandidateGuide, LinearReturnGuide, PerRuleRateGuide,
@@ -115,7 +115,7 @@ use pixelflow_search::nnue::guide::{CandidateSummary, SaturationGuide};
 struct Args {
     /// Directory holding `corpus_dev.bin` (default corpus) and
     /// `corpus_train.bin` (fence source — read whenever any corpus is
-    /// loaded, per docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §3).
+    /// loaded, per docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §3).
     #[arg(long, default_value = "pixelflow-pipeline/data")]
     corpus_dir: String,
 
@@ -134,7 +134,7 @@ struct Args {
     name_prefix: String,
 
     /// Emit the registered op-composition stratum
-    /// (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §2)
+    /// (docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §2)
     /// per expression in the JSONL rows, and per-stratum summary tables
     /// (population counts over the full classical corpus, plus per-stratum
     /// D_A statistics for whatever classical rows this run evaluated).
@@ -148,7 +148,7 @@ struct Args {
     )]
     checkpoint: String,
 
-    /// `train_guide_r2g` checkpoint (`docs/plans/2026-09-01-guide-return-to-go.md`
+    /// `train_guide_r2g` checkpoint (`docs/archive/plans/2026-09-01-guide-return-to-go.md`
     /// §3.3). When set, the claim arm is [`LinearReturnGuide`] loaded from
     /// this path and `--checkpoint` is not opened. The arm keeps the `linear`
     /// key in every row and aggregate (schema stability for `read_rows` /
@@ -175,7 +175,7 @@ struct Args {
     /// unbounded. Applied to BOTH the selection and the aggregation, so a
     /// run and a `--aggregate-only` re-read of its rows report the same
     /// population. Round 3's registered training regime
-    /// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3) is node band
+    /// (docs/archive/plans/2026-09-01-guide-return-to-go.md §2b.3) is node band
     /// 101-1000: `--min-expr-nodes 101 --max-expr-nodes 1000`.
     #[arg(long, default_value_t = 0)]
     min_expr_nodes: usize,
@@ -232,7 +232,7 @@ struct Args {
 }
 
 // ---------------------------------------------------------------------------
-// Registered constants (docs/plans/2026-09-01-phase3-registration.md §4–§6).
+// Registered constants (docs/archive/plans/2026-09-01-phase3-registration.md §4–§6).
 // Not adjustable after the fact; restated here so the report is self-checking.
 // ---------------------------------------------------------------------------
 
@@ -292,7 +292,7 @@ fn config_fingerprint(args: &Args, guided_grid: &[usize], dev_corpus: &Path) -> 
 }
 
 // ---------------------------------------------------------------------------
-// Round-1b registered constants (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md
+// Round-1b registered constants (docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md
 // §1). `D_A(S, B) = m_A^S(B) - m_A^DEV(B)`; `m_A^DEV(B)` below is quoted
 // verbatim from Round 1's own DEV-overall classical result (PR #1084,
 // `2026-09-01-phase3-at-budget-eval.json`, `tiers[].arms[].ratio_vs_unguided_at_b.median`)
@@ -348,7 +348,7 @@ const TRIG_RULE_IDX: [usize; 11] = [20, 30, 31, 32, 33, 34, 36, 37, 38, 39, 40];
 /// the same rules. A same-length reorder of `all_rules()` would repoint
 /// every index silently and there is nothing else in the run that would
 /// notice — which is exactly the failure
-/// docs/plans/2026-09-02-phase3-forward-port.md §2.2 is about.
+/// docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2 is about.
 const TRIG_RULE_LABELS: [&str; 11] = [
     "doubling",
     "odd-negation(Sin)",
@@ -615,7 +615,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "iteration_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -722,7 +722,7 @@ struct AtBudgetDiag {
     #[serde(default)]
     /// Per-rule firings, keyed by CANONICAL RULE LABEL — never by a
     /// position in `all_rules()`, which a same-length reorder repoints
-    /// silently (docs/plans/2026-09-02-phase3-forward-port.md §2.2). `None`
+    /// silently (docs/archive/plans/2026-09-02-phase3-forward-port.md §2.2). `None`
     /// on a row written before this key existed, which every consumer here
     /// refuses loudly rather than reading as "no firings".
     by_rule: Option<BTreeMap<String, RuleFiring>>,
@@ -742,7 +742,8 @@ struct ProductionRow {
     node_count_reachable: usize,
     config_tier: String,
     max_iterations: usize,
-    max_classes: usize,
+    #[serde(rename = "max_classes")]
+    max_minted: usize,
     /// The production budget's application cap (#1118). Replaces the old
     /// `hard_timeout_ms`: wall clock is a panicking safety ceiling now, not
     /// a stop reason, so it is not a budget dimension to report.
@@ -836,12 +837,7 @@ fn rule_label_of(rules: &RuleSet, id: RuleId) -> String {
 
 /// The [`RuleId`] a recorded application carries, or a loud failure.
 fn rule_of(rec: &pixelflow_search::egraph::ApplicationRecord) -> RuleId {
-    rec.rule.unwrap_or_else(|| {
-        panic!(
-            "phase3_at_budget_eval: an application carries no RuleId — the graph was built \
-             without rule ids, and every table here is keyed by identity"
-        )
-    })
+    rec.rule
 }
 
 /// Strict hindsight labels for a finished curve (its own final extraction).
@@ -867,7 +863,7 @@ fn full_run_diag(
     positives: &BTreeSet<ApplicationId>,
     rules: &RuleSet,
 ) -> AtBudgetDiag {
-    let total = out.egraph.provenance().applications().count();
+    let total = out.egraph.journal().applications().count();
     let rounds = *arm.rounds.last().expect("non-empty curve");
     prefix_diag(out, total, rounds, positives, rules)
 }
@@ -885,7 +881,7 @@ fn prefix_diag(
     let mut strict_positive = 0usize;
     let mut rule_hist: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_rule: BTreeMap<String, RuleFiring> = BTreeMap::new();
-    for (id, rec) in out.egraph.provenance().applications() {
+    for (id, rec) in out.egraph.journal().applications() {
         if id.as_u64() as usize >= applications {
             continue;
         }
@@ -919,8 +915,13 @@ fn prefix_diag(
 enum Term {
     Leaf(ENode),
     Op {
-        op: &'static dyn pixelflow_search::egraph::Op,
+        op: OpKind,
         children: Vec<Term>,
+    },
+    Shift {
+        direction: ShiftDirection,
+        count: ShiftCount,
+        operand: Box<Term>,
     },
 }
 
@@ -930,7 +931,10 @@ fn term_of_chosen(
     class: EClassId,
     node_idx: usize,
 ) -> Term {
-    let node = &egraph.nodes(class)[node_idx];
+    let node = egraph
+        .nodes(class)
+        .nth(node_idx)
+        .expect("a choice indexes its class's e-nodes");
     match node {
         ENode::Op { op, children } => Term::Op {
             op: *op,
@@ -948,7 +952,25 @@ fn term_of_chosen(
                 })
                 .collect(),
         },
-        leaf => Term::Leaf(leaf.clone()),
+        ENode::Shift {
+            direction,
+            count,
+            operand,
+        } => {
+            let c = egraph.find(*operand);
+            let idx = choices.get(c.index()).and_then(|o| *o).unwrap_or_else(|| {
+                panic!(
+                    "term_of_chosen: operand class {} of a chosen shift has no extraction choice",
+                    c.index()
+                )
+            });
+            Term::Shift {
+                direction: *direction,
+                count: *count,
+                operand: Box::new(term_of_chosen(egraph, choices, c, idx)),
+            }
+        }
+        leaf => Term::Leaf(*leaf),
     }
 }
 
@@ -977,12 +999,29 @@ impl<'a> NodeIndex<'a> {
                 .iter()
                 .find(|(_, n)| *n == leaf)
                 .map(|(c, _)| *c),
+            Term::Shift {
+                direction,
+                count,
+                operand,
+            } => {
+                let operand_class = self.lookup(operand)?;
+                self.entries
+                    .iter()
+                    .find(|(_, n)| match n {
+                        ENode::Shift {
+                            direction: d,
+                            count: k,
+                            operand: o,
+                        } => d == direction && k == count && self.egraph.find(*o) == operand_class,
+                        _ => false,
+                    })
+                    .map(|(c, _)| *c)
+            }
             Term::Op { op, children } => {
                 let mut child_classes = Vec::with_capacity(children.len());
                 for ch in children {
                     child_classes.push(self.lookup(ch)?);
                 }
-                let kind = op.kind();
                 self.entries
                     .iter()
                     .find(|(_, n)| match n {
@@ -990,7 +1029,7 @@ impl<'a> NodeIndex<'a> {
                             op: o,
                             children: cs,
                         } => {
-                            o.kind() == kind
+                            o == op
                                 && cs.len() == child_classes.len()
                                 && cs
                                     .iter()
@@ -1012,7 +1051,7 @@ fn enabler_diag(
     rules: &RuleSet,
 ) -> EnablerDiag {
     let eg = &unguided.egraph;
-    let prov = eg.provenance();
+    let prov = eg.journal();
     let choices = &unguided.extraction.choices;
 
     // Output nodes of every application (a rule RHS may create several),
@@ -1027,8 +1066,8 @@ fn enabler_diag(
     }
     let mut class_of_tag: HashMap<ENodeId, (EClassId, usize)> = HashMap::new();
     for c in eg.class_ids() {
-        for (i, tag) in eg.tags(c).iter().enumerate() {
-            class_of_tag.insert(*tag, (c, i));
+        for (i, tag) in eg.tags(c).enumerate() {
+            class_of_tag.insert(tag, (c, i));
         }
     }
     // The extraction's complete class -> chosen-node map, and the set of
@@ -1053,8 +1092,13 @@ fn enabler_diag(
                     c.index()
                 )
             });
-            out.push((c, eg.tags(c)[idx]));
-            stack.extend(eg.nodes(c)[idx].children());
+            let (node, tag) = eg
+                .nodes(c)
+                .zip(eg.tags(c))
+                .nth(idx)
+                .expect("a choice indexes its class's e-nodes");
+            out.push((c, tag));
+            stack.extend(node.children());
         }
         out
     };
@@ -1106,11 +1150,18 @@ fn enabler_diag(
             let mut ancestry = eg.derivation_ancestors_tight_from(&[(class, tag)], &chosen_map);
             ancestry.remove(&app);
             enabled |= ancestry.iter().any(|&a| structural_app(a));
-            let node = &eg.nodes(class)[node_idx];
+            let node = eg
+                .nodes(class)
+                .nth(node_idx)
+                .expect("a tag's position indexes its class's e-nodes");
             direct |= node.children().iter().any(|&child| {
                 let c = eg.find(child);
                 let idx = choices[c.index()].expect("chosen child has a choice");
-                matches!(prov.origin(eg.tags(c)[idx]), Some(Origin::Rule(a)) if structural_app(a))
+                let tag = eg
+                    .tags(c)
+                    .nth(idx)
+                    .expect("a choice indexes its class's e-nodes");
+                matches!(prov.origin(tag), Some(Origin::Rule(a)) if structural_app(a))
             });
             terms.push(term_of_chosen(eg, choices, class, node_idx));
         }
@@ -1195,7 +1246,7 @@ fn arm_optimizer(input: &CurveInput<'_>, guide: Option<Box<dyn SaturationGuide>>
         .observe(Some(Box::new(KeepJournal)))
         .budget(Budget::Explicit {
             iterations: SWEEP_SAFETY_CEILING,
-            classes: input.class_cap,
+            minted: input.class_cap,
             applications: None,
         })
         .hard_ceiling(SAFETY_TIMEOUT)
@@ -1231,10 +1282,9 @@ fn production_probe(arena: &ExprArena, root: ExprId, costs: &CostModel) -> Produ
     )
     .expect("insert into e-graph");
     let limits = optimizer.limits_for(pixelflow_search::egraph::InputSize {
-        nodes: node_count,
         classes: egraph.num_classes(),
     });
-    let out = optimizer.run(&mut egraph, root_class, node_count);
+    let out = optimizer.run(&mut egraph, root_class);
     ProductionRow {
         node_count_reachable: node_count,
         config_tier: match limits.iterations {
@@ -1245,7 +1295,7 @@ fn production_probe(arena: &ExprArena, root: ExprId, costs: &CostModel) -> Produ
         }
         .to_string(),
         max_iterations: limits.iterations,
-        max_classes: limits.classes,
+        max_minted: limits.minted,
         // The production budget's application dimension (#1118). The
         // wall-clock `hard_timeout` this field used to carry is gone: it is
         // a panicking safety ceiling now, never a stop reason, so reporting
@@ -2278,7 +2328,7 @@ fn write_markdown(report: &Report, path: &Path, jsonl: &str) {
     md.push_str(
         "# Phase 3 at-budget evaluation on DEV (ablation ladder against the registered claim)\n\n",
     );
-    md.push_str("**Date:** 2026-09-01 · **Registration:** `docs/plans/2026-09-01-phase3-registration.md` (unrevised) · **Authority:** `docs/plans/2026-08-31-guide-design-revision.md` §5\n\n");
+    md.push_str("**Date:** 2026-09-01 · **Registration:** `docs/archive/plans/2026-09-01-phase3-registration.md` (unrevised) · **Authority:** `docs/archive/plans/2026-08-31-guide-design-revision.md` §5\n\n");
     md.push_str(&format!(
         "Per-expression rows: `{jsonl}` ({} expressions: {}). Skipped: {}.\n\n",
         report.n_rows,
@@ -2952,7 +3002,7 @@ fn main() {
             let input = CurveInput {
                 arena,
                 root: *root,
-                class_cap: config_for_node_count(arena.len()).max_classes,
+                class_cap: config_for_node_count(arena.len()).max_minted,
                 costs: &costs,
                 guided_grid: &guided_grid,
             };

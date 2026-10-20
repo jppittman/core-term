@@ -3,7 +3,7 @@
 Scope: scheduled continuation of
 `docs/bugs/2026-08-08-test-quality-audit-followup.md`. `main` has not moved
 since that pass landed as `e2c0c5f` (2026-08-11) — no new commits, so there is
-no fresh delta to statically audit for STYLE.md/naming violations. Instead
+no fresh delta to statically audit for ../process/STYLE.md/naming violations. Instead
 this pass picked up the 08-08 audit's own recommended-next-steps item #2:
 
 > `pixelflow-ir/src/kind.rs`'s pre-existing, delta-untouched functions
@@ -14,9 +14,9 @@ this pass picked up the 08-08 audit's own recommended-next-steps item #2:
 > deterministic-math candidate for a future pass explicitly scoped to
 > "pre-existing backlog" rather than "since last audit."
 
-## Also: codified the "it should" naming convention into docs/STYLE.md
+## Also: codified the "it should" naming convention into docs/process/STYLE.md
 
-`docs/STYLE.md`'s Testing section had one rule (test public API) and no
+`docs/process/STYLE.md`'s Testing section had one rule (test public API) and no
 naming rule at all — the "name reads as a sentence once you prepend 'it
 should'" convention has been applied by every one of these audits going back
 to 2026-07-20, but only ever lived in the audits' own judgment, never in the
@@ -81,7 +81,7 @@ where it isn't (`default_cost`, `eval_binary`, `eval_ternary`,
   non-integral count, `MulAdd`'s fused-vs-split rounding, `Recip`/`Rsqrt`
   unconditional, and the `_ => false` default).
 - **`monoid_identity` / `is_monoid`** (`pub(crate)`, no public wrapper) —
-  rather than testing these directly (STYLE.md's public-API rule), tested
+  rather than testing these directly (../process/STYLE.md's public-API rule), tested
   through their one real entry point: `ExprArena::push_reduce`. Added
   `arena::tests::push_reduce_should_panic_when_the_combiner_is_not_a_monoid_op`
   (kills the `is_monoid -> true` mutant) and

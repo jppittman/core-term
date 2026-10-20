@@ -52,7 +52,7 @@
   2. The **saturation budget tier**: blitz, rapid or classical, by input
      size.
   3. The **corpus tier**: TRAIN, DEV, FINAL.
-  4. A variance level ("row-tier work"; mask_support's "symbolic tier").
+  4. A variance level ("row-tier work").
   5. Retired: the macro and runtime tiers, the combinator/"legacy" tier,
      the interpreter tier, and the frame/row/body hoist tiers.
 - **Is not:** one concept. Sense 5 is not a tier at all; it was a stage.
@@ -89,8 +89,10 @@
 - **Is:** a pass (here; codegen's `Pass` is a stage of the compiler's back
   half, see codegen.md) is an endomorphism on (arena, root). **Legalize** runs
   after extraction and link, in an order forced by meaning:
-  `expand_refs → lower_dwrt → collapse(extent) → pack(L) → expand_gather →
-  expand_transcendentals`. You cannot differentiate a name; you must
+  `expand_refs → lower_dwrt → collapse(extent) → pack(L) →
+  expand_transcendentals`. There is no gather pass: a gather is a backend
+  realization, not an IR op (note §2); today the list still has `expand_gather`.
+  You cannot differentiate a name; you must
   differentiate before collapse substitutes X; d sin = cos; and addresses
   are built over binders. Each pass is idempotent. `expand_refs` is the
   unit walk with every optimization the identity. **Optimize** is a
@@ -159,8 +161,9 @@
   (`Templates`/`Runtime`): "Naming the vocabulary makes the choice visible"
   named an accident of the tier split.
 - **Follows:** a lint fails on `RuleSet::new` or `Optimizer` construction
-  outside research modules (CL6). `Gather` and the identity-bearing leaves
-  stay representable but opaque.
+  outside research modules (CL6). The identity-bearing leaves (`Uniform`,
+  `Param`, a Ref unit, a discrete kernel) stay representable but opaque;
+  `Gather` is not a node (note §2).
 - **Lives:** one-pipeline §1.1, M4, M5. Today `RuleSet::production()`/
   `runtime()` (`pixelflow-search/src/egraph/rules.rs`) and `enum Vocabulary`
   (`pixelflow-search/src/egraph/ops.rs`) still exist.
@@ -176,15 +179,16 @@
 - **Is not:** mergeable with `ExprNode` through a generic `Node<I>`. Not a
   place for metadata kept as child classes. `EClassId` is not stable under
   union.
-- **Follows:** hash-consing is identity. Leaves that carry identity (Buffer,
-  Uniform, Param, a Ref unit) are hash-consed by it, and no rule matches
+- **Follows:** hash-consing is identity. Leaves that carry identity (a discrete
+  kernel, Uniform, Param, a Ref unit) are hash-consed by it, and no rule matches
   them. There is one reachable-only `insert<I: Ir>` that declines rather
   than panics. `add` is total: the over-limit `EClassId(0)` sentinel
   asserted false unions and is fixed.
 - **Lives:** `pixelflow-search/src/egraph/{node,graph,insert}.rs`;
   `pixelflow-ir/src/term.rs` (`trait Ir`, `Shape`); the 2026-09-04
   ir-as-a-trait plan; a-fold-is-a-node §6. `EClassId(pub(crate) u32)` is
-  narrower than the 64-bit rule.
+  narrower than the 64-bit rule, with a measured reason in its own doc
+  (`egraph/node.rs`).
 
 ### Hash-consing
 
@@ -214,7 +218,7 @@
   shape-free, ISA-free, and cached by structure. The proposed phases are
   subsets of R run in sequence: `saturate_R = folds_R ∘ main_(R∖folds)`
   (M15). The fold phase admits whole folds, smallest predicted growth first,
-  under `HARD_CLASS_LIMIT`.
+  under `HARD_MINTED_LIMIT`.
 - **Is not:**
   - A fixpoint search ("quiescence … is a diagnostic condition, never a
     certified closure").
@@ -230,14 +234,14 @@
     extractor's defect (E5).
   - Truncating early can never make the graph unsound.
   - The currency is the **rule application**: one recorded rewrite,
-    idempotent re-fires included. `EGraph::application_count()` is
+    idempotent re-fires included. `Saturation::application_count()` is
     unconditional, "the budget must not depend on whether anyone is
     watching". It is not `Provenance::recorded_count`.
   - Zero rounds is silent today, so C1's gate requires that the largest
     saturation run at least one round.
 - **Lives:** `pixelflow-search/src/egraph/{saturate,graph,optimizer}.rs`
-  (`saturate_bounded` is in `graph.rs` and `optimizer.rs`),
-  `pixelflow-search/src/saturate_pass.rs`; `HARD_CLASS_LIMIT` (`graph.rs`);
+  (the sweep loop is `Saturation::saturate` in `graph/runner.rs`; the store it sweeps is `EGraph` in `graph.rs`),
+  `pixelflow-search/src/saturate_pass.rs`; `HARD_MINTED_LIMIT` (`graph/runner.rs`);
   the 2026-08-31 guide-design-revision §0 and §4.2; one-pipeline §1.1, §1.4,
   M15.
 
@@ -245,9 +249,9 @@
 
 - **Is:** what stops saturation: rule applications, e-classes and iterations,
   "all three deterministic functions of the input". It is tiered
-  blitz/rapid/classical by size: 20,000 and 80,000 applications; classical
+  blitz/rapid/classical by the class count the input inserts to: 20,000 and 80,000 applications; classical
   200,000, rising to 2,000,000 past 625 inserted classes. The classical
-  class cap is `clamp(8 × inserted, floor, ceiling)`. `HARD_CLASS_LIMIT`
+  class cap (`max_minted`, ids ever minted) is `clamp(8 × inserted, floor, ceiling)`. `HARD_MINTED_LIMIT`
   guards memory, not meaning.
 - **Is not:**
   - Wall clock. `safety_ceiling` (30 s/120 s, classical 300–3,000 s) panics
@@ -263,7 +267,7 @@
   investigated, not raised. `PIXELFLOW_SATURATION_CEILING_MS` can change
   whether the build panics, never which kernel is emitted. "If a tier is too
   slow for a user, the lever is `max_applications` … never the ceiling."
-- **Lives:** `SaturationConfig { max_iterations, max_classes,
+- **Lives:** `SaturationConfig { max_iterations, max_minted,
   max_applications, safety_ceiling }` and `CLASSICAL_CLASSES_PER_INSERTED_CLASS`,
   `CLASSICAL_CLASS_FLOOR`, `CLASSICAL_CLASS_CEILING`
   (`pixelflow-search/src/egraph/saturate.rs`); `Budget`
@@ -281,9 +285,16 @@
   equivalent forms will be made at extraction." That includes a fold
   against its unrolling. "Extraction reads `s`. It prices every fold by its
   trips."
-  - The result is "a witnessed selection: (egraph, root, choices) where
-    choices is a well-founded … function from reachable e-class to chosen
-    node".
+  - The result is a `Selection`: the well-founded picks, one per distinct
+    class the root reaches through the nodes chosen, in the DFS post-order
+    the term materializes in (children before parents). The settlement
+    makes it once; pricing and materializing are each one fold over it, and
+    a missing choice or a cycle is not representable in it. Settle order is
+    not that order: it is cost-first and interleaves subtrees, and
+    `ExprArena` numbers nodes and slots in embed order.
+  - `ExtractedDAG.choices` and `Optimized.choices` are the settlement's
+    record, a superset of the term, kept beside the selection for the
+    pipeline readers. Editing one does not change what materializes.
   - There are two DP arms, tree (a child priced at every use) and shared
     (each class priced once), plus an arbiter.
   - Two costs are always reported and never confused. `dag_cost` is the
@@ -294,8 +305,11 @@
   - A stage followed by repair or reranking.
   - Monotone in graph richness: chrome's dag_cost was +42% at a 100k cap.
   - Argmin: "The witnesses say the failure is **argmin**, not cost."
-  - A bare `Vec<Option<usize>>`.
-  - Where guard against blend is decided (#1313).
+  - A bare `Vec<Option<usize>>`: that is the settlement's record, or a
+    hand-built map that `Selection::of_map` either turns into a `Selection`
+    or refuses by name (`Refused::{Missing, OutOfBounds, Cyclic}`).
+  - Where a guard-or-blend decision is made. There is none: an `If` always
+    guards its arms and ends in one select (note §1; #1313 is superseded).
   - Merely a form once schedules are choices: then it is "a form plus a
     schedule".
   - Superseded: the NNUE extraction head (deleted after tying the table);
@@ -308,7 +322,8 @@
     of swaps, so a swap-neighbourhood search provably misses the answer.
   - A learned component "emits a decision, not a number" and sits inside
     the DP as a residual (extraction-judge, unbuilt).
-- **Lives:** `pixelflow-search/src/egraph/extract.rs` (`Extraction`,
+- **Lives:** `pixelflow-search/src/egraph/extract.rs` (`Selection`,
+  `Selection::of_map`, `Extraction` (the reranker's map state only),
   `tree_dp_pass`, `shared_dag_dp_pass`, `settle_in_cost_order`),
   `pixelflow-search/src/egraph/witness.rs`. Decided in 2026-08-17
   cost-model-domain J2, `2026-09-08-extraction-witnesses.md`, and
@@ -355,9 +370,9 @@
   - Superseded: "the cost model does 95%" and a reranker as the next step
     (ledger L088, 2026-09-07). The denotation stands.
 - **Follows:**
-  - Mask coherence (how often a mask is uniform across a batch) is the first
-    profile-dependent residual term. It is a property of the data: about 97%
-    uniform for a sphere silhouette, almost none for glyph coverage.
+  - The `If` price is `cost(m) + (cost(a)+cost(b))/2 + cost(select)`: the arms
+    are averaged, because nothing estimates how often `m` is true (note §1).
+    Mask coherence is not a residual term.
   - Factoring Σ stays cost-neutral until a binder's trip count is priced.
   - "When a metric has been optimized against and lost, the missing term is
     likely to be something that metric's own definition ruled out of
@@ -399,11 +414,11 @@
   context pointer are both `CONST`. Not a scheduling property of a whole
   e-class: "the class-wide meet lies once a rewrite merges a constant into a
   pixel-varying class". Not a `u8`. Not reachability. Not demand, which is
-  its dual. Superseded: `DepsAnalysis`/`Variance::meet` (where
+  retired (note §1). Superseded: `DepsAnalysis`/`Variance::meet` (where
   `X.meet(Y) = X`).
 - **Follows:**
   - Variance decides hoisting, factoring side conditions, the
-    lane-uniform/gather split, and `evals` pricing.
+    broadcast/load/gather choice (note §2), and `evals` pricing.
   - A stale class fact over-approximates, so "a rule can miss an opportunity
     but can never fire wrongly".
   - A unit's leaf carries its variance.
@@ -419,34 +434,23 @@
 
 ### Demand
 
-- **Is:** `dem(v) ⊆ Ω`, "the points at which v is read". Law: if
-  `ω ∉ dem(v)`, replacing `⟦v⟧(ω)` leaves the output at ω unchanged. It is
-  computed backward from the root: an `If` passes `dem ∧ m` and `dem ∧ ¬m`
-  to its arms, and consumers join with ∨. It is control dependence, the
-  Boolean shadow of the adjoint, "a property of the graph — not of any
-  select". As a predicate it is DNF over mask literals, capped and widened
-  to `true`.
-- **Is not:**
-  - An e-graph fact: it is exact only on the extracted DAG.
-  - Exclusivity: a value read by both selects' true arms has demand `m` and
-    is exclusive to neither.
-  - A selector: "demand only decides what is computed, never what is
-    selected".
-  - An ordering: "predicate strength is not an ordering". The superset
-    invariant holds for unconditional edges only.
-  - Semantics, since arms are total.
-- **Follows:** a guard covers a region of equal demand, so `m₁ ∨ ¬m₂` would
-  become guardable. A static demand fraction belongs in the cost,
-  `cost·P(demanded)` (D6), and guards in the graph need it (D7). A Y-range
-  demand belongs in a loop bound, not a per-row guard. Placement that reads
-  demand is the next speed step (D1).
-- **Lives:** nowhere resident. `pixelflow-ir/src/passes/demand.rs` was
-  deleted 2026-10-03 as "a diagnostic that nothing reads" (ce3e9177, #1307;
-  last present at `0459d2b3`). `pixelflow-codegen/src/program/ownership.rs`
-  computes the single-`If` case, and regions form a tree, so `m₁ ∨ ¬m₂`
-  still falls in the enclosing region. Decided in
-  `2026-09-07-demand-is-a-dag-property.md` (JP: "Why isn't the DAG over the
-  whole program?") and one-conditional §4, §6.
+- **Is:** retired (2026-10-15, note §1: "Demand weighting, arm probability and
+  projected regions are deleted"). It was `dem(v) ⊆ Ω`, the points at which v
+  is read, computed backward from the root to weight cost and place guards.
+  JP, 2026-10-15: "You don't know how often m is true. Or the branching
+  factor. Average them and move on."
+- **Is not:** a cost weight, an arm probability, a projected region, or a
+  placement input. Guards read `m` at runtime, per batch. Nothing in the
+  compiler estimates how often a mask is true.
+- **Follows:** the `If` cost is the average of its arms (Cost model). Arm
+  regions are ownership, not demand: an arm owns what only it reads (Arm
+  ownership in codegen.md).
+- **Lives:** nowhere resident. `pixelflow-ir/src/passes/demand.rs` was deleted
+  2026-10-03 as "a diagnostic that nothing reads" (ce3e9177, #1307; last
+  present at `0459d2b3`). `pixelflow-codegen/src/program/ownership.rs` owns the
+  arm regions. Superseded by `docs/language/2026-10-15-kernels-evaluate-kernels.md`
+  §1; `2026-09-07-demand-is-a-dag-property.md` keeps its denotation as history
+  only, and `2026-10-12-placement-reads-demand.md` is superseded.
 
 ### Widening and narrowing
 
@@ -456,21 +460,22 @@
   available to this design is a narrowing, and a narrowing deletes pixels
   without failing."
 - **Is not:** a precision dial that turns both ways.
-- **Follows:** clause caps widen to `true`. A buffer-dependent conjunct
+- **Follows:** clause caps widen to `true`. A discrete-kernel-dependent conjunct
   contributes the full extent. An op with no bound yields the full interval.
-  A derived range is computed over the values a uniform can take. The gate
+  The gate
   is containment, not equality. Precision is a compile-budget knob, and
   correctness never depends on one: "No tuned constant stands in for a
   bound." Three constants have had stated derivations that did not survive
   measurement: `EXTENT_SLOP`, `CLUSTER_ROUNDS_PER_SELECT` and
   `DISC_BAND_ULPS`.
-- **Lives:** `pixelflow-ir/src/mask_support.rs` (its contract section);
+- **Lives:** nothing in code. The range analysis that stated this contract
+  was deleted with the domain split (kernels-evaluate-kernels §1);
   demand §1, §7; one-conditional §2, §3, §9.
 
 ### Compile cache key (canonical)
 
 - **Is:** a kernel's canonical bytes, a post-order walk from the root that
-  hash-conses structurally equal subterms, plus its shape. Buffer and
+  hash-conses structurally equal subterms, plus its shape. Discrete-kernel and
   uniform identities enter as dense slots by first occurrence and come back
   in a link table. "An over-specific key misses sharing and never shares
   wrongly."
@@ -482,8 +487,7 @@
   recompiles "by decision". The saturated graph is cached per structure. The
   cache never evicts; caching was put "later". A unit's key digests minted
   identities, so a program of units needs a structural key before E1.
-- **Lives:** `pixelflow-codegen/src/jit_cache.rs` (`cache_key`,
-  `UNIT_PROGRAM_TAG`), `pixelflow-ir/src/key.rs` (`canonical`);
+- **Lives:** `pixelflow-codegen/src/jit_cache.rs` (`CacheKey`), `pixelflow-ir/src/key.rs` (`canonical`);
   uniform-slot-identity "Link order"; composition-is-linking §2.1;
   one-pipeline §1.1.
 

@@ -13,7 +13,7 @@
 //! `pixelflow-codegen`'s `jit_cache` as the compile cache's key; it depends on
 //! nothing but [`ExprArena`], and a kernel's identity is not codegen's private
 //! business — a reference names a kernel by exactly this
-//! (docs/plans/2026-09-09-composition-is-linking.md §2), so it belongs at the
+//! (docs/language/2026-09-09-composition-is-linking.md §2), so it belongs at the
 //! bottom of the dependency graph where every crate can see it.
 //!
 //! The identity is the whole [`Canonical`], not its `key` field. The bytes
@@ -75,6 +75,27 @@ const MIX_SHIFT_A: u32 = 30;
 const MIX_SHIFT_B: u32 = 27;
 const MIX_SHIFT_C: u32 = 31;
 
+/// FNV-1a over bytes, continuing from `state`.
+const fn fnv1a64_from(mut state: u64, bytes: &[u8]) -> u64 {
+    // `while`, not an iterator: iterators are not callable in a `const fn`.
+    let mut i = 0;
+    while i < bytes.len() {
+        state = (state ^ bytes[i] as u64).wrapping_mul(FNV_PRIME);
+        i += 1;
+    }
+    state
+}
+
+/// FNV-1a over bytes: the workspace's one definition. A *stable* digest,
+/// unlike `DefaultHasher`, whose output is explicitly not guaranteed across
+/// releases, so an identity built from it (a `RuleId`, a schema, a probe's
+/// code digest) is reproducible by a different build. A `const fn` so a
+/// schema identity can be derived at compile time.
+#[must_use]
+pub const fn fnv1a64(bytes: &[u8]) -> u64 {
+    fnv1a64_from(FNV_OFFSET_BASIS, bytes)
+}
+
 /// FNV-1a as a [`core::hash::Hasher`], so the link tables can be folded into
 /// the digest through their derived [`Hash`](core::hash::Hash) — the
 /// identities they carry have no byte accessor, and adding one to widen a
@@ -83,10 +104,7 @@ struct Fnv1a(u64);
 
 impl core::hash::Hasher for Fnv1a {
     fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= u64::from(*b);
-            self.0 = self.0.wrapping_mul(FNV_PRIME);
-        }
+        self.0 = fnv1a64_from(self.0, bytes);
     }
 
     fn finish(&self) -> u64 {
@@ -499,7 +517,7 @@ mod tests {
     /// Pins `canonical`'s bytes for a root that reaches an `Nary` node — the
     /// one shape whose encoding could drift when its children stop coming
     /// from a raw slab offset (Stage A,
-    /// docs/plans/2026-09-09-exprarena-on-dag.md) and its node stops naming
+    /// docs/archive/plans/2026-09-09-exprarena-on-dag.md) and its node stops naming
     /// one at all (Stage B). Written out in the walk's own order — post-order
     /// from the root, children first to last — so the arena's push order
     /// (`v0` first) is visibly *not* what the bytes follow: `v1` is the

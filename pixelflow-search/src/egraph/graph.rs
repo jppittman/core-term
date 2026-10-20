@@ -2,215 +2,163 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
-use super::cost::{CostFunction, CostModel};
 use super::node::{EClassId, ENode};
-use super::ops::{self, Op};
-#[cfg(feature = "provenance-journal")]
-use super::provenance::{ApplicationRecord, Origin, UnionEvent};
+use super::ops;
 use super::provenance::{ENodeId, Provenance};
-use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::RuleId;
+use super::rewrite::{RewriteAction, RootShapes};
 use alloc::collections::BTreeMap;
+use columns::{Birth, Columns, Kept, SaturationColumns, Slot};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::{KernelKey, Variance};
 
-/// A potential rewrite target: (rule, e-class, node within class).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RewriteTarget {
-    /// Index into the e-graph's rule list
-    pub rule_idx: usize,
-    /// The e-class to apply the rule to
-    pub class_id: EClassId,
-    /// The node the rule should try to match, named by its stable
-    /// [`ENodeId`] rather than by a position in the class's node vector.
-    ///
-    /// A position goes stale: a caller that enumerates a round's matches
-    /// and then applies them one at a time can rebuild the class between
-    /// enumeration and application, and `rebuild`'s take/canonicalize/extend
-    /// cycle renumbers it. Re-fetching a stale *index* silently applies the
-    /// rule to whichever node inherited that slot, credited to the original
-    /// candidate's score and dedup key. Re-resolving a stale *tag* finds
-    /// either the same node or nothing at all.
-    pub tag: ENodeId,
-}
+mod columns;
+mod runner;
+pub use runner::{
+    ApplicationMask, HARD_MINTED_LIMIT, Limits, MaskScope, RewriteTarget, Saturation,
+    SaturationStats, SaturationStop,
+};
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct EClass {
-    pub(crate) nodes: Vec<ENode>,
-    /// Stable identity per node, parallel to `nodes`: `tags[i]` names
-    /// `nodes[i]`. Must be kept in lockstep with `nodes` through every
-    /// mutation (union's extend, rebuild's take/canonicalize/extend) — see
-    /// `provenance` module docs.
-    pub(crate) tags: Vec<ENodeId>,
-}
-
-/// Context describing which rewrite application (if any) is currently
-/// responsible for e-nodes/unions created by `add()`/`union()`. Set for the
-/// duration of `apply_action_from_rule`, `None` otherwise (e.g. during
-/// `rebuild_budgeted`'s congruence-closure unions, or seed insertion).
-#[cfg(feature = "provenance-journal")]
-#[derive(Clone, Copy, Debug)]
-struct ActiveApplication {
-    rule_idx: usize,
-    application_id: super::provenance::ApplicationId,
-}
-
+/// The store: a `FrozenGraph` (classes, the union-find over them, the
+/// per-class facts, the units) and what only saturation reads beside it: the
+/// memo that hash-conses their nodes, the worklist, the graph's own mutation
+/// log and the columns the scan and rebuild keep.
+///
+/// It holds no rules and counts no applications — those belong to the runner
+/// that sweeps it ([`Saturation`]). What a store does know about rewriting is
+/// the change log the runner's dirty tracking reads
+/// (`mutation_counter`, `last_changed`) and, when one is
+/// kept, the journal that attributes its mutations.
+#[derive(Clone)]
 pub struct EGraph {
-    pub(crate) classes: Vec<EClass>,
-    pub(crate) parent: Vec<EClassId>,
+    /// The classes, their facts and the units: what freezing keeps
+    /// (`FrozenGraph`). Written only by this type.
+    graph: FrozenGraph,
+    /// The per-id columns only saturation reads, grown with `graph`'s by
+    /// `Columns::push`.
+    saturation: SaturationColumns,
+    /// Canonical node forms to the class each was in when computed (law 2).
+    /// Each key is a copy, not a node id: `rebuild` rewrites the arena's
+    /// stored operands in place, and a key keeps the form it was computed in.
     memo: HashMap<ENode, EClassId>,
-    worklist: Vec<EClassId>,
-    /// `queued[id.index()]` is `true` while `id` has an entry on `worklist`
-    /// awaiting `rebuild_budgeted`. Guards `union`'s push: several unions
-    /// landing on the same parent in one round used to enqueue it once per
-    /// union, and `rebuild_budgeted` paid a full canonicalize-and-memo-probe
-    /// pass over that class's node vector per redundant entry even though
-    /// only the state after the *last* union in the round matters. Parallel
-    /// to `classes`/`parent`, grown alongside them in `add`.
-    queued: Vec<bool>,
-    /// Rules are shared via Arc so EGraph can be cloned for search branching.
-    rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
-    /// Stable id per rule, parallel to `rules`. Kept so the graph can name a
-    /// rule by something that survives a reordering; see [`super::rules`].
-    rule_ids: std::sync::Arc<Vec<RuleId>>,
-    /// Matches found per rule, keyed by identity rather than by family name.
-    /// A name-keyed map collapsed all four `Commutative` instances into one
-    /// bucket, so every per-rule report built on it was wrong by aggregation.
-    pub match_counts: HashMap<RuleId, usize>,
-    /// Cumulative rule-match ATTEMPTS across this e-graph's whole lifetime —
-    /// every node checked against a rule, matched or not, summed from
-    /// [`ApplyResult::evals`] at the one site every rule-application path
-    /// funnels through.
-    ///
-    /// This is "raw matches enumerated"
-    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1): the
-    /// Guide-cost-flatness precondition needs it denominated per
-    /// application, and per application needs it cumulative across the
-    /// resumed budget calls an anytime curve makes, the same way
-    /// [`Self::application_count`] is.
-    total_evals: usize,
-    /// Global monotonic counter minting `ENodeId`s in `add()`.
-    next_enode_id: u64,
-    /// Saturation-iteration counter, advanced once per `saturate_with_limits`
-    /// loop iteration. Recorded on every `ApplicationRecord`/`UnionEvent`.
-    step: usize,
-    /// Rule provenance: origins, application log, union journal.
-    provenance: Provenance,
-    /// Which rewrite application (if any) is currently executing — read by
-    /// `add()`/`union()` to attribute newly created nodes/unions.
-    #[cfg(feature = "provenance-journal")]
-    active_application: Option<ActiveApplication>,
-    /// The constant each class is known to equal, as f32 bits, indexed by
-    /// class id — maintained independently of `EClass::nodes` on purpose.
-    /// `rebuild` drains a class's nodes with `mem::take` and only THEN
-    /// performs congruence unions, so a guard that scanned the node vector
-    /// saw an empty class and waved contradictory merges through at exactly
-    /// the moment congruence closure does its work. The fact must outlive the
-    /// nodes.
-    const_fact: Vec<Option<u32>>,
-    /// Which binders each class may depend on, indexed by class id — the
-    /// per-class variance fact (docs/plans/2026-09-23-an-integral-is-a-fold.md
-    /// §1, §3), kept beside `const_fact` and out of `EClass::nodes` for the
-    /// same reason: a guard read mid-`rebuild` must not see a drained class.
-    ///
-    /// **Law:** `var_fact[C] ⊇ var(⟦C⟧)` — the fact over-approximates the
-    /// variance of the one function every member of `C` denotes, so a bit
-    /// absent from the fact is a binder the class is provably constant along.
-    ///
-    /// - **Seeded** in [`EGraph::add`] by [`ENode::variance`], the node's
-    ///   transfer function, over its children's facts *as they stand then*.
-    ///   Each child's fact over-approximates the child, and the transfer is
-    ///   monotone, so the seed over-approximates the node.
-    /// - **Merged** in [`EGraph::union`] by *intersection*. Both classes
-    ///   denote the same function and both facts over-approximate it, so a
-    ///   bit either one lacks is a bit the function lacks. A fact only ever
-    ///   shrinks from its seed and never grows up from `∅` — the greatest
-    ///   fixpoint, not the least — which is why a cycle cannot certify an
-    ///   invariance: a class holding `x` and `x + 0` got each member's fact
-    ///   from facts that already existed, never from an assumption about
-    ///   itself.
-    /// - **Never repaired upward.** A union that shrinks a child's fact does
-    ///   not revisit the parents seeded from the larger one. A stale parent
-    ///   fact is still a superset, so a rule reading it may miss an
-    ///   opportunity but can never fire wrongly; soundness needs no repair.
-    var_fact: Vec<Variance>,
-    /// The units this graph may hold as leaves, with the variance each
-    /// carries — told to it by the runtime tier's unit walk
-    /// ([`EGraph::admit_unit`]) before the term is inserted. A unit's body is
-    /// not in this graph, so its variance cannot be computed here; and a
-    /// reference the graph was not told about is one [`insert`](super::insert)
-    /// declines, which is what keeps every other path — the macro tier,
-    /// research tools — exactly as it was (docs/plans/2026-09-25-the-language-is-kernel.md
-    /// §4, O1).
-    units: BTreeMap<KernelKey, Variance>,
+    worklist: Vec<Slot>,
     /// Unions REFUSED because they would assert two numerically unequal
     /// constants equal — a proved falsehood the graph declines to absorb.
     /// Distinct (bits, bits) pairs, kept for reporting and tests; see
     /// [`EGraph::union`].
     refused_const_unions: Vec<(u32, u32)>,
-    /// Rule applications this graph has performed, counted unconditionally.
-    ///
-    /// Independent of the provenance log on purpose: an application budget
-    /// must be enforceable whether or not anyone is observing, and reading
-    /// the budget off `provenance().recorded_count()` would make
-    /// recording a load-bearing part of saturation rather than an
-    /// observation of it.
-    applications: u64,
-    /// Whether to record provenance. Recording had no production consumer
-    /// (2026-09-01 integration audit) and a production compile discarded a
-    /// median 8 446 records per kernel;
-    /// [`super::optimizer::Optimizer`] turns it on exactly when an
-    /// [`Observer`](super::optimizer::Observer) is attached. Defaults to
-    /// `true`, so every direct `EGraph` caller keeps what it had.
-    #[cfg(feature = "provenance-journal")]
-    record_provenance: bool,
-    /// Application ceiling for the current run, or `None`. Set for the
-    /// duration of [`EGraph::saturate_budgeted`].
-    application_cap: Option<u64>,
-    /// Counterfactual-replay mask (docs/plans/2026-09-01-guide-return-to-go.md
-    /// §4.1): when `Some`, the application that would otherwise be assigned
-    /// this ordinal is skipped entirely by `apply_action_from_rule` — not
-    /// counted, not recorded, not applied — and the ordinal it would have
-    /// consumed is left for whatever candidate comes next in the same scan
-    /// order. Installed only by
-    /// [`Optimizer::mask`](super::optimizer::Optimizer::mask), so every
-    /// other path is unaffected.
-    replay_mask: Option<ApplicationMask>,
-    /// How many applications the most recent masked run actually skipped.
-    /// Reset when a mask is installed and read back by
-    /// [`EGraph::last_replay_mask_skips`] — a caller reporting a
-    /// confluence-aware Δ must be able to distinguish "the mask matched
-    /// once" from "the mask matched eleven times", and must never have to
-    /// infer that a mask fired at all.
-    replay_mask_skips: usize,
-    /// Per-application growth telemetry (`docs/plans/2026-08-31-guide-design-revision.md`
-    /// §4.1): `None` until [`EGraph::enable_growth_telemetry`] turns it on.
-    /// Compiled in only under `saturation-telemetry`, and checked with a bare
-    /// `is_some()` on every committed application even then — see
-    /// [`super::growth`]'s module doc for the "costs nothing when off"
-    /// contract this field exists to keep.
-    #[cfg(feature = "saturation-telemetry")]
-    growth: Option<super::growth::GrowthTelemetry>,
     /// Global monotonic counter, bumped once per class-content mutation
     /// (`add`'s memo miss, `union`'s merge) — never reset, never bumped by
-    /// anything that only re-canonicalizes existing content (`nodes()`
-    /// already resolves through `find`, so rewriting a child's stored id to
-    /// its current canonical form during rebuild surfaces nothing a lookup
-    /// couldn't already see). See [`Self::class_is_dirty`].
+    /// anything that only re-canonicalizes existing content (rewriting a
+    /// child's stored id to its current representative during rebuild changes
+    /// a name, not the class's content, and `class_is_dirty` follows every id
+    /// through `find`). See [`Self::class_is_dirty`].
     mutation_counter: u64,
-    /// `last_changed[c.index()]` is the [`Self::mutation_counter`] value as
-    /// of the most recent time canonical class `c`'s own node list gained
-    /// content — set at creation in `add` and bumped in `union` when `c`
-    /// survives as the merge's parent. Parallel to `classes`, grown
-    /// alongside it.
-    last_changed: Vec<u64>,
-    /// `rule_last_swept[rule_idx]` is the [`Self::mutation_counter`] value
-    /// captured just BEFORE that rule's most recent *complete* scan of
-    /// `canonical_class_ids()` began. Parallel to `rules`. See
-    /// [`Self::class_is_dirty`] for how it is used and why the value is
-    /// taken from the scan's start, not its end.
-    rule_last_swept: Vec<u64>,
+    /// The graph's mutation log, or `None` when the graph was built without
+    /// one ([`Self::without_journal`]).
+    ///
+    /// Origins and merges are recorded as they happen — `add` and `union` are
+    /// the only writers — so the log cannot be switched on after the fact,
+    /// and a graph built without it has nothing to query rather than an
+    /// empty or misattributed answer. The runner writes its cursor (the
+    /// current step and the application being executed); see
+    /// [`Provenance::open_application`].
+    journal: Option<Provenance>,
 }
+
+/// An e-graph's classes once nothing will add to them: the node arena, the
+/// union-find, the member lists and the live set, the per-class facts, and the
+/// units the graph admitted. Everything extraction reads, and only that.
+///
+/// It has no `add`, `union` or `rebuild`, and no method that takes `&mut self`.
+/// [`EGraph`] holds one and is the only thing that writes it;
+/// [`EGraph::freeze`] hands it over and drops what only saturation reads (the
+/// memo, the worklist, the change log, the scan's and rebuild's columns, the
+/// journal and the refusal record), and [`EGraph::as_frozen`] lends it. A cache
+/// of saturated graphs keeps one of these, so a cached graph cannot be added to:
+/// there is no method to call.
+#[derive(Clone)]
+pub(crate) struct FrozenGraph {
+    /// The per-id columns extraction reads. See the `columns` module.
+    columns: Columns,
+    /// The units this graph may hold as leaves, with the variance each
+    /// carries — told to it by the runtime tier's unit walk
+    /// ([`EGraph::admit_unit`]) before the term is inserted. A
+    /// [`ENode::Ref`] is only its key, so this is where its variance is read
+    /// from. A unit's body is not in this graph, so its variance cannot be
+    /// computed here; and a
+    /// reference the graph was not told about is one [`insert`](super::insert)
+    /// declines, which is what keeps every other path — the macro tier,
+    /// research tools — exactly as it was (docs/language/2026-09-25-the-language-is-kernel.md
+    /// §4, O1).
+    units: BTreeMap<KernelKey, Variance>,
+}
+
+impl FrozenGraph {
+    /// [`EGraph::find`], on the frozen graph.
+    pub(crate) fn find(&self, id: EClassId) -> EClassId {
+        self.columns.root(id).id()
+    }
+
+    /// [`EGraph::canonical_node`], on the frozen graph.
+    pub(crate) fn canonical_node(&self, mut node: ENode) -> ENode {
+        for child in node.children_slice_mut() {
+            *child = self.find(*child);
+        }
+        node
+    }
+
+    /// [`EGraph::unit_variance`], on the frozen graph.
+    pub(crate) fn unit_variance(&self, key: KernelKey) -> Option<Variance> {
+        self.units.get(&key).copied()
+    }
+
+    /// [`EGraph::ref_variance`], on the frozen graph.
+    pub(crate) fn ref_variance(&self, key: KernelKey) -> Variance {
+        self.unit_variance(key)
+            .unwrap_or_else(|| panic!("EGraph: a Ref to {key:?}, which no unit walk admitted"))
+    }
+
+    /// [`EGraph::nodes`], on the frozen graph.
+    pub(crate) fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
+        let class = self.columns.root(id);
+        self.columns
+            .members(class)
+            .map(move |tag| self.columns.node(tag))
+    }
+
+    /// [`EGraph::tags`], on the frozen graph.
+    pub(crate) fn tags(&self, id: EClassId) -> impl Iterator<Item = ENodeId> + Clone + '_ {
+        self.columns.members(self.columns.root(id))
+    }
+
+    /// [`EGraph::node_for_tag`], on the frozen graph.
+    pub(crate) fn node_for_tag(&self, id: EClassId, tag: ENodeId) -> Option<&ENode> {
+        let minted_as = self.columns.class_of(tag)?;
+        if self.columns.is_retired(tag) || self.find(minted_as) != self.find(id) {
+            return None;
+        }
+        Some(self.columns.node(tag))
+    }
+
+    /// The node `tag` names in this graph's arena, as stored. For a tag the
+    /// caller read from [`Self::tags`] or that an extraction recorded, so known
+    /// to be a member: this is not a membership test, and a retired node is
+    /// answered too. A tag of unknown standing asks [`Self::node_for_tag`].
+    /// Panics past the end. O(1).
+    pub(crate) fn node(&self, tag: ENodeId) -> &ENode {
+        self.columns.node(tag)
+    }
+
+    /// [`EGraph::num_classes`], on the frozen graph.
+    pub(crate) fn num_classes(&self) -> usize {
+        self.columns.len()
+    }
+}
+
+/// Why a research walk over the journal refused a graph that keeps none.
+#[cfg(feature = "provenance-journal")]
+const NO_JOURNAL: &str = "this graph was built without a journal (Saturation::without_journal, or \
+     an Optimizer with no observer attached) — a derivation walk has nothing to read";
 
 /// [`EGraph::class_is_dirty`] checks this many hops of a class's forward
 /// neighborhood (the class itself, its direct children, and their
@@ -240,106 +188,12 @@ pub struct EGraph {
 /// per-rule value could go stale unnoticed: every rule is checked to this
 /// depth regardless of what it actually needs, so a new rule that matches
 /// deeper than this is caught the same way `Pythagorean` would be — by
-/// `docs/plans/2026-09-08-egraph-cpu-memory-profile.md`'s methodology
+/// `docs/archive/plans/2026-09-08-egraph-cpu-memory-profile.md`'s methodology
 /// (compare extracted cost with dirty-tracking on vs. off), not by silent
 /// trust in a number nobody re-audits. Raise it if that audit is ever
 /// redone and finds a deeper rule; do not lower it without redoing the
 /// audit above.
 const DIRTY_TRACKING_MAX_DEPTH: u8 = 2;
-
-/// How far a counterfactual replay's mask reaches: one application, or
-/// every application that would re-derive the same thing.
-///
-/// Leave-one-out ([`MaskScope::Single`]) answers "what did THIS firing
-/// contribute", but an e-graph is confluent enough that a masked node is
-/// often re-derived a few applications later by the same rule matching the
-/// same class content again — so a `Δ = 0` under `Single` can mean either
-/// "this application did not matter" or "this application mattered and
-/// something else silently restored it". [`MaskScope::AllMatchingCandidate`]
-/// separates those two: it masks the seed AND every later application
-/// sharing its [`CandidateKey`](super::candidate::CandidateKey) — the same
-/// key the guided loop dedups on — so no re-derivation by that route can put
-/// the node back. The gap between the two Δs is this program's measurement
-/// of leave-one-out's confluence blindness
-/// (docs/plans/2026-09-01-guide-return-to-go.md §4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MaskScope {
-    /// Skip only the application that would be assigned `skip_ordinal`.
-    Single,
-    /// Skip that application and every later one with the same
-    /// [`CandidateKey`](super::candidate::CandidateKey), for the rest of the
-    /// run.
-    AllMatchingCandidate,
-}
-
-/// Names the application to skip in a counterfactual replay, and how far the
-/// skip reaches — see [`Optimizer::mask`](super::optimizer::Optimizer::mask)
-/// and docs/plans/2026-09-01-guide-return-to-go.md §4.1.
-///
-/// `skip_ordinal` counts in [`EGraph::application_count`]'s currency, the
-/// unconditional budget denominator — the same numbering
-/// [`ApplicationId`](super::provenance::ApplicationId) uses for a run that
-/// recorded from the start, so a harness can take an ordinal off the journal
-/// and hand it straight back. Replay is deterministic and identical to the
-/// original run up to the point of divergence, so replaying the same
-/// expression through the same configuration and masking the ordinal that
-/// was `a` in the original trajectory reproduces `τ \ a` exactly (§4.1's
-/// `Δ_a = R(τ\a,B) − R(τ,B)`).
-///
-/// Under [`MaskScope::AllMatchingCandidate`] the key to keep masking is not
-/// supplied by the caller — it is READ off the live graph at the moment the
-/// seed ordinal comes up, which is the only moment it is exactly the key the
-/// original trajectory's application `a` matched. A caller-supplied key
-/// would be a second computation of the same thing against a different graph
-/// state, i.e. the drift this codebase's one-constructor rule exists to
-/// prevent.
-#[derive(Clone, Debug)]
-pub struct ApplicationMask {
-    /// Ordinal of the seed application to skip.
-    pub skip_ordinal: u64,
-    /// How far the skip reaches.
-    pub scope: MaskScope,
-    /// The seed's `(rule, class content)`, captured when `skip_ordinal` came
-    /// up. `None` until then, and always `None` under [`MaskScope::Single`],
-    /// which never needs it.
-    captured: Option<super::candidate::CandidateKey>,
-}
-
-impl ApplicationMask {
-    /// §4.1's leave-one-out mask: skip exactly this ordinal.
-    #[must_use]
-    pub fn leave_one_out(skip_ordinal: u64) -> Self {
-        Self {
-            skip_ordinal,
-            scope: MaskScope::Single,
-            captured: None,
-        }
-    }
-
-    /// The confluence-aware mask: skip this ordinal and every later
-    /// application sharing its
-    /// [`CandidateKey`](super::candidate::CandidateKey).
-    #[must_use]
-    pub fn all_matching_candidate(skip_ordinal: u64) -> Self {
-        Self {
-            skip_ordinal,
-            scope: MaskScope::AllMatchingCandidate,
-            captured: None,
-        }
-    }
-}
-
-/// What [`EGraph::mask_decision`] concluded about the application about to
-/// be committed. Three distinct skips, not one boolean: the leave-one-out
-/// mask must be consumed after it fires, the confluence-aware seed must
-/// capture its key as it fires, and a later re-derivation must do neither.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MaskDecision {
-    Proceed,
-    Skip,
-    SkipAndCapture,
-    SkipAndConsume,
-}
 
 impl Default for EGraph {
     fn default() -> Self {
@@ -347,357 +201,85 @@ impl Default for EGraph {
     }
 }
 
-impl Clone for EGraph {
-    fn clone(&self) -> Self {
-        Self {
-            classes: self.classes.clone(),
-            parent: self.parent.clone(),
-            memo: self.memo.clone(),
-            worklist: self.worklist.clone(),
-            queued: self.queued.clone(),
-            rules: self.rules.clone(), // Arc clone - cheap, shares rules
-            rule_ids: self.rule_ids.clone(),
-            match_counts: self.match_counts.clone(),
-            total_evals: self.total_evals,
-            next_enode_id: self.next_enode_id,
-            step: self.step,
-            provenance: self.provenance.clone(),
-            #[cfg(feature = "provenance-journal")]
-            active_application: self.active_application,
-            const_fact: self.const_fact.clone(),
-            var_fact: self.var_fact.clone(),
-            units: self.units.clone(),
-            refused_const_unions: self.refused_const_unions.clone(),
-            applications: self.applications,
-            #[cfg(feature = "provenance-journal")]
-            record_provenance: self.record_provenance,
-            application_cap: self.application_cap,
-            replay_mask: self.replay_mask.clone(),
-            replay_mask_skips: self.replay_mask_skips,
-            #[cfg(feature = "saturation-telemetry")]
-            growth: self.growth.clone(),
-            mutation_counter: self.mutation_counter,
-            last_changed: self.last_changed.clone(),
-            rule_last_swept: self.rule_last_swept.clone(),
-        }
-    }
-}
-
-/// Result of applying a single rule: changes made and evaluations consumed.
-///
-/// `changes` counts union/create actions. `evals` counts rule match
-/// attempts (one per node checked). Evals model compute cost — the
-/// Guide learns to stay within an eval budget just as it learns to
-/// stay within a node budget.
-pub struct ApplyResult {
-    pub changes: usize,
-    pub evals: usize,
-    /// How the scan ended. `changes == 0` is quiescence only when this is
-    /// [`ScanStop::Completed`]; under either budget the rest of the graph
-    /// was never looked at, so nothing is known about it.
-    pub scan: ScanStop,
-}
-
-/// How a single rule's scan over the e-graph ended.
-///
-/// Two budgets can cut a scan short and they are *different facts*, so this
-/// is a three-valued type rather than a `truncated: bool` the caller has to
-/// disambiguate afterwards by asking which budget looks closer — that
-/// inference is exactly what a stop reason exists to replace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScanStop {
-    /// Every e-class was visited and every match committed.
-    Completed,
-    /// The class budget `max_nodes` stopped the scan: the graph (plus the
-    /// nodes the pending actions would create) reached the cap.
-    ClassCap,
-    /// The wall-clock deadline elapsed before the scan finished — either it
-    /// cut the walk short, or it passed while a rule's `apply` (or the
-    /// commit that follows) was running. Both mean the same thing: this
-    /// scan did not finish inside the ceiling.
-    Deadline,
-    /// The rule-application budget was reached mid-scan.
-    ApplicationBudget,
-}
-
-/// Why an [`EGraph::saturate_with_limits`] call stopped — an explicit stop
-/// reason instead of the `SaturationStats` proxy game every measurement
-/// harness had to play (`iterations < max_iters && classes <= cap` ≈
-/// "probably quiesced"; `pixelflow-pipeline/src/bin/guide_headroom.rs` names
-/// it as the one ambiguity that proxy can't resolve). Read off the loop that
-/// decides when to stop, never inferred from the counts afterwards.
-/// Budget-only framing: none of these certify a fixpoint;
-/// [`SaturationStop::Quiesced`] is a diagnostic condition (one full rule
-/// sweep ran to completion and produced zero unions), never a closure claim.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SaturationStop {
-    /// A full rule sweep completed with zero unions. Diagnostic, not a
-    /// certified fixpoint.
-    Quiesced,
-    /// The class budget `max_classes` stopped the run (memory protection) —
-    /// either the count exceeded it outright, or a sweep produced zero
-    /// unions only because every remaining action was discarded for budget.
-    ClassCap,
-    /// `max_iters` sweeps completed without any other condition firing.
-    IterationCeiling,
-    /// The wall-clock safety ceiling elapsed. Offline measurement callers
-    /// should treat this as a hard error (fail loud), never as data.
-    ///
-    /// [`EGraph::saturate_budgeted`] can never report this: it takes no
-    /// clock, which is what makes it deterministic.
-    Timeout,
-    /// The rule-application budget ran out. The one budget dimension that
-    /// means the same thing to every ordering policy, and so the one a
-    /// research arm can hold two policies to.
-    ApplicationBudget,
-}
-
-/// Result of one [`EGraph::saturate_with_limits`] run: how many rounds it
-/// took and how many rule applications fired in total, whichever limit
-/// (iteration count, class count, timeout, or convergence) ended the run.
-///
-/// Deliberately not `Default`: a defaulted `stop` would be an invented
-/// stop reason, and nothing constructs an empty stats value.
-#[derive(Clone, Copy, Debug)]
-pub struct SaturationStats {
-    /// Number of rewrite rounds completed before the run stopped.
-    pub iterations: usize,
-    /// Sum of `ApplyResult::changes` across every round.
-    pub total_unions: usize,
-    /// Which condition ended the run — READ from the loop that stopped, so a
-    /// caller never has to infer "quiesced" from `iterations < max_iters`
-    /// (which conflates a timeout or class cap with quiescence).
-    pub stop: SaturationStop,
-}
-
-/// The ceiling on every class budget: no saturation driver grows the graph
-/// past this many e-classes, whatever cap its caller asks for.
-///
-/// This is memory protection for call sites that pass no meaningful cap
-/// (`usize::MAX`, or a number derived from an unbounded input). It lives
-/// here — at the growth decision — and NOT inside [`EGraph::add`], because
-/// `add` is the homomorphism onto the semantic quotient (law L1,
-/// `docs/plans/2026-09-02-optimizer-api.md` §1): a budget that stops `add`
-/// must hand the caller something that is not the class of the node it
-/// asked for, and there is no such thing. A budget that stops the *driver*
-/// leaves every class the graph does hold correct, which is what
-/// truncation has always meant here.
-///
-/// Twice the classical cap's ceiling (`CLASSICAL_CLASS_CEILING`, 50,000),
-/// and two orders of magnitude above the floors every shipped kernel keeps
-/// (500/2,000/5,000, see `SaturationConfig`), so no shipping configuration
-/// meets it.
-///
-/// It bounds the graph *approximately*: a sweep estimates the classes a
-/// pending action will mint (`RewriteAction::Union` 0, `Create` 1, every
-/// other variant 3) and then commits the batch it accepted, so a
-/// multi-node action can overshoot by the difference. That is precisely
-/// why the limit can live at the driver — it guards memory, not meaning,
-/// and a bounded overshoot of a 100 000-class ceiling costs memory nobody
-/// was going to miss. The old in-`add` limit bought exactness by returning
-/// `EClassId(0)`, a false class id that the `Create` handler then unioned
-/// against the match — asserting an equality that does not hold (#1105).
-pub const HARD_CLASS_LIMIT: usize = 100_000;
-
 impl EGraph {
-    /// Create an empty e-graph with no rewrite rules.
+    /// Create an empty store.
     ///
-    /// Rules are application-defined. Use `with_rules()` or `add_rule()` to add them.
+    /// With `provenance-journal` the mutation log is kept, so every direct
+    /// caller keeps what it had. Rules are the runner's: see
+    /// [`Saturation::over`].
     pub fn new() -> Self {
         Self {
-            classes: Vec::new(),
-            parent: Vec::new(),
+            graph: FrozenGraph {
+                columns: Columns::default(),
+                units: BTreeMap::new(),
+            },
+            saturation: SaturationColumns::default(),
             memo: HashMap::default(),
             worklist: Vec::new(),
-            queued: Vec::new(),
-            rules: std::sync::Arc::new(Vec::new()),
-            rule_ids: std::sync::Arc::new(Vec::new()),
-            match_counts: HashMap::default(),
-            total_evals: 0,
-            next_enode_id: 0,
-            step: 0,
-            provenance: Provenance::new(),
-            #[cfg(feature = "provenance-journal")]
-            active_application: None,
-            const_fact: Vec::new(),
-            var_fact: Vec::new(),
-            units: BTreeMap::new(),
             refused_const_unions: Vec::new(),
-            applications: 0,
-            #[cfg(feature = "provenance-journal")]
-            record_provenance: true,
-            application_cap: None,
-            replay_mask: None,
-            replay_mask_skips: 0,
-            #[cfg(feature = "saturation-telemetry")]
-            growth: None,
             mutation_counter: 0,
-            last_changed: Vec::new(),
-            rule_last_swept: Vec::new(),
+            journal: Some(Provenance::new()),
         }
     }
 
-    /// Create an e-graph with the given rewrite rules.
+    /// The same store with its mutation log turned off.
     ///
-    /// Rules are owned by the e-graph and shared via Arc when cloned.
-    pub fn with_rules(rules: Vec<Box<dyn Rewrite>>) -> Self {
-        let ids: Vec<RuleId> = rules.iter().map(|r| RuleId::of(r.as_ref())).collect();
-        let rule_last_swept = vec![0u64; rules.len()];
-        Self {
-            classes: Vec::new(),
-            parent: Vec::new(),
-            memo: HashMap::default(),
-            worklist: Vec::new(),
-            queued: Vec::new(),
-            rules: std::sync::Arc::new(rules),
-            rule_ids: std::sync::Arc::new(ids),
-            match_counts: HashMap::default(),
-            total_evals: 0,
-            next_enode_id: 0,
-            step: 0,
-            provenance: Provenance::new(),
-            #[cfg(feature = "provenance-journal")]
-            active_application: None,
-            const_fact: Vec::new(),
-            var_fact: Vec::new(),
-            units: BTreeMap::new(),
-            refused_const_unions: Vec::new(),
-            applications: 0,
-            #[cfg(feature = "provenance-journal")]
-            record_provenance: true,
-            application_cap: None,
-            replay_mask: None,
-            replay_mask_skips: 0,
-            #[cfg(feature = "saturation-telemetry")]
-            growth: None,
-            mutation_counter: 0,
-            last_changed: Vec::new(),
-            rule_last_swept,
-        }
-    }
-
-    /// Add a rule to this e-graph.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the e-graph has been cloned (rules are shared via Arc).
-    pub fn add_rule(&mut self, rule: Box<dyn Rewrite>) {
-        let id = RuleId::of(rule.as_ref());
-        std::sync::Arc::get_mut(&mut self.rules)
-            .expect("Cannot add rules after EGraph has been cloned")
-            .push(rule);
-        std::sync::Arc::get_mut(&mut self.rule_ids)
-            .expect("Cannot add rules after EGraph has been cloned")
-            .push(id);
-        self.rule_last_swept.push(0);
-    }
-
-    /// An e-graph over a rule vector that is already shared.
-    ///
-    /// [`super::RuleSet`] holds its rules behind an `Arc` so an
-    /// [`super::optimizer::Optimizer`] can hand the same vocabulary to as
-    /// many graphs as it likes without rebuilding it, and so the ids it
-    /// computed once stay in agreement with the rules the graph applies.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the two vectors disagree in length — an id vector that does
-    /// not name exactly the rules the graph will apply is a
-    /// silently-wrong-answer generator, not a recoverable input.
+    /// A choice made when the graph is built: an origin or a merge recorded
+    /// without the application that caused it reads as a seed or a congruence
+    /// union, so a log that could be flipped mid-run would hand out wrong
+    /// answers rather than missing ones. Production builds its graphs this
+    /// way, and a cached graph then carries no log at all.
     #[must_use]
-    pub fn with_shared_rules(
-        rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
-        rule_ids: std::sync::Arc<Vec<RuleId>>,
-    ) -> Self {
-        assert_eq!(
-            rules.len(),
-            rule_ids.len(),
-            "EGraph::with_shared_rules: {} rules but {} ids",
-            rules.len(),
-            rule_ids.len()
+    pub fn without_journal(mut self) -> Self {
+        assert!(
+            self.graph.columns.len() == 0,
+            "a journal is chosen when the graph is built: this graph already holds {} classes, \
+             whose births it would have to forget",
+            self.graph.columns.len(),
         );
-        let mut eg = Self::new();
-        eg.rule_last_swept = vec![0; rules.len()];
-        eg.rules = rules;
-        eg.rule_ids = rule_ids;
-        eg
+        self.journal = None;
+        self
     }
 
-    /// The stable id of the rule at `idx`, if there is one.
+    /// The graph without what only saturation reads: the memo, the worklist,
+    /// the change log, the scan's and rebuild's columns, the journal and the
+    /// refusal record are dropped, and what extraction reads is moved, not
+    /// copied. What a cache of saturated graphs keeps: a [`FrozenGraph`] has
+    /// no `add`, so nothing can add to a graph whose memo is gone.
     #[must_use]
-    pub fn rule_id(&self, idx: usize) -> Option<RuleId> {
-        self.rule_ids.get(idx).copied()
+    pub(crate) fn freeze(self) -> FrozenGraph {
+        self.graph
     }
 
-    /// Rule applications performed since this graph was created.
-    ///
-    /// Counted whether or not provenance is being recorded — the budget and
-    /// the observation are separate concerns, and conflating them is what
-    /// made recording impossible to turn off.
+    /// What [`Self::freeze`] would keep, borrowed: for extraction over a graph
+    /// that stays live.
     #[must_use]
-    pub fn application_count(&self) -> u64 {
-        self.applications
+    pub(crate) fn as_frozen(&self) -> &FrozenGraph {
+        &self.graph
     }
 
-    /// Turn provenance recording on or off. On by default.
-    ///
-    /// Off, the graph still counts applications and still enforces an
-    /// application budget; it just does not build the log. Turning recording
-    /// off does not erase what is already recorded.
-    #[cfg(feature = "provenance-journal")]
-    pub fn set_provenance_recording(&mut self, on: bool) {
-        self.record_provenance = on;
-    }
-
-    /// Whether provenance is being recorded.
-    #[cfg(feature = "provenance-journal")]
-    #[must_use]
-    pub fn provenance_recording(&self) -> bool {
-        self.record_provenance
-    }
-
-    /// Turn on per-application growth telemetry: how many e-nodes/e-classes
-    /// each committed rewrite application actually adds, per rule (see
-    /// [`super::growth`]). Off by default and free to leave off — this is
-    /// the one call that starts paying for it.
-    #[cfg(feature = "saturation-telemetry")]
-    pub fn enable_growth_telemetry(&mut self) {
-        self.growth = Some(super::growth::GrowthTelemetry::default());
-    }
-
-    /// The growth telemetry collected so far, if
-    /// [`Self::enable_growth_telemetry`] was called on this graph.
-    #[cfg(feature = "saturation-telemetry")]
-    #[must_use]
-    pub fn growth_telemetry(&self) -> Option<&super::growth::GrowthTelemetry> {
-        self.growth.as_ref()
+    /// Advance the journal's step, if one is kept. The runner's cursor: the
+    /// one place the store is told something about the sweep that is
+    /// mutating it.
+    fn begin_step(&mut self) {
+        #[cfg(feature = "provenance-journal")]
+        if let Some(journal) = &mut self.journal {
+            journal.begin_step();
+        }
     }
 
     pub fn find(&self, id: EClassId) -> EClassId {
-        let mut current = id;
-        while self.parent[current.index()] != current {
-            current = self.parent[current.index()];
-        }
-        current
+        self.graph.find(id)
     }
 
-    fn find_mut(&mut self, id: EClassId) -> EClassId {
-        let mut current = id;
-        let mut path = Vec::new();
-        while self.parent[current.index()] != current {
-            path.push(current);
-            current = self.parent[current.index()];
-        }
-        for node in path {
-            self.parent[node.index()] = current;
-        }
-        current
-    }
-
-    fn canonicalize_node(&self, node: &mut ENode) {
-        for child in node.children_slice_mut() {
-            *child = self.find(*child);
-        }
+    /// `node` with every operand class replaced by its canonical class: the
+    /// form the memo keys on, and the form two nodes are compared in.
+    ///
+    /// Every operand, a fold's body included. A graph between a `union` and
+    /// the `rebuild` that follows it holds nodes naming merged-away classes,
+    /// and only this copy can be compared with another.
+    pub(crate) fn canonical_node(&self, node: ENode) -> ENode {
+        self.graph.canonical_node(node)
     }
 
     /// Tell this graph that `key` names a **unit** varying as `variance` says,
@@ -707,14 +289,17 @@ impl EGraph {
     /// The runtime tier's unit walk calls this once per unit a term reads,
     /// before inserting the term: it is the walk that holds each unit's body,
     /// and so the only place its variance can be computed
-    /// (docs/plans/2026-09-25-the-language-is-kernel.md §4, O1).
+    /// (docs/language/2026-09-25-the-language-is-kernel.md §4, O1).
     ///
     /// # Panics
     ///
     /// Panics if `variance` names a binder or a retired axis — a unit is a
     /// closed term over the coordinates and uniforms, and nothing else can be
     /// optimized out of its context, because no rewrite outside it can reach
-    /// a binder inside it.
+    /// a binder inside it. Panics too if `key` was admitted before with a
+    /// different variance: a key names one referent, so its variance is one
+    /// value, and two `Ref` nodes for one key would otherwise differ only in
+    /// what they claim about it.
     pub(crate) fn admit_unit(&mut self, key: KernelKey, variance: Variance) {
         assert!(
             variance.without(Variance::COORDS).is_const(),
@@ -722,13 +307,30 @@ impl EGraph {
              closed over the coordinates, and this one reads a binder no \
              rewrite outside it could substitute"
         );
-        self.units.insert(key, variance);
+        if let Some(admitted) = self.graph.units.insert(key, variance) {
+            assert_eq!(
+                admitted, variance,
+                "EGraph::admit_unit: {key:?} was admitted as varying as {admitted:?} and is \
+                 admitted again as {variance:?}"
+            );
+        }
     }
 
     /// The variance a unit admitted by [`Self::admit_unit`] carries, or
     /// `None` if `key` was never admitted.
     pub(crate) fn unit_variance(&self, key: KernelKey) -> Option<Variance> {
-        self.units.get(&key).copied()
+        self.graph.unit_variance(key)
+    }
+
+    /// The variance of the unit a [`ENode::Ref`] to `key` names: what
+    /// [`Self::unit_variance`] answers, for a node the graph holds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` was never admitted. [`Self::add`] refuses a `Ref` to
+    /// such a unit, so no node in the graph names one.
+    pub(crate) fn ref_variance(&self, key: KernelKey) -> Variance {
+        self.graph.ref_variance(key)
     }
 
     /// Insert `node`, returning the e-class that contains it.
@@ -739,43 +341,49 @@ impl EGraph {
     /// which `add` returns something else, because there is nothing else
     /// it could correctly return — this is law L1 (`add` is a homomorphism
     /// from the term algebra onto the e-graph quotient,
-    /// `docs/plans/2026-09-02-optimizer-api.md` §1), and L4 (any saturation
+    /// `docs/archive/plans/2026-09-02-optimizer-api.md` §1), and L4 (any saturation
     /// policy preserves denotation) is proved from it.
     ///
     /// The class budget therefore is not enforced here. It is enforced
     /// where growth is *decided* — the saturation drivers, each of which
-    /// clamps its caller's cap to [`HARD_CLASS_LIMIT`] and stops scanning
+    /// clamps its caller's cap to [`HARD_MINTED_LIMIT`] and stops scanning
     /// before it calls `add`. A driver that stops early leaves a graph
     /// holding fewer equalities than an exhaustive run would; every one it
     /// does hold is still true.
-    pub fn add(&mut self, mut node: ENode) -> EClassId {
-        self.canonicalize_node(&mut node);
+    ///
+    /// # Panics
+    ///
+    /// Panics on an [`ENode::Ref`] to a unit no walk has admitted
+    /// (`EGraph::admit_unit`): the node is only a key, and the graph holds
+    /// nothing to say what it varies as.
+    pub fn add(&mut self, node: ENode) -> EClassId {
+        let node = self.canonical_node(node);
         if let Some(&id) = self.memo.get(&node) {
             return self.find(id);
         }
-        let id = EClassId(self.classes.len() as u32);
-        let enode_id = ENodeId(self.next_enode_id);
-        self.next_enode_id += 1;
-        #[cfg(feature = "provenance-journal")]
-        {
-            let origin = match self.active_application {
-                Some(active) => Origin::Rule(active.application_id),
-                None => Origin::Seed,
-            };
-            self.provenance.record_origin(enode_id, origin);
-        }
-        self.const_fact.push(node.as_f32().map(f32::to_bits));
-        // `node` is canonical, so every child indexes its class's live fact.
-        let variance = node.variance(|child| self.var_fact[child.index()]);
-        self.var_fact.push(variance);
-        self.classes.push(EClass {
-            nodes: vec![node.clone()],
-            tags: vec![enode_id],
-        });
-        self.parent.push(id);
-        self.queued.push(false);
+        // `node` is canonical, so each child is already its class's root; the
+        // walk is the identity here and only hands the fact column the `Root`
+        // it is indexed by. Read before the graph changes: a refusal leaves
+        // it as it was.
+        let variance = node.variance(
+            |key| self.ref_variance(key),
+            |child| self.graph.columns.var_fact[self.graph.columns.root(child)],
+        );
         self.mutation_counter += 1;
-        self.last_changed.push(self.mutation_counter);
+        let id = self.graph.columns.push(
+            &mut self.saturation,
+            Birth {
+                node,
+                const_fact: node.as_f32().map(f32::to_bits),
+                variance,
+                shape: node.shape(),
+                stamp: self.mutation_counter,
+            },
+        );
+        #[cfg(feature = "provenance-journal")]
+        if let Some(journal) = &mut self.journal {
+            journal.record_birth(columns::tag_of(id));
+        }
         self.memo.insert(node, id);
         id
     }
@@ -790,7 +398,7 @@ impl EGraph {
 
     /// The binders `class` may depend on: a superset of what the function it
     /// denotes varies with, so `!variance(c).depends_on(b)` proves `c` is
-    /// constant along `b` (see the `var_fact` field for the law and why it
+    /// constant along `b` (see `Columns::var_fact` for the law and why it
     /// holds without repair).
     ///
     /// The side condition every loop-transformation rule over a fold asks —
@@ -798,24 +406,14 @@ impl EGraph {
     /// rather than of one representative.
     #[must_use]
     pub(crate) fn variance(&self, class: EClassId) -> Variance {
-        self.var_fact[self.find(class).index()]
-    }
-
-    /// The literal `class` is known to equal, if it is one — the class's
-    /// constant fact, which outlives a mid-`rebuild` drain of its nodes (see
-    /// the `const_fact` field). A comparison mask reads here as the NaN its
-    /// all-ones pattern is, so a caller that wants a *number* asks for one
-    /// it can recognize (`1.0`, a finite nonzero slope).
-    #[must_use]
-    pub(crate) fn constant(&self, class: EClassId) -> Option<f32> {
-        self.const_fact[self.find(class).index()].map(f32::from_bits)
+        self.graph.columns.var_fact[self.graph.columns.root(class)]
     }
 
     pub fn union(&mut self, a: EClassId, b: EClassId) -> EClassId {
-        let a = self.find_mut(a);
-        let b = self.find_mut(b);
+        let a = self.graph.columns.root_mut(a);
+        let b = self.graph.columns.root_mut(b);
         if a == b {
-            return a;
+            return a.id();
         }
         // An e-class asserts "these are all equal", so a union placing two
         // numerically UNEQUAL constants in one class would be a proved
@@ -840,10 +438,13 @@ impl EGraph {
         // Min/Max over NaN. Bit equality additionally admits identical NaN
         // patterns, which `==` would wrongly reject: an all-ones comparison
         // mask reads as NaN and must be unionable with itself.
-        // Read the class-level fact, NOT the node vector: `rebuild` drains
-        // nodes with `mem::take` before performing congruence unions, so a
-        // node-scanning guard is blind exactly when congruence closure runs.
-        let (fa, fb) = (self.const_fact[a.index()], self.const_fact[b.index()]);
+        // Read the class-level fact, NOT the members: `rebuild` detaches a
+        // class's members before performing congruence unions, so a
+        // member-scanning guard is blind exactly when congruence closure runs.
+        let (fa, fb) = (
+            self.graph.columns.const_fact[a],
+            self.graph.columns.const_fact[b],
+        );
         if let (Some(ba), Some(bb)) = (fa, fb) {
             let (ca, cb) = (f32::from_bits(ba), f32::from_bits(bb));
             if ca != cb && ba != bb {
@@ -867,84 +468,54 @@ impl EGraph {
                     }
                     self.refused_const_unions.push(pair);
                 }
-                return if a.0 < b.0 { a } else { b };
+                return a.min(b).id();
             }
         }
-        let (parent, child) = if a.0 < b.0 { (a, b) } else { (b, a) };
-        self.parent[child.index()] = parent;
-        let child_nodes = std::mem::take(&mut self.classes[child.index()].nodes);
-        let child_tags = std::mem::take(&mut self.classes[child.index()].tags);
-        self.classes[parent.index()].nodes.extend(child_nodes);
-        self.classes[parent.index()].tags.extend(child_tags);
+        let (parent, child) = if a < b { (a, b) } else { (b, a) };
+        // Everything read at `child` happens before `link`, while it is still
+        // a representative.
+        self.saturation.merge_kinds(child, parent);
+        self.graph.columns.absorb(child, parent);
         // The guard above proved the two facts agree (or that at most one
         // exists), so `or` is a merge, not a choice.
-        if self.const_fact[parent.index()].is_none() {
-            self.const_fact[parent.index()] = self.const_fact[child.index()];
+        if self.graph.columns.const_fact[parent].is_none() {
+            self.graph.columns.const_fact[parent] = self.graph.columns.const_fact[child];
         }
         // Intersection, not a choice: see `var_fact`'s law.
-        self.var_fact[parent.index()] =
-            self.var_fact[parent.index()].intersection(self.var_fact[child.index()]);
+        self.graph.columns.var_fact[parent] =
+            self.graph.columns.var_fact[parent].intersection(self.graph.columns.var_fact[child]);
+        self.graph.columns.link(child, parent);
         // `parent`'s own node list just changed (gained `child`'s nodes) —
         // see `class_is_dirty`/`DIRTY_TRACKING_MAX_DEPTH`.
         self.mutation_counter += 1;
-        self.last_changed[parent.index()] = self.mutation_counter;
-        if !self.queued[parent.index()] {
-            self.queued[parent.index()] = true;
-            self.worklist.push(parent);
+        self.saturation.last_changed[parent] = self.mutation_counter;
+        let slot = Slot::at(parent);
+        if !self.saturation.queued[slot] {
+            self.saturation.queued[slot] = true;
+            self.worklist.push(slot);
         }
         #[cfg(feature = "provenance-journal")]
-        self.provenance.record_union(UnionEvent {
-            rule_idx: self.active_application.map(|a| a.rule_idx),
-            application_id: self.active_application.map(|a| a.application_id),
-            step: self.step,
-            class_a: parent,
-            class_b: child,
-        });
-        parent
-    }
-
-    /// Begin a batch of rule applications. Returns a guard that rebuilds
-    /// the e-graph when dropped (RAII). Rules applied through the guard
-    /// skip per-rule rebuilds; the single rebuild on drop amortizes the cost.
-    ///
-    /// ```ignore
-    /// {
-    ///     let mut batch = egraph.batch();
-    ///     batch.apply_rule(0, 500);
-    ///     batch.apply_rule(1, 500);
-    ///     // rebuild happens here on drop
-    /// }
-    /// ```
-    /// Begin a batch of rule applications with interleaved partial rebuild.
-    ///
-    /// `rebuild_chunk`: max worklist items to process after each rule.
-    /// Higher = more deduplication, slower per rule.
-    /// Lower = less deduplication, faster per rule but classes grow.
-    /// Default of 256 balances the two.
-    pub fn batch(&mut self) -> EGraphBatch<'_> {
-        EGraphBatch {
-            graph: self,
-            any_changes: false,
-            rebuild_chunk: 256,
+        if let Some(journal) = &mut self.journal {
+            journal.record_union(parent.id(), child.id());
         }
-    }
-
-    /// Begin a batch with a custom rebuild chunk size.
-    pub fn batch_with_chunk(&mut self, rebuild_chunk: usize) -> EGraphBatch<'_> {
-        EGraphBatch {
-            graph: self,
-            any_changes: false,
-            rebuild_chunk,
-        }
+        parent.id()
     }
 
     /// Rebuild the e-graph completely. Processes the entire worklist.
     pub fn rebuild(&mut self) {
         self.rebuild_budgeted(usize::MAX);
+        debug_assert!(
+            self.kind_index_covers_members(),
+            "a live class holds a node whose kind its kind mask or the per-kind class set lacks"
+        );
     }
 
-    /// Process up to `budget` worklist items. Each item canonicalizes one
-    /// e-class's nodes and deduplicates via the memo table.
+    /// Process up to `budget` worklist items. Each item canonicalizes the
+    /// stored nodes of one class and probes the memo with each canonical
+    /// form: a miss records the form, and a hit in another class unions the
+    /// two, or, when that union is refused, takes the node out of the class.
+    /// Nothing is deduplicated: a node whose form another member already has
+    /// stays, so a class can hold equal members (see [`Self::nodes`]).
     ///
     /// The graph is consistent after each item — partially rebuilt is safe.
     /// Unprocessed classes may have stale canonical forms (rule matching
@@ -954,54 +525,46 @@ impl EGraph {
     pub fn rebuild_budgeted(&mut self, budget: usize) -> usize {
         let mut processed = 0;
         while processed < budget {
-            let id = match self.worklist.pop() {
-                Some(id) => id,
+            let slot = match self.worklist.pop() {
+                Some(slot) => slot,
                 None => break,
             };
             processed += 1;
             // Cleared by the slot pushed at (not the class it now
             // canonicalizes to) — matches `union`'s guard, which sets it by
             // the same slot.
-            self.queued[id.index()] = false;
-            let id = self.find(id);
-            let nodes = std::mem::take(&mut self.classes[id.index()].nodes);
-            // `tags` must stay zipped with `nodes` through this loop: no
-            // reordering happens (nodes are only appended to `new_nodes` in
-            // the same order they're drained from `nodes`), so zipping by
-            // index here and pushing to `new_tags` in lockstep with
-            // `new_nodes` keeps every tag pointed at the right node.
-            let tags = std::mem::take(&mut self.classes[id.index()].tags);
-            debug_assert_eq!(
-                nodes.len(),
-                tags.len(),
-                "EClass.nodes and EClass.tags must never desync"
-            );
-            let mut new_nodes = Vec::new();
-            let mut new_tags = Vec::new();
-            for (mut node, tag) in nodes.into_iter().zip(tags) {
-                self.canonicalize_node(&mut node);
+            self.saturation.queued[slot] = false;
+            // The item's class as it is now. A union inside the item can
+            // merge it away, and the item keeps this name on purpose: the
+            // memo takes it for the nodes the item keeps, `existing != id`
+            // compares against it, and only the write-back asks again.
+            let id = self.graph.columns.root_of(slot);
+            let mut detached = self.graph.columns.detach(id);
+            let mut kept = Kept::new();
+            while let Some(tag) = self.graph.columns.walk(&mut detached) {
+                let node = self.canonical_node(*self.graph.columns.node(tag));
+                // The stored names are state: the arena keeps the form
+                // canonicalized now, retired or kept.
+                self.graph.columns.set_node(tag, node);
                 if let Some(&existing) = self.memo.get(&node) {
-                    let existing = self.find(existing);
+                    let existing = self.graph.columns.root(existing);
                     if existing != id {
                         // `union` keeps `min(id, existing)`, so this call
                         // can go either way, and the write-back at the
                         // bottom of the loop has to survive both:
-                        //   - `id` survives: `union`'s extend() appends
-                        //     `existing`'s nodes (and tags) directly onto
-                        //     `self.classes[id.index()]`, which mem::take
-                        //     just emptied — so the write-back must EXTEND,
-                        //     not overwrite, or those are dropped.
+                        //   - `id` survives: `union` splices `existing`'s
+                        //     members onto `id`'s list, which `detach` just
+                        //     emptied — so the write-back must splice after
+                        //     them, not overwrite, or those are dropped.
                         //   - `existing` survives: `id` is merged away and
-                        //     `classes[id.index()]` stops being reachable
-                        //     through `find` — so the write-back must target
-                        //     `self.find(id)`, or everything still in
-                        //     `new_nodes` is orphaned.
+                        //     its list stops being reachable through `find`
+                        //     — so the write-back must target `root(id)`,
+                        //     which `write_back` resolves itself.
                         // This is a rebuild-time
                         // congruence-closure union, not a rule firing, so it
                         // carries no rule_idx in the provenance journal
-                        // (`active_application` is whatever the caller left
-                        // it as — normally `None` outside rule application).
-                        self.union(id, existing);
+                        // (no application bracket is open during `rebuild`).
+                        self.union(id.id(), existing.id());
 
                         // `union` REFUSES a merge that would assert two
                         // unequal constants equal, and a refusal here needs
@@ -1011,39 +574,23 @@ impl EGraph {
                         // contradictory classes with only one of them
                         // reachable by lookup — later matching or extraction
                         // could then give the same expression different
-                        // values. Leave the node with the class memo already
-                        // names. `id` loses a node congruent to one it can no
-                        // longer be merged with, which is under-merging: it
-                        // costs CSE, not correctness.
-                        if self.find(id) != self.find(existing) {
+                        // values. Retire the node: it stays in the arena and
+                        // in no class (law 7). `id` loses a node congruent to
+                        // one it can no longer be merged with, which is
+                        // under-merging: it costs CSE, not correctness.
+                        if self.find(id.id()) != self.find(existing.id()) {
+                            self.graph.columns.retire(tag);
                             continue;
                         }
                     }
                 } else {
-                    self.memo.insert(node.clone(), id);
+                    self.memo.insert(node, id.id());
                 }
-                new_nodes.push(node);
-                new_tags.push(tag);
+                self.graph.columns.keep(&mut kept, tag);
             }
-            // Write back to the class `id` CANONICALIZES TO, not to `id`.
-            // A mid-loop union() above picks `min(id, existing)` as the
-            // surviving parent, so when `existing.0 < id.0` it is `id` that
-            // was merged away — and `classes[id.index()]` is then a slot
-            // `find` no longer routes to. Every node written there is
-            // orphaned: `nodes()`/`tags()` canonicalize first, so nothing
-            // can read them again. That is lost extraction alternatives
-            // (under-merging: sound, since the surviving class still holds
-            // only provably-equal terms) but lost *silently*, which this
-            // project forbids.
-            //
-            // And extend, never assign: in the mirror case, where `id`
-            // survives, union()'s extend() has already appended `existing`'s
-            // nodes and tags onto this very vector (which mem::take emptied
-            // above), and an assignment would clobber them. `find(id) == id`
-            // there, so one write-back handles both directions.
-            let dest = self.find(id);
-            self.classes[dest.index()].nodes.extend(new_nodes);
-            self.classes[dest.index()].tags.extend(new_tags);
+            // After what the class `id` is in now holds: see
+            // `Columns::write_back`.
+            self.graph.columns.write_back(id, kept);
         }
         self.worklist.len()
     }
@@ -1053,35 +600,100 @@ impl EGraph {
         self.worklist.len()
     }
 
-    pub fn nodes(&self, id: EClassId) -> &[ENode] {
-        let id = self.find(id);
-        &self.classes[id.index()].nodes
+    /// The nodes of the class `id` belongs to, in the order the graph gives
+    /// them. The order is semantics, not layout: rules that return on the
+    /// first matching node, the node substitution reads and the candidate
+    /// extraction keeps on a tie all depend on it.
+    ///
+    /// - [`add`](Self::add) gives `[node]`.
+    /// - [`union`](Self::union) gives the surviving class's nodes, then the
+    ///   merged-away class's.
+    /// - A [`rebuild`](Self::rebuild) item detaches the nodes of the class it
+    ///   processes, and any union inside the item appends to the class as
+    ///   `union` does. At the end the kept nodes, in the order they were
+    ///   walked, follow whatever the class then holds: `[absorbed] ++ [kept]`
+    ///   when the class survives its unions. When the class loses one, it is
+    ///   the survivor's prior nodes, then any the survivor absorbs later in
+    ///   the same item, then `[kept]`.
+    ///
+    /// A node whose canonical form collides with a class it cannot merge with
+    /// leaves the class, and rebuild deduplicates nothing: two members may be
+    /// equal.
+    ///
+    /// An iterator and nothing more: no length, no reverse, no slice, no
+    /// index, so a caller depends on the order and not on how the members
+    /// are stored. A count is `nodes(id).count()` and a position
+    /// `nodes(id).nth(k)`; both walk the members. Extraction reads the node it
+    /// chose by id (`FrozenGraph::node`), not by position. The members are a list
+    /// threaded through the arena, so a walk is one dependent load per member.
+    pub fn nodes(&self, id: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
+        self.graph.nodes(id)
     }
 
-    /// Get the stable `ENodeId` tags for the canonical class's nodes,
-    /// parallel to `nodes(id)` — `tags(id)[i]` names `nodes(id)[i]`.
-    pub fn tags(&self, id: EClassId) -> &[ENodeId] {
-        let id = self.find(id);
-        &self.classes[id.index()].tags
+    /// The stable `ENodeId` tags of the class's nodes, yielded in step with
+    /// [`Self::nodes`]: the k-th tag names the k-th node. A tag is the node's
+    /// id in this graph: the k-th tag is the id of the k-th node.
+    pub fn tags(&self, id: EClassId) -> impl Iterator<Item = ENodeId> + Clone + '_ {
+        self.graph.tags(id)
     }
 
-    /// Access the rule-provenance side tables (origins, application log,
-    /// union journal). See the `provenance` module for details.
-    pub fn provenance(&self) -> &Provenance {
-        &self.provenance
+    /// [`Self::nodes`] for a class that is already its own representative, as
+    /// [`Self::candidate_classes`] yields: the rule scan's read, without the
+    /// walk to the representative it has already done.
+    fn nodes_of_canonical(&self, canonical: EClassId) -> impl Iterator<Item = &ENode> + Clone + '_ {
+        debug_assert_eq!(
+            self.find(canonical),
+            canonical,
+            "nodes_of_canonical is for a representative"
+        );
+        let class = self.graph.columns.root(canonical);
+        self.graph
+            .columns
+            .members(class)
+            .map(move |tag| self.graph.columns.node(tag))
     }
 
-    /// Look up the `ENode` for a given stable tag within a class, if it's
-    /// still present there. `O(class size)` — classes are small in practice
-    /// (equality-saturated e-classes rarely exceed a few dozen nodes).
+    /// The mutation log (origins, application log, union journal), or `None`
+    /// for a graph built [`without_journal`](Self::without_journal). See the
+    /// `provenance` module for details.
+    pub fn provenance(&self) -> Option<&Provenance> {
+        self.journal.as_ref()
+    }
+
+    /// The mutation log of a graph that keeps one: for a walk that has
+    /// nothing to compute without it (the hindsight labeler, the research
+    /// harnesses). [`Self::provenance`] is the question to ask first.
+    ///
+    /// # Panics
+    ///
+    /// On a graph built without a journal.
+    #[cfg(feature = "provenance-journal")]
+    pub fn journal(&self) -> &Provenance {
+        self.journal.as_ref().expect(NO_JOURNAL)
+    }
+
+    /// The node `tag` names, if it is a member of `id`'s class now: `None`
+    /// for a node another class holds, a retired node (law 7), or a tag past
+    /// this graph's end. O(1).
     pub fn node_for_tag(&self, id: EClassId, tag: ENodeId) -> Option<&ENode> {
-        let id = self.find(id);
-        let class = &self.classes[id.index()];
-        class
-            .tags
-            .iter()
-            .position(|&t| t == tag)
-            .map(|i| &class.nodes[i])
+        self.graph.node_for_tag(id, tag)
+    }
+
+    /// Whether node `tag` is a member of a class now: false exactly for a
+    /// retired node (law 7) and for a tag past this graph's end.
+    pub fn is_member(&self, tag: ENodeId) -> bool {
+        self.graph.columns.class_of(tag).is_some() && !self.graph.columns.is_retired(tag)
+    }
+
+    /// The operand classes node `tag` names as stored, or none for a node that
+    /// is not a member (retired, or past the end): what the derivation walks
+    /// read. O(1), where the scan it replaces visited every class.
+    #[cfg(feature = "provenance-journal")]
+    fn children_of(&self, tag: ENodeId) -> Vec<EClassId> {
+        match self.is_member(tag) {
+            true => self.graph.columns.node(tag).children(),
+            false => Vec::new(),
+        }
     }
 
     /// Compute the transitive rewrite-application ancestry of a set of
@@ -1093,19 +705,12 @@ impl EGraph {
         &self,
         chosen_nodes: &[(EClassId, ENodeId)],
     ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
-        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).to_vec() };
-        let children_of = |tag: ENodeId| -> Vec<EClassId> {
-            for class in self.classes.iter() {
-                if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
-                    return class.nodes[idx].children();
-                }
-            }
-            Vec::new()
-        };
+        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).collect() };
+        let children_of = |tag: ENodeId| -> Vec<EClassId> { self.children_of(tag) };
         super::provenance::derivation_ancestors(
             &tags_of,
             &children_of,
-            &self.provenance,
+            self.journal(),
             chosen_nodes,
         )
     }
@@ -1137,441 +742,83 @@ impl EGraph {
         seeds: &[(EClassId, ENodeId)],
         chosen_nodes: &[(EClassId, ENodeId)],
     ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
-        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).to_vec() };
-        let children_of = |tag: ENodeId| -> Vec<EClassId> {
-            for class in self.classes.iter() {
-                if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
-                    return class.nodes[idx].children();
-                }
-            }
-            Vec::new()
-        };
+        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).collect() };
+        let children_of = |tag: ENodeId| -> Vec<EClassId> { self.children_of(tag) };
         let canonical_of = |class: EClassId| -> EClassId { self.find(class) };
         super::provenance::derivation_ancestors_tight(
-            &tags_of,
-            &children_of,
-            &canonical_of,
-            &self.provenance,
-            seeds,
-            chosen_nodes,
+            super::provenance::GraphView {
+                tags_of: &tags_of,
+                children_of: &children_of,
+                canonical_of: &canonical_of,
+            },
+            self.journal(),
+            super::provenance::TightWalk {
+                seeds,
+                chosen_nodes,
+            },
         )
     }
 
-    /// Render a human-readable derivation trace for the given ancestry set
-    /// (from [`EGraph::derivation_ancestors`]), resolving rule names via
-    /// this e-graph's rule list.
-    #[cfg(feature = "provenance-journal")]
-    pub fn format_derivation_trace(
-        &self,
-        ancestors: &std::collections::BTreeSet<super::provenance::ApplicationId>,
-    ) -> String {
-        let rule_name =
-            |idx: usize| -> Option<String> { self.rule(idx).map(|r| r.name().to_string()) };
-        super::provenance::format_derivation_trace(&self.provenance, ancestors, &rule_name)
-    }
-
-    /// Get the number of registered rewrite rules.
-    pub fn num_rules(&self) -> usize {
-        self.rules.len()
-    }
-
-    /// Get the number of e-classes.
+    /// Get the number of e-class ids minted.
+    ///
+    /// Ids are never reclaimed — a union repoints a slot rather than freeing
+    /// it — so this is the count [`Limits::minted`] bounds, not the number of
+    /// live classes ([`Self::class_ids`] yields those).
     pub fn num_classes(&self) -> usize {
-        self.classes.len()
+        self.graph.num_classes()
     }
 
     /// Iterate over all canonical e-class IDs.
     ///
     /// Returns an iterator of all e-class IDs that are canonical (i.e., roots
-    /// of their union-find tree) and have at least one node.
+    /// of their union-find tree) and have at least one node. Read from the
+    /// live set the member store keeps.
     pub fn class_ids(&self) -> impl Iterator<Item = EClassId> + '_ {
-        (0..self.classes.len()).filter_map(move |idx| {
-            let id = EClassId(idx as u32);
-            let canonical = self.find(id);
-            if canonical == id && !self.classes[idx].nodes.is_empty() {
-                Some(id)
-            } else {
-                None
-            }
+        self.graph.columns.live().iter()
+    }
+
+    /// The live classes a rule rooted in `roots` can match at, in ascending
+    /// id order: every live class that has held a node of one of its kinds.
+    ///
+    /// A superset of the classes holding such a node now (see
+    /// `SaturationColumns::kind_mask`), so a visited class is still checked node by
+    /// node. [`RootShapes::Any`] names no kind and visits every live class.
+    pub(super) fn candidate_classes(
+        &self,
+        roots: RootShapes,
+    ) -> impl Iterator<Item = EClassId> + '_ {
+        self.graph
+            .columns
+            .live()
+            .iter_within(move |word| match roots {
+                RootShapes::Any => u64::MAX,
+                RootShapes::Kinds(kinds) => self.saturation.by_kind.word_of_any(kinds, word),
+            })
+    }
+
+    /// Whether every member of every live class has its kind in the class's
+    /// mask and the class in that kind's set: the superset law
+    /// `candidate_classes` is sound by.
+    fn kind_index_covers_members(&self) -> bool {
+        self.class_ids().all(|id| {
+            let root = self.graph.columns.root(id);
+            self.nodes_of_canonical(id)
+                .filter_map(ENode::shape)
+                .all(|kind| {
+                    self.saturation.kind_mask[root].contains(kind)
+                        && self.saturation.by_kind.contains(kind, id)
+                })
         })
     }
 
-    /// Collect all canonical e-class IDs into a `Vec`.
-    ///
-    /// Use this instead of `class_ids()` when the caller needs `&mut self`
-    /// (since the iterator borrows `&self`). This is the single source of
-    /// truth for "which classes are canonical" — delegates to `class_ids()`.
-    pub fn canonical_class_ids(&self) -> Vec<EClassId> {
-        self.class_ids().collect()
-    }
-
-    /// Get the total number of nodes across all e-classes.
+    /// Nodes minted and not retired (law 7), duplicates counted: every member
+    /// of every live class.
     pub fn node_count(&self) -> usize {
-        self.classes.iter().map(|c| c.nodes.len()).sum()
-    }
-
-    /// Get the OpKind of the canonical representative of an e-class.
-    ///
-    /// Resolves through union-find to the canonical class, then returns
-    /// the OpKind of the first node in that class.
-    pub fn canonical_op(&self, id: EClassId) -> pixelflow_ir::OpKind {
-        let id = self.find(id);
-        let class = &self.classes[id.index()];
-        match &class.nodes[0] {
-            ENode::Var(_) => pixelflow_ir::OpKind::Var,
-            ENode::Const(_) => pixelflow_ir::OpKind::Const,
-            ENode::Buffer(_) => pixelflow_ir::OpKind::Buffer,
-            ENode::Uniform(_) => pixelflow_ir::OpKind::Uniform,
-            ENode::Param(_) => pixelflow_ir::OpKind::Param,
-            ENode::Op { op, .. } => op.kind(),
-            ENode::Reduce { .. } => pixelflow_ir::OpKind::Reduce,
-            // No op names a whole kernel, and a unit is the one leaf a
-            // research walk cannot meet: only the runtime tier admits one.
-            ENode::Ref { key, .. } => panic!(
-                "canonical_op: {key:?} is a unit — a leaf only the runtime tier's \
-                 unit walk admits, and it has no OpKind"
-            ),
-        }
-    }
-
-    /// Debug: dump the entire e-graph structure.
-    #[allow(dead_code)]
-    pub fn dump(&self) -> String {
-        use std::fmt::Write;
-        let mut out = String::new();
-        for (idx, class) in self.classes.iter().enumerate() {
-            let id = EClassId(idx as u32);
-            let canonical = self.find(id);
-            if canonical == id && !class.nodes.is_empty() {
-                writeln!(&mut out, "e{}: {:?}", idx, class.nodes).unwrap();
-            }
-        }
-        out
-    }
-
-    /// Get a rule by index.
-    pub fn rule(&self, idx: usize) -> Option<&dyn Rewrite> {
-        self.rules.get(idx).map(|r| r.as_ref())
-    }
-
-    /// Find all actual rewrite matches in the E-graph.
-    ///
-    /// Returns only targets where the rule actually matches (produces an action).
-    /// Much more efficient than enumerating all combinations - only scores real matches.
-    pub fn find_rewrite_matches(&self) -> Vec<RewriteTarget> {
-        let mut matches = Vec::new();
-
-        for (rule_idx, rule) in self.rules.iter().enumerate() {
-            for class_id in self.class_ids() {
-                let nodes = &self.classes[class_id.index()].nodes;
-
-                let tags = &self.classes[class_id.index()].tags;
-                for (node_idx, node) in nodes.iter().enumerate() {
-                    // Check if rule matches this node
-                    if rule.apply(self, class_id, node).is_some() {
-                        matches.push(RewriteTarget {
-                            rule_idx,
-                            class_id,
-                            tag: tags[node_idx],
-                        });
-                    }
-                }
-            }
-        }
-
-        matches
-    }
-
-    /// Apply a single rule to a specific (class, node) pair.
-    ///
-    /// Returns true if the rule matched and produced a change.
-    /// This is used by guided search to apply rules one at a time.
-    ///
-    /// Unlike the sweeps, this takes no class budget: one call applies at
-    /// most one action, so it cannot itself grow the graph without bound —
-    /// the loop that calls it can, and that loop owns the budget. Reaching
-    /// [`HARD_CLASS_LIMIT`] here therefore means a caller is driving
-    /// rewrites with no budget at all, and it **panics** rather than
-    /// returning `false`: `false` already means "the rule did not fire",
-    /// and a budget exhaustion that is indistinguishable from a non-match
-    /// is the silent failure this ceiling exists to prevent. No production
-    /// path calls this, and the production caps stay below the limit (the
-    /// classical ceiling is half of it).
-    pub fn apply_single_rule(&mut self, rule_idx: usize, class_id: EClassId, tag: ENodeId) -> bool {
-        assert!(
-            self.classes.len() < HARD_CLASS_LIMIT,
-            "apply_single_rule: e-graph is at the hard class limit \
-             ({} classes, limit {HARD_CLASS_LIMIT}) — this entry point applies \
-             one action per call and carries no budget, so the caller's \
-             rewrite loop must impose one (see `saturate_with_limits`)",
-            self.classes.len(),
-        );
-        let Some(rule) = self.rules.get(rule_idx) else {
-            return false;
-        };
-
-        let class_id = self.find(class_id);
-        // Resolve the stable tag against the class as it stands NOW — a
-        // rebuild since the caller enumerated this target either left the
-        // node in place or removed it, and `None` is the honest answer for
-        // the second case. See `RewriteTarget::tag`.
-        let Some(node) = self.node_for_tag(class_id, tag).cloned() else {
-            return false;
-        };
-
-        let Some(action) = rule.apply(self, class_id, &node) else {
-            return false;
-        };
-
-        // Guided search calls this once per discrete rewrite decision — the
-        // step counter's granularity here is "one apply_single_rule call",
-        // mirroring "one saturate_with_limits iteration" for the batched path.
-        self.step += 1;
-
-        // The batched path already knows how to execute every action; reuse
-        // it so the single-step path can't drift out of sync.
-        let changed = self.apply_action_from_rule(rule_idx, class_id, action) > 0;
-
-        if changed {
-            self.rebuild();
-        }
-        changed
+        self.graph.columns.len() - self.graph.columns.retired_count()
     }
 
     pub fn contains_const(&self, id: EClassId, val: f32) -> bool {
-        self.nodes(id).iter().any(|n| n.is_const(val))
-    }
-
-    /// The one rewrite-until-budget-exhausted loop.
-    ///
-    /// Every saturation in the workspace bottoms out here, and nothing else
-    /// re-decides when a run stops. Callers reach it through one of two
-    /// entry points:
-    ///
-    /// - [`Optimizer::run`](super::optimizer::Optimizer::run) — the
-    ///   production path, through [`Self::saturate_budgeted`]. It picks its
-    ///   limits from a [`Budget`](super::optimizer::Budget), so the budget
-    ///   scales with the input and carries no clock. All three production
-    ///   tiers use it.
-    /// - This method, called directly only where a budget must be pinned
-    ///   rather than inherited — tests, the hindsight labeler, and
-    ///   measurement harnesses, which spell it
-    ///   [`SaturationConfig::compatibility`](super::saturate::SaturationConfig::compatibility).
-    ///
-    /// The three arguments are independent stopping conditions, checked
-    /// between rewrite rounds; the run returns as soon as any one of them —
-    /// or saturation itself — is reached, whichever comes first:
-    ///
-    /// - `max_iters` — how many rewrite rounds may run. One round applies
-    ///   every rule once and rebuilds once.
-    /// - `max_classes` — e-class ceiling. Bounds memory against e-graph
-    ///   blowup, and is the only limit also checked *between rules within* a
-    ///   round.
-    /// - `timeout` — wall-clock ceiling measured from entry. It is the only
-    ///   limit pushed down into a single rule's matching, as a deadline, so
-    ///   it is what bounds a round that would otherwise run long.
-    ///
-    /// Returns the [`SaturationStats`] the run actually achieved;
-    /// `stats.iterations < max_iters` is how a caller tells convergence from
-    /// an exhausted round budget.
-    pub fn saturate_with_limits(
-        &mut self,
-        max_iters: usize,
-        max_classes: usize,
-        timeout: std::time::Duration,
-    ) -> SaturationStats {
-        self.saturate_bounded(max_iters, max_classes, None, Some(timeout))
-    }
-
-    /// Saturate under deterministic limits only — rounds, classes, and
-    /// optionally rule applications — with no clock.
-    ///
-    /// This is what [`super::optimizer::Optimizer`] drives, and the
-    /// difference from [`Self::saturate_with_limits`] is the whole point:
-    /// every limit here is a property of the input and the configuration, so
-    /// the same term under the same limits produces the same graph on any
-    /// machine at any load. `saturate_with_limits`'s `timeout` is not — it
-    /// stops the run at a wall-clock boundary and the result then depends on
-    /// what else the machine was doing. A wall-clock ceiling is still
-    /// available, on the optimizer, where exceeding it panics instead of
-    /// quietly changing the answer.
-    ///
-    /// `SaturationStop::Timeout` is unreachable from here.
-    pub fn saturate_budgeted(
-        &mut self,
-        max_iters: usize,
-        max_classes: usize,
-        max_applications: Option<u64>,
-    ) -> SaturationStats {
-        self.saturate_bounded(max_iters, max_classes, max_applications, None)
-    }
-
-    /// The one rewrite-until-budget-exhausted loop. Every saturation entry
-    /// point in this crate funnels here rather than re-deciding, in a second
-    /// copy, when to stop.
-    fn saturate_bounded(
-        &mut self,
-        max_iters: usize,
-        max_classes: usize,
-        max_applications: Option<u64>,
-        timeout: Option<std::time::Duration>,
-    ) -> SaturationStats {
-        // Growth is decided here and in `apply_rule_at_index_timed`, so the
-        // ceiling is applied here: a caller asking for `usize::MAX` classes
-        // gets `HARD_CLASS_LIMIT` and a truthful `ClassCap` stop, not a
-        // graph that grows until `add` starts refusing to insert. Applied in
-        // the shared loop rather than in `saturate_with_limits`, so
-        // `saturate_budgeted` — and therefore every production tier — is
-        // held to it too.
-        let max_classes = max_classes.min(HARD_CLASS_LIMIT);
-        let start = std::time::Instant::now();
-        // `Instant + Duration::MAX` panics, so the deadline is optional
-        // rather than "infinitely far away".
-        let deadline = timeout.map(|t| start + t);
-        // The cap is enforced deep inside the scan, where an application is
-        // about to commit — the only place that can stop mid-round without
-        // letting the round decide how far past the budget to go.
-        let previous_cap = self.application_cap;
-        self.application_cap = max_applications.map(|n| self.applications.saturating_add(n));
-        let mut iterations = 0;
-        let mut total_unions = 0;
-        // Recorded at the point the loop decides to stop — never inferred
-        // afterwards from the counters.
-        let mut stop = SaturationStop::IterationCeiling;
-
-        for _ in 0..max_iters {
-            if let Some(t) = timeout {
-                if start.elapsed() >= t {
-                    stop = SaturationStop::Timeout;
-                    break;
-                }
-            }
-            if self.classes.len() > max_classes {
-                stop = SaturationStop::ClassCap;
-                break;
-            }
-            if self
-                .application_cap
-                .is_some_and(|cap| self.applications >= cap)
-            {
-                stop = SaturationStop::ApplicationBudget;
-                break;
-            }
-            iterations += 1;
-
-            // Advance the provenance step counter once per saturation
-            // iteration — every ApplicationRecord/UnionEvent produced by
-            // this iteration's rule applications shares this step.
-            self.step += 1;
-
-            // Apply all rules in a single batch — one rebuild per iteration
-            let (unions, sweep) = {
-                let mut batch = self.batch();
-                let n_rules = batch.graph.rules.len();
-                let mut total = 0;
-                let mut sweep = ScanStop::Completed;
-                for rule_idx in 0..n_rules {
-                    if batch.node_count() > max_classes {
-                        sweep = ScanStop::ClassCap;
-                        break;
-                    }
-                    let result = batch.apply_rule(rule_idx, max_classes, deadline);
-                    total += result.changes;
-                    match result.scan {
-                        ScanStop::Completed => {}
-                        // The class budget cut this rule short. A later rule
-                        // may still fit inside the cap, so the sweep goes on
-                        // — but it is no longer a full sweep, and can never
-                        // read as quiescence.
-                        ScanStop::ClassCap => sweep = ScanStop::ClassCap,
-                        // The wall-clock ceiling is hard: do not start
-                        // another rule's scan on the far side of it.
-                        ScanStop::Deadline => {
-                            sweep = ScanStop::Deadline;
-                            break;
-                        }
-                        // The application budget is spent for the whole run,
-                        // not just this rule: no later rule can commit
-                        // anything either.
-                        ScanStop::ApplicationBudget => {
-                            sweep = ScanStop::ApplicationBudget;
-                            break;
-                        }
-                    }
-                }
-                (total, sweep)
-                // rebuild happens here on drop
-            };
-            total_unions += unions;
-            // The union count and the stop reason are independent facts: a
-            // sweep that a budget cut short classifies as that budget whether
-            // or not it also committed unions. Consulting `truncated` only on
-            // the `unions == 0` path missed every truncated-but-productive
-            // sweep, and if that was the last allowed iteration the run fell
-            // through to this loop's default `IterationCeiling`.
-            //
-            // `apply_rule` holds `classes.len()` at or under `max_classes` by
-            // truncating its own scan, so the cheap check at the top of this
-            // loop almost never sees a capped run — the sweep's own report is
-            // what makes `ClassCap` observable at all.
-            match sweep {
-                ScanStop::ClassCap => {
-                    stop = SaturationStop::ClassCap;
-                    break;
-                }
-                ScanStop::Deadline => {
-                    stop = SaturationStop::Timeout;
-                    break;
-                }
-                ScanStop::ApplicationBudget => {
-                    stop = SaturationStop::ApplicationBudget;
-                    break;
-                }
-                // A full sweep that changed nothing is the one diagnostic
-                // fixed point this loop can report.
-                ScanStop::Completed => {
-                    if unions == 0 {
-                        stop = SaturationStop::Quiesced;
-                        break;
-                    }
-                }
-            }
-        }
-
-        self.application_cap = previous_cap;
-
-        SaturationStats {
-            iterations,
-            total_unions,
-            stop,
-        }
-    }
-
-    /// Apply all rewrite rules once with a node budget.
-    ///
-    /// Returns the number of changes made. Stops if the graph exceeds
-    /// `max_nodes` classes.
-    pub fn apply_rules_once(&mut self, max_nodes: usize) -> usize {
-        self.apply_rules_budgeted(max_nodes)
-    }
-
-    /// Apply a single rule (by index) everywhere it matches, with budget.
-    ///
-    /// Returns changes made and evaluations consumed. Stops scanning
-    /// if the graph exceeds `max_nodes` classes.
-    pub fn apply_rule_at_index(&mut self, rule_idx: usize, max_nodes: usize) -> ApplyResult {
-        self.apply_rule_at_index_budgeted(rule_idx, max_nodes)
-    }
-
-    /// Apply a single rule with a node budget. Stops scanning when the
-    /// e-graph exceeds `max_nodes` classes, preventing runaway growth
-    /// from a single rule application.
-    pub fn apply_rule_at_index_budgeted(
-        &mut self,
-        rule_idx: usize,
-        max_nodes: usize,
-    ) -> ApplyResult {
-        self.apply_rule_at_index_timed(rule_idx, max_nodes, None)
+        self.nodes(id).any(|n| n.is_const(val))
     }
 
     /// Whether `canonical`'s forward neighborhood — itself, its direct
@@ -1580,30 +827,32 @@ impl EGraph {
     /// [`Self::mutation_counter`] value from some rule's last complete scan.
     ///
     /// Reads only `EClassId`s and `last_changed` entries, never clones a
-    /// node vector or calls a rule's `apply` — this is the cheap check
-    /// [`Self::apply_rule_at_index_timed`] uses to decide whether the
+    /// node or calls a rule's `apply` — this is the cheap check
+    /// the runner's rule scan uses to decide whether the
     /// expensive path (clone the class's nodes, run every rule against
     /// every one) is worth paying for at all. Canonicalizes every id it
     /// follows: `parent`/`child` fields on a stored node can lag a union
     /// that happened after the node was written, and `last_changed` is only
     /// ever indexed by canonical class slots.
     fn class_is_dirty(&self, canonical: EClassId, swept: u64) -> bool {
-        let canonical = self.find(canonical);
-        if self.last_changed[canonical.index()] > swept {
+        let canonical = self.graph.columns.root(canonical);
+        if self.saturation.last_changed[canonical] > swept {
             return true;
         }
-        for node in &self.classes[canonical.index()].nodes {
+        for tag in self.graph.columns.members(canonical) {
+            let node = self.graph.columns.node(tag);
             for &child in node.children_slice() {
-                let child = self.find(child);
-                if self.last_changed[child.index()] > swept {
+                let child = self.graph.columns.root(child);
+                if self.saturation.last_changed[child] > swept {
                     return true;
                 }
                 if DIRTY_TRACKING_MAX_DEPTH < 2 {
                     continue;
                 }
-                for gnode in &self.classes[child.index()].nodes {
+                for gtag in self.graph.columns.members(child) {
+                    let gnode = self.graph.columns.node(gtag);
                     for &gchild in gnode.children_slice() {
-                        if self.last_changed[self.find(gchild).index()] > swept {
+                        if self.saturation.last_changed[self.graph.columns.root(gchild)] > swept {
                             return true;
                         }
                     }
@@ -1613,436 +862,6 @@ impl EGraph {
         false
     }
 
-    /// Apply a single rule with node budget AND optional wall-clock deadline.
-    /// Stops if either budget or deadline is exceeded.
-    pub fn apply_rule_at_index_timed(
-        &mut self,
-        rule_idx: usize,
-        max_nodes: usize,
-        deadline: Option<std::time::Instant>,
-    ) -> ApplyResult {
-        // See `HARD_CLASS_LIMIT`: the scan below is one of the two places
-        // the graph decides to grow, so it is one of the two places the
-        // ceiling is applied.
-        let max_nodes = max_nodes.min(HARD_CLASS_LIMIT);
-        if rule_idx >= self.rules.len() {
-            return ApplyResult {
-                changes: 0,
-                evals: 0,
-                scan: ScanStop::Completed,
-            };
-        }
-
-        // `Instant::now()` costs tens of nanoseconds — the same order as the
-        // cheapest rule's `apply` — so polling it once per node would be a
-        // measurable tax on every scan. It is polled instead at the three
-        // places that make the ceiling hard without that tax: once per
-        // e-class (the boundary already clones the class's node vector, so a
-        // clock read is lost in the noise), every `DEADLINE_POLL_NODES` nodes
-        // within a class (so one enormous e-class cannot run unbounded), and
-        // once after the scan and its commit (so a deadline that elapsed
-        // inside an opaque `apply` is still seen). The bound that buys is an
-        // overrun of at most `DEADLINE_POLL_NODES` rule evaluations plus one
-        // `apply`; the timeout is a fail-loud safety ceiling, not a
-        // scheduling knob, so shrinking that bound further buys nothing worth
-        // a clock read per node.
-        const DEADLINE_POLL_NODES: usize = 256;
-        let expired = |deadline: Option<std::time::Instant>| match deadline {
-            Some(dl) => std::time::Instant::now() > dl,
-            None => false,
-        };
-
-        let mut unions = 0;
-        let mut evals = 0usize;
-        let mut updates: Vec<(EClassId, RewriteAction)> = Vec::new();
-        let mut estimated_new_nodes: usize = 0;
-        let mut scan = ScanStop::Completed;
-
-        // An application budget is spent by *applications*, so the scan stops
-        // once it has queued its whole allowance. Checked here and not only
-        // between rounds: a round is 62 rules over every e-class, so a
-        // between-rounds check alone overshoots a small budget by orders of
-        // magnitude — the budget has to bound the work, not describe it
-        // afterwards.
-        let allowance_spent = |graph: &Self, queued: usize| {
-            graph
-                .application_cap
-                .is_some_and(|cap| graph.applications + queued as u64 >= cap)
-        };
-
-        // Captured before the scan touches anything: `class_is_dirty` below
-        // compares every candidate class against `swept` (this rule's OWN
-        // last complete-scan baseline, from a previous call), and — only if
-        // this scan itself runs to completion — `rule_last_swept[rule_idx]`
-        // is advanced to `sweep_start` at the end. Taking the *start* value
-        // rather than the counter's value after the scan means a mutation
-        // this very call makes (via the commit loop's unions below) is
-        // correctly seen as new next time this rule runs, without needing
-        // to re-examine it against itself right now.
-        let sweep_start = self.mutation_counter;
-        let swept = self.rule_last_swept[rule_idx];
-
-        let canonical_ids = self.canonical_class_ids();
-        'scan: for canonical in canonical_ids {
-            // Budget check: current graph + pending creates must stay under limit
-            if self.classes.len() + estimated_new_nodes > max_nodes {
-                scan = ScanStop::ClassCap;
-                break;
-            }
-            if expired(deadline) {
-                scan = ScanStop::Deadline;
-                break;
-            }
-            if allowance_spent(self, updates.len()) {
-                scan = ScanStop::ApplicationBudget;
-                break;
-            }
-            // Nothing within DIRTY_TRACKING_MAX_DEPTH hops of `canonical`
-            // has changed since this rule last swept the whole graph, so
-            // this rule's answer on `canonical` cannot have changed either
-            // — skip straight past the clone and every `apply` call below.
-            if !self.class_is_dirty(canonical, swept) {
-                continue;
-            }
-
-            let nodes: Vec<ENode> = self.classes[canonical.index()].nodes.clone();
-
-            for node in &nodes {
-                evals += 1;
-                if evals % DEADLINE_POLL_NODES == 0 && expired(deadline) {
-                    scan = ScanStop::Deadline;
-                    break 'scan;
-                }
-                if let Some(action) = self.rules[rule_idx].apply(self, canonical, node) {
-                    // Exactly how many e-classes this action would add,
-                    // against the graph as it stands right now — see
-                    // `predicted_growth`, whose exactness is asserted on
-                    // every application under growth telemetry. This
-                    // replaced a flat 0/1/3 guess that was so conservative
-                    // saturation stopped ~40% short of its own class budget
-                    // (circle_sdf 1218 of 2000, redundant 428 of 500).
-                    //
-                    // Spending the whole budget moved extraction *both* ways
-                    // on the shipped corpus: four kernels better, four worse
-                    // (mandelbrot_distance +7.3%, smooth_min_scene +6.0%).
-                    // That is not a reason to saturate less. A richer
-                    // equivalence class cannot make the true optimum worse;
-                    // only an extractor that is not monotone in what it is
-                    // given can be led to a worse answer by more choices.
-                    // So the estimator tells the truth and the extractor
-                    // owns the regression — decision JP, 2026-09-09; see
-                    // docs/plans/2026-08-31-guide-design-revision.md §4.2.
-                    //
-                    // Sound as an upper bound on the whole scan's real
-                    // growth even though sibling actions found later in this
-                    // same scan (still uncommitted, so invisible to this
-                    // call) may end up sharing some of the same nodes: real
-                    // growth can only come in lower.
-                    let action_cost = self.predicted_growth(&action);
-                    estimated_new_nodes += action_cost;
-
-                    // If this action would push us over budget, stop scanning
-                    if self.classes.len() + estimated_new_nodes > max_nodes {
-                        // Don't add this action — discard it and stop
-                        scan = ScanStop::ClassCap;
-                        break 'scan;
-                    }
-
-                    updates.push((canonical, action));
-                    *self
-                        .match_counts
-                        .entry(RuleId::of(self.rules[rule_idx].as_ref()))
-                        .or_insert(0) += 1;
-                    if allowance_spent(self, updates.len()) {
-                        scan = ScanStop::ApplicationBudget;
-                        break 'scan;
-                    }
-                }
-            }
-        }
-
-        // Only a scan that reached every canonical id without a budget/
-        // deadline break actually looked at everything — advancing the
-        // baseline after a cut-short scan would let a class this call never
-        // got to sit unswept-but-marked-swept, which is exactly the
-        // under-saturation `class_is_dirty` exists to never cause. A
-        // cut-short scan leaves `rule_last_swept[rule_idx]` at its old
-        // value, so next call simply sees more as dirty than strictly
-        // necessary — safe, just less tight.
-        if scan == ScanStop::Completed {
-            self.rule_last_swept[rule_idx] = sweep_start;
-        }
-
-        // Commit: all actions in the log are within budget.
-        // Do NOT rebuild here — caller is responsible for calling rebuild()
-        // after all rules for the epoch are applied (lazy/batched rebuild).
-        for (class_id, action) in updates {
-            if allowance_spent(self, 0) {
-                scan = ScanStop::ApplicationBudget;
-                break;
-            }
-            unions += self.apply_action_from_rule(rule_idx, class_id, action);
-        }
-
-        // A deadline that elapsed inside a rule's `apply` or inside the commit
-        // above reached none of the checks in the walk. Left as `Completed`,
-        // a sweep that blew the hard ceiling would be recorded as quiescence.
-        if scan == ScanStop::Completed && expired(deadline) {
-            scan = ScanStop::Deadline;
-        }
-
-        self.total_evals += evals;
-        ApplyResult {
-            changes: unions,
-            evals,
-            scan,
-        }
-    }
-
-    /// Cumulative rule-match attempts across this e-graph's whole lifetime
-    /// (see the `total_evals` field doc) — the raw-matches-enumerated
-    /// counter §7.1's Guide-overhead-flatness measurement denominates.
-    #[must_use]
-    pub const fn total_evals(&self) -> usize {
-        self.total_evals
-    }
-
-    /// How many applications the most recent installed mask skipped. `0`
-    /// when no mask was installed, or when the mask's ordinal was never
-    /// reached — a caller reporting Δ reads this rather than assuming.
-    #[must_use]
-    pub const fn last_replay_mask_skips(&self) -> usize {
-        self.replay_mask_skips
-    }
-
-    /// Install (or clear) the counterfactual-replay mask, resetting the skip
-    /// counter. Crate-private on purpose: the mask is a *policy*, in exactly
-    /// the sense a `Reranker` and an `Observer` are, and it reaches the graph
-    /// through [`Optimizer::mask`](super::optimizer::Optimizer::mask) rather
-    /// than through a second public saturation entry point.
-    pub(crate) fn set_replay_mask(&mut self, mask: Option<ApplicationMask>) {
-        self.replay_mask = mask;
-        self.replay_mask_skips = 0;
-    }
-
-    /// Decide what the installed replay mask (if any) says about the
-    /// application about to be committed. Split out of
-    /// `apply_action_from_rule` because the `AllMatchingCandidate` arm needs
-    /// to READ the graph (`ClassContentKey::of`) while the mask is borrowed,
-    /// and then WRITE the mask — two borrows that cannot overlap.
-    fn mask_decision(&self, rule_idx: usize, class_id: EClassId) -> MaskDecision {
-        let Some(mask) = &self.replay_mask else {
-            return MaskDecision::Proceed;
-        };
-        // The counter is incremented right after this returns `Proceed`, so
-        // its value right now IS the ordinal about to be consumed.
-        let at_seed = mask.skip_ordinal == self.applications;
-        match (mask.scope, &mask.captured) {
-            // Leave-one-out: fire exactly once, then consume the mask.
-            (MaskScope::Single, _) => {
-                if at_seed {
-                    MaskDecision::SkipAndConsume
-                } else {
-                    MaskDecision::Proceed
-                }
-            }
-            // Confluence-aware, before the seed: nothing to compare against
-            // yet, so only the seed ordinal itself is masked — and masking
-            // it is what captures the key.
-            (MaskScope::AllMatchingCandidate, None) => {
-                if at_seed {
-                    MaskDecision::SkipAndCapture
-                } else {
-                    MaskDecision::Proceed
-                }
-            }
-            // Confluence-aware, after the seed: mask every re-derivation by
-            // the same (rule, canonical matched-class content).
-            (MaskScope::AllMatchingCandidate, Some(key)) => {
-                let same_rule = self.rule_ids.get(rule_idx).copied() == Some(key.rule);
-                if same_rule
-                    && key.content
-                        == super::candidate::ClassContentKey::of(self, self.find(class_id))
-                {
-                    MaskDecision::Skip
-                } else {
-                    MaskDecision::Proceed
-                }
-            }
-        }
-    }
-
-    /// Apply a rewrite action on behalf of a specific rule, attributing
-    /// every e-node created and every union performed while executing it to
-    /// one [`super::provenance::ApplicationId`].
-    ///
-    /// This is the sole entry point into `apply_action` from rule-driven
-    /// call sites (`apply_single_rule`, `apply_rule_at_index_timed`,
-    /// `apply_rules_budgeted`) — it exists so provenance attribution can't
-    /// drift out of sync with the actual rewrite dispatch: every caller that
-    /// knows a `rule_idx` funnels through here instead of calling
-    /// `apply_action` directly.
-    ///
-    /// Records one [`ApplicationRecord`] up front (even if the action turns
-    /// out to produce no net change, e.g. a `Union` with an already-equal
-    /// target) — the record's cost is a single `Vec::push`, and recording
-    /// unconditionally keeps `step` bookkeeping simple. `match_root` is the
-    /// class the rule matched against, i.e. `class_id` as passed in (cheap:
-    /// already in hand at the call site).
-    fn apply_action_from_rule(
-        &mut self,
-        rule_idx: usize,
-        class_id: EClassId,
-        action: RewriteAction,
-    ) -> usize {
-        // Counterfactual replay (docs/plans/2026-09-01-guide-return-to-go.md
-        // §4.1): a masked application is not counted, not recorded and not
-        // applied, so everything downstream — the rest of this scan, the
-        // rest of this sweep, later sweeps — proceeds exactly as it would
-        // against a graph that simply never received it, and the ordinal it
-        // would have consumed goes to the next candidate. Checked BEFORE the
-        // counter, which is what makes that last clause true. Which
-        // applications are masked is `mask_decision`'s call; see
-        // [`MaskScope`].
-        match self.mask_decision(rule_idx, class_id) {
-            MaskDecision::Proceed => {}
-            MaskDecision::Skip => {
-                self.replay_mask_skips += 1;
-                return 0;
-            }
-            MaskDecision::SkipAndCapture => {
-                let key = super::candidate::CandidateKey {
-                    rule: self.rule_ids.get(rule_idx).copied().unwrap_or_else(|| {
-                        panic!(
-                            "replay mask: rule_idx {rule_idx} has no id in this graph's rule \
-                             table — a mask names an application, and an application names a rule"
-                        )
-                    }),
-                    content: super::candidate::ClassContentKey::of(self, self.find(class_id)),
-                };
-                let mask = self
-                    .replay_mask
-                    .as_mut()
-                    .expect("mask_decision returned SkipAndCapture with no mask installed");
-                mask.captured = Some(key);
-                self.replay_mask_skips += 1;
-                return 0;
-            }
-            MaskDecision::SkipAndConsume => {
-                self.replay_mask = None;
-                self.replay_mask_skips += 1;
-                return 0;
-            }
-        }
-
-        // Counted unconditionally: the budget must not depend on whether
-        // anyone is watching.
-        self.applications += 1;
-
-        #[cfg(feature = "provenance-journal")]
-        {
-            if !self.record_provenance {
-                return self.apply_action_measured(rule_idx, class_id, action);
-            }
-
-            let minted_from = self.next_enode_id;
-            let application_id = self.provenance.record_application(ApplicationRecord {
-                rule: self.rule_ids.get(rule_idx).copied(),
-                rule_idx,
-                step: self.step,
-                match_root: class_id,
-                minted: minted_from..minted_from,
-                unions: 0,
-            });
-            let previous = self.active_application.replace(ActiveApplication {
-                rule_idx,
-                application_id,
-            });
-            let result = self.apply_action_measured(rule_idx, class_id, action);
-            self.active_application = previous;
-            // The record is opened before the action runs (so `add`/`union`
-            // can attribute to it) and closed after, which is the only order
-            // in which "what did this application mint" is answerable.
-            self.provenance.complete_application(
-                application_id,
-                minted_from..self.next_enode_id,
-                result,
-            );
-            return result;
-        }
-
-        #[cfg(not(feature = "provenance-journal"))]
-        {
-            self.apply_action_measured(rule_idx, class_id, action)
-        }
-    }
-
-    /// Apply a rewrite action on behalf of `rule_idx`, threading through
-    /// per-application growth telemetry when it is compiled in and switched
-    /// on ([`Self::enable_growth_telemetry`]). Behaviorally identical to a
-    /// bare `self.apply_action(class_id, action)` call in every other case —
-    /// with `saturation-telemetry` off this compiles to exactly that call,
-    /// and with it on but unused the only added cost is one
-    /// `Option::is_some()` check. See [`super::growth`]'s module doc.
-    ///
-    /// `rule_idx` is unused when `saturation-telemetry` is off (the journal
-    /// path already keeps its own use of it under `provenance-journal`, a
-    /// separate feature).
-    #[cfg_attr(not(feature = "saturation-telemetry"), allow(unused_variables))]
-    fn apply_action_measured(
-        &mut self,
-        rule_idx: usize,
-        class_id: EClassId,
-        action: RewriteAction,
-    ) -> usize {
-        #[cfg(feature = "saturation-telemetry")]
-        if self.growth.is_some() {
-            // The exactness oracle for `predicted_growth`: computed against
-            // the graph exactly as it stands right now, immediately before
-            // the same action executes for real, so there is no window in
-            // which some other commit could move the memo out from under
-            // the comparison. An always-on `assert_eq!`, not `debug_assert!`
-            // — this is a measurement path (telemetry is opt-in), not a hot
-            // one, and a divergence here is exactly the "most important
-            // finding" a mispredicted budget estimator could produce.
-            let predicted = self.predicted_growth(&action);
-            let nodes_before = self.next_enode_id;
-            let unions = self.apply_action(class_id, action);
-            let nodes_added = (self.next_enode_id - nodes_before) as usize;
-            // See `super::growth`'s module doc: `add()` mints exactly one
-            // new class per new node, always, so this equality is an
-            // invariant of the representation, not an assumption of the
-            // measurement — pinned here rather than merely relied upon.
-            debug_assert_eq!(
-                self.classes.len() as u64,
-                self.next_enode_id,
-                "EGraph::add's one-class-per-node invariant broke; growth's \
-                 nodes_added/classes_added equivalence depends on it"
-            );
-            let rule = self.rule_ids.get(rule_idx).copied();
-            assert_eq!(
-                predicted, nodes_added,
-                "predicted_growth mismatch on rule {rule_idx} ({rule:?}): \
-                 predicted {predicted} new e-classes, the commit actually \
-                 added {nodes_added} — predicted_growth must walk exactly \
-                 the same shape apply_action does"
-            );
-            self.growth.as_mut().expect("checked Some above").record(
-                rule,
-                nodes_added,
-                unions > 0 || nodes_added > 0,
-            );
-            return unions;
-        }
-        self.apply_action(class_id, action)
-    }
-
-    /// Apply a rewrite action and return 1 if a union was made, 0 otherwise.
-    ///
-    /// Internal executor. Rule-driven callers must go through
-    /// `apply_action_from_rule` so provenance attribution stays correct;
-    /// this function itself has no notion of "which rule" — it only knows
-    /// how to execute the `RewriteAction` variants.
     /// Union `a` and `b`, reporting whether the graph actually changed.
     ///
     /// [`EGraph::union`] REFUSES merges that would assert two numerically
@@ -2071,32 +890,41 @@ impl EGraph {
     /// exactly as [`EGraph::add`] does on a hit, instead of inserting into
     /// it.
     ///
-    /// Because the e-graph's raw class-slot count and its raw e-node count
-    /// grow in lockstep (see the [`growth`](super::growth) module doc),
-    /// "e-classes added" and "e-nodes added" are the same number here, which
-    /// is why this returns one `usize` rather than a pair.
+    /// Because `add` pushes each new node at the arena's length and returns
+    /// that index as its class, "e-classes added" and "e-nodes added" are the
+    /// same number here, which is why this returns one `usize` rather than a
+    /// pair.
     ///
-    /// **Only exact against the graph this is called on.** If several
-    /// actions found in the same scan (before any of them commit) would
-    /// build overlapping nodes, each one's prediction is exact in isolation
-    /// but their sum over-counts the batch's real total — safely: the sum is
-    /// still an upper bound on real growth, never an under-count, so a
-    /// caller budgeting against it (`apply_rule_at_index_timed`) never
-    /// overshoots. Pinned exact per single application — the sense that
-    /// matters for a budget decided one application at a time — by the
-    /// `assert_eq!` in [`EGraph::apply_action_measured`], which calls this
-    /// immediately before executing the same action for real.
-    pub(crate) fn predicted_growth(&self, action: &RewriteAction) -> usize {
+    /// **Only exact against the graph this is called on.** The runner sums
+    /// the predictions of every action one scan finds, before any of them
+    /// commits, and that sum bounds the batch's real growth in neither
+    /// direction. Two actions that build the same node each count it, so the
+    /// sum can over-count. And an earlier commit's `union` changes what a
+    /// later action's nodes canonicalize to, while the memo keeps the names
+    /// its keys were computed in until a rebuild re-inserts them, so a node
+    /// predicted as a hit can miss and the sum can under-count. Pinned exact
+    /// per single application by the `assert_eq!` in the runner's
+    /// `apply_measured`, which calls this immediately before executing the
+    /// same action for real.
+    ///
+    /// `pending` is the caller's scratch table for the walk: emptied here
+    /// before use, so what a previous prediction left in it is never read, and
+    /// owned by the caller so the table's allocation outlives the prediction.
+    pub(crate) fn predicted_growth(
+        &self,
+        action: &RewriteAction,
+        pending: &mut HashMap<ENode, EClassId>,
+    ) -> usize {
         match action {
             RewriteAction::Union(_) => 0,
-            RewriteAction::Create(node) => self.predict(|s| {
-                s.make(node.clone());
+            RewriteAction::Create(node) => self.predict(pending, |s| {
+                s.make(*node);
             }),
             RewriteAction::Instantiate {
                 template,
                 entry,
                 bindings,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 instantiate_template(s, template.0.entry_at(*entry), bindings);
             }),
             RewriteAction::Distribute {
@@ -2105,8 +933,15 @@ impl EGraph {
                 a,
                 b,
                 c,
-            } => self.predict(|s| {
-                distribute_shape(s, *outer, *inner, *a, *b, *c);
+            } => self.predict(pending, |s| {
+                distribute_shape(
+                    s,
+                    Distributive {
+                        outer: *outer,
+                        inner: *inner,
+                    },
+                    [*a, *b, *c],
+                );
             }),
             RewriteAction::Factor {
                 outer,
@@ -2114,24 +949,31 @@ impl EGraph {
                 common,
                 unique_l,
                 unique_r,
-            } => self.predict(|s| {
-                factor_shape(s, *outer, *inner, *common, *unique_l, *unique_r);
+            } => self.predict(pending, |s| {
+                factor_shape(
+                    s,
+                    Distributive {
+                        outer: *outer,
+                        inner: *inner,
+                    },
+                    [*common, *unique_l, *unique_r],
+                );
             }),
             RewriteAction::Canonicalize {
                 target,
                 inverse,
                 a,
                 b,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 canonicalize_shape(s, *target, *inverse, *a, *b);
             }),
-            RewriteAction::Associate { op, a, b, c } => self.predict(|s| {
+            RewriteAction::Associate { op, a, b, c } => self.predict(pending, |s| {
                 associate_shape(s, *op, *a, *b, *c);
             }),
-            RewriteAction::ReverseAssociate { op, a, b, c } => self.predict(|s| {
+            RewriteAction::ReverseAssociate { op, a, b, c } => self.predict(pending, |s| {
                 reverse_associate_shape(s, *op, *a, *b, *c);
             }),
-            RewriteAction::OddParity { func, inner } => self.predict(|s| {
+            RewriteAction::OddParity { func, inner } => self.predict(pending, |s| {
                 odd_parity_shape(s, *func, *inner);
             }),
             RewriteAction::AngleAddition {
@@ -2142,16 +984,21 @@ impl EGraph {
                 term2_sign,
                 a,
                 b,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 angle_addition_shape(
                     s,
-                    *term1_op1,
-                    *term1_op2,
-                    *term2_op1,
-                    *term2_op2,
-                    *term2_sign,
-                    *a,
-                    *b,
+                    AngleTerms {
+                        term1: Product {
+                            on_a: *term1_op1,
+                            on_b: *term1_op2,
+                        },
+                        term2: Product {
+                            on_a: *term2_op1,
+                            on_b: *term2_op2,
+                        },
+                        term2_sign: *term2_sign,
+                    },
+                    [*a, *b],
                 );
             }),
             RewriteAction::Homomorphism {
@@ -2159,61 +1006,72 @@ impl EGraph {
                 target_op,
                 a,
                 b,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 homomorphism_shape(s, *func, *target_op, *a, *b);
             }),
-            RewriteAction::PowerCombine { base, exp_a, exp_b } => self.predict(|s| {
+            RewriteAction::PowerCombine { base, exp_a, exp_b } => self.predict(pending, |s| {
                 power_combine_shape(s, *base, *exp_a, *exp_b);
             }),
-            RewriteAction::ReverseAngleAddition { trig_op, a, b } => self.predict(|s| {
+            RewriteAction::ReverseAngleAddition { trig_op, a, b } => self.predict(pending, |s| {
                 reverse_angle_addition_shape(s, *trig_op, *a, *b);
             }),
-            RewriteAction::HalfAngleProduct { x } => self.predict(|s| {
+            RewriteAction::HalfAngleProduct { x } => self.predict(pending, |s| {
                 half_angle_product_shape(s, *x);
             }),
-            RewriteAction::Doubling { a } => self.predict(|s| {
+            RewriteAction::Doubling { a } => self.predict(pending, |s| {
                 doubling_shape(s, *a);
             }),
-            RewriteAction::Halving { a } => self.predict(|s| {
+            RewriteAction::Halving { a } => self.predict(pending, |s| {
                 halving_shape(s, *a);
             }),
-            RewriteAction::PowerRecurrence { base, exponent } => self.predict(|s| {
+            RewriteAction::PowerRecurrence { base, exponent } => self.predict(pending, |s| {
                 power_recurrence_shape(s, *base, *exponent);
             }),
             RewriteAction::LogPower {
                 log_op,
                 base,
                 exponent,
-            } => self.predict(|s| {
+            } => self.predict(pending, |s| {
                 log_power_shape(s, *log_op, *base, *exponent);
             }),
-            RewriteAction::ExpandSquare { a, b } => self.predict(|s| {
+            RewriteAction::ExpandSquare { a, b } => self.predict(pending, |s| {
                 expand_square_shape(s, *a, *b);
             }),
-            RewriteAction::DiffOfSquares { a, b } => self.predict(|s| {
+            RewriteAction::DiffOfSquares { a, b } => self.predict(pending, |s| {
                 diff_of_squares_shape(s, *a, *b);
             }),
-            RewriteAction::Differentiate { inner, var } => self.predict(|s| {
+            RewriteAction::Differentiate { inner, var } => self.predict(pending, |s| {
                 derivative_shape(s, inner, *var);
             }),
-            RewriteAction::Plan(plan) => self.predict(|s| {
+            RewriteAction::Plan(plan) => self.predict(pending, |s| {
                 plan_shape(s, plan);
             }),
         }
     }
 
-    /// Run `build` against a fresh [`GrowthPredictor`] over this graph and
-    /// report how many e-classes it would have minted. See
-    /// [`EGraph::predicted_growth`].
-    fn predict(&self, build: impl FnOnce(&mut GrowthPredictor<'_>)) -> usize {
+    /// Run `build` against a [`GrowthPredictor`] over this graph, with
+    /// `pending` emptied first, and report how many e-classes it would have
+    /// minted. See [`EGraph::predicted_growth`].
+    fn predict(
+        &self,
+        pending: &mut HashMap<ENode, EClassId>,
+        build: impl FnOnce(&mut GrowthPredictor<'_>),
+    ) -> usize {
+        pending.clear();
         let mut sink = GrowthPredictor {
             egraph: self,
-            pending: HashMap::default(),
+            pending,
         };
         build(&mut sink);
         sink.pending.len()
     }
 
+    /// Apply a rewrite action and return 1 if a union was made, 0 otherwise.
+    ///
+    /// Internal executor. Rule-driven callers must go through the runner's
+    /// `commit` so the journal's attribution stays correct; this function
+    /// itself has no notion of "which rule" — it only knows how to execute
+    /// the `RewriteAction` variants.
     fn apply_action(&mut self, class_id: EClassId, action: RewriteAction) -> usize {
         match action {
             RewriteAction::Union(target_id) => self.union_counted(class_id, target_id),
@@ -2237,7 +1095,7 @@ impl EGraph {
                 b,
                 c,
             } => {
-                let result_id = distribute_shape(self, outer, inner, a, b, c);
+                let result_id = distribute_shape(self, Distributive { outer, inner }, [a, b, c]);
                 self.union_counted(class_id, result_id)
             }
             RewriteAction::Factor {
@@ -2247,7 +1105,11 @@ impl EGraph {
                 unique_l,
                 unique_r,
             } => {
-                let result_id = factor_shape(self, outer, inner, common, unique_l, unique_r);
+                let result_id = factor_shape(
+                    self,
+                    Distributive { outer, inner },
+                    [common, unique_l, unique_r],
+                );
                 self.union_counted(class_id, result_id)
             }
             RewriteAction::Canonicalize {
@@ -2280,9 +1142,18 @@ impl EGraph {
                 a,
                 b,
             } => {
-                let result_id = angle_addition_shape(
-                    self, term1_op1, term1_op2, term2_op1, term2_op2, term2_sign, a, b,
-                );
+                let terms = AngleTerms {
+                    term1: Product {
+                        on_a: term1_op1,
+                        on_b: term1_op2,
+                    },
+                    term2: Product {
+                        on_a: term2_op1,
+                        on_b: term2_op2,
+                    },
+                    term2_sign,
+                };
+                let result_id = angle_addition_shape(self, terms, [a, b]);
                 self.union_counted(class_id, result_id)
             }
             RewriteAction::Homomorphism {
@@ -2344,146 +1215,6 @@ impl EGraph {
             }
         }
     }
-
-    fn apply_rules_budgeted(&mut self, max_nodes: usize) -> usize {
-        // See `HARD_CLASS_LIMIT`.
-        let max_nodes = max_nodes.min(HARD_CLASS_LIMIT);
-        // One call = one "apply all rules once" pass, the same granularity
-        // saturate_with_limits uses for its step counter.
-        self.step += 1;
-
-        let mut unions = 0;
-        let mut updates: Vec<(usize, EClassId, RewriteAction)> = Vec::new();
-
-        let canonical_ids = self.canonical_class_ids();
-        for canonical in canonical_ids {
-            if self.classes.len() > max_nodes {
-                break;
-            }
-            let nodes: Vec<ENode> = self.classes[canonical.index()].nodes.clone();
-
-            for node in &nodes {
-                for (rule_idx, rule) in self.rules.iter().enumerate() {
-                    if let Some(action) = rule.apply(self, canonical, node) {
-                        updates.push((rule_idx, canonical, action));
-                        *self
-                            .match_counts
-                            .entry(RuleId::of(rule.as_ref()))
-                            .or_insert(0) += 1;
-                    }
-                }
-            }
-        }
-
-        for (rule_idx, class_id, action) in updates {
-            unions += self.apply_action_from_rule(rule_idx, class_id, action);
-            if self.classes.len() > max_nodes {
-                break;
-            }
-        }
-
-        // Lazy rebuild: caller should call rebuild() after all rules applied.
-        // saturate_with_limits handles this.
-        unions
-    }
-
-    pub fn extract_with_costs(&self, root: EClassId, costs: &CostModel) -> ENode {
-        let root = self.find(root);
-        let mut cost_table: HashMap<EClassId, (usize, ENode)> = HashMap::default();
-        let canonical_ids: Vec<EClassId> = self.class_ids().collect();
-        // Fixed-point iteration: at most one pass per canonical class.
-        for _ in 0..canonical_ids.len() {
-            let mut changed = false;
-            for &id in &canonical_ids {
-                for node in &self.classes[id.index()].nodes {
-                    let cost = self.node_cost_with_model(node, &cost_table, costs);
-                    let current = cost_table.get(&id).map(|(c, _)| *c).unwrap_or(usize::MAX);
-                    if cost < current {
-                        cost_table.insert(id, (cost, node.clone()));
-                        changed = true;
-                    }
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        // `ENode::Const(0)` used to stand in here — the number 0.0 wearing
-        // an extracted term's type, returned for a root the fixpoint never
-        // priced. The fixpoint visits every canonical class and every class
-        // holds at least one node, so a miss is a bug in this loop, and the
-        // caller has no way to tell 0.0-the-answer from 0.0-the-excuse.
-        let Some((_, node)) = cost_table.get(&root) else {
-            panic!(
-                "extract_with_costs: root e-class {} was never priced by the \
-                 fixpoint — every canonical class holds at least one node, so \
-                 this is a bug in the loop above, not an empty graph",
-                root.0
-            )
-        };
-        node.clone()
-    }
-
-    fn node_cost_with_model(
-        &self,
-        node: &ENode,
-        cost_table: &HashMap<EClassId, (usize, ENode)>,
-        costs: &CostModel,
-    ) -> usize {
-        let get_child_cost = |id: EClassId| {
-            let id = self.find(id);
-            cost_table
-                .get(&id)
-                .map(|(c, _)| *c)
-                .unwrap_or(usize::MAX / 4)
-        };
-        let op_cost = costs.node_op_cost(node);
-        let child_cost = node
-            .children_slice()
-            .iter()
-            .fold(0usize, |acc, &c| acc.saturating_add(get_child_cost(c)));
-        child_cost.saturating_add(op_cost)
-    }
-
-    /// Extract the minimum-cost expression from an e-class.
-    pub fn extract_expr_with_costs(
-        &self,
-        root: EClassId,
-        costs: &CostModel,
-    ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
-        let (arena, arena_root, _cost) = super::extract::extract(self, root, costs);
-        (arena, arena_root)
-    }
-
-    /// Extract the best expression and its cost.
-    ///
-    /// The cost function can be any `CostFunction` implementor —
-    /// `CostModel` is the hardcoded latency prior.
-    pub fn extract_best<C: CostFunction>(
-        &self,
-        root: EClassId,
-        costs: &C,
-    ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId, usize) {
-        super::extract::extract(self, root, costs)
-    }
-
-    /// Extract a DAG with sharing information from an e-class.
-    ///
-    /// Unlike `extract_expr_with_costs`, this tracks which e-classes are used
-    /// multiple times, enabling codegen to emit let-bindings for shared subexprs.
-    ///
-    /// # Example
-    ///
-    /// For `sin(X) * sin(X) + sin(X)`:
-    /// - Tree extraction would compute sin(X) three times
-    /// - DAG extraction marks sin(X) as shared, enabling: `let __0 = X.sin(); __0 * __0 + __0`
-    pub fn extract_dag_with_costs(
-        &self,
-        root: EClassId,
-        costs: &CostModel,
-    ) -> super::extract::ExtractedDAG {
-        super::extract::extract_dag(self, root, costs)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2508,44 +1239,53 @@ impl EGraph {
 /// ([`EGraph::predicted_growth`]) run the exact same code.
 trait NodeSink {
     fn make(&mut self, node: ENode) -> EClassId;
+
+    /// The graph the nodes land in, for the facts a shape is conditioned on.
+    fn graph(&self) -> &EGraph;
 }
 
 impl NodeSink for EGraph {
     fn make(&mut self, node: ENode) -> EClassId {
         self.add(node)
     }
+
+    fn graph(&self) -> &EGraph {
+        self
+    }
 }
 
 /// A [`NodeSink`] that predicts what [`EGraph::add`] would do without
 /// mutating the graph: canonicalize, then check the graph's real memo first
-/// and a local `pending` table second — the nodes this same prediction has
+/// and a `pending` table second — the nodes this same prediction has
 /// already "created" earlier in the same shape walk, keyed and deduplicated
 /// the identical way the real memo would (e.g. `ExpandSquare`'s `a²` and
 /// `b²` degenerate to one shared node when `a == b`, and this catches that
 /// exactly as a real `add` would).
 ///
 /// `pending`'s virtual ids are minted the same way [`EGraph::add`] mints
-/// real ones — sequentially from `egraph.classes.len()` — so a shape that
+/// real ones — sequentially from `egraph.num_classes()` — so a shape that
 /// references its own earlier output builds the identical composite node a
-/// real run would look up.
+/// real run would look up. The table is only probed, inserted into and
+/// counted, never iterated, so the capacity it keeps between predictions is
+/// not observable.
 struct GrowthPredictor<'a> {
     egraph: &'a EGraph,
-    pending: HashMap<ENode, EClassId>,
+    pending: &'a mut HashMap<ENode, EClassId>,
 }
 
 impl GrowthPredictor<'_> {
-    /// [`EGraph::canonicalize_node`], except a child may be a `pending` id
+    /// [`EGraph::canonical_node`], except a child may be a `pending` id
     /// — an id this same prediction minted for a node earlier in the same
     /// shape walk, one that does not exist in the real graph
-    /// (`id.index() >= egraph.classes.len()`) and so is not in `egraph.parent`
-    /// at all. `EGraph::find` indexes `parent` directly, so calling it on
+    /// (`id.index() >= egraph.num_classes()`) and so has no entry in the
+    /// union-find at all. `EGraph::find` indexes it directly, so calling it on
     /// such an id is out of bounds rather than merely wrong. A pending id
     /// needs no lookup regardless: nothing has unioned a class that does
     /// not yet exist in the real graph, so it is already its own canonical
     /// form. Only a real child is resolved through the real union-find.
     fn canonicalize(&self, node: &mut ENode) {
         for child in node.children_slice_mut() {
-            if child.index() < self.egraph.classes.len() {
+            if child.index() < self.egraph.num_classes() {
                 *child = self.egraph.find(*child);
             }
         }
@@ -2561,193 +1301,146 @@ impl NodeSink for GrowthPredictor<'_> {
         if let Some(&id) = self.pending.get(&node) {
             return id;
         }
-        let id = EClassId((self.egraph.classes.len() + self.pending.len()) as u32);
+        let id = EClassId::from_index(self.egraph.num_classes() + self.pending.len());
         self.pending.insert(node, id);
         id
     }
+
+    fn graph(&self) -> &EGraph {
+        self.egraph
+    }
 }
 
-/// `Distribute`: `A * (B + C) -> A*B + A*C`.
+/// The two operators of a distributive law: `outer` is the root of the term
+/// the rule matched and `inner` the operator beneath it. `Distribute` matches
+/// `*` over `+` and `Factor` matches `+` over `*`, so the roles are fixed by
+/// the match, not by which operator is which.
+#[derive(Clone, Copy)]
+struct Distributive {
+    outer: OpKind,
+    inner: OpKind,
+}
+
+/// `Distribute`: `A * (B + C) -> A*B + A*C`, with `ops` = (outer `*`, inner
+/// `+`) and `operands` = `[A, B, C]`.
 fn distribute_shape<S: NodeSink>(
     sink: &mut S,
-    outer: &'static dyn Op,
-    inner: &'static dyn Op,
-    a: EClassId,
-    b: EClassId,
-    c: EClassId,
+    ops: Distributive,
+    operands: [EClassId; 3],
 ) -> EClassId {
-    let ab_id = sink.make(ENode::Op {
-        op: outer,
-        children: vec![a, b],
-    });
-    let ac_id = sink.make(ENode::Op {
-        op: outer,
-        children: vec![a, c],
-    });
-    sink.make(ENode::Op {
-        op: inner,
-        children: vec![ab_id, ac_id],
-    })
+    let [a, b, c] = operands;
+    let ab_id = sink.make(ENode::apply(ops.outer, &[a, b]));
+    let ac_id = sink.make(ENode::apply(ops.outer, &[a, c]));
+    sink.make(ENode::apply(ops.inner, &[ab_id, ac_id]))
 }
 
-/// `Factor`: `A*B + A*C -> A * (B + C)`.
-fn factor_shape<S: NodeSink>(
-    sink: &mut S,
-    outer: &'static dyn Op,
-    inner: &'static dyn Op,
-    common: EClassId,
-    unique_l: EClassId,
-    unique_r: EClassId,
-) -> EClassId {
-    let sum_id = sink.make(ENode::Op {
-        op: outer,
-        children: vec![unique_l, unique_r],
-    });
-    sink.make(ENode::Op {
-        op: inner,
-        children: vec![common, sum_id],
-    })
+/// `Factor`: `A*B + A*C -> A * (B + C)`, with `ops` = (outer `+`, inner `*`)
+/// and `operands` = `[A, B, C]`.
+fn factor_shape<S: NodeSink>(sink: &mut S, ops: Distributive, operands: [EClassId; 3]) -> EClassId {
+    let [common, unique_l, unique_r] = operands;
+    let sum_id = sink.make(ENode::apply(ops.outer, &[unique_l, unique_r]));
+    sink.make(ENode::apply(ops.inner, &[common, sum_id]))
 }
 
 /// `Canonicalize`: `Sub(a,b) -> Add(a, Neg(b))`.
 fn canonicalize_shape<S: NodeSink>(
     sink: &mut S,
-    target: &'static dyn Op,
-    inverse: &'static dyn Op,
+    target: OpKind,
+    inverse: OpKind,
     a: EClassId,
     b: EClassId,
 ) -> EClassId {
-    let inv_id = sink.make(ENode::Op {
-        op: inverse,
-        children: vec![b],
-    });
-    sink.make(ENode::Op {
-        op: target,
-        children: vec![a, inv_id],
-    })
+    let inv_id = sink.make(ENode::apply(inverse, &[b]));
+    sink.make(ENode::apply(target, &[a, inv_id]))
 }
 
 /// `Associate`: `(a op b) op c -> a op (b op c)`.
 fn associate_shape<S: NodeSink>(
     sink: &mut S,
-    op: &'static dyn Op,
+    op: OpKind,
     a: EClassId,
     b: EClassId,
     c: EClassId,
 ) -> EClassId {
-    let bc_id = sink.make(ENode::Op {
-        op,
-        children: vec![b, c],
-    });
-    sink.make(ENode::Op {
-        op,
-        children: vec![a, bc_id],
-    })
+    let bc_id = sink.make(ENode::apply(op, &[b, c]));
+    sink.make(ENode::apply(op, &[a, bc_id]))
 }
 
 /// `ReverseAssociate`: `a op (b op c) -> (a op b) op c`.
 fn reverse_associate_shape<S: NodeSink>(
     sink: &mut S,
-    op: &'static dyn Op,
+    op: OpKind,
     a: EClassId,
     b: EClassId,
     c: EClassId,
 ) -> EClassId {
-    let ab_id = sink.make(ENode::Op {
-        op,
-        children: vec![a, b],
-    });
-    sink.make(ENode::Op {
-        op,
-        children: vec![ab_id, c],
-    })
+    let ab_id = sink.make(ENode::apply(op, &[a, b]));
+    sink.make(ENode::apply(op, &[ab_id, c]))
 }
 
 /// `OddParity`: `Op(neg(x)) -> neg(Op(x))`.
-fn odd_parity_shape<S: NodeSink>(sink: &mut S, func: &'static dyn Op, inner: EClassId) -> EClassId {
-    let func_id = sink.make(ENode::Op {
-        op: func,
-        children: vec![inner],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Neg,
-        children: vec![func_id],
-    })
+fn odd_parity_shape<S: NodeSink>(sink: &mut S, func: OpKind, inner: EClassId) -> EClassId {
+    let func_id = sink.make(ENode::apply(func, &[inner]));
+    sink.make(ENode::apply(OpKind::Neg, &[func_id]))
+}
+
+/// `on_a(a) * on_b(b)`: one term of an angle-addition identity.
+#[derive(Clone, Copy)]
+struct Product {
+    on_a: OpKind,
+    on_b: OpKind,
+}
+
+/// The shape of an angle-addition identity: two products of single-argument
+/// functions, joined by `term2_sign`.
+#[derive(Clone, Copy)]
+struct AngleTerms {
+    term1: Product,
+    term2: Product,
+    term2_sign: crate::math::trig::Sign,
 }
 
 /// `AngleAddition`: `sin(a+b) -> sin(a)cos(b) + cos(a)sin(b)` (or the `cos`
 /// case, sign-selected).
-#[allow(clippy::too_many_arguments)]
 fn angle_addition_shape<S: NodeSink>(
     sink: &mut S,
-    term1_op1: &'static dyn Op,
-    term1_op2: &'static dyn Op,
-    term2_op1: &'static dyn Op,
-    term2_op2: &'static dyn Op,
-    term2_sign: crate::math::trig::Sign,
-    a: EClassId,
-    b: EClassId,
+    terms: AngleTerms,
+    angles: [EClassId; 2],
 ) -> EClassId {
     use crate::math::trig::Sign;
 
-    let t1_left_id = sink.make(ENode::Op {
-        op: term1_op1,
-        children: vec![a],
-    });
-    let t1_right_id = sink.make(ENode::Op {
-        op: term1_op2,
-        children: vec![b],
-    });
-    let term1_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![t1_left_id, t1_right_id],
-    });
+    let [a, b] = angles;
+    let AngleTerms {
+        term1,
+        term2,
+        term2_sign,
+    } = terms;
 
-    let t2_left_id = sink.make(ENode::Op {
-        op: term2_op1,
-        children: vec![a],
-    });
-    let t2_right_id = sink.make(ENode::Op {
-        op: term2_op2,
-        children: vec![b],
-    });
-    let term2_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![t2_left_id, t2_right_id],
-    });
+    let t1_left_id = sink.make(ENode::apply(term1.on_a, &[a]));
+    let t1_right_id = sink.make(ENode::apply(term1.on_b, &[b]));
+    let term1_id = sink.make(ENode::apply(OpKind::Mul, &[t1_left_id, t1_right_id]));
+
+    let t2_left_id = sink.make(ENode::apply(term2.on_a, &[a]));
+    let t2_right_id = sink.make(ENode::apply(term2.on_b, &[b]));
+    let term2_id = sink.make(ENode::apply(OpKind::Mul, &[t2_left_id, t2_right_id]));
 
     match term2_sign {
-        Sign::Plus => sink.make(ENode::Op {
-            op: &ops::Add,
-            children: vec![term1_id, term2_id],
-        }),
-        Sign::Minus => sink.make(ENode::Op {
-            op: &ops::Sub,
-            children: vec![term1_id, term2_id],
-        }),
+        Sign::Plus => sink.make(ENode::apply(OpKind::Add, &[term1_id, term2_id])),
+        Sign::Minus => sink.make(ENode::apply(OpKind::Sub, &[term1_id, term2_id])),
     }
 }
 
 /// `Homomorphism`: `f(a ⊕ b) -> f(a) ⊗ f(b)`.
 fn homomorphism_shape<S: NodeSink>(
     sink: &mut S,
-    func: &'static dyn Op,
-    target_op: &'static dyn Op,
+    func: OpKind,
+    target_op: OpKind,
     a: EClassId,
     b: EClassId,
 ) -> EClassId {
-    let func_a_id = sink.make(ENode::Op {
-        op: func,
-        children: vec![a],
-    });
-    let func_b_id = sink.make(ENode::Op {
-        op: func,
-        children: vec![b],
-    });
-    sink.make(ENode::Op {
-        op: target_op,
-        children: vec![func_a_id, func_b_id],
-    })
+    let func_a_id = sink.make(ENode::apply(func, &[a]));
+    let func_b_id = sink.make(ENode::apply(func, &[b]));
+    sink.make(ENode::apply(target_op, &[func_a_id, func_b_id]))
 }
 
 /// `PowerCombine`: `x^a * x^b -> x^(a+b)`.
@@ -2757,141 +1450,75 @@ fn power_combine_shape<S: NodeSink>(
     exp_a: EClassId,
     exp_b: EClassId,
 ) -> EClassId {
-    let sum_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![exp_a, exp_b],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Pow,
-        children: vec![base, sum_id],
-    })
+    let sum_id = sink.make(ENode::apply(OpKind::Add, &[exp_a, exp_b]));
+    sink.make(ENode::apply(OpKind::Pow, &[base, sum_id]))
 }
 
 /// `ReverseAngleAddition`: `sin(a)cos(b) + cos(a)sin(b) -> sin(a + b)` (or
 /// the `cos` case).
 fn reverse_angle_addition_shape<S: NodeSink>(
     sink: &mut S,
-    trig_op: &'static dyn Op,
+    trig_op: OpKind,
     a: EClassId,
     b: EClassId,
 ) -> EClassId {
-    let sum_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![a, b],
-    });
-    sink.make(ENode::Op {
-        op: trig_op,
-        children: vec![sum_id],
-    })
+    let sum_id = sink.make(ENode::apply(OpKind::Add, &[a, b]));
+    sink.make(ENode::apply(trig_op, &[sum_id]))
 }
 
 /// `HalfAngleProduct`: `sin(x) * cos(x) -> sin(x + x) / 2`.
 fn half_angle_product_shape<S: NodeSink>(sink: &mut S, x: EClassId) -> EClassId {
-    let two_x_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![x, x],
-    });
-    let sin_2x_id = sink.make(ENode::Op {
-        op: &ops::Sin,
-        children: vec![two_x_id],
-    });
+    let two_x_id = sink.make(ENode::apply(OpKind::Add, &[x, x]));
+    let sin_2x_id = sink.make(ENode::apply(OpKind::Sin, &[two_x_id]));
     let two_id = sink.make(ENode::Const(2.0_f32.to_bits()));
-    sink.make(ENode::Op {
-        op: &ops::Div,
-        children: vec![sin_2x_id, two_id],
-    })
+    sink.make(ENode::apply(OpKind::Div, &[sin_2x_id, two_id]))
 }
 
 /// `Doubling`: `a + a -> 2 * a`.
 fn doubling_shape<S: NodeSink>(sink: &mut S, a: EClassId) -> EClassId {
     let two_id = sink.make(ENode::Const(2.0_f32.to_bits()));
-    sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![two_id, a],
-    })
+    sink.make(ENode::apply(OpKind::Mul, &[two_id, a]))
 }
 
 /// `Halving`: `2 * a -> a + a`.
 fn halving_shape<S: NodeSink>(sink: &mut S, a: EClassId) -> EClassId {
-    sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![a, a],
-    })
+    sink.make(ENode::apply(OpKind::Add, &[a, a]))
 }
 
 /// `PowerRecurrence`: `pow(x, n) -> x * pow(x, n-1)` for integer `n >= 3`.
 fn power_recurrence_shape<S: NodeSink>(sink: &mut S, base: EClassId, exponent: i32) -> EClassId {
     let n_minus_1_id = sink.make(ENode::constant((exponent - 1) as f32));
-    let pow_id = sink.make(ENode::Op {
-        op: &ops::Pow,
-        children: vec![base, n_minus_1_id],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![base, pow_id],
-    })
+    let pow_id = sink.make(ENode::apply(OpKind::Pow, &[base, n_minus_1_id]));
+    sink.make(ENode::apply(OpKind::Mul, &[base, pow_id]))
 }
 
 /// `LogPower`: `log(pow(x, n)) -> n * log(x)`.
 fn log_power_shape<S: NodeSink>(
     sink: &mut S,
-    log_op: &'static dyn Op,
+    log_op: OpKind,
     base: EClassId,
     exponent: EClassId,
 ) -> EClassId {
-    let log_x_id = sink.make(ENode::Op {
-        op: log_op,
-        children: vec![base],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![exponent, log_x_id],
-    })
+    let log_x_id = sink.make(ENode::apply(log_op, &[base]));
+    sink.make(ENode::apply(OpKind::Mul, &[exponent, log_x_id]))
 }
 
 /// `ExpandSquare`: `(a+b)² -> a² + 2ab + b²`.
 fn expand_square_shape<S: NodeSink>(sink: &mut S, a: EClassId, b: EClassId) -> EClassId {
-    let a2_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![a, a],
-    });
-    let b2_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![b, b],
-    });
-    let ab_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![a, b],
-    });
+    let a2_id = sink.make(ENode::apply(OpKind::Mul, &[a, a]));
+    let b2_id = sink.make(ENode::apply(OpKind::Mul, &[b, b]));
+    let ab_id = sink.make(ENode::apply(OpKind::Mul, &[a, b]));
     let two_id = sink.make(ENode::constant(2.0));
-    let two_ab_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![two_id, ab_id],
-    });
-    let sum1_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![a2_id, two_ab_id],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![sum1_id, b2_id],
-    })
+    let two_ab_id = sink.make(ENode::apply(OpKind::Mul, &[two_id, ab_id]));
+    let sum1_id = sink.make(ENode::apply(OpKind::Add, &[a2_id, two_ab_id]));
+    sink.make(ENode::apply(OpKind::Add, &[sum1_id, b2_id]))
 }
 
 /// `DiffOfSquares`: `a² - b² -> (a+b)(a-b)`.
 fn diff_of_squares_shape<S: NodeSink>(sink: &mut S, a: EClassId, b: EClassId) -> EClassId {
-    let sum_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![a, b],
-    });
-    let diff_id = sink.make(ENode::Op {
-        op: &ops::Sub,
-        children: vec![a, b],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![sum_id, diff_id],
-    })
+    let sum_id = sink.make(ENode::apply(OpKind::Add, &[a, b]));
+    let diff_id = sink.make(ENode::apply(OpKind::Sub, &[a, b]));
+    sink.make(ENode::apply(OpKind::Mul, &[sum_id, diff_id]))
 }
 
 /// Materialize `template`'s subtree at `id`, bottom-up, reading each
@@ -2902,8 +1529,10 @@ fn diff_of_squares_shape<S: NodeSink>(sink: &mut S, a: EClassId, b: EClassId) ->
 /// # Panics
 ///
 /// On a `Param`/`Buffer` node (a rewrite RHS template must never contain
-/// either), on an `OpKind` with no static [`Op`] (an arena/op-table drift,
-/// not a runtime condition), or on a metavariable with no binding.
+/// either), on an `OpKind` that `ops::template_may_name` refuses (a template
+/// naming something no rule may name is a bug in the rule, not a runtime
+/// condition), on a template node whose child count is not its op's arity
+/// (`Operands::new`), or on a metavariable with no binding.
 fn instantiate_template<S: NodeSink>(
     sink: &mut S,
     node: pixelflow_ir::Node<'_, pixelflow_ir::expr::ExprData>,
@@ -2951,17 +1580,15 @@ fn instantiate_template<S: NodeSink>(
             sink.make(ENode::Reduce { fold, body })
         }
         ExprData::Op(kind) => {
-            let static_op = ops::op_from_kind(kind).unwrap_or_else(|| {
-                panic!("instantiate_template: no static Op for OpKind {kind:?}")
-            });
+            assert!(
+                ops::template_may_name(kind),
+                "instantiate_template: a template cannot name {kind:?}"
+            );
             let children: Vec<EClassId> = node
                 .children()
                 .map(|c| instantiate_template(sink, c, bindings))
                 .collect();
-            sink.make(ENode::Op {
-                op: static_op,
-                children,
-            })
+            sink.make(ENode::apply(kind, &children))
         }
     }
 }
@@ -2983,13 +1610,23 @@ fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> ECla
     for entry in &plan.nodes {
         let id = match entry {
             HeadNode::Const(bits) => sink.make(ENode::Const(*bits)),
-            HeadNode::Op { op, children } => sink.make(ENode::Op {
-                op: *op,
-                children: children.iter().map(|c| resolve(*c, &planned)).collect(),
-            }),
+            HeadNode::Op { op, children } => {
+                let operands: Vec<EClassId> =
+                    children.iter().map(|c| resolve(*c, &planned)).collect();
+                sink.make(ENode::apply(*op, &operands))
+            }
             HeadNode::Reduce { fold, body } => sink.make(ENode::Reduce {
                 fold: *fold,
                 body: resolve(*body, &planned),
+            }),
+            HeadNode::Shift {
+                direction,
+                count,
+                operand,
+            } => sink.make(ENode::Shift {
+                direction: *direction,
+                count: *count,
+                operand: resolve(*operand, &planned),
             }),
         };
         planned.push(id);
@@ -3030,75 +1667,54 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         // can only come of rewriting a class it shares, and one extraction
         // keeps is lowered by `lower_dwrt` on the linked body, after the
         // link, like any other `Dwrt` the rules did not reach.
-        ENode::Ref { variance, .. } => {
-            if !variance.depends_on(var) {
+        ENode::Ref { key } => {
+            if !sink.graph().ref_variance(*key).depends_on(var) {
                 return sink.make(ENode::constant(0.0));
             }
             let var_const = sink.make(ENode::constant(var as f32));
-            let inner = sink.make(inner.clone());
-            return sink.make(ENode::Op {
-                op: &ops::Dwrt,
-                children: vec![inner, var_const],
-            });
+            let inner = sink.make(*inner);
+            return sink.make(ENode::apply(OpKind::Dwrt, &[inner, var_const]));
         }
-        ENode::Op { op, children } => (*op, children.clone()),
+        ENode::Op { op, children } => (*op, *children),
         // `d(⊕_k f) = ⊕_k d(f)` is linearity, which holds for `Σ` and for
         // nothing else in the monoid set — `Π` wants the product rule, and
         // `min`/`max` are selections. It is a rule this table does not have,
         // so the `Dwrt` is reconstructed below and survives as the fallback,
-        // exactly as `Gather` does.
-        ENode::Reduce { .. } => {
+        // exactly as `Gather` does. A shift has no derivative rule either
+        // (it moves bits, which have no slope), and is kept the same way.
+        ENode::Reduce { .. } | ENode::Shift { .. } => {
             let var_const = sink.make(ENode::constant(var as f32));
-            let inner = sink.make(inner.clone());
-            return sink.make(ENode::Op {
-                op: &ops::Dwrt,
-                children: vec![inner, var_const],
-            });
+            let inner = sink.make(*inner);
+            return sink.make(ENode::apply(OpKind::Dwrt, &[inner, var_const]));
         }
     };
 
     let var_const = sink.make(ENode::constant(var as f32));
     // d(child)/dvar as a fresh Dwrt node (saturation expands it later).
-    let dwrt = |s: &mut S, c: EClassId| {
-        s.make(ENode::Op {
-            op: &ops::Dwrt,
-            children: vec![c, var_const],
-        })
-    };
-    let op2 = |s: &mut S, o: &'static dyn Op, a: EClassId, b: EClassId| {
-        s.make(ENode::Op {
-            op: o,
-            children: vec![a, b],
-        })
-    };
-    let un = |s: &mut S, o: &'static dyn Op, a: EClassId| {
-        s.make(ENode::Op {
-            op: o,
-            children: vec![a],
-        })
-    };
+    let dwrt = |s: &mut S, c: EClassId| s.make(ENode::apply(OpKind::Dwrt, &[c, var_const]));
+    let op2 = |s: &mut S, o: OpKind, a: EClassId, b: EClassId| s.make(ENode::apply(o, &[a, b]));
+    let un = |s: &mut S, o: OpKind, a: EClassId| s.make(ENode::apply(o, &[a]));
     let cst = |s: &mut S, v: f32| s.make(ENode::constant(v));
 
-    match op.kind() {
+    match op {
         // Linearity: D(a + b) = D(a) + D(b); D(a - b) = D(a) - D(b).
         OpKind::Add | OpKind::Sub => {
             let da = dwrt(sink, children[0]);
             let db = dwrt(sink, children[1]);
-            let same = ops::op_from_kind(op.kind()).expect("add/sub op");
-            op2(sink, same, da, db)
+            op2(sink, op, da, db)
         }
         OpKind::Neg => {
             let da = dwrt(sink, children[0]);
-            un(sink, &ops::Neg, da)
+            un(sink, OpKind::Neg, da)
         }
         // Product rule: D(a*b) = D(a)*b + a*D(b).
         OpKind::Mul => {
             let (a, b) = (children[0], children[1]);
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
-            let t1 = op2(sink, &ops::Mul, da, b);
-            let t2 = op2(sink, &ops::Mul, a, db);
-            op2(sink, &ops::Add, t1, t2)
+            let t1 = op2(sink, OpKind::Mul, da, b);
+            let t2 = op2(sink, OpKind::Mul, a, db);
+            op2(sink, OpKind::Add, t1, t2)
         }
         // Fused multiply-add a*b + c: D = D(a)*b + a*D(b) + D(c).
         OpKind::MulAdd => {
@@ -3106,57 +1722,57 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
             let dc = dwrt(sink, c);
-            let t1 = op2(sink, &ops::Mul, da, b);
-            let t2 = op2(sink, &ops::Mul, a, db);
-            let prod = op2(sink, &ops::Add, t1, t2);
-            op2(sink, &ops::Add, prod, dc)
+            let t1 = op2(sink, OpKind::Mul, da, b);
+            let t2 = op2(sink, OpKind::Mul, a, db);
+            let prod = op2(sink, OpKind::Add, t1, t2);
+            op2(sink, OpKind::Add, prod, dc)
         }
         // Quotient rule: D(a/b) = (D(a)*b - a*D(b)) / (b*b).
         OpKind::Div => {
             let (a, b) = (children[0], children[1]);
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
-            let t1 = op2(sink, &ops::Mul, da, b);
-            let t2 = op2(sink, &ops::Mul, a, db);
-            let num = op2(sink, &ops::Sub, t1, t2);
-            let den = op2(sink, &ops::Mul, b, b);
-            op2(sink, &ops::Div, num, den)
+            let t1 = op2(sink, OpKind::Mul, da, b);
+            let t2 = op2(sink, OpKind::Mul, a, db);
+            let num = op2(sink, OpKind::Sub, t1, t2);
+            let den = op2(sink, OpKind::Mul, b, b);
+            op2(sink, OpKind::Div, num, den)
         }
         // d(sqrt u) = 0.5 * rsqrt(u) * u'.
         OpKind::Sqrt => {
             let u = children[0];
             let du = dwrt(sink, u);
             let half = cst(sink, 0.5);
-            let rs = un(sink, &ops::Rsqrt, u);
-            let factor = op2(sink, &ops::Mul, half, rs);
-            op2(sink, &ops::Mul, factor, du)
+            let rs = un(sink, OpKind::Rsqrt, u);
+            let factor = op2(sink, OpKind::Mul, half, rs);
+            op2(sink, OpKind::Mul, factor, du)
         }
         // d(recip u) = -u' / (u*u).
         OpKind::Recip => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let ndu = un(sink, &ops::Neg, du);
-            let u2 = op2(sink, &ops::Mul, u, u);
-            op2(sink, &ops::Div, ndu, u2)
+            let ndu = un(sink, OpKind::Neg, du);
+            let u2 = op2(sink, OpKind::Mul, u, u);
+            op2(sink, OpKind::Div, ndu, u2)
         }
         // d(|u|) = (u / |u|) * u'.
         OpKind::Abs => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let au = un(sink, &ops::Abs, u);
-            let sign = op2(sink, &ops::Div, u, au);
-            op2(sink, &ops::Mul, sign, du)
+            let au = un(sink, OpKind::Abs, u);
+            let sign = op2(sink, OpKind::Div, u, au);
+            op2(sink, OpKind::Mul, sign, du)
         }
         // d(rsqrt u) = -0.5 * rsqrt(u) * recip(u) * u'.
         OpKind::Rsqrt => {
             let u = children[0];
             let du = dwrt(sink, u);
             let neg_half = cst(sink, -0.5);
-            let rs = un(sink, &ops::Rsqrt, u);
-            let rc = un(sink, &ops::Recip, u);
-            let t = op2(sink, &ops::Mul, rs, rc);
-            let factor = op2(sink, &ops::Mul, neg_half, t);
-            op2(sink, &ops::Mul, factor, du)
+            let rs = un(sink, OpKind::Rsqrt, u);
+            let rc = un(sink, OpKind::Recip, u);
+            let t = op2(sink, OpKind::Mul, rs, rc);
+            let factor = op2(sink, OpKind::Mul, neg_half, t);
+            op2(sink, OpKind::Mul, factor, du)
         }
         // Piecewise: derivative of the branch the primal takes. Masks and
         // tie behavior mirror Jet2 (and the runtime `lower_dwrt` pass).
@@ -3164,21 +1780,15 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
             let (a, b) = (children[0], children[1]);
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
-            let mask = op2(sink, &ops::Lt, a, b);
-            sink.make(ENode::Op {
-                op: &ops::If,
-                children: vec![mask, da, db],
-            })
+            let mask = op2(sink, OpKind::Lt, a, b);
+            sink.make(ENode::apply(OpKind::If, &[mask, da, db]))
         }
         OpKind::Max => {
             let (a, b) = (children[0], children[1]);
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
-            let mask = op2(sink, &ops::Gt, a, b);
-            sink.make(ENode::Op {
-                op: &ops::If,
-                children: vec![mask, da, db],
-            })
+            let mask = op2(sink, OpKind::Gt, a, b);
+            sink.make(ENode::apply(OpKind::If, &[mask, da, db]))
         }
         // Blend the branch derivatives on the primal mask; the mask itself
         // is not differentiated.
@@ -3186,10 +1796,7 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
             let (m, t, f) = (children[0], children[1], children[2]);
             let dt = dwrt(sink, t);
             let df = dwrt(sink, f);
-            sink.make(ENode::Op {
-                op: &ops::If,
-                children: vec![m, dt, df],
-            })
+            sink.make(ENode::apply(OpKind::If, &[m, dt, df]))
         }
         // Masks and rounding are step functions: zero almost everywhere.
         OpKind::Lt
@@ -3205,122 +1812,122 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         OpKind::Sin => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let c = un(sink, &ops::Cos, u);
-            op2(sink, &ops::Mul, c, du)
+            let c = un(sink, OpKind::Cos, u);
+            op2(sink, OpKind::Mul, c, du)
         }
         // d(cos u) = -sin(u) * u'.
         OpKind::Cos => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let s = un(sink, &ops::Sin, u);
-            let ns = un(sink, &ops::Neg, s);
-            op2(sink, &ops::Mul, ns, du)
+            let s = un(sink, OpKind::Sin, u);
+            let ns = un(sink, OpKind::Neg, s);
+            op2(sink, OpKind::Mul, ns, du)
         }
         // d(tan u) = u' / cos(u)^2.
         OpKind::Tan => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let c = un(sink, &ops::Cos, u);
-            let c2 = op2(sink, &ops::Mul, c, c);
-            op2(sink, &ops::Div, du, c2)
+            let c = un(sink, OpKind::Cos, u);
+            let c2 = op2(sink, OpKind::Mul, c, c);
+            op2(sink, OpKind::Div, du, c2)
         }
         // d(atan u) = u' / (1 + u*u).
         OpKind::Atan => {
             let u = children[0];
             let du = dwrt(sink, u);
             let one = cst(sink, 1.0);
-            let u2 = op2(sink, &ops::Mul, u, u);
-            let den = op2(sink, &ops::Add, one, u2);
-            op2(sink, &ops::Div, du, den)
+            let u2 = op2(sink, OpKind::Mul, u, u);
+            let den = op2(sink, OpKind::Add, one, u2);
+            op2(sink, OpKind::Div, du, den)
         }
         // d(asin u) = u' / sqrt(1 - u*u).
         OpKind::Asin => {
             let u = children[0];
             let du = dwrt(sink, u);
             let one = cst(sink, 1.0);
-            let u2 = op2(sink, &ops::Mul, u, u);
-            let diff = op2(sink, &ops::Sub, one, u2);
-            let s = un(sink, &ops::Sqrt, diff);
-            op2(sink, &ops::Div, du, s)
+            let u2 = op2(sink, OpKind::Mul, u, u);
+            let diff = op2(sink, OpKind::Sub, one, u2);
+            let s = un(sink, OpKind::Sqrt, diff);
+            op2(sink, OpKind::Div, du, s)
         }
         // d(acos u) = -u' / sqrt(1 - u*u).
         OpKind::Acos => {
             let u = children[0];
             let du = dwrt(sink, u);
             let one = cst(sink, 1.0);
-            let u2 = op2(sink, &ops::Mul, u, u);
-            let diff = op2(sink, &ops::Sub, one, u2);
-            let s = un(sink, &ops::Sqrt, diff);
-            let q = op2(sink, &ops::Div, du, s);
-            un(sink, &ops::Neg, q)
+            let u2 = op2(sink, OpKind::Mul, u, u);
+            let diff = op2(sink, OpKind::Sub, one, u2);
+            let s = un(sink, OpKind::Sqrt, diff);
+            let q = op2(sink, OpKind::Div, du, s);
+            un(sink, OpKind::Neg, q)
         }
         // d(exp u) = exp(u) * u'.
         OpKind::Exp => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let e = un(sink, &ops::Exp, u);
-            op2(sink, &ops::Mul, e, du)
+            let e = un(sink, OpKind::Exp, u);
+            op2(sink, OpKind::Mul, e, du)
         }
         // d(2^u) = 2^u * ln2 * u'.
         OpKind::Exp2 => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let e = un(sink, &ops::Exp2, u);
+            let e = un(sink, OpKind::Exp2, u);
             let ln2 = cst(sink, core::f32::consts::LN_2);
-            let factor = op2(sink, &ops::Mul, e, ln2);
-            op2(sink, &ops::Mul, factor, du)
+            let factor = op2(sink, OpKind::Mul, e, ln2);
+            op2(sink, OpKind::Mul, factor, du)
         }
         // d(ln u) = u' / u.
         OpKind::Ln => {
             let u = children[0];
             let du = dwrt(sink, u);
-            op2(sink, &ops::Div, du, u)
+            op2(sink, OpKind::Div, du, u)
         }
         // d(log2 u) = u' / (u * ln2).
         OpKind::Log2 => {
             let u = children[0];
             let du = dwrt(sink, u);
             let ln2 = cst(sink, core::f32::consts::LN_2);
-            let den = op2(sink, &ops::Mul, u, ln2);
-            op2(sink, &ops::Div, du, den)
+            let den = op2(sink, OpKind::Mul, u, ln2);
+            op2(sink, OpKind::Div, du, den)
         }
         // d(log10 u) = u' / (u * ln10).
         OpKind::Log10 => {
             let u = children[0];
             let du = dwrt(sink, u);
             let ln10 = cst(sink, core::f32::consts::LN_10);
-            let den = op2(sink, &ops::Mul, u, ln10);
-            op2(sink, &ops::Div, du, den)
+            let den = op2(sink, OpKind::Mul, u, ln10);
+            op2(sink, OpKind::Div, du, den)
         }
         // d(atan2(y, x)) = (x*y' - y*x') / (x² + y²).
         OpKind::Atan2 => {
             let (y, x) = (children[0], children[1]);
             let dy = dwrt(sink, y);
             let dx = dwrt(sink, x);
-            let t1 = op2(sink, &ops::Mul, x, dy);
-            let t2 = op2(sink, &ops::Mul, y, dx);
-            let num = op2(sink, &ops::Sub, t1, t2);
-            let x2 = op2(sink, &ops::Mul, x, x);
-            let y2 = op2(sink, &ops::Mul, y, y);
-            let den = op2(sink, &ops::Add, x2, y2);
-            op2(sink, &ops::Div, num, den)
+            let t1 = op2(sink, OpKind::Mul, x, dy);
+            let t2 = op2(sink, OpKind::Mul, y, dx);
+            let num = op2(sink, OpKind::Sub, t1, t2);
+            let x2 = op2(sink, OpKind::Mul, x, x);
+            let y2 = op2(sink, OpKind::Mul, y, y);
+            let den = op2(sink, OpKind::Add, x2, y2);
+            op2(sink, OpKind::Div, num, den)
         }
         // d(f^g) = f^g * (g'*ln f + g*f'/f)  (Jet2's rule).
         OpKind::Pow => {
             let (f, g) = (children[0], children[1]);
             let df = dwrt(sink, f);
             let dg = dwrt(sink, g);
-            let lnf = un(sink, &ops::Ln, f);
-            let t1 = op2(sink, &ops::Mul, dg, lnf);
-            let g_over_f = op2(sink, &ops::Div, g, f);
-            let t2 = op2(sink, &ops::Mul, g_over_f, df);
-            let inner = op2(sink, &ops::Add, t1, t2);
-            let p = op2(sink, &ops::Pow, f, g);
-            op2(sink, &ops::Mul, p, inner)
+            let lnf = un(sink, OpKind::Ln, f);
+            let t1 = op2(sink, OpKind::Mul, dg, lnf);
+            let g_over_f = op2(sink, OpKind::Div, g, f);
+            let t2 = op2(sink, OpKind::Mul, g_over_f, df);
+            let inner = op2(sink, OpKind::Add, t1, t2);
+            let p = op2(sink, OpKind::Pow, f, g);
+            op2(sink, OpKind::Mul, p, inner)
         }
         // Unknown derivative: reconstruct the Dwrt and let it survive.
         _ => {
-            let reconstructed = sink.make(inner.clone());
+            let reconstructed = sink.make(*inner);
             dwrt(sink, reconstructed)
         }
     }
@@ -3329,272 +1936,181 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::ops;
-    use crate::egraph::provenance::ApplicationId;
+    use crate::egraph::cost::CostModel;
+    use crate::egraph::extract::extract_dag;
+    use crate::egraph::provenance::{ApplicationId, Origin};
+    use crate::egraph::rewrite::Rewrite;
+    use crate::egraph::rules::RuleSet;
     use crate::egraph::saturate::SaturationConfig;
     use crate::math::algebra::{
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Distributive, Identity,
         InverseAnnihilation, Involution, MulRecip,
     };
+    use pixelflow_ir::{Kernel, KernelStore};
 
-    /// Soundness regression for saturation's dirty-class tracking
-    /// (`class_is_dirty`, `DIRTY_TRACKING_MAX_DEPTH`). `Pythagorean` is one
-    /// of exactly two production rules that inspects a GRANDCHILD e-class
-    /// (`math/trig.rs`'s `extract_trig_arg`, reached through
-    /// `extract_squared_trig`): `sin²(x) + cos²(x) → 1` only matches once
-    /// the argument of `Mul(p, p)` is *itself* known to be `Sin(x)`, two
-    /// hops below the `Add` node the rule is handed.
-    ///
-    /// Builds `Add(Mul(p, p), Mul(Cos(x), Cos(x)))` where `p` starts as an
-    /// unrelated `Neg(x)` node in its own class — nothing marks it as
-    /// `Sin(x)` yet, so `Pythagorean` cannot fire on the first scan. A later
-    /// `union(p, sin_x)` (standing in for whatever upstream rewrite would
-    /// normally prove `p == sin(x)`) changes `p`'s class content without
-    /// touching `sum`'s or `p_sq`'s own node lists — exactly the shape a
-    /// 1-hop dirty-tracking scheme would miss, and exactly
-    /// `DIRTY_TRACKING_MAX_DEPTH`'s boundary. Asserts a further scan of
-    /// `Pythagorean` still finds and fires the identity.
-    #[test]
-    fn dirty_tracking_still_finds_a_rewrite_two_hops_below_a_changed_grandchild() {
-        use crate::math::trig::Pythagorean;
-
-        let mut egraph = EGraph::with_rules(vec![Pythagorean::new()]);
-        let op = |kind| ops::op_from_kind(kind).expect("op is modelled");
-
-        let x = egraph.add(ENode::Var(0));
-        let sin_x = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Sin),
-            children: vec![x],
-        });
-        let cos_x = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Cos),
-            children: vec![x],
-        });
-        let cos_sq = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Mul),
-            children: vec![cos_x, cos_x],
-        });
-
-        // `p` starts life indistinguishable from any other opaque unary
-        // node — NOT unioned with `sin_x` yet.
-        let p = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Neg),
-            children: vec![x],
-        });
-        let p_sq = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Mul),
-            children: vec![p, p],
-        });
-        let sum = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Add),
-            children: vec![p_sq, cos_sq],
-        });
-
-        // First scan: nothing to find (`p` isn't known to be `sin(x)`).
-        let result = egraph.apply_rule_at_index_budgeted(0, 10_000);
-        assert_eq!(
-            result.changes, 0,
-            "the identity cannot match before p == sin(x) is known"
-        );
-        egraph.rebuild();
-
-        // Now prove p == sin(x) — the grandchild change the rule needs, two
-        // hops below `sum`, with `sum`'s and `p_sq`'s own node lists
-        // untouched.
-        egraph.union(p, sin_x);
-        egraph.rebuild();
-
-        // Second scan of the SAME rule must still see `sum` as worth
-        // checking, even though neither `sum` nor `p_sq` (only their
-        // grandchild `p`) changed.
-        let result = egraph.apply_rule_at_index_budgeted(0, 10_000);
-        assert_eq!(
-            result.changes, 1,
-            "dirty-class tracking must not skip `sum` just because its own \
-             node list (and its direct child p_sq's) never changed — only \
-             the grandchild `p` did, which is exactly Pythagorean's \
-             matching depth"
-        );
-        egraph.rebuild();
-
-        let costs = CostModel::default();
-        let (_, _, cost) = crate::egraph::extract::extract(&egraph, egraph.find(sum), &costs);
-        assert_eq!(
-            cost, 0,
-            "sum's class must now also contain Const(1.0), cost 0"
-        );
+    /// `class`'s members in order, to compare with a literal.
+    fn members(eg: &EGraph, class: EClassId) -> Vec<ENode> {
+        eg.nodes(class).copied().collect()
     }
 
-    /// Regression test for a `rebuild_budgeted` bug: when canonicalizing the
-    /// worklist item `id`'s nodes triggers a union whose surviving parent is
-    /// `id` itself, `union()`'s `extend()` appends the merged-in class's
-    /// nodes directly onto `classes[id.index()].nodes` (which `rebuild_budgeted`
-    /// had just emptied via `mem::take`). The old code then did
-    /// `classes[id.index()].nodes = new_nodes`, an outright *assignment* that
-    /// clobbered whatever `union()` had just appended — silently dropping
-    /// nodes. The fix extends instead of assigning.
-    ///
-    /// Trigger recipe:
-    /// - class 3 (`nc = Neg(c)`, c = class 2) is the worklist item being
-    ///   rebuilt (`id = 3`).
-    /// - Before nc's rebuild, `union(b, c)` merges class 2 into class 1
-    ///   (1 < 2), so canonicalizing `Neg(c)` during nc's rebuild turns it
-    ///   into `Neg(b)`.
-    /// - `Neg(b)` is already memoized as class 4 (`nb = Neg(b)`, created
-    ///   after nc so it has a strictly higher id: 4 > 3).
-    /// - Because `id (3) < existing (4)`, `union(3, 4)` picks **3** as the
-    ///   surviving parent — reproducing the exact "current worklist item
-    ///   survives the merge" case that dropped nodes.
-    /// - Class 4 (`nb`) must still hold its node at the moment of that
-    ///   inner union, which it does (only class 3's `.nodes` was drained).
+    /// What a rebuild owes a caller whatever the store's layout: every id
+    /// `add` handed out is a member of `find(id)`'s class, still the node it
+    /// was born as (up to its operands' names), or retired, and no other class
+    /// lists it. `added` is every node the recipe added, with the id `add`
+    /// returned. Retired nodes are read from the store's retired bit. Called
+    /// once the recipe's `rebuild` has emptied the worklist.
+    fn assert_every_id_is_a_member(eg: &EGraph, added: &[(EClassId, ENode)]) {
+        assert_eq!(
+            added.len(),
+            eg.num_classes(),
+            "the recipe lists every id it minted"
+        );
+        for &(id, node) in added {
+            let tag = ENodeId(id.index() as u64);
+            match (
+                eg.node_for_tag(eg.find(id), tag),
+                eg.graph.columns.is_retired(tag),
+            ) {
+                (Some(member), false) => assert_eq!(
+                    eg.canonical_node(*member),
+                    eg.canonical_node(node),
+                    "id {} holds the node it was born as",
+                    id.index()
+                ),
+                (None, true) => {}
+                (member, retired) => panic!(
+                    "id {} must be a member of find(id) or retired, exactly one: \
+                     member {member:?}, retired {retired}",
+                    id.index()
+                ),
+            }
+        }
+        let listed: usize = eg.class_ids().map(|class| eg.tags(class).count()).sum();
+        assert_eq!(
+            listed,
+            eg.num_classes() - eg.graph.columns.retired_count(),
+            "each id is listed by exactly one class, or retired"
+        );
+        assert_eq!(eg.pending_rebuilds(), 0, "the recipe ran the worklist dry");
+    }
+
+    /// The canonical copy of a node names the surviving class of every operand
+    /// the node has, whichever variant holds it: an operation's operands, a
+    /// shift's operand and a fold's body. The graph is not rebuilt between
+    /// the union and the reads, which is the state an observer can find it in.
+    #[test]
+    fn a_canonical_node_reads_every_operand_through_find() {
+        use pixelflow_ir::ShiftCount;
+        use pixelflow_ir::fold::{Binder, Fold, Monoid};
+
+        let mut eg = EGraph::new();
+        let kept = eg.add(ENode::Var(0));
+        let merged = eg.add(ENode::Var(1));
+        let survivor = eg.union(kept, merged);
+        let fold = Fold::new(
+            Monoid::SUM,
+            Binder::from_slot(0).expect("a live binder"),
+            0..4,
+        );
+        let shift = |operand| ENode::Shift {
+            direction: crate::egraph::ShiftDirection::Right,
+            count: ShiftCount::from_literal(8.0).expect("in range"),
+            operand,
+        };
+        let stale_and_canonical = [
+            (
+                ENode::apply(OpKind::Add, &[merged, kept]),
+                ENode::apply(OpKind::Add, &[survivor, survivor]),
+            ),
+            (shift(merged), shift(survivor)),
+            (
+                ENode::Reduce { fold, body: merged },
+                ENode::Reduce {
+                    fold,
+                    body: survivor,
+                },
+            ),
+        ];
+        for (stale, canonical) in stale_and_canonical {
+            assert_eq!(eg.canonical_node(stale), canonical);
+        }
+    }
+
+    /// A rebuild item whose class survives the union its own node causes
+    /// loses nothing. The item is class 3 (`Neg(c)`); after `union(b, c)` its
+    /// node canonicalizes to `Neg(b)`, which the memo names class 4, and
+    /// 3 < 4, so the item absorbs class 4 after detaching its own members.
+    /// (The order that gives is pinned by
+    /// `a_rebuild_item_that_survives_gives_absorbed_then_kept`.) Stated as the
+    /// law rather than as which marker survived: every id is a member of
+    /// `find(id)`'s class, or retired, and listed once.
     #[test]
     fn rebuild_budgeted_does_not_drop_nodes_when_current_class_survives_union() {
         let mut eg = EGraph::new();
 
-        let _a = eg.add(ENode::Var(0)); // class 0 (unused, keeps ids spaced out)
+        let a = eg.add(ENode::Var(0)); // class 0
         let b = eg.add(ENode::Var(1)); // class 1
         let c = eg.add(ENode::Var(2)); // class 2
-        let nc = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![c],
-        }); // class 3: memo Neg([2]) -> 3
-        let nb = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![b],
-        }); // class 4: memo Neg([1]) -> 4
-        let d = eg.add(ENode::Var(3)); // class 5, dummy used only to enqueue `nc`
-        let marker = eg.add(ENode::Var(9)); // class 6: a node unique to nb's class
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 3
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 4
+        let d = eg.add(ENode::Var(3)); // class 5
+        let marker = eg.add(ENode::Var(9)); // class 6
 
         assert_eq!(nc.index(), 3, "test assumes nc is class 3");
         assert_eq!(nb.index(), 4, "test assumes nb is class 4");
 
-        // Enqueue class 3 (nc) on the worklist without disturbing its node
-        // list content: nc (3) < d (5), so nc survives as parent and simply
-        // gains an extra Var(3) node — it does not lose anything.
-        eg.union(nc, d);
+        eg.union(nc, d); // enqueues class 3
         assert_eq!(eg.pending_rebuilds(), 1);
-
-        // Give nb's class a node with no structural twin anywhere else
-        // (`Var(9)`), so its loss is directly observable. nb (4) < marker
-        // (6), so nb survives as parent and gains `Var(9)`.
-        eg.union(nb, marker);
-
-        // Now merge c into b. b (1) < c (2), so b survives; c's node list
-        // (just `Var(2)`) is merged in. This does NOT yet touch nc/nb.
-        eg.union(b, c);
-
-        // Rebuild exactly one worklist item. LIFO worklist: the most
-        // recently pushed parent (class 1, from union(b,c)) pops first.
-        // Process it, then process class 3 (nc) next so its rebuild is the
-        // one that triggers the id-survives-merge collision with nb (4).
-        //
-        // Drain the whole worklist via rebuild() (equivalent to
-        // rebuild_budgeted(usize::MAX)) so ordering doesn't need to be
-        // hand-tracked — the bug reproduces regardless of pop order, as
-        // long as nc's rebuild eventually runs after b/c are merged.
+        eg.union(nb, marker); // class 4 gains a node no other class has
+        eg.union(b, c); // `Neg(c)` now canonicalizes to `Neg(b)`
         eg.rebuild();
 
-        // The critical assertion: nb's class (now merged into nc's class,
-        // since nc=3 < nb=4 survives) must still contain BOTH nodes that
-        // were live before the merge: nc's own `Neg([canonical c])` and
-        // nb's `Neg([b])` (same canonical shape, but a distinct ENode
-        // instance in the vec before dedup would also be acceptable — the
-        // point is the vec must not have been clobbered to something
-        // that lost nb's contribution entirely).
-        let surviving = eg.find(nc);
         assert_eq!(
-            surviving,
+            eg.find(nc),
             eg.find(nb),
             "nc and nb should have been unioned via the canonicalization collision"
         );
-
-        let nodes = eg.nodes(surviving);
-        assert!(
-            !nodes.is_empty(),
-            "rebuild_budgeted must not silently drop all nodes from the surviving class"
-        );
-
-        // The dummy Var(3) node pushed onto nc's class via `union(nc, d)`
-        // earlier must have survived.
-        assert!(
-            nodes.iter().any(|n| matches!(n, ENode::Var(3))),
-            "expected Var(3) (pushed before the id-survives merge) to still be present; \
-             rebuild_budgeted's overwrite bug would have dropped it"
-        );
-
-        // The critical, structurally-unique marker node from nb's class
-        // (`Var(9)`) must have survived being merged into nc's class via
-        // union()'s extend(). This is exactly the data the overwrite bug
-        // silently discarded: union() appended it to
-        // `classes[id.index()].nodes` mid-loop, and the old
-        // `self.classes[id.index()].nodes = new_nodes` assignment clobbered
-        // it because `new_nodes` was built from nc's pre-union node list,
-        // which never contained `Var(9)`.
-        assert!(
-            nodes.iter().any(|n| matches!(n, ENode::Var(9))),
-            "expected Var(9) (nb's unique marker, merged in via union()'s extend) \
-             to still be present; rebuild_budgeted's overwrite bug drops nodes appended \
-             by a mid-loop union() when the current worklist item survives as parent"
+        assert_eq!(eg.find(nb), nc, "the item survived");
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (c, ENode::Var(2)),
+                (nc, ENode::apply(OpKind::Neg, &[c])),
+                (nb, ENode::apply(OpKind::Neg, &[b])),
+                (d, ENode::Var(3)),
+                (marker, ENode::Var(9)),
+            ],
         );
     }
 
-    /// The mirror of the test above, and the case its fix left open: when
-    /// canonicalizing the worklist item `id`'s nodes triggers a union whose
-    /// surviving parent is the OTHER class, `id` itself becomes
-    /// non-canonical — and the write-back at the bottom of the loop targets
-    /// `classes[id.index()]`, a slot `find` no longer routes to. Every node
-    /// `id` still held is orphaned: `EGraph::nodes(id)` canonicalizes first,
-    /// so nothing can ever read them again.
-    ///
-    /// Lost e-nodes are lost extraction alternatives (under-merging, not
-    /// unsoundness — every remaining class still holds only provably-equal
-    /// terms), but they are lost *silently*, which this project forbids.
-    /// The fix writes back to `self.find(id)`, extending rather than
-    /// assigning because `union` may already have moved nodes there.
-    ///
-    /// Trigger recipe — the same shape as the test above with the two `Neg`
-    /// classes created in the opposite order, which is all it takes to flip
-    /// which side `union`'s `min(a, b)` keeps:
-    /// - `nb = Neg(b)` (class 3) is created BEFORE `nc = Neg(c)` (class 4),
-    ///   so `memo[Neg([1])] -> 3` and `3 < 4`.
-    /// - `union(nc, marker)` gives class 4 a structurally unique `Var(9)`
-    ///   and enqueues it for rebuild.
-    /// - `union(b, c)` merges class 2 into class 1, so canonicalizing
-    ///   `Neg([2])` during class 4's rebuild rewrites it to `Neg([1])`.
-    /// - `memo` maps `Neg([1])` to class 3, and `existing (3) < id (4)`, so
-    ///   `union(4, 3)` keeps **3** — `id` is merged away mid-loop.
-    /// - The write-back then appends `Var(9)` to class 4, which `find` now
-    ///   routes past. `nodes(find(nc))` never sees it again.
+    /// The mirror case: a rebuild item whose class loses the union its own
+    /// node causes. The item is class 4 (`Neg(c)`); after `union(b, c)` its
+    /// node canonicalizes to `Neg(b)`, which the memo names class 3, and
+    /// 3 < 4, so class 4 is merged away mid-item. Its kept members belong to
+    /// `find(4)`: written back to the item's own id they would sit where
+    /// `find` no longer leads. (The order is pinned by
+    /// `a_rebuild_item_that_loses_gives_prior_then_later_absorbed_then_kept`.)
+    /// Stated as the law: every id is a member of `find(id)`'s class, or
+    /// retired, and listed once.
     #[test]
     fn rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away() {
         let mut eg = EGraph::new();
 
-        let a = eg.add(ENode::Var(0)); // class 0 (keeps the ids spaced out)
+        let a = eg.add(ENode::Var(0)); // class 0
         let b = eg.add(ENode::Var(1)); // class 1
         let c = eg.add(ENode::Var(2)); // class 2
-        let nb = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![b],
-        }); // class 3: memo Neg([1]) -> 3
-        let nc = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![c],
-        }); // class 4: memo Neg([2]) -> 4
-        let marker = eg.add(ENode::Var(9)); // class 5: a node unique to nc's class
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 4
+        let marker = eg.add(ENode::Var(9)); // class 5
 
         assert_eq!(nb.index(), 3, "test assumes nb is class 3");
         assert_eq!(nc.index(), 4, "test assumes nc is class 4");
 
-        // Give nc's class a node with no structural twin anywhere else
-        // (`Var(9)`), so its loss is directly observable, and enqueue nc for
-        // rebuild. nc (4) < marker (5), so nc survives as parent here.
-        eg.union(nc, marker);
+        eg.union(nc, marker); // enqueues class 4, which gains a node of its own
         assert_eq!(eg.pending_rebuilds(), 1);
-
-        // Merge c into b. b (1) < c (2), so b survives. This is what makes
-        // `Neg([2])` canonicalize to `Neg([1])` during nc's rebuild.
-        eg.union(b, c);
-
+        eg.union(b, c); // `Neg(c)` now canonicalizes to `Neg(b)`
         eg.rebuild();
 
         // nb (3) is the surviving parent: `union(4, 3)` keeps the lower id.
@@ -3610,76 +2126,448 @@ mod tests {
              i.e. the `existing.0 < id.0` branch"
         );
 
-        // The critical assertion: `Var(9)` lived in nc's class when nc was
-        // merged away mid-loop, so it must still be reachable through the
-        // surviving class. The orphaning bug writes it back to class 4,
-        // which `find` routes past — `nodes()` canonicalizes, so it is
-        // unreachable from every public entry point from then on.
-        let nodes = eg.nodes(surviving);
-        assert!(
-            nodes.iter().any(|n| matches!(n, ENode::Var(9))),
-            "expected Var(9) (nc's unique marker) to still be reachable via \
-             nodes(find(nc)); the write-back targeted the merged-away slot \
-             classes[{}] instead of classes[{}]. Got: {nodes:?}",
-            nc.index(),
-            surviving.index()
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (c, ENode::Var(2)),
+                (nb, ENode::apply(OpKind::Neg, &[b])),
+                (nc, ENode::apply(OpKind::Neg, &[c])),
+                (marker, ENode::Var(9)),
+            ],
         );
+    }
 
-        // Tags must stay zipped with nodes through the redirected write-back.
+    /// A node whose canonical form lands in a class it cannot merge with
+    /// leaves its class (law 7). Classes 0 and 1 hold the constants 1 and 2;
+    /// `Neg(a)` joins 0 and `Neg(b)` joins 1; `union(a, b)` makes the two
+    /// `Neg`s congruent. The worklist is a stack of 0, 1, 2: item 2 (the
+    /// variables) changes nothing, item 1 finds `Neg(b)` canonicalizes to
+    /// `Neg(a)`, which the memo names class 4, now in class 0, and the union
+    /// of 1 and 0 is refused (1 = 2). Node 5 is retired: no class lists it
+    /// and the node count leaves it out.
+    #[test]
+    fn a_node_whose_union_is_refused_leaves_its_class() {
+        let mut eg = EGraph::new();
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let two = eg.add(ENode::constant(2.0)); // 1
+        let a = eg.add(ENode::Var(0)); // 2
+        let b = eg.add(ENode::Var(1)); // 3
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 4
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 5
+        assert_eq!(neg_b.index(), 5, "the recipe assumes these ids");
+        eg.union(neg_a, one);
+        eg.union(neg_b, two);
+        eg.union(a, b);
+        eg.rebuild();
+
         assert_eq!(
-            eg.nodes(surviving).len(),
-            eg.tags(surviving).len(),
-            "EClass.nodes and EClass.tags must never desync"
+            eg.refused_const_unions(),
+            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..],
+            "item 1 asked to merge 2 into 1 and was refused"
+        );
+        assert_ne!(eg.find(one), eg.find(two));
+        let retired = ENodeId(5);
+        assert_eq!(eg.node_for_tag(eg.find(neg_b), retired), None);
+        assert_eq!(eg.node_for_tag(eg.find(neg_a), retired), None);
+        assert_eq!(
+            eg.node_for_tag(one, ENodeId(0)),
+            Some(&ENode::constant(1.0)),
+            "a live node answers in its own class"
+        );
+        assert_eq!(
+            eg.node_for_tag(two, ENodeId(0)),
+            None,
+            "a live node answers nothing in another class"
+        );
+        assert!(
+            eg.class_ids()
+                .all(|class| eg.tags(class).all(|t| t != retired))
+        );
+        assert_eq!(members(&eg, two), [ENode::constant(2.0)]);
+        assert_eq!(
+            members(&eg, one),
+            [ENode::constant(1.0), ENode::apply(OpKind::Neg, &[a])]
+        );
+        assert_eq!(
+            eg.node_count(),
+            eg.num_classes() - 1,
+            "the retired node is not counted"
+        );
+        assert_eq!(
+            eg.node_for_tag(one, ENodeId(1_000)),
+            None,
+            "a tag past the graph names nothing"
+        );
+        assert!(eg.graph.columns.is_retired(retired));
+        assert!(!eg.is_member(retired));
+        assert!(
+            !eg.is_member(ENodeId(u64::MAX)),
+            "a tag past the graph is no member"
+        );
+        assert!(eg.is_member(ENodeId(4)));
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (one, ENode::constant(1.0)),
+                (two, ENode::constant(2.0)),
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (neg_a, ENode::apply(OpKind::Neg, &[a])),
+                (neg_b, ENode::apply(OpKind::Neg, &[b])),
+            ],
+        );
+        #[cfg(feature = "provenance-journal")]
+        {
+            assert!(eg.children_of(retired).is_empty());
+            assert_eq!(eg.children_of(ENodeId(4)), vec![a]);
+        }
+    }
+
+    /// A retired node that founded its class: the class keeps the members
+    /// after it, and its own id names a node that is no member of it (plan
+    /// §1: `node(c)` need not be a member of `c`). Class 4 is
+    /// `[Neg(b), 2, Var(7)]` with the fact 2; `union(a, b)` makes `Neg(b)`
+    /// congruent to `Neg(a)`, which is in class 0 with the fact 1. Item 4 is
+    /// refused that union and retires its first member.
+    #[test]
+    fn a_retired_founder_leaves_the_members_after_it() {
+        let mut eg = EGraph::new();
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let a = eg.add(ENode::Var(0)); // 1
+        let b = eg.add(ENode::Var(1)); // 2
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 3
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 4
+        let two = eg.add(ENode::constant(2.0)); // 5
+        let z = eg.add(ENode::Var(7)); // 6
+        assert_eq!(z.index(), 6, "the recipe assumes these ids");
+        eg.union(neg_a, one);
+        eg.union(neg_b, two);
+        eg.union(neg_b, z);
+        eg.union(a, b);
+        eg.rebuild();
+
+        assert_eq!(
+            eg.refused_const_unions(),
+            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..]
+        );
+        assert_eq!(eg.find(neg_b), neg_b, "class 4 survives its founder");
+        assert_eq!(
+            eg.tags(neg_b).collect::<Vec<_>>(),
+            [ENodeId(5), ENodeId(6)],
+            "the kept members follow in walk order"
+        );
+        assert_eq!(members(&eg, neg_b), [ENode::constant(2.0), ENode::Var(7)]);
+        assert!(eg.graph.columns.is_retired(ENodeId(4)));
+        assert!(!eg.is_member(ENodeId(4)));
+        assert_eq!(eg.node_for_tag(neg_b, ENodeId(4)), None);
+        assert_eq!(
+            members(&eg, one),
+            [ENode::constant(1.0), ENode::apply(OpKind::Neg, &[a])]
+        );
+        assert_eq!(eg.node_count(), eg.num_classes() - 1);
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (one, ENode::constant(1.0)),
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (neg_a, ENode::apply(OpKind::Neg, &[a])),
+                (neg_b, ENode::apply(OpKind::Neg, &[b])),
+                (two, ENode::constant(2.0)),
+                (z, ENode::Var(7)),
+            ],
+        );
+    }
+
+    /// A retired member between two kept ones: the kept two are adjacent in
+    /// the class afterwards, the first still first. Class 3 is
+    /// `[Var(5), Neg(b), 2]` with the fact 2; item 3 keeps `Var(5)`, retires
+    /// `Neg(b)` (refused, as above) and keeps `2`.
+    #[test]
+    fn a_retired_middle_member_leaves_its_neighbours_adjacent() {
+        let mut eg = EGraph::new();
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let a = eg.add(ENode::Var(0)); // 1
+        let b = eg.add(ENode::Var(1)); // 2
+        let x = eg.add(ENode::Var(5)); // 3
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 4
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 5
+        let two = eg.add(ENode::constant(2.0)); // 6
+        assert_eq!(two.index(), 6, "the recipe assumes these ids");
+        eg.union(neg_a, one);
+        eg.union(x, neg_b);
+        eg.union(x, two);
+        eg.union(a, b);
+        eg.rebuild();
+
+        assert_eq!(
+            eg.refused_const_unions(),
+            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..]
+        );
+        assert_eq!(eg.tags(x).collect::<Vec<_>>(), [ENodeId(3), ENodeId(6)]);
+        assert_eq!(members(&eg, x), [ENode::Var(5), ENode::constant(2.0)]);
+        assert!(eg.graph.columns.is_retired(ENodeId(5)));
+        assert_eq!(eg.node_count(), eg.num_classes() - 1);
+        assert_every_id_is_a_member(
+            &eg,
+            &[
+                (one, ENode::constant(1.0)),
+                (a, ENode::Var(0)),
+                (b, ENode::Var(1)),
+                (x, ENode::Var(5)),
+                (neg_a, ENode::apply(OpKind::Neg, &[a])),
+                (neg_b, ENode::apply(OpKind::Neg, &[b])),
+                (two, ENode::constant(2.0)),
+            ],
+        );
+    }
+
+    /// A clone owns its member lists: a union in the original after the clone
+    /// moves nothing in the copy (`EGraph: Clone` is derived; plan §8.4).
+    #[test]
+    fn a_clone_owns_its_member_lists() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let copy = eg.clone();
+        eg.union(x, y);
+        eg.rebuild();
+        assert_eq!(members(&eg, x), [ENode::Var(0), ENode::Var(1)]);
+        assert_eq!(members(&copy, x), [ENode::Var(0)]);
+        assert_eq!(members(&copy, y), [ENode::Var(1)]);
+        assert_ne!(copy.find(x), copy.find(y));
+    }
+
+    /// `union` gives the surviving class's nodes, then the merged-away
+    /// class's, whichever argument order the caller used.
+    #[test]
+    fn union_gives_the_parent_then_the_child() {
+        for flipped in [false, true] {
+            let mut eg = EGraph::new();
+            let parent = eg.add(ENode::Var(0));
+            let parent_peer = eg.add(ENode::Var(1));
+            let child = eg.add(ENode::Var(2));
+            let child_peer = eg.add(ENode::Var(3));
+            let parent = eg.union(parent, parent_peer);
+            let child = eg.union(child, child_peer);
+            assert_eq!(
+                members(&eg, parent),
+                [ENode::Var(0), ENode::Var(1)],
+                "a union of two classes gives the first then the second"
+            );
+
+            let survivor = if flipped {
+                eg.union(child, parent)
+            } else {
+                eg.union(parent, child)
+            };
+            assert_eq!(survivor, parent, "the smaller id survives");
+            assert_eq!(
+                members(&eg, survivor),
+                [ENode::Var(0), ENode::Var(1), ENode::Var(2), ENode::Var(3)],
+                "parent then child (flipped argument order: {flipped})"
+            );
+            assert_eq!(members(&eg, child), members(&eg, parent));
+        }
+    }
+
+    /// A rebuild item whose class survives a union made during the item gives
+    /// `[absorbed] ++ [kept]`: what the union appended, then the item's own
+    /// nodes in the order they were walked. The item is class 3, it absorbs
+    /// class 4, and 3 < 4.
+    #[test]
+    fn a_rebuild_item_that_survives_gives_absorbed_then_kept() {
+        let mut eg = EGraph::new();
+        let _a = eg.add(ENode::Var(0));
+        let b = eg.add(ENode::Var(1));
+        let c = eg.add(ENode::Var(2));
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 3, the item
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 4, absorbed
+        let d = eg.add(ENode::Var(3));
+        let marker = eg.add(ENode::Var(9));
+        eg.union(nc, d);
+        eg.union(nb, marker);
+        eg.union(b, c);
+        assert_eq!(
+            members(&eg, nc),
+            [ENode::apply(OpKind::Neg, &[c]), ENode::Var(3)],
+            "the item's nodes before the rebuild, the first still naming c"
+        );
+        assert_eq!(
+            members(&eg, nb),
+            [ENode::apply(OpKind::Neg, &[b]), ENode::Var(9)]
         );
 
-        // Nothing else got orphaned on the way. Stated as the law the public
-        // API actually owes a caller — **every id `add` ever handed out still
-        // resolves to a class containing its node** — rather than by reading
-        // the merged-away slot directly: a shadow copy is unreachable by
-        // definition, so the only honest way to catch one is to check that
-        // everything reachable is still there.
-        let holds = |eg: &EGraph, id: EClassId, want: &ENode| -> bool {
-            eg.nodes(eg.find(id)).iter().any(|n| n == want)
-        };
-        let neg_b = ENode::Op {
-            op: &ops::Neg,
-            children: vec![eg.find(b)],
-        };
-        for (id, want) in [
-            (a, ENode::Var(0)),
-            (b, ENode::Var(1)),
-            (c, ENode::Var(2)),
-            (marker, ENode::Var(9)),
-            (nb, neg_b.clone()),
-            (nc, neg_b.clone()),
-        ] {
-            assert!(
-                holds(&eg, id, &want),
-                "id {} no longer resolves to a class holding {want:?}",
-                id.index()
-            );
-        }
+        // The worklist is a stack of 3, 4, 1: class 1 pops, then 4, then 3.
+        assert_eq!(eg.pending_rebuilds(), 3);
+        assert_eq!(eg.rebuild_budgeted(3), 1, "the union in item 3 queues 3");
+        assert_eq!(eg.find(nb), nc, "the item absorbed class 4 and survived");
 
-        // And the graph must be at rest: a second rebuild is a no-op. The
-        // orphaning bug leaves the worklist naming a class whose nodes went
-        // somewhere else, so "reachable" was not yet a fixpoint — a state
-        // that can look correct until something rebuilds again.
-        let before: Vec<ENode> = eg.nodes(surviving).to_vec();
+        let neg_b = ENode::apply(OpKind::Neg, &[b]);
+        let expected = [neg_b, ENode::Var(9), neg_b, ENode::Var(3)];
+        assert_eq!(
+            members(&eg, nc),
+            expected,
+            "[absorbed: Neg(b), Var(9)] ++ [kept: Neg(b), Var(3)]"
+        );
         eg.rebuild();
         assert_eq!(
-            eg.find(nc),
-            surviving,
-            "a second rebuild must not move the surviving class"
+            members(&eg, nc),
+            expected,
+            "a further rebuild keeps the order"
+        );
+    }
+
+    /// A rebuild item whose class loses a union made during the item gives
+    /// the survivor's prior nodes, then whatever the survivor absorbs later in
+    /// the same item, then `[kept]`. The item is class 4. Its first node
+    /// canonicalizes into class 3, which survives with a prior member; its
+    /// second into class 5, which 3 then absorbs; its third is its own.
+    #[test]
+    fn a_rebuild_item_that_loses_gives_prior_then_later_absorbed_then_kept() {
+        let mut eg = EGraph::new();
+        let _a = eg.add(ENode::Var(0));
+        let b = eg.add(ENode::Var(1));
+        let c = eg.add(ENode::Var(2));
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3, survives
+        let neg_c = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 4, the item
+        let abs_b = eg.add(ENode::apply(OpKind::Abs, &[b])); // class 5, absorbed later
+        let abs_c = eg.add(ENode::apply(OpKind::Abs, &[c]));
+        let prior = eg.add(ENode::Var(7));
+        let later = eg.add(ENode::Var(8));
+        let marker = eg.add(ENode::Var(9));
+        eg.union(neg_b, prior);
+        eg.union(abs_b, later);
+        eg.union(neg_c, abs_c);
+        eg.union(neg_c, marker);
+        eg.union(b, c);
+        assert_eq!(
+            [neg_b, neg_c, abs_b].map(EClassId::index),
+            [3, 4, 5],
+            "the recipe assumes these ids"
         );
         assert_eq!(
-            eg.nodes(eg.find(nc)),
-            before.as_slice(),
-            "rebuild must be idempotent once the worklist is drained"
+            members(&eg, neg_c),
+            [
+                ENode::apply(OpKind::Neg, &[c]),
+                ENode::apply(OpKind::Abs, &[c]),
+                ENode::Var(9)
+            ]
+        );
+
+        // The worklist is a stack of 3, 5, 4, 1: class 1 pops, then 4.
+        assert_eq!(
+            eg.rebuild_budgeted(2),
+            2,
+            "the unions in item 4 queue nothing"
+        );
+        assert_eq!(eg.find(neg_c), neg_b, "the item lost to class 3");
+        assert_eq!(eg.find(abs_b), neg_b, "and 3 absorbed class 5 during it");
+
+        let neg = ENode::apply(OpKind::Neg, &[b]);
+        let abs = ENode::apply(OpKind::Abs, &[b]);
+        let expected = [
+            neg,
+            ENode::Var(7), // the survivor's prior nodes
+            abs,
+            ENode::Var(8), // absorbed later in the item
+            neg,
+            abs,
+            ENode::Var(9), // kept, in the order they were walked
+        ];
+        assert_eq!(members(&eg, neg_b), expected);
+        eg.rebuild();
+        assert_eq!(
+            members(&eg, neg_b),
+            expected,
+            "a further rebuild keeps the order"
+        );
+    }
+
+    /// A rebuild item that survives one union made during it and then loses a
+    /// later one hands the survivor what it absorbed in between: the
+    /// survivor's prior nodes, then the nodes the item absorbed while it still
+    /// stood, then whatever the survivor absorbs after the loss, then
+    /// `[kept]`. The item is class 4. Its first node canonicalizes into class
+    /// 5, which 4 absorbs (4 < 5); its second into class 3, which survives
+    /// with a prior member (3 < 4), so the item's list, class 5's nodes, goes
+    /// to the survivor; its third into class 7, which 3 then absorbs.
+    #[test]
+    fn a_rebuild_item_that_survives_then_loses_gives_prior_then_absorbed_then_kept() {
+        let mut eg = EGraph::new();
+        let _a = eg.add(ENode::Var(0));
+        let b = eg.add(ENode::Var(1));
+        let c = eg.add(ENode::Var(2));
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3, survives
+        let abs_c = eg.add(ENode::apply(OpKind::Abs, &[c])); // class 4, the item
+        let abs_b = eg.add(ENode::apply(OpKind::Abs, &[b])); // class 5, absorbed first
+        let neg_c = eg.add(ENode::apply(OpKind::Neg, &[c]));
+        let sqrt_b = eg.add(ENode::apply(OpKind::Sqrt, &[b])); // class 7, absorbed later
+        let sqrt_c = eg.add(ENode::apply(OpKind::Sqrt, &[c]));
+        let prior = eg.add(ENode::Var(7));
+        let first = eg.add(ENode::Var(8));
+        let later = eg.add(ENode::Var(10));
+        let marker = eg.add(ENode::Var(9));
+        eg.union(neg_b, prior);
+        eg.union(abs_b, first);
+        eg.union(sqrt_b, later);
+        eg.union(abs_c, neg_c);
+        eg.union(abs_c, sqrt_c);
+        eg.union(abs_c, marker);
+        eg.union(b, c);
+        assert_eq!(
+            [neg_b, abs_c, abs_b, sqrt_b].map(EClassId::index),
+            [3, 4, 5, 7],
+            "the recipe assumes these ids"
+        );
+        assert_eq!(
+            members(&eg, abs_c),
+            [
+                ENode::apply(OpKind::Abs, &[c]),
+                ENode::apply(OpKind::Neg, &[c]),
+                ENode::apply(OpKind::Sqrt, &[c]),
+                ENode::Var(9)
+            ]
+        );
+
+        // The worklist is a stack of 3, 5, 7, 4, 1: class 1 pops, then 4.
+        assert_eq!(
+            eg.rebuild_budgeted(2),
+            4,
+            "the union in item 4 that 4 survives queues 4; the one it loses queues nothing"
+        );
+        assert_eq!(eg.find(abs_c), neg_b, "the item lost to class 3");
+        assert_eq!(eg.find(abs_b), neg_b, "after absorbing class 5");
+        assert_eq!(eg.find(sqrt_b), neg_b, "and 3 absorbed class 7 during it");
+
+        let neg = ENode::apply(OpKind::Neg, &[b]);
+        let abs = ENode::apply(OpKind::Abs, &[b]);
+        let sqrt = ENode::apply(OpKind::Sqrt, &[b]);
+        let expected = [
+            neg,
+            ENode::Var(7), // the survivor's prior nodes
+            abs,
+            ENode::Var(8), // absorbed by the item before it lost
+            sqrt,
+            ENode::Var(10), // absorbed by the survivor after
+            abs,
+            neg,
+            sqrt,
+            ENode::Var(9), // kept, in the order they were walked
+        ];
+        assert_eq!(members(&eg, neg_b), expected);
+        eg.rebuild();
+        assert_eq!(
+            members(&eg, neg_b),
+            expected,
+            "a further rebuild keeps the order"
         );
     }
 
     /// Create an e-graph with standard algebraic rules for testing.
-    fn egraph_with_rules() -> EGraph {
+    fn egraph_with_rules() -> Saturation {
         let rules: Vec<Box<dyn Rewrite>> = vec![
             // InversePair rules
             Canonicalize::<AddNeg>::new(),
@@ -3691,34 +2579,28 @@ mod tests {
             Cancellation::<MulRecip>::new(),
             InverseAnnihilation::<MulRecip>::new(),
             // Commutativity
-            Commutative::new(&ops::Add),
-            Commutative::new(&ops::Mul),
-            Commutative::new(&ops::Min),
-            Commutative::new(&ops::Max),
+            Commutative::new(OpKind::Add),
+            Commutative::new(OpKind::Mul),
+            Commutative::new(OpKind::Min),
+            Commutative::new(OpKind::Max),
             // Distributivity
-            Distributive::new(&ops::Mul, &ops::Add),
-            Distributive::new(&ops::Mul, &ops::Sub),
+            Distributive::new(OpKind::Mul, OpKind::Add),
+            Distributive::new(OpKind::Mul, OpKind::Sub),
             // Identity
-            Identity::new(&ops::Add),
-            Identity::new(&ops::Mul),
+            Identity::new(OpKind::Add),
+            Identity::new(OpKind::Mul),
             // Annihilator
-            Annihilator::new(&ops::Mul),
+            Annihilator::new(OpKind::Mul),
         ];
-        EGraph::with_rules(rules)
+        Saturation::over(RuleSet::new(rules))
     }
 
     #[test]
     fn inverse_add() {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
-        let neg_x = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![x],
-        });
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, neg_x],
-        });
+        let neg_x = eg.add(ENode::apply(OpKind::Neg, &[x]));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, neg_x]));
         SaturationConfig::compatibility(100).run(&mut eg);
         let zero = eg.add(ENode::constant(0.0));
         assert_eq!(eg.find(sum), eg.find(zero));
@@ -3728,14 +2610,8 @@ mod tests {
     fn inverse_mul() {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
-        let recip_x = eg.add(ENode::Op {
-            op: &ops::Recip,
-            children: vec![x],
-        });
-        let product = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, recip_x],
-        });
+        let recip_x = eg.add(ENode::apply(OpKind::Recip, &[x]));
+        let product = eg.add(ENode::apply(OpKind::Mul, &[x, recip_x]));
         SaturationConfig::compatibility(100).run(&mut eg);
         let one = eg.add(ENode::constant(1.0));
         assert_eq!(eg.find(product), eg.find(one));
@@ -3746,14 +2622,8 @@ mod tests {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
         let five = eg.add(ENode::constant(5.0));
-        let prod = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, five],
-        });
-        let div = eg.add(ENode::Op {
-            op: &ops::Div,
-            children: vec![prod, x],
-        });
+        let prod = eg.add(ENode::apply(OpKind::Mul, &[x, five]));
+        let div = eg.add(ENode::apply(OpKind::Div, &[prod, x]));
         SaturationConfig::compatibility(100).run(&mut eg);
         assert_eq!(eg.find(div), eg.find(five));
     }
@@ -3768,20 +2638,15 @@ mod tests {
         let c = eg.add(ENode::constant(2.0)); // c = 2
 
         // Build a - (b - c)
-        let b_minus_c = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![b, c],
-        }); // 6 - 2 = 4
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![a, b_minus_c],
-        }); // 10 - 4 = 6
+        let b_minus_c = eg.add(ENode::apply(OpKind::Sub, &[b, c])); // 6 - 2 = 4
+        let result = eg.add(ENode::apply(OpKind::Sub, &[a, b_minus_c])); // 10 - 4 = 6
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
         // Extract and verify structure
         let costs = CostModel::default();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!("Extracted arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3795,23 +2660,15 @@ mod tests {
         let c_sq = eg.add(ENode::constant(16.0));
         let r_sq = eg.add(ENode::constant(1.0));
 
-        let d_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![d, d],
-        });
-        let inner_sub = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![c_sq, r_sq],
-        });
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![d_sq, inner_sub],
-        });
+        let d_sq = eg.add(ENode::apply(OpKind::Mul, &[d, d]));
+        let inner_sub = eg.add(ENode::apply(OpKind::Sub, &[c_sq, r_sq]));
+        let result = eg.add(ENode::apply(OpKind::Sub, &[d_sq, inner_sub]));
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::default();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!("Extracted arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3824,23 +2681,15 @@ mod tests {
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
 
-        let x_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, x],
-        });
-        let inner_sub = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![y, z],
-        });
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![x_sq, inner_sub],
-        });
+        let x_sq = eg.add(ENode::apply(OpKind::Mul, &[x, x]));
+        let inner_sub = eg.add(ENode::apply(OpKind::Sub, &[y, z]));
+        let result = eg.add(ENode::apply(OpKind::Sub, &[x_sq, inner_sub]));
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::default();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!(
             "Extracted arena with vars: root={:?} len={}",
             root,
@@ -3857,24 +2706,16 @@ mod tests {
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
 
-        let x_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, x],
-        });
-        let inner_sub = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![y, z],
-        });
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![x_sq, inner_sub],
-        });
+        let x_sq = eg.add(ENode::apply(OpKind::Mul, &[x, x]));
+        let inner_sub = eg.add(ENode::apply(OpKind::Sub, &[y, z]));
+        let result = eg.add(ENode::apply(OpKind::Sub, &[x_sq, inner_sub]));
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
         // Use default costs like the kernel! macro does
         let costs = CostModel::new();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!(
             "Extracted arena with FMA costs: root={:?} len={}",
             root,
@@ -3893,39 +2734,19 @@ mod tests {
         let b = eg.add(ENode::Var(2));
         let r = eg.add(ENode::Var(3));
 
-        let d_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![d, d],
-        });
-        let a_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![a, a],
-        });
-        let b_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![b, b],
-        });
-        let c_sq = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![a_sq, b_sq],
-        });
-        let r_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![r, r],
-        });
-        let inner = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![c_sq, r_sq],
-        });
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![d_sq, inner],
-        });
+        let d_sq = eg.add(ENode::apply(OpKind::Mul, &[d, d]));
+        let a_sq = eg.add(ENode::apply(OpKind::Mul, &[a, a]));
+        let b_sq = eg.add(ENode::apply(OpKind::Mul, &[b, b]));
+        let c_sq = eg.add(ENode::apply(OpKind::Add, &[a_sq, b_sq]));
+        let r_sq = eg.add(ENode::apply(OpKind::Mul, &[r, r]));
+        let inner = eg.add(ENode::apply(OpKind::Sub, &[c_sq, r_sq]));
+        let result = eg.add(ENode::apply(OpKind::Sub, &[d_sq, inner]));
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::new();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!("Discriminant arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3964,24 +2785,23 @@ mod tests {
 
         let mut current = x;
         for _ in 0..10 {
-            current = eg.add(ENode::Op {
-                op: &ops::Add,
-                children: vec![current, one],
-            });
+            current = eg.add(ENode::apply(OpKind::Add, &[current, one]));
         }
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
         // Extract with default costs (high threshold)
         let default_costs = CostModel::default();
-        let (arena, root) = eg.extract_expr_with_costs(current, &default_costs);
+        let dag = extract_dag(&eg, current, &default_costs);
+        let (arena, root) = dag.to_arena(&eg);
         assert!(arena.node_count_subtree(root) > 0);
 
         // Extract with shallow costs (low threshold)
         let mut shallow_costs = CostModel::new();
         shallow_costs.depth_threshold = 3;
         shallow_costs.depth_penalty = 1000;
-        let (arena2, root2) = eg.extract_expr_with_costs(current, &shallow_costs);
+        let dag = extract_dag(&eg, current, &shallow_costs);
+        let (arena2, root2) = dag.to_arena(&eg);
         assert!(arena2.node_count_subtree(root2) > 0);
     }
 
@@ -3992,20 +2812,20 @@ mod tests {
     /// Find the `RewriteTarget` for a given rule name, failing loudly (not
     /// silently) if it isn't present — a missing match means the test setup
     /// is wrong, not that provenance has nothing to check.
-    fn find_target(eg: &EGraph, rule_name: &str) -> RewriteTarget {
+    fn find_target(eg: &Saturation, rule_name: &str) -> RewriteTarget {
         eg.find_rewrite_matches()
             .into_iter()
-            .find(|t| eg.rule(t.rule_idx).unwrap().name() == rule_name)
+            .find(|t| eg.rules().rule(t.rule_idx).name() == rule_name)
             .unwrap_or_else(|| panic!("no rewrite match found for rule {rule_name:?}"))
     }
 
     /// Like `find_target`, but further restricted to matches against a
     /// specific (already-canonical) class — needed once a class holds
     /// multiple nodes that all match the same rule name.
-    fn find_target_in_class(eg: &EGraph, rule_name: &str, class: EClassId) -> RewriteTarget {
+    fn find_target_in_class(eg: &Saturation, rule_name: &str, class: EClassId) -> RewriteTarget {
         eg.find_rewrite_matches()
             .into_iter()
-            .find(|t| eg.rule(t.rule_idx).unwrap().name() == rule_name && t.class_id == class)
+            .find(|t| eg.rules().rule(t.rule_idx).name() == rule_name && t.class_id == class)
             .unwrap_or_else(|| {
                 panic!("no rewrite match found for rule {rule_name:?} in class {class:?}")
             })
@@ -4017,23 +2837,20 @@ mod tests {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
 
         // Hand-derivation: x, y, and sum are all seeds.
         for &(class, _) in &[(x, "x"), (y, "y"), (sum, "sum")] {
-            for &tag in eg.tags(class) {
+            for tag in eg.tags(class) {
                 assert_eq!(
-                    eg.provenance().origin(tag),
+                    eg.journal().origin(tag),
                     Some(Origin::Seed),
                     "seed node in class {class:?} should be Origin::Seed"
                 );
             }
         }
-        assert_eq!(eg.provenance().recorded_count(), 0);
-        assert_eq!(eg.provenance().union_count(), 0);
+        assert_eq!(eg.journal().recorded_count(), 0);
+        assert_eq!(eg.journal().union_count(), 0);
 
         let target = find_target(&eg, "commutative");
         assert_eq!(target.class_id, eg.find(sum));
@@ -4043,11 +2860,11 @@ mod tests {
 
         // Hand-derivation: exactly one application recorded, for the
         // "commutative" rule, matched against `sum`'s class.
-        assert_eq!(eg.provenance().recorded_count(), 1);
-        let record = eg.provenance().application(ApplicationId(0)).unwrap();
+        assert_eq!(eg.journal().recorded_count(), 1);
+        let record = eg.journal().application(ApplicationId(0)).unwrap();
         assert_eq!(record.rule_idx, target.rule_idx);
         assert_eq!(record.match_root, eg.find(sum));
-        assert_eq!(eg.rule(record.rule_idx).unwrap().name(), "commutative");
+        assert_eq!(eg.rules().rule(record.rule_idx).name(), "commutative");
 
         // Hand-derivation: the new commuted node (y + x) has Origin::Rule
         // pointing at that one application; it lives in the same class as
@@ -4055,9 +2872,7 @@ mod tests {
         let commuted_class = eg.find(sum);
         let rule_origin_tags: Vec<ENodeId> = eg
             .tags(commuted_class)
-            .iter()
-            .copied()
-            .filter(|&t| matches!(eg.provenance().origin(t), Some(Origin::Rule(_))))
+            .filter(|&t| matches!(eg.journal().origin(t), Some(Origin::Rule(_))))
             .collect();
         assert_eq!(
             rule_origin_tags.len(),
@@ -4065,14 +2880,14 @@ mod tests {
             "expected exactly one rule-created node in the merged class"
         );
         assert_eq!(
-            eg.provenance().origin(rule_origin_tags[0]),
+            eg.journal().origin(rule_origin_tags[0]),
             Some(Origin::Rule(ApplicationId(0)))
         );
 
         // Hand-derivation: exactly one union event, attributed to the
         // commutative rule's index, at the step apply_single_rule ran on.
-        assert_eq!(eg.provenance().union_count(), 1);
-        let union_event = eg.provenance().union_events()[0];
+        assert_eq!(eg.journal().union_count(), 1);
+        let union_event = eg.journal().union_events()[0];
         assert_eq!(union_event.rule_idx, Some(target.rule_idx));
     }
 
@@ -4087,14 +2902,8 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
-        let inner = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        }); // x + y
-        let outer = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![inner, z],
-        }); // (x + y) + z
+        let inner = eg.add(ENode::apply(OpKind::Add, &[x, y])); // x + y
+        let outer = eg.add(ENode::apply(OpKind::Add, &[inner, z])); // (x + y) + z
 
         // Rule A: commute the inner sum (x + y) -> (y + x).
         let target_a = find_target_in_class(&eg, "commutative", eg.find(inner));
@@ -4108,16 +2917,14 @@ mod tests {
         let target_b = find_target_in_class(&eg, "commutative", eg.find(outer));
         assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
-        assert_eq!(eg.provenance().recorded_count(), 2);
+        assert_eq!(eg.journal().recorded_count(), 2);
 
         // Find B's produced node: the rule-created node in outer's class
         // whose origin is app_b.
         let outer_class = eg.find(outer);
         let b_product_tag = eg
             .tags(outer_class)
-            .iter()
-            .copied()
-            .find(|&t| eg.provenance().origin(t) == Some(Origin::Rule(app_b)))
+            .find(|&t| eg.journal().origin(t) == Some(Origin::Rule(app_b)))
             .expect("expected a node created by application B in outer's class");
 
         let ancestors = eg.derivation_ancestors(&[(outer_class, b_product_tag)]);
@@ -4157,17 +2964,11 @@ mod tests {
         let mut eg = egraph_with_rules();
         let b = eg.add(ENode::Var(1));
         let c = eg.add(ENode::Var(2));
-        let nb = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![b],
-        });
-        let nc = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![c],
-        });
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b]));
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c]));
         let marker = eg.add(ENode::Var(9));
 
-        assert_eq!(eg.provenance().union_count(), 0);
+        assert_eq!(eg.journal().union_count(), 0);
 
         // Enqueue nc on the worklist without disturbing its semantics.
         eg.union(nc, marker);
@@ -4186,7 +2987,7 @@ mod tests {
         // (the direct union(b, c) and/or the congruence-closure union that
         // merged nb/nc during rebuild).
         assert!(
-            eg.provenance()
+            eg.journal()
                 .union_events()
                 .iter()
                 .any(|e| e.rule_idx.is_none()),
@@ -4210,15 +3011,12 @@ mod tests {
         // A reasonably deep expression: alternating +/-/* chain over x, y.
         let mut current = x;
         for i in 0..40 {
-            let op: &'static dyn Op = match i % 3 {
-                0 => &ops::Add,
-                1 => &ops::Mul,
-                _ => &ops::Sub,
+            let op: OpKind = match i % 3 {
+                0 => OpKind::Add,
+                1 => OpKind::Mul,
+                _ => OpKind::Sub,
             };
-            current = eg.add(ENode::Op {
-                op,
-                children: vec![current, y],
-            });
+            current = eg.add(ENode::apply(op, &[current, y]));
         }
 
         let start = std::time::Instant::now();
@@ -4228,15 +3026,15 @@ mod tests {
         eprintln!(
             "provenance overhead: saturation took {:?}; origins={} applications={} unions={} classes={}",
             elapsed,
-            eg.provenance().origin_count(),
-            eg.provenance().recorded_count(),
-            eg.provenance().union_count(),
+            eg.journal().origin_count(),
+            eg.journal().recorded_count(),
+            eg.journal().union_count(),
             eg.num_classes(),
         );
     }
 
     // ------------------------------------------------------------------
-    // The laws. `docs/plans/2026-09-02-optimizer-api.md` §1 states each one
+    // The laws. `docs/archive/plans/2026-09-02-optimizer-api.md` §1 states each one
     // and names the test that should pin it; these are those tests. They
     // assert the *property*, never the mechanism — a future fix that moves
     // the class budget somewhere else entirely should keep them passing.
@@ -4250,22 +3048,10 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
-        let diff = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![x, y],
-        });
-        let prod = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![sum, z],
-        });
-        let scaled = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![diff, z],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let diff = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
+        let prod = eg.add(ENode::apply(OpKind::Mul, &[sum, z]));
+        let scaled = eg.add(ENode::apply(OpKind::Mul, &[diff, z]));
         vec![x, y, z, sum, diff, prod, scaled]
     }
 
@@ -4320,7 +3106,7 @@ mod tests {
         // keeps the saturation run below inside the sweep rather than
         // bailing at `saturate_with_limits`'s own pre-sweep check.
         let mut pad = 0.0f32;
-        while eg.classes.len() < HARD_CLASS_LIMIT - 1 {
+        while eg.num_classes() < HARD_MINTED_LIMIT - 1 {
             let _ = eg.add(ENode::constant(pad));
             pad += 1.0;
         }
@@ -4328,9 +3114,9 @@ mod tests {
         // `add` is still total at the ceiling: the class it returns holds
         // the node, and it is not class 0's term.
         let fresh = eg.add(ENode::Var(200));
-        assert_eq!(eg.classes.len(), HARD_CLASS_LIMIT);
+        assert_eq!(eg.num_classes(), HARD_MINTED_LIMIT);
         assert!(
-            matches!(eg.nodes(eg.find(fresh)).first(), Some(ENode::Var(200))),
+            matches!(eg.nodes(eg.find(fresh)).next(), Some(ENode::Var(200))),
             "add past the limit returned a class that does not hold the node"
         );
         assert_ne!(
@@ -4370,29 +3156,14 @@ mod tests {
         let one = eg.add(ENode::constant(1.0));
 
         // x + 0 = x, one Identity firing away.
-        let x_plus_zero = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, zero],
-        });
+        let x_plus_zero = eg.add(ENode::apply(OpKind::Add, &[x, zero]));
         // (x + 0) * 1 = x, two firings away.
-        let scaled = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x_plus_zero, one],
-        });
+        let scaled = eg.add(ENode::apply(OpKind::Mul, &[x_plus_zero, one]));
         // x * 0 = 0, via Annihilator.
-        let annihilated = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, zero],
-        });
+        let annihilated = eg.add(ENode::apply(OpKind::Mul, &[x, zero]));
         // x + y = y + x, via Commutative.
-        let xy = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
-        let yx = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![y, x],
-        });
+        let xy = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let yx = eg.add(ENode::apply(OpKind::Add, &[y, x]));
 
         vec![x, y, zero, one, x_plus_zero, scaled, annihilated, xy, yx]
     }
@@ -4423,11 +3194,11 @@ mod tests {
     fn saturation_at_any_budget_never_removes_an_equality() {
         // Strictly increasing, spanning "cannot even finish one rule" to the
         // ceiling itself.
-        let ladder = [1usize, 2, 8, 64, 512, 4096, HARD_CLASS_LIMIT];
+        let ladder = [1usize, 2, 8, 64, 512, 4096, HARD_MINTED_LIMIT];
         let mut previous: Option<(usize, Vec<(usize, usize)>)> = None;
         let mut ever_found = 0usize;
 
-        for max_classes in ladder {
+        for max_minted in ladder {
             let mut eg = egraph_with_rules();
             let probes = seed_derivable_probes(&mut eg);
 
@@ -4439,12 +3210,12 @@ mod tests {
             eg.rebuild();
             assert_eq!(eg.find(a), eg.find(b), "union did not take");
 
-            eg.saturate_with_limits(20, max_classes, std::time::Duration::from_secs(30));
+            eg.saturate_with_limits(20, max_minted, std::time::Duration::from_secs(30));
 
             assert_eq!(
                 eg.find(a),
                 eg.find(b),
-                "budget {max_classes} retracted a hand-made equality"
+                "budget {max_minted} retracted a hand-made equality"
             );
 
             // Refinement: every pair equal at a smaller budget is still
@@ -4454,13 +3225,13 @@ mod tests {
                 for pair in before {
                     assert!(
                         pairs.contains(pair),
-                        "budget {max_classes} lost probe pair {pair:?} that budget \
+                        "budget {max_minted} lost probe pair {pair:?} that budget \
                          {smaller} had found — saturation is not monotone"
                     );
                 }
             }
             ever_found = ever_found.max(pairs.len());
-            previous = Some((max_classes, pairs));
+            previous = Some((max_minted, pairs));
         }
 
         // Guard against the ladder asserting nothing: if no budget ever
@@ -4471,218 +3242,170 @@ mod tests {
              is vacuous and no longer tests L2"
         );
     }
-}
 
-// ============================================================================
-// EGraphBatch — RAII batched rule application with lazy rebuild
-// ============================================================================
-
-/// RAII batch for rule application with budgeted interleaved rebuild.
-///
-/// Applies rules without per-rule rebuilds. After each rule, processes
-/// a chunk of the rebuild worklist to keep classes deduplicated without
-/// doing a full rebuild. On drop, drains the remaining worklist.
-///
-/// The rebuild budget per rule is proportional to the changes made,
-/// keeping total work bounded.
-///
-/// ```ignore
-/// {
-///     let mut batch = egraph.batch();
-///     for rule in approved_rules {
-///         batch.apply_rule(rule, 500, Some(deadline));
-///     }
-/// } // final rebuild on drop
-/// ```
-pub struct EGraphBatch<'a> {
-    graph: &'a mut EGraph,
-    any_changes: bool,
-    /// Max worklist items to process per rule application.
-    /// Keeps class sizes bounded during the batch.
-    rebuild_chunk: usize,
-}
-
-impl<'a> EGraphBatch<'a> {
-    /// Apply a single rule, then process a chunk of pending rebuilds.
-    ///
-    /// The interleaved rebuild keeps classes from ballooning between rules.
-    /// Each rule application is followed by processing up to `rebuild_chunk`
-    /// worklist items, so the graph stays approximately deduplicated.
-    pub fn apply_rule(
-        &mut self,
-        rule_idx: usize,
-        max_nodes: usize,
-        deadline: Option<std::time::Instant>,
-    ) -> ApplyResult {
-        let result = self
-            .graph
-            .apply_rule_at_index_timed(rule_idx, max_nodes, deadline);
-        if result.changes > 0 {
-            self.any_changes = true;
-            // Interleaved partial rebuild: process some worklist items to keep
-            // classes small. The chunk size bounds work per rule.
-            self.graph.rebuild_budgeted(self.rebuild_chunk);
-        }
-        result
-    }
-
-    /// Current number of e-classes.
-    pub fn node_count(&self) -> usize {
-        self.graph.classes.len()
-    }
-
-    /// Whether any rule in this batch produced changes.
-    pub fn has_changes(&self) -> bool {
-        self.any_changes
-    }
-
-    /// Pending rebuild worklist items.
-    pub fn pending_rebuilds(&self) -> usize {
-        self.graph.pending_rebuilds()
-    }
-}
-
-impl Drop for EGraphBatch<'_> {
-    fn drop(&mut self) {
-        // Drain any remaining worklist items
-        if self.any_changes {
-            self.graph.rebuild();
-        }
-    }
-}
-
-#[cfg(test)]
-mod mask_tests {
-    use super::*;
-    use crate::egraph::optimizer::{Budget, Optimizer};
-
-    /// A `(x*x + y*y).sqrt()`-shaped arena under the full rule set — a real
-    /// sweep where idempotent re-fires (`commutative`/`associative`)
-    /// dominate, which is exactly the regime
-    /// [`MaskScope::AllMatchingCandidate`] exists to see through.
-    fn mask_fixture() -> (Optimizer, EGraph, EClassId) {
-        let mut arena = pixelflow_ir::ExprArena::new();
-        let x = arena.push_var(0);
-        let y = arena.push_var(1);
-        let xx = arena.push_binary(pixelflow_ir::OpKind::Mul, x, x);
-        let yy = arena.push_binary(pixelflow_ir::OpKind::Mul, y, y);
-        let sum = arena.push_binary(pixelflow_ir::OpKind::Add, xx, yy);
-        let dist = arena.push_unary(pixelflow_ir::OpKind::Sqrt, sum);
-        let doubled = arena.push_binary(pixelflow_ir::OpKind::Add, dist, dist);
-        let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
-        let opt = Optimizer::production()
-            .budget(Budget::Applications(MASK_BUDGET))
-            .no_ceiling();
-        let mut eg = opt.egraph();
-        let root_class =
-            crate::egraph::insert(&arena, root, &mut eg, crate::egraph::Vocabulary::Templates)
-                .expect("insert into e-graph");
-        (opt, eg, root_class)
-    }
-
-    const MASK_BUDGET: u64 = 60;
-    const NODES: usize = 8;
-
-    /// The leave-one-out mask is consumed after it fires: exactly one skip,
-    /// no matter how many later applications look like it.
+    /// A rule's scan visits exactly the live classes that can root it, in
+    /// ascending order: a merge carries the absorbed class's kinds to the
+    /// survivor.
     #[test]
-    fn leave_one_out_mask_skips_exactly_one_application() {
-        let (opt, mut eg, root) = mask_fixture();
-        let mut opt = opt.mask(Some(ApplicationMask::leave_one_out(0)));
-        opt.run(&mut eg, root, NODES);
+    fn candidate_classes_are_the_live_classes_that_can_root_the_rule() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let product = eg.add(ENode::apply(OpKind::Mul, &[x, y]));
+        let neg = eg.add(ENode::apply(OpKind::Neg, &[sum]));
+        // `product` is merged into `sum`'s class (the smaller id survives),
+        // so the survivor now roots both `Add` and `Mul`.
+        let merged = eg.union(sum, product);
+        eg.rebuild();
+
+        let candidates = |roots: RootShapes| eg.candidate_classes(roots).collect::<Vec<_>>();
+        assert_eq!(candidates(RootShapes::kind(OpKind::Mul)), vec![merged]);
+        assert_eq!(candidates(RootShapes::kind(OpKind::Add)), vec![merged]);
+        assert_eq!(candidates(RootShapes::kind(OpKind::Neg)), vec![neg]);
         assert_eq!(
-            eg.last_replay_mask_skips(),
+            candidates(RootShapes::kinds(&[OpKind::Neg, OpKind::Var])),
+            vec![x, y, neg]
+        );
+        assert_eq!(candidates(RootShapes::nothing()), Vec::<EClassId>::new());
+        assert_eq!(
+            candidates(RootShapes::Any),
+            eg.class_ids().collect::<Vec<_>>()
+        );
+    }
+
+    /// A class that merges away keeps its bits in the per-kind sets, but it is
+    /// not live, so a scan never visits it.
+    #[test]
+    fn a_merged_away_class_is_not_a_candidate() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let c = eg.add(ENode::Const(1.0f32.to_bits()));
+        let survivor = eg.union(x, c);
+        eg.rebuild();
+        assert_eq!(survivor, x);
+        let candidates = eg
+            .candidate_classes(RootShapes::kind(OpKind::Const))
+            .collect::<Vec<_>>();
+        assert_eq!(candidates, vec![x], "the survivor now holds the constant");
+    }
+
+    /// A prediction does not count what an earlier one left in the scratch
+    /// table the caller keeps: its nodes are not this prediction's to mint.
+    #[test]
+    fn a_prediction_ignores_what_the_scratch_held() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let sum = RewriteAction::Create(ENode::apply(OpKind::Add, &[x, y]));
+        let product = RewriteAction::Create(ENode::apply(OpKind::Mul, &[x, y]));
+
+        let mut scratch = HashMap::default();
+        assert_eq!(eg.predicted_growth(&sum, &mut scratch), 1);
+        assert_eq!(
+            eg.predicted_growth(&product, &mut scratch),
             1,
-            "MaskScope::Single must fire exactly once"
+            "the sum the first prediction minted is not the product's growth"
         );
     }
 
-    /// The confluence-aware mask keeps firing: it skips the seed and every
-    /// later application of the same (rule, canonical matched-class
-    /// content). Under rules that re-match their own installed output, that
-    /// is strictly more than one.
+    /// Freezing moves the arena rather than copying it: the cache's peak is the
+    /// graph's, not twice it.
     #[test]
-    fn all_matching_candidate_mask_skips_every_re_derivation() {
-        let (opt, mut eg, root) = mask_fixture();
-        let mut opt = opt.mask(Some(ApplicationMask::all_matching_candidate(0)));
-        opt.run(&mut eg, root, NODES);
+    fn freezing_moves_the_arena() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let one = eg.add(ENode::constant(1.0));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, one]));
+        let tag = eg.tags(sum).next().expect("a class has a member");
+        let before: *const ENode = eg.as_frozen().node(tag);
+        let frozen = eg.freeze();
+        assert!(core::ptr::eq(frozen.node(tag), before));
+        assert_eq!(frozen.find(sum), sum);
+        assert_eq!(frozen.nodes(sum).count(), 1);
+    }
+
+    /// A frozen graph keeps what extraction reads, as literal facts about the
+    /// recipe of `a_node_whose_union_is_refused_leaves_its_class` (same ids):
+    /// each class's members and tags in order, the retired node answered by no
+    /// class, a live node answered in its own class only, the ids minted, and
+    /// the variance of a unit admitted before the freeze.
+    #[test]
+    fn a_frozen_graph_keeps_what_extraction_reads() {
+        let admitted = KernelStore::intern(&Kernel::x().add(&Kernel::constant(0.75)));
+        let never_admitted = KernelStore::intern(&Kernel::y().add(&Kernel::constant(0.75)));
+        let mut eg = EGraph::new();
+        eg.admit_unit(admitted, Variance::X);
+        let one = eg.add(ENode::constant(1.0)); // 0
+        let two = eg.add(ENode::constant(2.0)); // 1
+        let a = eg.add(ENode::Var(0)); // 2
+        let b = eg.add(ENode::Var(1)); // 3
+        let neg_a = eg.add(ENode::apply(OpKind::Neg, &[a])); // 4
+        let neg_b = eg.add(ENode::apply(OpKind::Neg, &[b])); // 5
+        eg.union(neg_a, one);
+        eg.union(neg_b, two);
+        eg.union(a, b);
+        eg.rebuild();
+        let retired = ENodeId(5);
         assert!(
-            eg.last_replay_mask_skips() > 1,
-            "MaskScope::AllMatchingCandidate must keep masking re-derivations of the seed \
-             candidate, got {} skip(s)",
-            eg.last_replay_mask_skips()
+            !eg.is_member(retired),
+            "precondition: the recipe retires node 5"
         );
-    }
 
-    /// A mask whose ordinal is never reached leaves no trace: zero skips,
-    /// and — because nothing was withheld — the same run an unmasked
-    /// optimizer produces, down to the extracted term.
-    #[test]
-    fn a_mask_whose_ordinal_never_fires_changes_nothing() {
-        let (mut plain_opt, mut plain_eg, plain_root) = mask_fixture();
-        let plain = plain_opt.run(&mut plain_eg, plain_root, NODES);
+        let frozen = eg.freeze();
 
-        let (opt, mut eg, root) = mask_fixture();
-        let mut opt = opt.mask(Some(ApplicationMask::leave_one_out(u64::MAX)));
-        let masked = opt.run(&mut eg, root, NODES);
-
-        assert_eq!(eg.last_replay_mask_skips(), 0);
-        assert_eq!(plain.stats.applications, masked.stats.applications);
-        assert_eq!(plain.stats.unions, masked.stats.unions);
-        assert_eq!(plain.choices, masked.choices);
-    }
-
-    /// The whole point of a counterfactual: withholding a real application
-    /// must actually withhold it, and the run must be a different run.
-    ///
-    /// A skipped ordinal is not *burned* — it is left for the next candidate
-    /// in the same scan order — so the mask does not by itself shorten the
-    /// budget. It can still end the run sooner, and on this fixture it does:
-    /// withholding a whole candidate class removes the work that would have
-    /// kept the sweep productive, and the masked run quiesces well inside
-    /// the 60-application budget while the unmasked one spends all of it.
-    /// That is the counterfactual working, so the assertion is the honest
-    /// one — the graphs differ — not an equality that happens to hold on a
-    /// luckier fixture.
-    #[test]
-    fn withholding_a_real_application_changes_the_run() {
-        let (mut plain_opt, mut plain_eg, plain_root) = mask_fixture();
-        let plain = plain_opt.run(&mut plain_eg, plain_root, NODES);
-
-        let (opt, mut eg, root) = mask_fixture();
-        let mut opt = opt.mask(Some(ApplicationMask::all_matching_candidate(0)));
-        let masked = opt.run(&mut eg, root, NODES);
-
-        assert!(eg.last_replay_mask_skips() > 0, "the seed must have fired");
-        assert!(
-            masked.stats.applications <= plain.stats.applications,
-            "a mask can only withhold work, never manufacture it: {} vs {}",
-            masked.stats.applications,
-            plain.stats.applications
+        assert_eq!(frozen.num_classes(), 6, "six ids were minted");
+        assert_eq!(frozen.find(b), a, "the smaller id survives");
+        assert_eq!(frozen.find(neg_a), one);
+        assert_eq!(frozen.find(neg_b), two);
+        assert_eq!(
+            frozen.nodes(one).copied().collect::<Vec<_>>(),
+            [ENode::constant(1.0), ENode::apply(OpKind::Neg, &[a])]
         );
-        assert_ne!(
-            (plain.stats.unions, plain.stats.classes),
-            (masked.stats.unions, masked.stats.classes),
-            "withholding a candidate and every re-derivation of it must change what the \
-             run built — otherwise Δ is measuring nothing"
+        assert_eq!(
+            frozen.tags(one).collect::<Vec<_>>(),
+            [ENodeId(0), ENodeId(4)]
         );
+        assert_eq!(
+            frozen.nodes(two).copied().collect::<Vec<_>>(),
+            [ENode::constant(2.0)]
+        );
+        assert_eq!(frozen.tags(two).collect::<Vec<_>>(), [ENodeId(1)]);
+        assert_eq!(
+            frozen.nodes(b).copied().collect::<Vec<_>>(),
+            [ENode::Var(0), ENode::Var(1)],
+            "a union gives the survivor's members, then the absorbed ones"
+        );
+        assert_eq!(frozen.tags(a).collect::<Vec<_>>(), [ENodeId(2), ENodeId(3)]);
+
+        assert_eq!(frozen.node_for_tag(two, retired), None);
+        assert_eq!(frozen.node_for_tag(one, retired), None);
+        assert_eq!(
+            frozen.node_for_tag(one, ENodeId(0)),
+            Some(&ENode::constant(1.0)),
+            "a live node answers in its own class"
+        );
+        assert_eq!(
+            frozen.node_for_tag(two, ENodeId(0)),
+            None,
+            "a live node answers nothing in another class"
+        );
+        assert_eq!(
+            frozen.node_for_tag(one, ENodeId(1_000)),
+            None,
+            "a tag past the graph names nothing"
+        );
+
+        assert_eq!(frozen.unit_variance(admitted), Some(Variance::X));
+        assert_eq!(frozen.ref_variance(admitted), Variance::X);
+        assert_eq!(frozen.unit_variance(never_admitted), None);
     }
 }
 
-/// The per-class variance fact (`var_fact`): seeded by the transfer function,
-/// merged by intersection, and a superset of the truth whatever the graph did
-/// to reach it.
 #[cfg(test)]
 mod variance_fact_tests {
     use super::*;
     use pixelflow_ir::{Binder, Fold, Monoid};
-
-    fn op2(op: &'static dyn Op, a: EClassId, b: EClassId) -> ENode {
-        ENode::Op {
-            op,
-            children: vec![a, b],
-        }
-    }
 
     /// **Free of what any member is free of.** `X − X` is seeded `{X}` from
     /// its children; the graph then learns it equals `0`, and the class is
@@ -4694,8 +3417,8 @@ mod variance_fact_tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let x_minus_x = eg.add(op2(&ops::Sub, x, x));
-        let parent = eg.add(op2(&ops::Mul, x_minus_x, y));
+        let x_minus_x = eg.add(ENode::apply(OpKind::Sub, &[x, x]));
+        let parent = eg.add(ENode::apply(OpKind::Mul, &[x_minus_x, y]));
         assert_eq!(eg.variance(x_minus_x), Variance::X, "seeded from X and X");
         assert_eq!(eg.variance(parent), Variance::COORDS);
 
@@ -4723,14 +3446,8 @@ mod variance_fact_tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sin_x = eg.add(ENode::Op {
-            op: &ops::Sin,
-            children: vec![x],
-        });
-        let sin_y = eg.add(ENode::Op {
-            op: &ops::Sin,
-            children: vec![y],
-        });
+        let sin_x = eg.add(ENode::apply(OpKind::Sin, &[x]));
+        let sin_y = eg.add(ENode::apply(OpKind::Sin, &[y]));
         eg.union(sin_x, sin_y);
         eg.rebuild();
         assert_eq!(eg.variance(sin_x), Variance::CONST);
@@ -4744,7 +3461,7 @@ mod variance_fact_tests {
         let binder = Binder::from_slot(0).expect("a live binder");
         let i = eg.add(ENode::Var(binder.var()));
         let x = eg.add(ENode::Var(0));
-        let body = eg.add(op2(&ops::Mul, i, x));
+        let body = eg.add(ENode::apply(OpKind::Mul, &[i, x]));
         let fold = eg.add(ENode::Reduce {
             fold: Fold::new(Monoid::SUM, binder, 0..8),
             body,
@@ -4768,18 +3485,27 @@ mod variance_fact_tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let zero = eg.add(ENode::constant(0.0));
-        let x_plus_0 = eg.add(op2(&ops::Add, x, zero));
+        let x_plus_0 = eg.add(ENode::apply(OpKind::Add, &[x, zero]));
         eg.union(x_plus_0, x);
         eg.rebuild();
 
         let class = eg.find(x);
         assert!(
             eg.nodes(class)
-                .iter()
                 .any(|n| n.children_slice().iter().any(|&c| eg.find(c) == class)),
             "precondition: the class reaches itself"
         );
         assert_eq!(eg.variance(class), Variance::X);
+    }
+
+    /// A journal is chosen when the graph is built: dropping it from a graph
+    /// that already holds classes would forget their births.
+    #[test]
+    #[should_panic(expected = "already holds")]
+    fn a_journal_cannot_be_dropped_from_a_populated_graph() {
+        let mut egraph = EGraph::new();
+        let _x = egraph.add(ENode::Var(0));
+        let _journalless = egraph.without_journal();
     }
 
     /// The fact survives a clone — a search branch reads the same facts its
@@ -4789,7 +3515,7 @@ mod variance_fact_tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(op2(&ops::Add, x, y));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let copy = eg.clone();
         assert_eq!(copy.variance(sum), Variance::COORDS);
     }

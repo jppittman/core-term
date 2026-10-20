@@ -17,12 +17,12 @@ containing field was private, with no accessor.
 
 ### Fixed
 
-- This audit originally read that as a STYLE.md "test public API" violation
+- This audit originally read that as a ../process/STYLE.md "test public API" violation
   and added `SpatialBSP::interiors(&self) -> &[InteriorNode]` to fix it.
   That accessor was **not** merged, and the direct field reads stand. Its
   own doc comment gave the game away — "Exposed for structural assertions
   in tests" is a public API widened for test access, which CLAUDE.md forbids
-  without explicit permission, and STYLE.md's preference for public-API
+  without explicit permission, and ../process/STYLE.md's preference for public-API
   tests does not outrank it. No accessor was needed in any case: `mod tests`
   is a child of the module declaring the field, so it can read
   `self.interiors` directly. The public surface is unchanged.
@@ -30,7 +30,7 @@ containing field was private, with no accessor.
   had `matches!(root.left, NodeRef::Leaf(_));` as a bare statement — the
   `bool` it produces was discarded instead of asserted, so the check was a
   silent no-op. Wrapped both occurrences in `assert!()`.
-- Renamed 9 test names that were bare noun phrases (violating STYLE.md's
+- Renamed 9 test names that were bare noun phrases (violating ../process/STYLE.md's
   "it should" rule): `single_leaf`, `two_leaves`, `empty_bsp`,
   `four_leaves_grid`, `many_items_stress_test`, `stack_of_wide_strips`,
   `node_ref_types_are_distinct`, `binary_tree_property_interior_count`,

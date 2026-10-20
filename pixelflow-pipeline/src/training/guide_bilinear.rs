@@ -1,5 +1,5 @@
 //! Checkpoint format and record→candidate encoding for the **bilinear**
-//! saturation Guide (`docs/plans/2026-09-02-bilinear-guide-registration.md`).
+//! saturation Guide (`docs/archive/plans/2026-09-02-bilinear-guide-registration.md`).
 //!
 //! Shared by `train_guide_bilinear` (writes) and `skew_test_bilinear_guide`
 //! (reads), for the same reason `guide_linear` is shared by the additive

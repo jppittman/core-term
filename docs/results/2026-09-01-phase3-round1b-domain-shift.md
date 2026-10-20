@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L038.** The H_null verdict compared two arms that both lose on the real metric (DAG cost), on generator families rather than shipped shaders; the trig finding that half-angle-product pays on sh (L039) stands. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L038.** The H_null verdict compared two arms that both lose on the real metric (DAG cost), on generator families rather than shipped shaders; the trig finding that half-angle-product pays on sh (L039) stands. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Phase 3 round 1b — domain shift: H_null on `sh`, and the shift is not about trig at all (`bezier` moves the same amount) (2026-09-01)
 
@@ -24,7 +24,7 @@ $B --corpus pixelflow-pipeline/data/corpus_dev_ood.bin --name-prefix dev_bezier_
 # combined tables: 2026-09-01-phase3-round1b-domain-shift.{json,csv}
 ```
 
-Registration: `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` — nothing in §1–§6 was
+Registration: `docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` — nothing in §1–§6 was
 revised; §7 is appended there against its gates. Round-1 discipline unchanged: budgets in rule
 applications, the one curve definition `egraph::anytime::run_anytime_curve[_with]`, deterministic
 `CostModel::latency_prior()` `extract_dag` cost, no wall-clock in any number, FINAL untouched
@@ -284,7 +284,7 @@ recorded here as a referral with the numbers, not chased.
   harness's per-expression rows (with per-rule-index histograms), aggregate JSON, and generated
   report for each corpus.
 - `docs/results/journal.jsonl` — one `phase3_round1b_domain_shift` record.
-- `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §7 — results against the gates.
+- `docs/archive/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §7 — results against the gates.
 
 ## Harness corrections landed after these numbers were minted (2026-09-02)
 
