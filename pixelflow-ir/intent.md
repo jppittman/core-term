@@ -66,8 +66,9 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   `render/packed.rs` (exprarena-on-dag Stage D, not started; D16).
 - A constant is typed (`Lit`), but a node is not: one `f32` lane is a real
   and an integer by convention, and a computed mask is a lane like any other.
-  `Real`/`Int`/`Mask` sorts on nodes, and `Lit::Int`, wait on the
-  reinterpretation being an op (kernels-evaluate-kernels §2, item 1).
+  `Real`/`Int`/`Mask` on nodes, and `Lit::Int`, are ruled
+  (kernels-evaluate-kernels §2) and wait on the reinterpretation being an op
+  (docs/language/2026-10-17-the-arena-is-typed.md, T2 then T3).
 - `Var(u8)` means an axis or a binder by range; `Fold`'s ends are `u32`,
   `Binder` a `u8`, against the 64-bit control-plane rule.
 - `Buffer`, `BoundManifold`'s link tables and `passes::lattice` are in the

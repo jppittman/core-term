@@ -47,7 +47,6 @@ and to the baked tiles a frame reads today.
   `BilinearSampler` read memory. D10 replaces them with `FontPrograms` after
   C2's measurement (the-language-is-kernel, O4); `FontPrograms` has no frame
   caller (`core-term` and `render/cell_grid.rs` use the atlas).
-  `CachedText::kernel` sums coverages, so overlaps exceed 1 (BACKLOG C3).
 - `loop_blinn::glyph`/`run` fold over a `DiscreteManifold` piece table and round
   counts to powers of two; `loop_blinn.rs` builds `ExprArena`, against D16.
 - `mod.rs` documents `render::color::Grayscale`, which does not exist, and calls
