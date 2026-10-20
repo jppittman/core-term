@@ -49,11 +49,11 @@ for dp,dirs,files in os.walk(ROOT):
             while stack and depth<=stack[-1][2]: stack.pop()
 # write full dump TSV
 recs=sorted(records,key=lambda r:(r['crate'],r['file'],r['line']))
-with open(os.path.join(ROOT,'docs/function-audit.tsv'),'w',newline='') as fh:
+with open(os.path.join(ROOT,'docs/archive/notes/function-audit.tsv'),'w',newline='') as fh:
     w=csv.writer(fh,delimiter='\t')
     w.writerow(['crate','file','line','name','visibility','context','context_type','is_test'])
     for r in recs:
         w.writerow([r['crate'],r['file'],r['line'],r['name'],r['vis'],r['ctx'],r['ctx_name'],'test'if r['test']else'prod'])
 json.dump(records,open('/tmp/fns_final.json','w'))
-print("wrote docs/function-audit.tsv  rows:",len(recs))
+print("wrote docs/archive/notes/function-audit.tsv  rows:",len(recs))
 print("prod:",sum(1 for r in records if not r['test']),"test:",sum(1 for r in records if r['test']))

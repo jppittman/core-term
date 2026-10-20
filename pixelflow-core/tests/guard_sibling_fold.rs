@@ -10,7 +10,7 @@
 //! `regalloc::operands` alone, which treats a `Reduce` def as a leaf: once
 //! `extract_folds` (`program/scopes.rs`) has carved a fold's body into its own scope, nothing in the
 //! enclosing scope's schedule recorded what that body reads. They now read it
-//! from `guards::FoldReads` as well, which makes the def a consumer of what its
+//! from `ownership::FoldReads` as well, which makes the def a consumer of what its
 //! fold reads. Two miscompiles came of the missing edges, each pinned below
 //! against a plain-`f64` reference (never a pixelflow evaluator):
 //!

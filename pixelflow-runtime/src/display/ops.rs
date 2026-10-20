@@ -7,7 +7,7 @@ use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, SystemStatus};
 /// target topology; `Blitted` goes no further than `PlatformActor`, which puts the buffer back
 /// at rest. There is no window *return* message any more: under the pull protocol the driver is
 /// the buffer's resting owner, so `Present` **is** the return (§8 of
-/// `docs/designs/pixelflow-runtime-engine-mesh-migration.md`).
+/// `docs/runtime/pixelflow-runtime-engine-mesh-migration.md`).
 #[derive(Debug)]
 pub enum DriverEmit {
     /// An input or window-lifecycle event.

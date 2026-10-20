@@ -27,7 +27,7 @@
 //! `ExprArena` nonetheless still keeps its own index-based storage, for
 //! reasons of representation rather than lifecycle: `ExprNode::Nary`
 //! publishes raw slab offsets, and several call sites store an `ExprId`
-//! beside the arena it indexes. `docs/plans/2026-09-09-exprarena-on-dag.md`
+//! beside the arena it indexes. `docs/archive/plans/2026-09-09-exprarena-on-dag.md`
 //! has the full list and the staging around it.
 
 extern crate alloc;

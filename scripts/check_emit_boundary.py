@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Enforce the emit boundary of pixelflow-codegen.
 
-docs/plans/2026-09-12-emit-should-just-emit.md: the emitter -- `emit/`, the
+docs/archive/plans/2026-09-12-emit-should-just-emit.md: the emitter -- `emit/`, the
 register allocator included -- is handed a finished program and turns it into
 bytes. It names nothing upstream of it: no optimizer, no lowering, no scoping,
 no driver. And `program/`, the vocabulary and the stages that build it, names
@@ -47,7 +47,7 @@ Known loopholes, which a text scan cannot see: crate-root re-exports such as
 module imported then named by its short path (`use crate::program as p;
 p::lower::x()`); macro-generated paths; and a method call into the driver from
 non-test emit code. A file that is test-only by its parent's `mod`
-declaration (`emit/coverage.rs`) is scanned as production, and so is a file
+declaration is scanned as production, and so is a file
 whose own `#![cfg(test)]` is an inner attribute (only `#[cfg(test)]` is
 recognised) -- a false positive there is loud, never silent. An unrecognised
 shape is always scanned, never skipped: the failure direction is more text,

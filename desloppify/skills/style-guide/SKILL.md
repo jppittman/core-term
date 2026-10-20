@@ -1,6 +1,6 @@
 ---
 name: style-guide
-description: The repository's code style (docs/STYLE.md and CLAUDE.md "Code Style"), distilled.
+description: The repository's code style (docs/process/STYLE.md and CLAUDE.md "Code Style"), distilled.
 ---
 
 # Style guide

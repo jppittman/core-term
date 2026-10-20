@@ -5,6 +5,11 @@
 //! [`Out`] or [`InOut`] only from a lease, so a register chosen anywhere but
 //! the allocator does not compile. Values and labels are names and copy;
 //! these are resources and move.
+//!
+//! What an encoder's register field takes is one of those borrows, never a
+//! number: the number is read off the token at the field ([`Reg::number`]),
+//! and a register the ISA or the ABI fixes (`rsp`, `sp`, `xzr`, `x30`, `k0`)
+//! is not a register here at all but bits of the word that names it.
 
 use crate::emit::{
     Class, File, FileId, FlagsFile, GeneralFile, IsaBackend, OpmaskFile, VectorFile,
@@ -13,6 +18,7 @@ use crate::error::CompileError;
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
+use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ops::{Deref, RangeInclusive};
 
@@ -30,12 +36,14 @@ pub(in crate::emit) const FRAME_OVERFLOW: &str = "spill frame overflow: exceeds 
 /// VEX prefix would drop bit 4 and encode `zmm20` as `ymm12`.
 pub(in crate::emit) struct Reg<B: IsaBackend, F: File> {
     number: u8,
-    _brand: PhantomData<(fn() -> B, F)>,
+    _brand: PhantomData<fn() -> (B, F)>,
 }
 
 impl<B: IsaBackend, F: File> Reg<B, F> {
     /// The number the encoding's register fields take (`ModRM`, `VEX.vvvv`,
-    /// `Rd`/`Rn`/`Rm`): a width the ISA dictates.
+    /// `Rd`/`Rn`/`Rm`): a width the ISA dictates. The one way a number leaves
+    /// this module, and it is reached only through an [`In`], [`Out`] or
+    /// [`InOut`], at the field that holds it.
     pub(in crate::emit) fn number(&self) -> u8 {
         self.number
     }
@@ -68,6 +76,21 @@ impl<B: IsaBackend> Pool<B> {
             opmask: file(),
             flags: file(),
         }
+    }
+
+    /// A lease of general register `number` at a point the scan has left: the
+    /// allocator's one past-tense lease. [`Leases::new`] lends every register
+    /// once, for the present; this lends one again, for a store placed behind
+    /// the scan (`local::Scan::store_at_definition`), whose address register
+    /// is the one the allocator's own record of that point says was lent to
+    /// nothing there (`general_free_at`). It binds that store and is dropped.
+    ///
+    /// # Panics
+    /// If `number` is not a member of the general file.
+    pub(super) fn past(&self, number: u8) -> Lent<'_, B> {
+        let reg = self.general.iter().find(|reg| reg.number == number);
+        let reg = reg.unwrap_or_else(|| panic!("general register {number} is in no pool"));
+        Lent::General(Lease(reg))
     }
 }
 
@@ -219,9 +242,12 @@ deref_to_reg!(In, Out, InOut);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(in crate::emit) struct SlotName(u64);
 
-/// A frame slot: at `offset` from the stack pointer. A resource like
-/// [`Reg`]: not `Copy`, not `Clone`, minted only by [`Frame`], at an offset
-/// fixed for its life.
+/// A frame slot: at `offset` from the stack pointer, fixed at mint. A
+/// descriptor, `Copy`: the instruction the allocator binds as it places it
+/// carries one while the frame is still growing. The right to use the slot is
+/// the frame's ([`SlotLease`], and the vector spans [`Frame::lease_vector`]
+/// keeps), not the descriptor's.
+#[derive(Copy, Clone, Debug)]
 pub(in crate::emit) struct FrameSlot {
     name: SlotName,
     offset: u64,
@@ -406,8 +432,8 @@ impl Frame {
         self.slots.len() as u64
     }
 
-    pub(in crate::emit) fn slot(&self, name: SlotName) -> &FrameSlot {
-        &self.slots[name.0 as usize]
+    pub(in crate::emit) fn slot(&self, name: SlotName) -> FrameSlot {
+        self.slots[name.0 as usize]
     }
 
     /// The frame's size in bytes: what `Enter` subtracts from the stack
@@ -418,5 +444,34 @@ impl Frame {
             return align_up(self.narrow * NARROW_BYTES, SP_ALIGN);
         }
         self.vector_end()
+    }
+}
+
+/// The frame's size, as `Enter` and `Ret` take it: set once, when the scan
+/// ends and the frame has stopped growing. An instruction is bound as the scan
+/// places it, before the frame is final, so it holds this handle and the
+/// encoder reads the size through it. Owned beside the pool, for one compile.
+pub(in crate::emit) struct FrameBytes(Cell<Option<u64>>);
+
+impl FrameBytes {
+    pub(in crate::emit) fn pending() -> Self {
+        Self(Cell::new(None))
+    }
+
+    /// # Panics
+    /// If the size was set already: the frame is final once.
+    pub(super) fn set(&self, bytes: u64) {
+        assert!(
+            self.0.replace(Some(bytes)).is_none(),
+            "the frame's size is set once, when the scan ends"
+        );
+    }
+
+    /// # Panics
+    /// If the scan has not ended: nothing encodes before allocation is done.
+    pub(in crate::emit) fn get(&self) -> u64 {
+        self.0
+            .get()
+            .expect("the frame's size is read before the scan ended")
     }
 }

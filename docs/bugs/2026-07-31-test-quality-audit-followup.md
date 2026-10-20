@@ -7,7 +7,7 @@ commits had landed, including a substantial actor-scheduler refactor
 send policy` #968, `feat(actor-scheduler): one runtime primitive — step_os on
 Transducer, DedicatedThread driver` #967) and unrelated graphics/IR/compiler
 work. Two things this pass: (1) a static audit of every test file changed
-since `d7d33b8` (at that point in history) against docs/STYLE.md's "Test
+since `d7d33b8` (at that point in history) against docs/process/STYLE.md's "Test
 Public API" rule, via a background `Explore` sub-agent; (2) `cargo-mutants`
 (installed fresh, v27.1.0, consistent with every prior pass's note it
 doesn't persist between sessions) scoped to actor-scheduler's most-refactored

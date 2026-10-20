@@ -22,6 +22,10 @@ How to read the entries:
 - **Lives** names the type or module and the document that decided it. A
   "today … contradicts this entry" note marks code or prose known to be
   behind the decision.
+- **Lives** also points, where one exists, at the module's own `intent.md`
+  (beside its `mod.rs`, or beside `Cargo.toml` for a crate): what the module
+  owns, never does, and is behind on, in its own words
+  (`docs/process/2026-10-15-intent-lives-with-the-module.md`).
 - **Homonyms** are marked. One word in this project often names several
   unrelated things, and each sense is listed separately: tier, region, slot,
   shape, root, guard, arm, block, phase, pass, frame, lane, park, label, fold,
@@ -30,6 +34,12 @@ How to read the entries:
 The entries are in one file per part. Read the part a term belongs to, not
 the whole ontology; a term's homonyms may live in another part, so check the
 index for the word first.
+
+The *meaning* of each object (what it is as a mathematical object, and the
+laws it obeys) is written once, in `docs/DENOTATION.md`. An entry here says
+what the code treats the term as and where the code is behind the meaning;
+the denotation is the thing it is behind. When an entry and the denotation
+disagree, the denotation wins and the entry is stale.
 
 ## Index
 
@@ -65,7 +75,7 @@ index for the word first.
 - Dwrt (derivative)
 - Ref, unit and link (composition)
 - Identity
-- Table, Buffer, Gather, Broadcast
+- Discrete kernel (table; Gather and Broadcast are backend realizations)
 - Library (vs primitive)
 - Transcendental expansion
 - Totality
@@ -77,7 +87,7 @@ index for the word first.
 
 - Lattice
 - Shape (extent). Homonym
-- Manifold (BoundManifold, bind, bake)
+- Manifold (bake)
 - CompiledKernel
 - Collapse
 - Write and Seq (effects)
@@ -112,7 +122,7 @@ index for the word first.
 - Cost model (latency prior, fold price)
 - Reranker
 - Variance
-- Demand
+- Demand (retired)
 - Widening and narrowing
 - Compile cache key (canonical)
 - Numeric contract (precision versus range)

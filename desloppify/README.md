@@ -123,7 +123,7 @@ speaking its API.
 | `question` | the decision, answered once per unit |
 | `fine`, `violations` | the outcomes, each name with its meaning; at least one of each. `unsure` is every rule's own |
 | `guidance` | optional, for the explainer: what a finding should say |
-| `context` | `"module_root"`: each call also sees the outline of the reviewed file's module root — the contract an implementation file is judged against |
+| `context` | `"module_root"`: each call also sees the outline of the reviewed file's module root — the contract an implementation file is judged against; `"module_intent"`: that, plus the nearest `intent.md` up the tree within the crate — what the module says of itself |
 | `paths`, `exclude` | optional globs over paths relative to where the review runs (`pixelflow-*/**`, `**/tests/**`); no `paths` means every file |
 | `skills` | optional skill names to put ahead of the question |
 
@@ -135,7 +135,7 @@ it judges nothing.
 
 ## Shipped rules
 
-Drawn from `CLAUDE.md`, `AGENTS.md`, `docs/STYLE.md`, `.claude/agents/` and
+Drawn from `CLAUDE.md`, `AGENTS.md`, `docs/process/STYLE.md`, `.claude/agents/` and
 `docs/plans/`. Only rules needing judgment are here: what a deterministic
 check can catch (`cfg` encapsulation, `let _ =` on `#[must_use]`,
 conventional commits) is already a CI job or a lint, and stays there.
@@ -143,7 +143,6 @@ conventional commits) is already a CI job or a lint, and stays there.
 | Rule | Levels | Unit | Source |
 |---|---|---|---|
 | `boolean-argument` | 1→1 | a file's function signatures | STYLE: boolean arguments |
-| `no-tests-inside-the-implementation` | 1→2 | outline | behavioral contracts: no test code or test-only API in the source tree |
 | `test-names-it-should` | 1→1 | outline | STYLE: "it should" names |
 | `actor-lane-choice` | 1→2 | file | CLAUDE.md: actor lanes |
 | `behavior-through-the-trait` | 1→2 | outline + module root | behavioral contracts |
@@ -162,7 +161,7 @@ conventional commits) is already a CI job or a lint, and stays there.
 | `registers-come-from-the-allocator` | 1→2 | each of functions | register-allocation escape hatches plan |
 | `silent-failure` | 1→2 | each of functions | CLAUDE.md: fail loud |
 | `simd-is-codegens` | 1→2 | file | CLAUDE.md: SIMD is an implementation detail |
-| `tests-target-the-contract` | 1→2 | file | behavioral contracts: tests observe the production API's output |
+| `tests-target-the-contract` | 1→2 | file | tests assert the as-if contract (values, refusals, determinism, documented laws), never mechanism |
 | `effects-are-returned` | 2→3 | file | behavioral contracts |
 | `function-shapes` | 2→3 | a crate's function signatures | names vs namespaces, argument structs, denotation, extraction |
 | `invariant-in-comment` | 2→3 | file | CLAUDE.md: denote before you build |

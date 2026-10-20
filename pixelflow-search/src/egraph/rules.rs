@@ -27,23 +27,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 
+use pixelflow_ir::key::fnv1a64;
+
 use super::rewrite::Rewrite;
-
-/// FNV-1a over bytes — a *stable* hash, unlike `DefaultHasher`, whose output
-/// is explicitly not guaranteed across releases. A [`RuleId`] outlives the
-/// process that minted it (it is written into checkpoints and reports), so
-/// the digest has to be reproducible by a different build.
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h = FNV_OFFSET;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    h
-}
 
 /// The canonical, stable name of one rule *instance*.
 ///
@@ -81,7 +67,7 @@ impl RuleId {
     /// loader reading rule keys back out of a checkpoint or a JSON report.
     #[must_use]
     pub fn from_label(label: &str) -> Self {
-        Self(fnv1a(label.as_bytes()))
+        Self(fnv1a64(label.as_bytes()))
     }
 
     /// The raw digest, for serialization.
@@ -103,14 +89,44 @@ impl fmt::Display for RuleId {
     }
 }
 
-/// A digest over a whole optimizer configuration — today, over a
-/// [`RuleSet`]'s ordered ids.
+/// A position in one [`RuleSet`]: [`RuleSet::indices`] hands them out, and
+/// nothing else mints one.
+///
+/// [`RuleId`] is the identity that survives a reordering; this is the dense
+/// handle the sweep indexes its per-rule tables with, and it is only
+/// meaningful against the set that minted it (nothing checks that: a handle
+/// from another set of equal length silently names a different rule). Holding it as its own type
+/// keeps a rule's position from being confused with any other `usize` an
+/// application record carries (a class, a step, a count).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RuleIdx(usize);
+
+impl RuleIdx {
+    /// The position, for a consumer that keeps its own table parallel to the
+    /// set (a checkpoint's weights, a report's rows).
+    #[must_use]
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
+
+impl fmt::Display for RuleIdx {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// A digest over a rule vocabulary — over a [`RuleSet`]'s ordered ids.
 ///
 /// Order is part of it, not just content: saturation under a budget is
 /// order-sensitive, so the same rules in a different sequence can extract a
-/// different (equally valid, differently priced) term. A cache keyed on the
-/// input expression alone would then serve one configuration's code to
-/// another.
+/// different (equally valid, differently priced) term.
+///
+/// This names the *vocabulary* and nothing wider: a guide checkpoint records
+/// the fingerprint of the set it was trained against and refuses to load
+/// against another, so the digest is written to disk and must keep meaning
+/// that. What a saturation *cache* must key on — the budget as well — is
+/// [`SaturationKey`](super::optimizer::SaturationKey).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Fingerprint(u64);
 
@@ -156,11 +172,13 @@ impl fmt::Display for Fingerprint {
 
 /// An ordered rule vocabulary, plus the ids that name its members.
 ///
-/// Rules are held behind an `Arc` — the same one an
-/// [`EGraph`](super::EGraph) stores — so an
-/// [`Optimizer`](super::optimizer::Optimizer) can hand the vocabulary to as
-/// many graphs as it likes without rebuilding it, and so the ids it computed
-/// once are provably the ids of the rules those graphs apply.
+/// Frozen at construction and shared behind `Arc`s: cloning a set is cheap,
+/// so an [`Optimizer`](super::optimizer::Optimizer) hands the same vocabulary
+/// to as many [`Saturation`](super::Saturation)s as it likes without
+/// rebuilding it, and the ids it computed once are provably the ids of the
+/// rules those runs apply. The sweep visits rules in this order, so the order
+/// is part of what a set means.
+#[derive(Clone)]
 pub struct RuleSet {
     rules: Arc<Vec<Box<dyn Rewrite>>>,
     ids: Arc<Vec<RuleId>>,
@@ -197,25 +215,37 @@ impl RuleSet {
     #[must_use]
     pub fn new(rules: Vec<Box<dyn Rewrite>>) -> Self {
         let ids: Vec<RuleId> = rules.iter().map(|r| RuleId::of(r.as_ref())).collect();
-        let mut h = FNV_OFFSET;
-        for id in &ids {
-            for &b in &id.0.to_le_bytes() {
-                h ^= u64::from(b);
-                h = h.wrapping_mul(FNV_PRIME);
-            }
-        }
+        let id_bytes: Vec<u8> = ids.iter().flat_map(|id| id.0.to_le_bytes()).collect();
         Self {
             rules: Arc::new(rules),
             ids: Arc::new(ids),
-            fingerprint: Fingerprint(h),
+            fingerprint: Fingerprint(fnv1a64(&id_bytes)),
         }
     }
 
-    /// The shared rule vector and its ids, for building an
-    /// [`EGraph`](super::EGraph) over this vocabulary.
+    /// Every position in the set, in sweep order.
+    pub fn indices(&self) -> impl Iterator<Item = RuleIdx> + use<> {
+        (0..self.ids.len()).map(RuleIdx)
+    }
+
+    /// The rule a handle names.
+    ///
+    /// # Panics
+    ///
+    /// If `idx` was minted by a longer set.
     #[must_use]
-    pub fn shared(&self) -> (Arc<Vec<Box<dyn Rewrite>>>, Arc<Vec<RuleId>>) {
-        (Arc::clone(&self.rules), Arc::clone(&self.ids))
+    pub fn rule(&self, idx: RuleIdx) -> &dyn Rewrite {
+        self.rules[idx.0].as_ref()
+    }
+
+    /// The id of the rule a handle names.
+    ///
+    /// # Panics
+    ///
+    /// If `idx` was minted by a longer set.
+    #[must_use]
+    pub fn id(&self, idx: RuleIdx) -> RuleId {
+        self.ids[idx.0]
     }
 
     /// Digest over the ordered sequence of [`RuleId`]s — content *and*

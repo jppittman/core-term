@@ -21,7 +21,7 @@
 //! combines those instead, so each character keeps its own bounding box and a
 //! sample only pays for the characters whose box contains it — the binning is
 //! exact, and it is what the merge threw away
-//! (docs/plans/2026-09-09-a-run-is-a-glyph.md).
+//! (docs/archive/plans/2026-09-09-a-run-is-a-glyph.md).
 //!
 //! The *coefficient table* is still shared, though: one table for the run,
 //! with each character folding over its own row range. Per-character tables

@@ -64,7 +64,7 @@ impl Provider {
     #[must_use]
     pub(crate) fn model(self, level: ModelLevel) -> &'static str {
         match (self, level) {
-            (Self::Anthropic, ModelLevel::Lite) => "claude-haiku-4-5",
+            (Self::Anthropic, ModelLevel::Lite) => "claude-haiku-5-5",
             (Self::Anthropic, ModelLevel::Fast) => "claude-sonnet-5-5",
             (Self::Anthropic, ModelLevel::Strong) => "claude-opus-5-5",
             (Self::Anthropic, ModelLevel::Frontier) => "claude-fable-5-1",

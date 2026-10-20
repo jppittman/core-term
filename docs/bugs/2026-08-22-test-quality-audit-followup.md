@@ -9,7 +9,7 @@ this pass picks up three of the five open items directly:
    mutation-tested to completion (a partial run had timed out on the
    crate's slow `--lib` baseline).
 2. `pixelflow-graphics/src/spatial_bsp.rs` — flagged in three consecutive
-   passes (07-26 through 08-15) as a STYLE.md "test public API" violation:
+   passes (07-26 through 08-15) as a ../process/STYLE.md "test public API" violation:
    19 tests reached into the private `bsp.interiors` field. Each prior pass
    called it "a design call" and left it open; this pass makes the call.
 3. `pixelflow-core/src/backend/x86.rs`'s *required* `SimdOps` methods —
@@ -136,7 +136,7 @@ the implementation, not a test.
 
 ### Descriptive names
 
-While in the file for the above, did a full pass against STYLE.md's "it
+While in the file for the above, did a full pass against ../process/STYLE.md's "it
 should" test: 29 of ~56 test names were either bare noun phrases with no
 verb (`two_leaves`, `binary_tree_property_interior_count`,
 `many_items_stress_test`, `stack_of_wide_strips`), had a subject/verb
@@ -168,7 +168,7 @@ above (which changed a name to match existing assertions, not the reverse).
 - `cargo fmt -p pixelflow-graphics -- --check`: clean.
 
 Mutation-testing this file was not attempted this pass — the fix here was
-the STYLE.md violation specifically, not a coverage gap (the 19 rewritten
+the ../process/STYLE.md violation specifically, not a coverage gap (the 19 rewritten
 tests already covered the same assertions before and after; only the
 access path changed). A mutants sweep of `spatial_bsp.rs` remains open for
 a future pass.

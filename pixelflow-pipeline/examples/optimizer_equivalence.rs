@@ -28,7 +28,7 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 /// `KernelKey::of` is exactly this digest — a canonical, reachability-scoped
 /// fingerprint of the arena — so this example uses that shared definition
 /// instead of restating FNV-1a over `nodes_raw()`'s debug string
-/// (docs/plans/2026-09-09-exprarena-on-dag.md, Stage A).
+/// (docs/archive/plans/2026-09-09-exprarena-on-dag.md, Stage A).
 fn digest(arena: &ExprArena, root: ExprId) -> u64 {
     KernelKey::of(arena, root).bits()
 }
@@ -71,7 +71,7 @@ fn main() {
             pixelflow_search::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        let stats = optimizer.run(&mut eg, root_class, arena.len()).stats;
+        let stats = optimizer.run(&mut eg, root_class).stats;
 
         println!(
             "{name:<22} {input_nodes:>5} {:>5} {d:>18x} {:>8.1}ms {:>9} {:>7} {:>20}",

@@ -1,5 +1,5 @@
 //! Deterministic, learning-free ordering diversity for the R2G trajectory
-//! mint (`docs/plans/2026-09-01-guide-return-to-go.md` §2: "without variation
+//! mint (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §2: "without variation
 //! in return across trajectories of the same expression there is no credit
 //! signal"). [`UniformRandomGuide`] is the one new [`SaturationGuide`] this
 //! module adds; it exists so a caller minting several independent orderings
@@ -25,23 +25,9 @@
 //! and trivially reproducible from the seed alone (no state to serialize or
 //! replay).
 
-use crate::egraph::REGISTERED_PRIMARY_BUDGET_APPLICATIONS;
+use pixelflow_ir::key::fnv1a64;
 
 use super::{CandidateSummary, SaturationGuide};
-
-/// FNV-1a, 64-bit — a small, dependency-free, well-distributed non-crypto
-/// hash; adequate here because the only property this module needs is
-/// "looks uniform, is deterministic," not collision resistance.
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET_BASIS;
-    for &b in bytes {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
 
 /// SplitMix64's output mixer — cheap, well-studied avalanche for turning one
 /// `u64` (here, `seed ^ fingerprint`) into a second `u64` that does not
@@ -77,8 +63,8 @@ fn candidate_fingerprint(c: &CandidateSummary) -> u64 {
 }
 
 /// One candidate's deterministic pseudo-random score, `seed` mixed with the
-/// candidate's own fingerprint (see [`candidate_fingerprint`]) via
-/// [`splitmix64`], normalized to `[0.0, 1.0)`. Exposed at module scope (not
+/// candidate's own fingerprint (see `candidate_fingerprint`) via
+/// `splitmix64`, normalized to `[0.0, 1.0)`. Exposed at module scope (not
 /// just via [`UniformRandomGuide`]) so `pixelflow-pipeline`'s trajectory
 /// minter can reuse the identical uniform term for its `EpsilonMix` ordering
 /// policy (mixing a NAMED base Guide's rank with this same hash-uniform)
@@ -105,13 +91,14 @@ pub fn uniform_unit_score(seed: u64, c: &CandidateSummary) -> f32 {
 /// `GuidedSaturation`'s checkpoint-resume semantics — see module doc).
 ///
 /// This is the diversity half of the R2G trajectory mint's "ordering
-/// diversity is the dataset" design (`docs/plans/2026-09-01-guide-return-to-go.md`
+/// diversity is the dataset" design (`docs/archive/plans/2026-09-01-guide-return-to-go.md`
 /// §2): without SOME arms whose ordering has nothing to do with rule
 /// identity or the trained linear Guide, every trajectory of a given
 /// expression samples nearby points in the SAME ordering family and the
 /// per-expression return spread that carries the credit signal collapses.
 #[derive(Clone, Copy, Debug)]
 pub struct UniformRandomGuide {
+    /// Names the ordering: the same seed scores the same batch identically.
     pub seed: u64,
 }
 
@@ -123,16 +110,6 @@ impl SaturationGuide for UniformRandomGuide {
             .collect()
     }
 }
-
-/// The registered primary budget tier, re-exported here purely so a caller
-/// that only imports this module (e.g. a unit test constructing a
-/// `CandidateSummary` by hand) does not also need to reach into
-/// `crate::egraph` for a constant this module's own doc already discusses —
-/// **not** used by any scoring logic above, which is budget-agnostic by
-/// design (a fixed pseudo-random preference over candidate SHAPES, not a
-/// function of how far through the budget the episode is).
-#[allow(dead_code)]
-const _DOC_ONLY_BUDGET_REFERENCE: usize = REGISTERED_PRIMARY_BUDGET_APPLICATIONS;
 
 #[cfg(test)]
 mod tests {

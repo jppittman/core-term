@@ -48,20 +48,22 @@
 //! values live at once; a vector slot is leased for one value's interval when
 //! the value is first stored.
 //!
-//! Registers are bound after the scan: it records which register every
-//! operand of every instruction held, and the frame is final by then, so a
-//! slot is a borrowed offset.
+//! **Each instruction is bound as it is placed.** The scan holds every lease,
+//! so an operand's token is borrowed from the lease its value holds at that
+//! point; a read whose register a write of the same instruction takes is bound
+//! through the write's. A slot is a descriptor fixed at mint, and the frame's
+//! size reaches `Enter` and `Ret` through a handle the scan fills when it
+//! ends. There is no register-number table.
 
 use super::policy::{
     self, Budget, CARRY_RESERVE, Candidate, EvictionRank, GENERAL_CARRY_RESERVE, Store,
 };
-use super::resource::{Frame, In, InOut, Leases, Lent, Out, Pool, SlotLease, SlotName};
+use super::resource::{Frame, FrameBytes, In, InOut, Leases, Lent, Out, Pool, SlotLease, SlotName};
 use crate::emit::asm::{AsmProgram, Item, Label, Labels};
 use crate::emit::build::{self, Spiller};
 use crate::emit::{
     Access, Block, Bound, CONST_POOL_ALIGN, Class, ClassId, Constants, File, FileId, FrameSlot,
-    Function, Integer, IsaBackend, Loop, Operand, Opmask, Pointer, Pushed, Rebind, Selected,
-    Target, Value, ValueName, Vector,
+    Function, IsaBackend, Loop, Operand, Pushed, Rebind, Selected, Target, Value, ValueName,
 };
 use crate::error::CompileError;
 use crate::pass::Pass;
@@ -94,7 +96,7 @@ pub(in crate::emit) struct Emitted<'m, B: IsaBackend> {
 
 /// An allocated kernel: every register a borrowed token, every slot a
 /// borrowed slot, every block argument a placed move. A block has no
-/// parameters any more: they are slots.
+/// parameters: they are slots.
 pub(in crate::emit) struct Allocated<'m, B: IsaBackend> {
     pub(in crate::emit) blocks: Vec<Block<Emitted<'m, B>>>,
     pub(in crate::emit) loops: Vec<Loop>,
@@ -174,6 +176,10 @@ struct Life {
     /// Whether its definition can be placed again, known before the scan: such
     /// a value is never stored, so it needs no slot.
     recompute: Recompute,
+    /// The general registers lent to nothing right after its definition, by
+    /// number: the allocator's record of that point, which a store placed
+    /// there behind the scan ([`Scan::store_at_definition`]) draws on.
+    free_general: u64,
 }
 
 /// Whether a value's definition can be placed again, and what that reads.
@@ -239,6 +245,7 @@ impl Liveness {
                 carried_until: None,
                 remat: None,
                 recompute: Recompute::No,
+                free_general: 0,
             })
             .collect();
 
@@ -519,6 +526,9 @@ fn plan_carries(live: &Liveness, reads: &[usize], budget: Budget) -> Vec<Vec<u64
 pub(in crate::emit) struct Allocate<'m, B: IsaBackend> {
     pub(in crate::emit) pool: &'m Pool<B>,
     pub(in crate::emit) frame: &'m mut Frame,
+    /// Where the frame's size goes when the scan ends: what the `Enter` and
+    /// `Ret` it bound read.
+    pub(in crate::emit) frame_bytes: &'m FrameBytes,
 }
 
 impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
@@ -535,13 +545,16 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
     /// flags write or held to the end of its block, a carried value that is not in
     /// its register at its loop's latch, a loop parameter read past the latch, a
     /// backward branch whose moves form a register cycle (no producer before a loop
-    /// passes one parameter to another), a latch move into a register that a value
-    /// other than the loop's parameters and the moved arguments holds, a value
-    /// dropped at a join that is in no slot, a block no scanned branch reaches, a
-    /// loop's exit reached by anything but its latch, or an entry block whose first
-    /// instruction does not make the frame.
+    /// passes one parameter to another), a value dropped at a join that is in no
+    /// slot, a block no scanned branch reaches, a loop's exit reached by anything
+    /// but its latch, or an entry block whose first instruction does not make the
+    /// frame.
     fn run(self, function: Function<B>) -> Result<Allocated<'m, B>, CompileError> {
-        let Self { pool, frame } = self;
+        let Self {
+            pool,
+            frame,
+            frame_bytes,
+        } = self;
         let mut live = Liveness::of(&function);
         let reads = live.index_reads();
         layout(&mut live.lives, frame)?;
@@ -559,7 +572,9 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
             0,
         ];
         let plan = plan_carries(&live, &reads, budget);
-        let Liveness { lives, loops, .. } = live;
+        let Liveness {
+            mut lives, loops, ..
+        } = live;
 
         let leases = Leases::new(pool);
         let mut free: [Vec<Lent<B>>; 4] = [
@@ -590,8 +605,10 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
         // The ABI registers are stored, if they ever are, right after the entry
         // block's first instruction, which makes the frame.
         let mut defined: Vec<Option<(usize, usize)>> = alloc::vec![None; lives.len()];
+        let free_general = general_mask(&free[FileId::General as usize]);
         for value in entry {
             defined[value.id as usize] = Some((0, 0));
+            lives[value.id as usize].free_general = free_general;
         }
 
         let mut labels = function.labels;
@@ -608,9 +625,10 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
             .enumerate()
             .map(|(i, l)| (l.head, i))
             .collect();
-        let entry_numbers = B::FILE.entry();
         let mut scan = Scan {
+            pool,
             frame: &mut *frame,
+            frame_bytes,
             reads,
             lives,
             blocks_at,
@@ -622,16 +640,13 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
             edges: BTreeMap::new(),
             free,
             held,
-            used_general: [entry_numbers.ctx, entry_numbers.out, entry_numbers.pitch]
-                .into_iter()
-                .fold(0, |used, number| used | 1 << number),
             pinned: Vec::new(),
             next: function.classes.len() as u64,
             defined,
-            insts: Vec::new(),
+            free_general_at_entry: alloc::vec![0; function.blocks.len()],
+            deferred: Vec::new(),
             records: Vec::new(),
             late: BTreeMap::new(),
-            numbers: Vec::new(),
             at: function.blocks[0].label,
             block: 0,
             position: 0,
@@ -667,43 +682,17 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
             scan.edges.keys()
         );
         let Scan {
-            free,
-            insts,
-            records,
-            late,
-            numbers,
-            ..
+            records, mut late, ..
         } = scan;
 
         let slots = frame.minted();
-        let frame: &'m Frame = frame;
-        let mut bank = free;
-        bank.iter_mut()
-            .for_each(|file| file.sort_unstable_by_key(Lent::number));
-        let mut binding = Binding {
-            frame,
-            insts: &insts,
-            bank,
-            numbers: &numbers,
-            next: 0,
-            framed: false,
-        };
-        let mut late = late;
+        frame_bytes.set(frame.bytes());
         let mut blocks = Vec::with_capacity(records.len());
         for (b, (block, (label, scope))) in records.into_iter().zip(shapes).enumerate() {
-            let mut insts = Vec::with_capacity(block.len());
-            for stored in late.remove(&StorePoint::Entry(b)).unwrap_or_default() {
-                insts.push(binding.record(&stored));
-            }
-            for (k, record) in block.into_iter().enumerate() {
-                insts.push(binding.record(&record));
-                assert!(
-                    (b, k) != (0, 0) || binding.framed,
-                    "the entry block's first instruction does not make the frame, so the ABI registers have nowhere to be stored"
-                );
-                for stored in late.remove(&StorePoint::After(b, k)).unwrap_or_default() {
-                    insts.push(binding.record(&stored));
-                }
+            let mut insts = late.remove(&StorePoint::Entry(b)).unwrap_or_default();
+            for (k, emitted) in block.into_iter().enumerate() {
+                insts.push(emitted);
+                insts.extend(late.remove(&StorePoint::After(b, k)).unwrap_or_default());
             }
             blocks.push(Block {
                 label,
@@ -712,6 +701,11 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
                 scope,
             });
         }
+        assert!(
+            late.is_empty(),
+            "stores were placed at points no block has: {:?}",
+            late.keys()
+        );
 
         Ok(Allocated {
             blocks,
@@ -727,18 +721,8 @@ impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
     }
 }
 
-/// An instruction the scan has placed: which of the scan's instructions to
-/// bind, why it is there, and where in the scan's numbers its operands'
-/// registers begin. Placing one instruction twice (a rematerialization) is two
-/// records of one instruction.
-struct Record {
-    inst: usize,
-    origin: Origin,
-    regs: usize,
-}
-
 /// Where an evicted value's store goes in the blocks.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum StorePoint {
     /// Right after the record at this block and index.
     After(usize, usize),
@@ -749,9 +733,9 @@ enum StorePoint {
 /// A loop the scan is inside: where its carried values live.
 struct Active {
     index: usize,
-    /// Each carried parameter, and the number of the register that is its home
-    /// from the loop's entry to its latch.
-    homes: Vec<(u64, u8)>,
+    /// Each carried parameter: its lease, taken at the loop's entry, is its
+    /// home to the latch.
+    homes: Vec<u64>,
     /// Each carried value defined before the loop, and its register.
     carried: Vec<(u64, u8)>,
 }
@@ -762,6 +746,13 @@ type Residents = Vec<(u64, (FileId, u8))>;
 /// The values in a register and their leases, in id order: a file's registers
 /// are few, so a search of them is short, and nothing is allocated per value.
 struct Held<'m, B: IsaBackend>(Vec<(u64, Lent<'m, B>)>);
+
+/// The registers of `leases`, by number, as a mask.
+fn general_mask<B: IsaBackend>(leases: &[Lent<'_, B>]) -> u64 {
+    leases
+        .iter()
+        .fold(0, |mask, lent| mask | 1 << lent.number())
+}
 
 impl<'m, B: IsaBackend> Held<'m, B> {
     fn at(&self, id: u64) -> Result<usize, usize> {
@@ -801,18 +792,19 @@ struct Edge {
     residents: Residents,
 }
 
-/// One register-to-register move of a branch's parallel move.
+/// One register-to-register move of a branch's parallel move: the argument
+/// into the parameter's lease.
 struct Move {
-    /// A value of the moved class, to type the copy.
-    value: ValueName,
-    from: u8,
-    to: u8,
+    arg: ValueName,
+    param: ValueName,
 }
 
 /// The scan's state: which registers are free, which values are in one, and
 /// the instructions placed so far.
 struct Scan<'f, 'm, B: IsaBackend> {
+    pool: &'m Pool<B>,
     frame: &'f mut Frame,
+    frame_bytes: &'m FrameBytes,
     lives: Vec<Life>,
     /// The position of every read, by value and then by position.
     reads: Vec<usize>,
@@ -837,11 +829,6 @@ struct Scan<'f, 'm, B: IsaBackend> {
     free: [Vec<Lent<'m, B>>; 4],
     /// The values in a register, by id.
     held: Held<'m, B>,
-    /// The general registers some value has held so far, by number. A register
-    /// outside it has held nothing at any point behind the scan. Every general
-    /// lease that leaves `free` or goes back into a register passes
-    /// [`Self::note_general`], which is what makes that true.
-    used_general: u64,
     /// The values the instruction being placed reads or defines: the ones
     /// eviction leaves alone.
     pinned: Vec<u64>,
@@ -849,45 +836,21 @@ struct Scan<'f, 'm, B: IsaBackend> {
     next: u64,
     /// Where each value is defined: a block, and an index into its records.
     defined: Vec<Option<(usize, usize)>>,
-    /// Every instruction the scan has been given or has inserted, in the order
-    /// it met them; a record names one by its index.
-    insts: Vec<B::Inst<Selected>>,
-    /// The instructions placed so far, by block.
-    records: Vec<Vec<Record>>,
-    /// The stores of evicted values, by where each goes.
-    late: BTreeMap<StorePoint, Vec<Record>>,
-    /// The register number of every operand of every record, in operand order;
-    /// zero where the operand is not a register.
-    numbers: Vec<u8>,
+    /// By block, the general registers lent to nothing when the scan arrived:
+    /// the record a store placed at the block's entry draws on.
+    free_general_at_entry: Vec<u64>,
+    /// The definitions the backend can recompute, held back from where they
+    /// were selected ([`Self::defer`]) and placed where a read needs them; a
+    /// [`Life::remat`] names one by index. One is out while it is being placed.
+    deferred: Vec<Option<B::Inst<Selected>>>,
+    /// The instructions placed so far, bound, by block.
+    records: Vec<Vec<Emitted<'m, B>>>,
+    /// The stores of evicted values, bound, by where each goes.
+    late: BTreeMap<StorePoint, Vec<Emitted<'m, B>>>,
     /// Where the scan is, for what it says when a function cannot be allocated.
     at: Label,
     block: usize,
     position: usize,
-}
-
-/// `$body` with `$class` standing for the spillable class `$id` names.
-macro_rules! of_class {
-    ($id:expr, $class:ident => $body:expr) => {
-        match $id {
-            ClassId::Vector => {
-                type $class = Vector;
-                $body
-            }
-            ClassId::Pointer => {
-                type $class = Pointer;
-                $body
-            }
-            ClassId::Integer => {
-                type $class = Integer;
-                $body
-            }
-            ClassId::Opmask => {
-                type $class = Opmask;
-                $body
-            }
-            ClassId::Flags => unreachable!("the flags are not stored"),
-        }
-    };
 }
 
 impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
@@ -993,8 +956,8 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             ClassId::Flags,
             "{value:?} is rematerializable, and a rematerialization would clobber the flags"
         );
-        let inst = self.keep(pushed.inst);
-        self.lives[value.id as usize].remat = Some(inst);
+        self.lives[value.id as usize].remat = Some(self.deferred.len());
+        self.deferred.push(Some(pushed.inst));
     }
 
     /// The loop `target` is the way into: a forward branch to its head.
@@ -1049,6 +1012,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     /// everything else in its slot, which `flush` makes true.
     fn head(&mut self, label: Label) -> Result<(), CompileError> {
         self.arrive(label);
+        self.free_general_at_entry[self.block] = general_mask(&self.free[FileId::General as usize]);
         let Some(&l) = self.loop_at.get(&label) else {
             return Ok(());
         };
@@ -1065,8 +1029,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             active.carried.push((value, lent.number()));
         }
         for (&arg, param) in facts.latch_args.iter().zip(&facts.params) {
-            let homed = active.homes.iter().any(|&(p, _)| p == param.id);
-            if homed && !facts.takes(arg.id) {
+            if active.homes.contains(&param.id) && !facts.takes(arg.id) {
                 self.want.entry(arg.id).or_insert(param.id);
             }
         }
@@ -1193,7 +1156,6 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
                 .position(|lent| lent.file() == file && lent.number() == number);
             let at = at.unwrap_or_else(|| panic!("value {id} is in a register no lease has"));
             let lent = leases.swap_remove(at);
-            self.note_general(&lent);
             self.held.insert(id, lent);
         }
         for lent in leases {
@@ -1222,7 +1184,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
                 (true, false) => {
                     let lent = self.home(arg, args)?;
                     let active = self.active.last_mut().expect("a loop is being entered");
-                    active.homes.push((param.id, lent.number()));
+                    active.homes.push(param.id);
                     self.held.insert(param.id, lent);
                 }
                 (true, true) => moves.push((arg, *param)),
@@ -1251,22 +1213,12 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         }
     }
 
-    /// `lent` is, or is about to be, a value's register: record it in
-    /// [`Self::used_general`] if it is a general one.
-    fn note_general(&mut self, lent: &Lent<'m, B>) {
-        if lent.file() == FileId::General {
-            self.used_general |= 1 << lent.number();
-        }
-    }
-
     /// The backward branch of loop `l`: move each carried parameter's argument
     /// into the parameter's register, and leave the loop.
     ///
     /// # Panics
     /// When a carried value is not in the register it had at the head, a
-    /// parameter is read past the latch, a move's destination holds a value
-    /// other than the loop's own parameters and the arguments being moved, or
-    /// the moves form a register cycle.
+    /// parameter is read past the latch, or the moves form a register cycle.
     fn latch(&mut self, l: usize, moves: &[(ValueName, ValueName)]) {
         let active = self.active.pop().expect("a latch is inside its loop");
         assert_eq!(active.index, l, "{:?} closes a loop it is not in", self.at);
@@ -1287,41 +1239,23 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         }
         let mut pending = Vec::new();
         for &(arg, param) in moves {
-            let (_, to) = *active
-                .homes
-                .iter()
-                .find(|&&(p, _)| p == param.id)
-                .expect("a carried parameter has a home");
-            let from = self.held.number(arg.id);
-            if from == to {
-                continue;
+            assert!(
+                active.homes.contains(&param.id),
+                "a carried parameter has a home"
+            );
+            // The parameter's register is its own to the latch, so the move is
+            // into its lease. A parameter holding none gave its register to the
+            // argument when that was defined ([`Self::write_plain`]), and its
+            // move is nothing.
+            if self.held.get(param.id).is_some() {
+                pending.push(Move { arg, param });
             }
-            // Only the loop's own dead parameters, and the arguments being
-            // moved, may be in a register a move writes.
-            let holder = self
-                .held
-                .iter()
-                .find(|(_, lent)| lent.file() == arg.class.file() && lent.number() == to);
-            if let Some((holder, _)) = holder {
-                let homed = active.homes.iter().any(|&(p, _)| p == holder);
-                let moved = moves.iter().any(|&(a, _)| a.id == holder);
-                assert!(
-                    homed || moved,
-                    "the latch of the loop headed {:?} moves {arg:?} into register {to}, which value {holder} holds",
-                    self.loops[l].head
-                );
-            }
-            pending.push(Move {
-                value: arg,
-                from,
-                to,
-            });
         }
         self.sequence(pending);
-        self.want
-            .retain(|_, param| !active.homes.iter().any(|&(p, _)| p == *param));
-        let expiring = active.carried.iter().chain(&active.homes);
-        self.pinned.extend(expiring.map(|&(value, _)| value));
+        self.want.retain(|_, param| !active.homes.contains(param));
+        let carried = active.carried.iter().map(|&(value, _)| value);
+        self.pinned
+            .extend(carried.chain(active.homes.iter().copied()));
     }
 
     /// Emit `pending`, a parallel move, in an order no move overwrites what
@@ -1333,11 +1267,12 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     /// with its first producer.
     fn sequence(&mut self, mut pending: Vec<Move>) {
         while !pending.is_empty() {
-            let free = pending.iter().position(|m| {
-                !pending.iter().any(|other| {
-                    other.value.class.file() == m.value.class.file() && other.from == m.to
-                })
-            });
+            // A move may go when no other reads the register it writes: every
+            // value is in a lease of its own, so that is the parameter itself
+            // being passed on.
+            let free = pending
+                .iter()
+                .position(|m| !pending.iter().any(|other| other.arg.id == m.param.id));
             let free = free.unwrap_or_else(|| {
                 panic!(
                     "{:?}: a backward branch's moves form a register cycle; no selected function passes a loop parameter to another",
@@ -1349,25 +1284,16 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         }
     }
 
-    /// Copy register `m.from` to register `m.to`, which no value uses.
+    /// Copy `m.arg` into the lease of `m.param`, which nothing reads again.
     fn move_register(&mut self, m: &Move) {
         let mut insts = Vec::new();
         let mut spiller = Spiller::<B>::new(&mut self.next, &mut insts);
-        of_class!(m.value.class, C => B::copy::<C>(&mut spiller, m.value.typed()).name());
+        let copy = B::copy(&mut spiller, m.arg);
         for pushed in insts {
-            let regs = self.numbers.len();
-            for operand in &pushed.operands {
-                self.numbers.push(match operand {
-                    Operand::Reg { access, .. } if access.reads() => m.from,
-                    Operand::Reg { .. } => m.to,
-                    Operand::Target(_) | Operand::Frame(_) => 0,
-                });
-            }
-            let inst = self.keep(pushed.inst);
-            self.records[self.block].push(Record {
+            let inst = self.bind(&pushed.inst, &[(copy.id, m.param.id)]);
+            self.records[self.block].push(Emitted {
                 inst,
                 origin: Origin::Copy,
-                regs,
             });
         }
     }
@@ -1384,25 +1310,30 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             self.at
         );
         let life = &self.lives[value.id as usize];
-        if let Some(inst) = life.remat {
-            let define = Operand::Reg {
+        if let Some(at) = life.remat {
+            let recompute = life.recompute;
+            let mut operands = alloc::vec![Operand::Reg {
                 value,
                 access: Access::Write,
-            };
-            let Recompute::Reads(base) = life.recompute else {
-                return self.place(inst, &[define], Origin::Remat);
-            };
-            // The definition reads, so what it reads is placed first, and kept
-            // while it is.
-            self.pin(base.id);
-            if self.held.get(base.id).is_none() {
-                self.reload_into(base)?;
+            }];
+            if let Recompute::Reads(base) = recompute {
+                // The definition reads, so what it reads is placed first, and
+                // kept while it is.
+                self.pin(base.id);
+                if self.held.get(base.id).is_none() {
+                    self.reload_into(base)?;
+                }
+                operands.push(Operand::Reg {
+                    value: base,
+                    access: Access::Read,
+                });
             }
-            let read = Operand::Reg {
-                value: base,
-                access: Access::Read,
-            };
-            return self.place(inst, &[define, read], Origin::Remat);
+            let inst = self.deferred[at]
+                .take()
+                .expect("a definition is placed again one read at a time");
+            let placed = self.place(&inst, &operands, Origin::Remat);
+            self.deferred[at] = Some(inst);
+            return placed;
         }
         let life = &self.lives[value.id as usize];
         let slot = life
@@ -1412,7 +1343,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         let mut insts = Vec::new();
         let mut spiller = Spiller::<B>::new(&mut self.next, &mut insts);
         let slot = self.frame.slot(slot);
-        let fresh = of_class!(value.class, C => B::reload::<C>(&mut spiller, slot).name());
+        let fresh = B::reload(&mut spiller, value.class, slot);
         for pushed in insts {
             self.emit(pushed, Origin::Reload)?;
         }
@@ -1426,7 +1357,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         let mut insts = Vec::new();
         let mut spiller = Spiller::<B>::new(&mut self.next, &mut insts);
         let slot = self.frame.slot(slot);
-        of_class!(value.class, C => B::spill::<C>(&mut spiller, value.typed(), slot));
+        B::spill(&mut spiller, value, slot);
         insts
     }
 
@@ -1486,53 +1417,77 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         let slot = self.slot(name)?;
         self.lives[value as usize].stored = true;
         let at = self.store_point(value);
-        let number = self.held.number(value);
+        let insts = self.spill_of(name, slot);
+        // The point the store follows is behind the scan, where no lease can be
+        // taken. The store reads `value` from the register it has held since
+        // its definition, and the address of a slot too deep for it to encode
+        // from a general register the allocator's record of that point says
+        // was lent to nothing: the pool's one past-tense lease, which the
+        // address value holds for the binding alone.
         let mut address = None;
-        for pushed in self.spill_of(name, slot) {
-            // The point the store follows is behind the scan: it may name the
-            // register `value` is in, and the address of a slot too deep for
-            // the store to encode, which goes in a general register that no
-            // value has held up to now, so it was free there too.
-            let regs = self.numbers.len();
-            for operand in &pushed.operands {
-                self.numbers.push(match operand {
-                    Operand::Reg { value: read, .. } if read.id == value => number,
-                    Operand::Reg { value: pointer, .. } if pointer.id as usize >= self.lives.len() => {
-                        assert_eq!(pointer.class, ClassId::Pointer, "{pointer:?} is not a slot's address");
-                        match address {
-                            Some(number) => number,
-                            None => *address.insert(self.unused_general()?),
-                        }
+        for operand in insts.iter().flat_map(|pushed| &pushed.operands) {
+            match operand {
+                Operand::Reg { value: read, .. } if read.id == value => {}
+                Operand::Reg {
+                    value: pointer,
+                    access,
+                } if pointer.id as usize >= self.lives.len() => {
+                    assert_eq!(
+                        pointer.class,
+                        ClassId::Pointer,
+                        "{pointer:?} is not a slot's address"
+                    );
+                    if !access.reads() {
+                        let number = self.general_free_at(value, at)?;
+                        self.held.insert(pointer.id, self.pool.past(number));
+                        assert!(
+                            address.replace(pointer.id).is_none(),
+                            "a slot's address is one value"
+                        );
                     }
-                    Operand::Reg { value: read, .. } => panic!(
-                        "the store of {value} after its definition reads {read:?}, a register at a point the scan has left"
-                    ),
-                    Operand::Target(_) | Operand::Frame(_) => 0,
-                });
+                }
+                Operand::Reg { value: read, .. } => panic!(
+                    "the store of {value} after its definition reads {read:?}, a register at a point the scan has left"
+                ),
+                Operand::Target(_) | Operand::Frame(_) => {}
             }
-            let inst = self.keep(pushed.inst);
-            self.late.entry(at).or_default().push(Record {
+        }
+        for pushed in &insts {
+            let inst = self.bind(&pushed.inst, &[]);
+            self.late.entry(at).or_default().push(Emitted {
                 inst,
                 origin: Origin::Spill,
-                regs,
             });
+        }
+        if let Some(address) = address {
+            assert!(
+                self.held.remove(address).is_some(),
+                "the address value held the past-tense lease for the binding"
+            );
         }
         Ok(())
     }
 
-    /// A general register no value has held so far.
+    /// A general register lent to nothing at `at`, where `value`'s store goes,
+    /// from the allocator's record of that point ([`Life::free_general`],
+    /// [`Self::free_general_at_entry`]): the lowest-numbered, as
+    /// [`Self::acquire`] would choose now.
     ///
     /// # Errors
-    /// [`CompileError::BudgetExceeded`] when every general register has held
-    /// one.
-    fn unused_general(&self) -> Result<u8, CompileError> {
+    /// [`CompileError::BudgetExceeded`] when every general register was lent
+    /// there.
+    fn general_free_at(&self, value: u64, at: StorePoint) -> Result<u8, CompileError> {
+        let free = match at {
+            StorePoint::After(..) => self.lives[value as usize].free_general,
+            StorePoint::Entry(block) => self.free_general_at_entry[block],
+        };
         B::FILE
             .members(FileId::General)
             .iter()
             .copied()
-            .find(|&number| self.used_general & 1 << number == 0)
+            .find(|&number| free & 1 << number != 0)
             .ok_or(CompileError::BudgetExceeded(
-                "a vector slot past the reach of one store, in a function that uses every general register",
+                "a vector slot past the reach of one store, defined where every general register was lent",
             ))
     }
 
@@ -1590,7 +1545,6 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             .map(|(i, _)| i)
             .expect("eviction frees a register or panics");
         let lent = bank.swap_remove(lowest);
-        self.note_general(&lent);
         Ok(lent)
     }
 
@@ -1644,30 +1598,22 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         pushed: Pushed<B::Inst<Selected>>,
         origin: Origin,
     ) -> Result<(), CompileError> {
-        let inst = self.keep(pushed.inst);
-        self.place(inst, &pushed.operands, origin)
+        self.place(&pushed.inst, &pushed.operands, origin)
     }
 
     /// Place instruction `inst`, whose operands are `operands`, as
-    /// [`Self::emit`] does.
+    /// [`Self::emit`] does, and bind it: its reads in the state it reads them
+    /// in, its writes in the state it leaves.
     fn place(
         &mut self,
-        inst: usize,
+        inst: &B::Inst<Selected>,
         operands: &[Operand],
         origin: Origin,
     ) -> Result<(), CompileError> {
-        let first = self.numbers.len();
-        self.numbers.resize(first + operands.len(), 0);
-        for (k, operand) in operands.iter().enumerate() {
-            if let Operand::Reg {
-                value,
-                access: Access::Read,
-            } = operand
-            {
-                self.numbers[first + k] = self.held.number(value.id);
-            }
-        }
-        for (k, operand) in operands.iter().enumerate() {
+        // Values bound through another's lease: a read whose register a write
+        // of this instruction takes.
+        let mut via: Vec<(u64, u64)> = Vec::new();
+        for operand in operands {
             let Operand::Reg {
                 value,
                 access: Access::Tied { read },
@@ -1679,23 +1625,29 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
                 unreachable!("a tie names a register operand")
             };
             let lent = match self.live_after(tied.id) {
-                false => self.held.remove(tied.id).expect("a tied read is held"),
+                false => {
+                    via.push((tied.id, value.id));
+                    self.held.remove(tied.id).expect("a tied read is held")
+                }
                 true => self.copy_of(tied)?,
             };
-            self.numbers[first + read] = lent.number();
-            self.numbers[first + k] = lent.number();
             self.pinned.push(value.id);
             self.held.insert(value.id, lent);
         }
-        for (k, operand) in operands.iter().enumerate() {
+        for operand in operands {
             if let Operand::Reg {
                 value,
                 access: Access::Early,
             } = operand
             {
-                self.write(*value, first + k)?;
+                self.write(*value)?;
             }
         }
+        // The reads nothing reads again (a value the allocator made is read
+        // once, by the instruction after the one that defines it) keep their
+        // leases until the instruction is bound: a plain write may take one
+        // ([`Self::write_plain`]), and the rest are returned after.
+        let mut dying: Vec<u64> = Vec::new();
         for operand in operands {
             let Operand::Reg {
                 value,
@@ -1704,77 +1656,122 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             else {
                 continue;
             };
-            // A value the allocator made is read once, by the instruction
-            // after the one that defines it.
             let minted = value.id as usize >= self.lives.len();
-            if origin == Origin::Selected || minted {
-                if self.live_after(value.id) {
-                    continue;
-                }
-                if let Some(lent) = self.held.remove(value.id) {
-                    self.free[lent.file() as usize].push(lent);
-                }
+            let dies = (origin == Origin::Selected || minted) && !self.live_after(value.id);
+            if dies && self.held.get(value.id).is_some() && !dying.contains(&value.id) {
+                dying.push(value.id);
             }
         }
-        for (k, operand) in operands.iter().enumerate() {
+        for operand in operands {
             if let Operand::Reg {
                 value,
                 access: Access::Write,
             } = operand
             {
-                self.write_plain(*value, first + k)?;
+                self.write_plain(*value, &mut dying, &mut via)?;
             }
+        }
+        let mut binder = self.binder(&via);
+        let bound = B::walk(inst, &mut binder);
+        assert!(
+            (self.block, self.records[self.block].len()) != (0, 0) || binder.framed,
+            "the entry block's first instruction does not make the frame, so the ABI registers have nowhere to be stored"
+        );
+        for id in dying {
+            let lent = self.held.remove(id);
+            let lent = lent.expect("a dying read is held until its instruction is bound");
+            self.free[lent.file() as usize].push(lent);
         }
         if origin == Origin::Selected {
             let at = (self.block, self.records[self.block].len());
+            let free_general = general_mask(&self.free[FileId::General as usize]);
             for operand in operands {
                 let Operand::Reg { value, access } = operand else {
                     continue;
                 };
                 if !access.reads() {
                     self.defined[value.id as usize] = Some(at);
+                    self.lives[value.id as usize].free_general = free_general;
                 }
             }
         }
-        self.records[self.block].push(Record {
-            inst,
+        self.records[self.block].push(Emitted {
+            inst: bound,
             origin,
-            regs: first,
         });
         Ok(())
     }
 
-    /// `inst`, now one of the scan's.
-    fn keep(&mut self, inst: B::Inst<Selected>) -> usize {
-        self.insts.push(inst);
-        self.insts.len() - 1
+    /// `inst`, bound: each operand's token comes from the lease its value
+    /// holds, or, for a value in `via`, from the lease of the value named for
+    /// it ([`Binder`]).
+    fn bind(&self, inst: &B::Inst<Selected>, via: &[(u64, u64)]) -> B::Inst<Bound<'m, B>> {
+        B::walk(inst, &mut self.binder(via))
     }
 
-    /// Define `value` in a register, recording its number at `at`.
-    fn write(&mut self, value: ValueName, at: usize) -> Result<(), CompileError> {
+    fn binder<'a>(&'a self, via: &'a [(u64, u64)]) -> Binder<'a, 'm, B> {
+        Binder {
+            held: &self.held,
+            via,
+            frame: &*self.frame,
+            frame_bytes: self.frame_bytes,
+            framed: false,
+        }
+    }
+
+    /// Define `value` in a free lease, or one an eviction frees.
+    fn write(&mut self, value: ValueName) -> Result<(), CompileError> {
         let lent = self.acquire(value.class)?;
-        self.numbers[at] = lent.number();
         self.pinned.push(value.id);
         self.held.insert(value.id, lent);
         Ok(())
     }
 
-    /// Define `value` in a register as [`Self::write`] does, except that a value
-    /// a backward branch passes to a carried parameter that is read no more
-    /// takes the parameter's register, so the branch has nothing to move. The
-    /// value is then kept there to the latch, as the parameter was.
-    fn write_plain(&mut self, value: ValueName, at: usize) -> Result<(), CompileError> {
+    /// Define `value` as [`Self::write`] does, with two exceptions. A value a
+    /// backward branch passes to a carried parameter that is read no more takes
+    /// the parameter's register, so the branch has nothing to move, and is kept
+    /// there to the latch as the parameter was. Otherwise the lease is the
+    /// lowest-numbered of the free list's and the `dying` reads' of its file,
+    /// which is the one [`Self::acquire`] finds once the dying reads are
+    /// returned; a dying read's goes to `via`, since the read is bound through
+    /// it.
+    fn write_plain(
+        &mut self,
+        value: ValueName,
+        dying: &mut Vec<u64>,
+        via: &mut Vec<(u64, u64)>,
+    ) -> Result<(), CompileError> {
         let home = self
             .want
             .get(&value.id)
             .copied()
             .filter(|&param| !self.read_again(param))
             .and_then(|param| Some((param, self.held.remove(param)?)));
-        let Some((param, lent)) = home else {
-            return self.write(value, at);
+        if let Some((param, lent)) = home {
+            self.lives[value.id as usize].carried_until = self.lives[param as usize].carried_until;
+            // The parameter may be a read of this instruction, `i + 1` into
+            // `i`'s register: the read is bound through the value that took it.
+            via.push((param, value.id));
+            self.pinned.push(value.id);
+            self.held.insert(value.id, lent);
+            return Ok(());
+        }
+        let file = value.class.file();
+        let dead = dying
+            .iter()
+            .enumerate()
+            .filter(|&(_, &id)| self.held.get(id).is_some_and(|lent| lent.file() == file))
+            .min_by_key(|&(_, &id)| self.held.number(id))
+            .map(|(at, &id)| (at, id));
+        let free = self.free[file as usize].iter().map(Lent::number).min();
+        let lent = match dead {
+            Some((at, id)) if free.is_none_or(|free| self.held.number(id) < free) => {
+                dying.swap_remove(at);
+                via.push((id, value.id));
+                self.held.remove(id).expect("a dying read is held")
+            }
+            _ => self.acquire(value.class)?,
         };
-        self.lives[value.id as usize].carried_until = self.lives[param as usize].carried_until;
-        self.numbers[at] = lent.number();
         self.pinned.push(value.id);
         self.held.insert(value.id, lent);
         Ok(())
@@ -1784,7 +1781,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     fn copy_of(&mut self, value: ValueName) -> Result<Lent<'m, B>, CompileError> {
         let mut insts = Vec::new();
         let mut spiller = Spiller::<B>::new(&mut self.next, &mut insts);
-        let copy = of_class!(value.class, C => B::copy::<C>(&mut spiller, value.typed()).name());
+        let copy = B::copy(&mut spiller, value);
         for pushed in insts {
             self.emit(pushed, Origin::Copy)?;
         }
@@ -1809,77 +1806,58 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     }
 }
 
-/// How the records are bound once the scan is over: each operand becomes the
-/// token of the lease the scan recorded for it.
-struct Binding<'a, 'm, B: IsaBackend> {
-    frame: &'m Frame,
-    /// Every instruction the scan placed, which the records name.
-    insts: &'a [B::Inst<Selected>],
-    /// Every lease, by file and then number.
-    bank: [Vec<Lent<'m, B>>; 4],
-    /// The register number of every operand of every record.
-    numbers: &'a [u8],
-    /// The operand being bound.
-    next: usize,
+/// How the scan binds an instruction as it places it: each operand becomes a
+/// token borrowed from the lease its value holds, the information the scan has
+/// in hand at that point.
+struct Binder<'a, 'm, B: IsaBackend> {
+    held: &'a Held<'m, B>,
+    /// Values bound through another value's lease: a read whose register a
+    /// write of the same instruction took, and a latch move's copy, which
+    /// writes the parameter's.
+    via: &'a [(u64, u64)],
+    frame: &'a Frame,
+    frame_bytes: &'m FrameBytes,
     /// Whether the instruction asked for the frame's size.
     framed: bool,
 }
 
-impl<'m, B: IsaBackend> Binding<'_, 'm, B> {
-    /// `record`, bound.
-    fn record(&mut self, record: &Record) -> Emitted<'m, B> {
-        self.next = record.regs;
-        self.framed = false;
-        Emitted {
-            inst: B::walk::<Bound<'m, B>>(&self.insts[record.inst], self),
-            origin: record.origin,
-        }
-    }
-
-    /// The lease of the next operand, a register of `C`'s file.
-    fn lent<C: Class>(&mut self) -> &Lent<'m, B> {
-        let number = self.numbers[self.next];
-        self.next += 1;
-        let file = &self.bank[C::File::ID as usize];
-        file.binary_search_by_key(&number, Lent::number)
-            .ok()
-            .map(|at| &file[at])
-            .unwrap_or_else(|| panic!("register {number} is in no lease of {:?}", C::File::ID))
+impl<'a, 'm, B: IsaBackend> Binder<'a, 'm, B> {
+    /// The lease value `id` is bound through.
+    fn lent(&self, id: u64) -> &'a Lent<'m, B> {
+        let through = || {
+            self.via
+                .iter()
+                .find(|&&(value, _)| value == id)
+                .map(|&(_, w)| w)
+        };
+        self.held
+            .get(id)
+            .or_else(|| self.held.get(through()?))
+            .unwrap_or_else(|| panic!("value {id} is in no register"))
     }
 }
 
-impl<'m, B: IsaBackend> Rebind<Bound<'m, B>> for Binding<'_, 'm, B> {
-    fn read<C: Class>(&mut self, _: Value<C>) -> In<'m, B, C> {
-        C::File::lease(self.lent::<C>()).read()
+impl<'m, B: IsaBackend> Rebind<Bound<'m, B>> for Binder<'_, 'm, B> {
+    fn read<C: Class>(&mut self, v: Value<C>) -> In<'m, B, C> {
+        C::File::lease(self.lent(v.id)).read()
     }
-    fn write<C: Class>(&mut self, _: &build::Def<C>) -> Out<'m, B, C> {
-        C::File::lease(self.lent::<C>()).write()
+    fn write<C: Class>(&mut self, d: &build::Def<C>) -> Out<'m, B, C> {
+        C::File::lease(self.lent(d.value().id)).write()
     }
-    fn early<C: Class>(&mut self, _: &build::Early<C>) -> Out<'m, B, C> {
-        C::File::lease(self.lent::<C>()).write()
+    fn early<C: Class>(&mut self, d: &build::Early<C>) -> Out<'m, B, C> {
+        C::File::lease(self.lent(d.value().id)).write()
     }
-    fn tie<C: Class>(&mut self, _: &build::Tie<C>) -> InOut<'m, B, C> {
-        let write = self.numbers[self.next + 1];
-        let lent = self.lent::<C>();
-        assert_eq!(
-            lent.number(),
-            write,
-            "a tie's write is in its read's register"
-        );
-        let tie = C::File::lease(lent).tie();
-        self.next += 1;
-        tie
+    fn tie<C: Class>(&mut self, t: &build::Tie<C>) -> InOut<'m, B, C> {
+        C::File::lease(self.lent(t.write().id)).tie()
     }
-    fn slot(&mut self, s: SlotName) -> &'m FrameSlot {
-        self.next += 1;
+    fn slot(&mut self, s: SlotName) -> FrameSlot {
         self.frame.slot(s)
     }
     fn target(&mut self, t: &Target) -> Label {
-        self.next += 1;
         t.label
     }
-    fn frame_size(&mut self) -> u64 {
+    fn frame_size(&mut self) -> &'m FrameBytes {
         self.framed = true;
-        self.frame.bytes()
+        self.frame_bytes
     }
 }

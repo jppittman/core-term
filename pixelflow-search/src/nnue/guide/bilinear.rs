@@ -1,5 +1,5 @@
 //! Deployment and training of the **bilinear** saturation Guide — the arm
-//! `docs/plans/2026-09-02-bilinear-guide-registration.md` §4 names as "the
+//! `docs/archive/plans/2026-09-02-bilinear-guide-registration.md` §4 names as "the
 //! thing under test", and the only implementation of [`SaturationGuide`]
 //! whose rule-by-context second difference is not identically zero.
 //!
@@ -199,19 +199,19 @@ fn rule_concats(
     BTreeMap<RuleId, [f32; RULE_CONCAT_DIM]>,
     Vec<alloc::string::String>,
 ) {
-    let (shared, ids) = rules.shared();
     let mut map = BTreeMap::new();
     let mut templateless = Vec::new();
-    for (idx, rule) in shared.iter().enumerate() {
-        let template = ArenaRuleTemplate::from_rule(rule.as_ref());
-        if template.lhs.is_none() && template.rhs.is_none() {
-            if let Some(label) = rules.label_of(idx) {
-                templateless.push(label);
-            }
+    for idx in rules.indices() {
+        let template = ArenaRuleTemplate::from_rule(rules.rule(idx));
+        if template.lhs.is_none()
+            && template.rhs.is_none()
+            && let Some(label) = rules.label_of(idx.get())
+        {
+            templateless.push(label);
         }
         let z_lhs = pool_template_side(embeddings, &template.arena, template.lhs);
         let z_rhs = pool_template_side(embeddings, &template.arena, template.rhs);
-        map.insert(ids[idx], rule_concat(&z_lhs, &z_rhs));
+        map.insert(rules.id(idx), rule_concat(&z_lhs, &z_rhs));
     }
     (map, templateless)
 }
@@ -253,13 +253,15 @@ fn concat_rank(concats: &BTreeMap<RuleId, [f32; RULE_CONCAT_DIM]>) -> usize {
         };
         rows.swap(rank, pivot);
         let inv = 1.0 / rows[rank][col];
-        for r in (rank + 1)..rows.len() {
-            let factor = rows[r][col] * inv;
+        let (pivots, below) = rows.split_at_mut(rank + 1);
+        let pivot_row = pivots[rank];
+        for row in below {
+            let factor = row[col] * inv;
             if factor == 0.0 {
                 continue;
             }
-            for c in col..RULE_CONCAT_DIM {
-                rows[r][c] -= factor * rows[rank][c];
+            for (x, &p) in row[col..].iter_mut().zip(&pivot_row[col..]) {
+                *x -= factor * p;
             }
         }
         rank += 1;
@@ -795,9 +797,7 @@ mod tests {
         let trainer = BilinearTrainer::new_cold(&rules, 3);
         let mut weights = trainer.weights();
 
-        let other = RuleSet::new(vec![crate::math::algebra::Commutative::new(
-            &crate::egraph::ops::Add,
-        )]);
+        let other = RuleSet::new(vec![crate::math::algebra::Commutative::new(OpKind::Add)]);
         assert_ne!(other.fingerprint(), rules.fingerprint());
         weights.fingerprint = other.fingerprint();
 

@@ -9,7 +9,7 @@
 > tree total (#1117). Full statement:
 > [docs/results/2026-09-02-phase3-instrument-changes.md](2026-09-02-phase3-instrument-changes.md).
 
-**Date:** 2026-09-01 · **Registration:** `docs/plans/2026-09-01-phase3-registration.md` (unrevised) · **Authority:** `docs/plans/2026-08-31-guide-design-revision.md` §5
+**Date:** 2026-09-01 · **Registration:** `docs/archive/plans/2026-09-01-phase3-registration.md` (unrevised) · **Authority:** `docs/archive/plans/2026-08-31-guide-design-revision.md` §5
 
 Per-expression rows: `docs/results/2026-09-01-r2g-ladder-r2g-dev.jsonl` (334 expressions: classical 334). Skipped: none.
 

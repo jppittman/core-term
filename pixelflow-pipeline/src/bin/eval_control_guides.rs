@@ -1,5 +1,5 @@
 //! Zero-candidate-local-information control arm for the cold-start linear
-//! Guide (`docs/plans/2026-08-31-guide-design-revision.md` §5, task 2 of the
+//! Guide (`docs/archive/plans/2026-08-31-guide-design-revision.md` §5, task 2 of the
 //! 2026-09-02 cold-start-training round): "implement the CONTROL arm:
 //! `PerRuleRateGuide`... Report DEV AUC/PR-AUC for the table AND the linear
 //! model side by side — if they are close, say plainly that the model

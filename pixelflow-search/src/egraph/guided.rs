@@ -7,14 +7,14 @@
 //! [`RewriteAction`](super::rewrite::RewriteAction), does not call `union`,
 //! does not touch `const_fact`, and never sees a mutable e-graph. Every
 //! mutation this loop performs goes through
-//! [`EGraph::apply_single_rule`], which re-checks the rule against the
-//! matched node and dispatches through the same `apply_action_from_rule` the
+//! [`Saturation::apply_single_rule`], which re-checks the rule against the
+//! matched node and dispatches through the same `commit` the
 //! unguided sweep uses — so the guided run applies a *subsequence* of the
 //! rewrites an exhaustive run would apply, in a different order, and nothing
 //! else.
 //!
 //! That is exactly the precondition of law **L4** in
-//! `docs/plans/2026-09-02-optimizer-api.md`: every rule preserves denotation
+//! `docs/archive/plans/2026-09-02-optimizer-api.md`: every rule preserves denotation
 //! (L1), saturation only ever adds equalities (L2), so any policy that orders
 //! or truncates leaves the graph holding a *subset* of the equalities an
 //! exhaustive run would hold — never a different one — and extraction picks a
@@ -24,16 +24,16 @@
 //!
 //! # How it differs from the unguided sweep
 //!
-//! Unguided saturation ([`EGraph::saturate_budgeted`]) applies every rule
+//! Unguided saturation ([`Saturation::saturate_budgeted`]) applies every rule
 //! against every matching node in a fixed rule-then-class scan order, once
 //! per sweep, with no notion of "have I already resolved this exact (rule,
 //! class content) pair". This loop instead, once per round:
 //!
-//! 1. Enumerates every current match ([`EGraph::find_rewrite_matches`]).
+//! 1. Enumerates every current match ([`Saturation::find_rewrite_matches`]).
 //! 2. Builds each match's [`CandidateKey`] and skips any key already seen in
 //!    an EARLIER round of this same episode, without ever handing it to the
 //!    Guide — the "dedup before scoring" step
-//!    `docs/plans/2026-08-31-guide-design-revision.md` §2.2 measured as the
+//!    `docs/archive/plans/2026-08-31-guide-design-revision.md` §2.2 measured as the
 //!    dominant per-round cost (90.4% of raw matches are an idempotent
 //!    re-fire of an already-installed rewrite, from rules like
 //!    `commutative`/`associative` that carry no "already applied" check).
@@ -54,9 +54,9 @@
 //!
 //! No clock. The stop reasons this loop can report are
 //! [`SaturationStop::Quiesced`], [`SaturationStop::ApplicationBudget`],
-//! [`SaturationStop::ClassCap`] and [`SaturationStop::IterationCeiling`] —
+//! [`SaturationStop::MintedCap`] and [`SaturationStop::IterationCeiling`] —
 //! never [`SaturationStop::Timeout`], for the same reason
-//! [`EGraph::saturate_budgeted`] cannot report it. A wall-clock ceiling
+//! [`Saturation::saturate_budgeted`] cannot report it. A wall-clock ceiling
 //! still exists on [`Optimizer::hard_ceiling`](super::optimizer::Optimizer::hard_ceiling),
 //! where exceeding it panics instead of quietly changing the answer.
 //!
@@ -67,7 +67,7 @@
 //! e-class a later candidate matched against. [`RewriteTarget`] therefore
 //! names the matched node by its stable
 //! [`ENodeId`](super::provenance::ENodeId), not by a position in the class's
-//! node vector, and `apply_single_rule` re-resolves that identity before
+//! member order, and `apply_single_rule` re-resolves that identity before
 //! re-checking the rule — so a mid-round rebuild either leaves the exact
 //! matched node in place (the rule is re-checked against it, as before) or
 //! removes it, in which case nothing fires and nothing is recorded. It can
@@ -86,8 +86,8 @@ use std::collections::{HashMap, HashSet};
 use super::candidate::{
     CandidateFeatures, CandidateKey, Firing, REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
 };
-use super::graph::{EGraph, RewriteTarget, SaturationStats, SaturationStop};
-use super::optimizer::Limits;
+use super::graph::Limits;
+use super::graph::{RewriteTarget, Saturation, SaturationStats, SaturationStop};
 use super::rules::RuleId;
 use crate::nnue::factored::EMBED_DIM;
 use crate::nnue::guide::{CandidateSummary, SaturationGuide};
@@ -132,7 +132,7 @@ impl GuidedEpisode {
     ///
     /// `limits.applications` is a **delta** from the graph's current
     /// cumulative count, resolved here exactly as
-    /// `EGraph::saturate_bounded` resolves it — so a caller stepping an
+    /// `Saturation::saturate` resolves it — so a caller stepping an
     /// anytime curve passes the gap to the next checkpoint, not the
     /// checkpoint itself.
     ///
@@ -143,11 +143,11 @@ impl GuidedEpisode {
     /// silently corrupt move ordering.
     pub(crate) fn advance(
         &mut self,
-        egraph: &mut EGraph,
+        egraph: &mut Saturation,
         guide: &dyn SaturationGuide,
         limits: Limits,
     ) -> SaturationStats {
-        let max_classes = limits.classes.min(super::graph::HARD_CLASS_LIMIT);
+        let max_minted = limits.minted.min(super::graph::HARD_MINTED_LIMIT);
         let application_cap = limits
             .applications
             .map(|n| egraph.application_count().saturating_add(n));
@@ -168,8 +168,8 @@ impl GuidedEpisode {
             if iterations >= limits.iterations {
                 break SaturationStop::IterationCeiling;
             }
-            if egraph.num_classes() > max_classes {
-                break SaturationStop::ClassCap;
+            if egraph.num_classes() > max_minted {
+                break SaturationStop::MintedCap;
             }
             iterations += 1;
 
@@ -210,13 +210,7 @@ impl GuidedEpisode {
             let mut survivors: Vec<(Vec<RewriteTarget>, CandidateFeatures)> = Vec::new();
             let mut round_slot: HashMap<CandidateKey, usize> = HashMap::new();
             for target in matches {
-                let rule = egraph.rule_id(target.rule_idx).unwrap_or_else(|| {
-                    panic!(
-                        "guided saturation: match named rule_idx {} but the graph's rule table \
-                         has no id for it",
-                        target.rule_idx
-                    )
-                });
+                let rule = egraph.rules().id(target.rule_idx);
                 let firing = Firing {
                     rule,
                     match_root: target.class_id,
@@ -298,11 +292,11 @@ impl GuidedEpisode {
                     if egraph.application_count() > before {
                         recorded_any = true;
                     }
-                    if egraph.num_classes() > max_classes {
+                    if egraph.num_classes() > max_minted {
                         if recorded_any {
                             self.seen_keys.insert(key);
                         }
-                        break 'outer SaturationStop::ClassCap;
+                        break 'outer SaturationStop::MintedCap;
                     }
                 }
                 // At least one target recorded (whether or not it changed
@@ -326,13 +320,15 @@ impl GuidedEpisode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::ENode;
     use crate::egraph::rewrite::Rewrite;
-    use crate::egraph::{ENode, Optimizer, ops};
+    use crate::egraph::{RuleSet, Saturation};
     use crate::math::algebra::Commutative;
     use crate::nnue::factored::OpEmbeddings;
     use crate::nnue::guide::Guide;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
+    use pixelflow_ir::OpKind;
 
     /// Scores every candidate zero — ordering therefore falls back to the
     /// stable sort's tie-break, i.e. match-enumeration order.
@@ -340,15 +336,6 @@ mod tests {
     impl SaturationGuide for FlatGuide {
         fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
             alloc::vec![0.0; candidates.len()]
-        }
-    }
-
-    /// Reverses match-enumeration order: the adversarial ordering L4 has to
-    /// hold under.
-    struct ReversingGuide;
-    impl SaturationGuide for ReversingGuide {
-        fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
-            (0..candidates.len()).map(|i| i as f32).collect()
         }
     }
 
@@ -364,15 +351,12 @@ mod tests {
         }
     }
 
-    fn commutative_only_egraph() -> EGraph {
-        let rules: Vec<Box<dyn Rewrite>> = alloc::vec![Commutative::new(&ops::Add)];
-        let mut eg = EGraph::with_rules(rules);
+    fn commutative_only_egraph() -> Saturation {
+        let rules: Vec<Box<dyn Rewrite>> = alloc::vec![Commutative::new(OpKind::Add)];
+        let mut eg = Saturation::over(RuleSet::new(rules));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![x, y],
-        });
+        eg.add(ENode::apply(OpKind::Add, &[x, y]));
         eg
     }
 
@@ -381,27 +365,18 @@ mod tests {
     /// into each other and are therefore no-ops; `z+w` has no commuted form
     /// in the graph yet, so it is the one productive target — and it is last
     /// in enumeration order.
-    fn one_class_three_matching_nodes_egraph() -> EGraph {
-        let rules: Vec<Box<dyn Rewrite>> = alloc::vec![Commutative::new(&ops::Add)];
-        let mut eg = EGraph::with_rules(rules);
+    fn one_class_three_matching_nodes_egraph() -> Saturation {
+        let rules: Vec<Box<dyn Rewrite>> = alloc::vec![Commutative::new(OpKind::Add)];
+        let mut eg = Saturation::over(RuleSet::new(rules));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
         let w = eg.add(ENode::Var(3));
-        let xy = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![x, y],
-        });
+        let xy = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         // Pre-existing commuted form: applying Commutative at `x+y` (or at
         // `y+x`) can only re-derive a node that is already here.
-        eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![y, x],
-        });
-        let zw = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![z, w],
-        });
+        eg.add(ENode::apply(OpKind::Add, &[y, x]));
+        let zw = eg.add(ENode::apply(OpKind::Add, &[z, w]));
         eg.union(xy, zw);
         eg.rebuild();
         eg
@@ -410,7 +385,7 @@ mod tests {
     fn generous_limits() -> Limits {
         Limits {
             iterations: 200,
-            classes: 10_000,
+            minted: 10_000,
             applications: Some(10_000),
         }
     }
@@ -443,7 +418,11 @@ mod tests {
                 "{label}: expected the guided loop to quiesce under a generous budget: {guided:?}"
             );
 
-            let after = eg.saturate_budgeted(200, 10_000, None);
+            let after = eg.saturate_budgeted(Limits {
+                iterations: 200,
+                minted: 10_000,
+                applications: None,
+            });
             assert_eq!(
                 after.total_unions, 0,
                 "{label}: the guided loop reported Quiesced, but an unguided sweep over the same \
@@ -481,7 +460,7 @@ mod tests {
         let mut episode = GuidedEpisode::default();
         let limits = Limits {
             iterations: 200,
-            classes: 10_000,
+            minted: 10_000,
             applications: Some(1),
         };
         let first = episode.advance(&mut eg, &guide, limits);

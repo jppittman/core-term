@@ -1,4 +1,4 @@
-//! Shape B of `docs/plans/2026-09-06-egraph-at-production-scale.md` §5.3:
+//! Shape B of `docs/archive/plans/2026-09-06-egraph-at-production-scale.md` §5.3:
 //! the compile cost of a glyph warm, per kernel, with the emitted bytes.
 //!
 //! ```text

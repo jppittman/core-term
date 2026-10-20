@@ -22,7 +22,7 @@ fragment with a root — and it becomes numbers exactly once, when it is compile
 lattice's shape and collapsed.
 
 ```text
-Kernel ──compile(extent)──▶ Manifold ──bind(buffers)──▶ BoundManifold ──collapse──▶ buffer
+Kernel ──compile(extent)──▶ Manifold ──collapse──▶ DiscreteManifold
 ```
 
 This is Conal Elliott's "functional images", with the AST an explicit arena rather than a
@@ -42,7 +42,7 @@ Rust type tree. Key properties:
 |---|---|---|
 | arithmetic / `map` | covariant functor | transform the value |
 | `Kernel::at` | contravariant functor | remap coordinates before sampling |
-| `Kernel::select` | coproduct / conditional | branchless choice; `Bits::select` for packed words |
+| `Kernel::select` | coproduct / conditional | arms guarded by the mask, then one select (docs/language/2026-10-15-kernels-evaluate-kernels.md §1); `Bits::select` for packed words |
 | `Kernel::over` (`sum_over`, …) | monoid fold, bounded | a binder with a *static* extent |
 | `Kernel::dwrt` (`dx`, `dy`) | derivation | symbolic differentiation, resolved before emission |
 
@@ -82,9 +82,9 @@ When asked about design decisions:
 
 **A**: "Filter is a partial function - it breaks totality. Instead:
 - Use `select` (total function; both arms are in the program)
-- If you need short-circuit, that's a codegen decision, not algebraic structure — the
-  emitter already guards an arm-exclusive schedule range on the mask's uniformity, and
-  whether that pays is a cost question, not a language one
+- Skipping an arm is a codegen decision, not algebraic structure: each arm's own block is
+  guarded by `any(m)` / `!all(m)` and then one select runs, with no uniformity test and no
+  decision about whether to guard (docs/language/2026-10-15-kernels-evaluate-kernels.md §1)
 - The kernel should still denote the full computation; skipping is an implementation detail"
 
 ## Phrases You Should Use

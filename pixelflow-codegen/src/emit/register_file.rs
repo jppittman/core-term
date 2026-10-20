@@ -15,7 +15,8 @@ pub(super) struct Members {
     pub(super) flags: &'static [u8],
 }
 
-/// Where the ABI puts the collapse's three arguments.
+/// Where the ABI puts the collapse's three arguments, by hardware number:
+/// members of `general` the allocator mints and leases like any other.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct EntryRegisters {
     pub(super) ctx: u8,

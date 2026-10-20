@@ -34,7 +34,7 @@
 //!
 //! [`ExprArena::apply`]: pixelflow_ir::arena::ExprArena::apply
 //!
-//! **Binding times** (docs/plans/2026-09-25-the-language-is-kernel.md §1.4).
+//! **Binding times** (docs/language/2026-09-25-the-language-is-kernel.md §1.4).
 //! A host function takes its parameters by their declared types, and every
 //! one is a uniform: the kernel it returns declares one uniform per scalar —
 //! a record parameter, one per field — in declaration order, with the call's
@@ -420,7 +420,7 @@ fn instantiated_range(range: &crate::sema::StructuralRange) -> TokenStream {
 /// the chain rule. A `Dwrt` already resolved to `f'` has no operand left for
 /// the warp to reach, and the substitution silently lands inside `f'`.
 ///
-/// See docs/plans/2026-09-08-macro-tier-is-arena-native.md.
+/// See docs/archive/plans/2026-09-08-macro-tier-is-arena-native.md.
 ///
 /// The arena's uniform table is declared first, one per argument of
 /// `context`, in order: each with an identity minted per call and the

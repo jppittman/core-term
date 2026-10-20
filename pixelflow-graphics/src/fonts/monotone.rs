@@ -6,7 +6,7 @@
 //! The area left of a curve, integrated over a pixel, is one formula only
 //! when the curve is a graph over `y` that also rises one way in `x`: then
 //! `clamp(x(y) − X, 0, 1)` is zero, then linear, then one, along the arc
-//! (docs/plans/2026-09-23-a-glyph-is-a-formula.md; `loop_blinn`'s
+//! (docs/archive/plans/2026-09-23-a-glyph-is-a-formula.md; `loop_blinn`'s
 //! `RisingArc::pixel_area`). That is a fact about the table's numbers, which
 //! the kernel cannot see, so it writes it in as a certificate —
 //! `max(step, 0)` on each control-polygon step — and the formula holds for

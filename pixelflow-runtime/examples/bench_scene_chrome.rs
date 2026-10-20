@@ -13,7 +13,7 @@
 //! `dyn` boundary — and the two lanes' agreement rows were how S3 established
 //! that the packed lane draws the same picture (matte, mirror and chrome, all
 //! three explained in
-//! [the plan](../../docs/plans/2026-09-06-kernel-with-a-lattice.md)). S4a
+//! [the plan](../../docs/archive/plans/2026-09-06-kernel-with-a-lattice.md)). S4a
 //! deleted that lane, so the comparison lives in the plan's landing blocks
 //! and this example times what remains. `scene3d`'s own tests are what now
 //! pin the picture — `a_reflection_off_a_sphere_is_a_unit_ray`,

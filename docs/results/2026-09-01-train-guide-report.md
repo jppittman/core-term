@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L036.** Predates the 2026-09-02 review fixes (dedup rows excluded, AP ties grouped) that its companion comparison says change every number, and was never re-run. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L036.** Predates the 2026-09-02 review fixes (dedup rows excluded, AP ties grouped) that its companion comparison says change every number, and was never re-run. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Guide cold-start training report (strict-v1 labels)
 
@@ -9,7 +9,7 @@
 > the ones a sample touched, and reports a within-expression AUC alongside the pooled one;
 > `average_precision` also groups tied scores now. Every weight and metric below changes.
 
-> Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = 100 (docs/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), imported by both gen_strict_labels and saturate_guided_until_applications so budget_fraction means the same thing at mint time and at deploy time. The first mint/train pass of this round (2026-09-01) used a 195-application placeholder (this round's measured median application count, before B was registered) — a train/deploy denominator skew, caught and fixed before this checkpoint (see git history for the placeholder-era numbers).
+> Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = 100 (docs/archive/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), imported by both gen_strict_labels and saturate_guided_until_applications so budget_fraction means the same thing at mint time and at deploy time. The first mint/train pass of this round (2026-09-01) used a 195-application placeholder (this round's measured median application count, before B was registered) — a train/deploy denominator skew, caught and fixed before this checkpoint (see git history for the placeholder-era numbers).
 
 > **Instrument change (2026-09-02 forward-port).** Two things about how a
 > Phase 3 anytime curve is measured changed with the port, so a re-run does

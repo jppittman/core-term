@@ -1,4 +1,4 @@
-//! Byte-identity fixture for docs/plans/2026-09-09-exprarena-on-dag.md: run
+//! Byte-identity fixture for docs/archive/plans/2026-09-09-exprarena-on-dag.md: run
 //! it at two commits and diff stdout. What a difference means depends on
 //! which commits:
 //!

@@ -218,7 +218,7 @@ impl UniformBlock {
     /// its declaration order (`Kernel::uniforms`) — which is a `kernel!`
     /// entry's parameters in order, a record's fields in field order, and
     /// what its `Args` record writes
-    /// (docs/plans/2026-09-25-the-language-is-kernel.md §1.4).
+    /// (docs/language/2026-09-25-the-language-is-kernel.md §1.4).
     ///
     /// A program is compiled once and rebound per call this way, with no
     /// handles: the declaration order was matched to the block's once, when

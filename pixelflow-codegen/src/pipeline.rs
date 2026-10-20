@@ -17,9 +17,6 @@ use pixelflow_ir::LatticeShape;
 use pixelflow_ir::arena::{ExprArena, ExprId, UniformDecl, UniformId, UniformIdentity};
 use pixelflow_ir::passes::lattice::{Collapse, Domain};
 
-/// A lane is one `f32`.
-const BYTES_PER_LANE: u32 = 4;
-
 /// The two per-call scalars every collapse reads: where the lattice's sample
 /// `(0, 0)` lies, `x0` then `y0`.
 ///
@@ -138,21 +135,19 @@ pub fn compile(
         "emit::compile: degenerate extent {:?}",
         shape.extent()
     );
-    let lanes = (crate::jit_vector_bytes() as u32) / BYTES_PER_LANE;
-    let front = Legalize::new(shape, lanes)
-        .then(Lower)
-        .then(Nest)
-        .then(Own)
-        .then(Layout);
+    let front = |lanes| {
+        Legalize::new(shape, lanes)
+            .then(Lower)
+            .then(Nest)
+            .then(Own)
+            .then(Layout)
+    };
     emit::native(front, (arena, root))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-
-    /// A lane is one `f32`.
-    pub(crate) const BYTES_PER_LANE: u32 = super::BYTES_PER_LANE;
 
     /// The stages that make a schedule, at a width a test chooses: everything
     /// a compile runs before scoping.

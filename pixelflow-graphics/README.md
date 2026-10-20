@@ -156,9 +156,9 @@ cargo bench -p pixelflow-graphics --bench frame_bake
 ```
 
 The retirement of the per-batch tier this crate used to render through is recorded in
-[`2026-09-06-kernel-with-a-lattice.md`](../docs/plans/2026-09-06-kernel-with-a-lattice.md);
+[`2026-09-06-kernel-with-a-lattice.md`](../docs/archive/plans/2026-09-06-kernel-with-a-lattice.md);
 the earlier language unification is
-[`2026-07-20-kernel-unification.md`](../docs/plans/2026-07-20-kernel-unification.md).
+[`2026-07-20-kernel-unification.md`](../docs/language/2026-07-20-kernel-unification.md).
 
 ## License
 

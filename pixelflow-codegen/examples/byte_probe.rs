@@ -128,8 +128,8 @@ fn cases() -> Vec<(&'static str, ExprArena, ExprId)> {
         out.push(("both_regions", a, r));
     }
 
-    // An If whose mask varies by lane, with enough work in an arm to be
-    // worth a guard: the branch path.
+    // An If whose mask varies by lane, with work of its own in an arm, so the
+    // arm has a guard and a mixed batch runs both arms.
     {
         let mut a = ExprArena::new();
         let (x, y) = xy(&mut a);

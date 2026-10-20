@@ -5,7 +5,7 @@
 //! through a context pointer the per-call scope loads once), and a uniform.
 //! Each is a shared `ValueId` in the fold's schedule — a `Const(0.0)`
 //! placeholder for a vector, the pointer's own `Context` op for a pointer —
-//! so `guards::FoldReads` must count it as a read of the fold's `Reduce` def,
+//! so `ownership::FoldReads` must count it as a read of the fold's `Reduce` def,
 //! and the guard analysis must count a pointer operand as a read at all.
 //!
 //! The `If`s sit at every scope an `If` can: the batch (a mask on `X`),

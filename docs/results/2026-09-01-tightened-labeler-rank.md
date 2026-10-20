@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L041.** This doc's own banner says the name-pooled vectors, quiescence filter and canonicalized ids all move the numbers below, and it was never re-run. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L041.** This doc's own banner says the name-pooled vectors, quiescence filter and canonicalized ids all move the numbers below, and it was never re-run. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Tightened-labeler re-measurement: does narrowing the over-approximation reorder the rule ranking? (2026-09-01)
 
@@ -30,7 +30,7 @@ Harness: `pixelflow-pipeline/src/bin/tightened_labeler_rank.rs` (new, additive).
 `derivation_ancestors` — neither its semantics nor its tests changed) and
 `pixelflow-search/src/egraph/labeler.rs` (`EpisodeLabels::compute_tight` / `::compute_strict`,
 sharing the aggregation tail with the existing `::compute` via a new private `from_load_bearing`
-helper — `::compute`'s own semantics and tests are unchanged). This is `docs/plans/2026-08-31-guide-design-revision.md`
+helper — `::compute`'s own semantics and tests are unchanged). This is `docs/archive/plans/2026-08-31-guide-design-revision.md`
 §3's "tightened-labeler track", stage-2 prep for option 3 (two-stage: strict-label cold start now,
 tightened-labeler refinement in parallel).
 

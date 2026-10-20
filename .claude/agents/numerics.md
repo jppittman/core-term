@@ -56,7 +56,7 @@ pub struct Jet2 {
 
 1. **Fast reciprocal**: Use `rsqrt` + Newton-Raphson, not `1/sqrt`
 2. **FMA fusion**: `a * b + c` → single FMA instruction
-3. **Branchless select**: Both branches always evaluate; blend via mask
+3. **Select**: `m.select(a, b)` guards each arm's own block by `any(m)` and `!all(m)`, then blends once; an arm that owns nothing has no guard (docs/language/2026-10-15-kernels-evaluate-kernels.md §1)
 4. **Chebyshev approximations**: sin/cos/atan2 via polynomial
 5. **Range reduction**: Trig functions use modular arithmetic
 

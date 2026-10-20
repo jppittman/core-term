@@ -11,7 +11,7 @@
 //! and by which extraction stage, the witness was let go.
 //!
 //! Denotation (written first, not revised after the run):
-//! `docs/plans/2026-09-08-extraction-witnesses.md`.
+//! `docs/archive/plans/2026-09-08-extraction-witnesses.md`.
 //! Results: `docs/results/2026-09-08-extraction-witnesses.{md,csv,json}`.
 
 use std::collections::{BTreeMap, HashMap};
@@ -35,7 +35,7 @@ use pixelflow_search::egraph::provenance::{ApplicationId, Origin};
 use pixelflow_search::egraph::witness::{self, Stage, Ties};
 use pixelflow_search::egraph::{
     Budget, CostModel, EClassId, EGraph, ENode, Optimized, Optimizer, Vocabulary,
-    config_for_node_count, insert, reachable_count,
+    config_for_node_count, insert, inserted_class_count,
 };
 
 const SCREEN: [u32; 2] = [1920, 1080];
@@ -339,7 +339,7 @@ struct WitnessRow {
 
 #[derive(Serialize, Clone, Debug)]
 struct FirstDivergence {
-    class: u32,
+    class: usize,
     node_greedy: String,
     node_witness: String,
     dp_cost_greedy: String,
@@ -380,13 +380,13 @@ fn saturate_at(
     shape: LatticeShape,
     class_cap: usize,
 ) -> Saturated {
-    let node_count = reachable_count(arena, root);
+    let node_count = inserted_class_count(arena, root);
     let tier = config_for_node_count(node_count);
     let mut optimizer = Optimizer::production()
         .for_lattice(shape)
         .budget(Budget::Explicit {
             iterations: tier.max_iterations,
-            classes: class_cap,
+            minted: class_cap,
             applications: Some(class_cap as u64 * APPLICATIONS_PER_CLASS),
         })
         // The ladder deliberately runs past production's own caps; the
@@ -398,22 +398,22 @@ fn saturate_at(
     let root_class = insert(arena, root, &mut egraph, Vocabulary::Runtime)
         .unwrap_or_else(|d| panic!("kernel not representable: {d:?}"));
     let inserted = egraph.num_classes();
-    let optimized = optimizer.run(&mut egraph, root_class, node_count);
+    let optimized = optimizer.run(&mut egraph, root_class);
     let rules = optimizer.rule_set();
     let rule_of: HashMap<ApplicationId, String> = egraph
-        .provenance()
+        .journal()
         .applications()
         .map(|(id, rec)| {
             (
                 id,
                 rules
-                    .label_of(rec.rule_idx)
+                    .label_of(rec.rule_idx.get())
                     .unwrap_or_else(|| format!("#{}", rec.rule_idx)),
             )
         })
         .collect();
     Saturated {
-        egraph,
+        egraph: egraph.into_graph(),
         optimized,
         root: root_class,
         inserted,
@@ -422,9 +422,8 @@ fn saturate_at(
 }
 
 fn node_label(egraph: &EGraph, class: EClassId, idx: usize) -> String {
-    let nodes = egraph.nodes(class);
-    let Some(node) = nodes.get(idx) else {
-        return format!("<idx {idx} of {}>", nodes.len());
+    let Some(node) = egraph.nodes(class).nth(idx) else {
+        return format!("<idx {idx} of {}>", egraph.nodes(class).count());
     };
     match node {
         ENode::Var(i) => format!("Var({i})"),
@@ -432,7 +431,7 @@ fn node_label(egraph: &EGraph, class: EClassId, idx: usize) -> String {
         ENode::Buffer(_) => "Buffer".into(),
         ENode::Uniform(_) => "Uniform".into(),
         ENode::Param(i) => format!("Param({i})"),
-        ENode::Ref { key, .. } => format!("Unit({key:?})"),
+        ENode::Ref { key } => format!("Unit({key:?})"),
         ENode::Op { op, children } => {
             let cs: Vec<String> = children
                 .iter()
@@ -443,24 +442,32 @@ fn node_label(egraph: &EGraph, class: EClassId, idx: usize) -> String {
         ENode::Reduce { fold, body } => {
             format!("Reduce[{fold}]({})", egraph.find(*body).index())
         }
+        ENode::Shift {
+            direction,
+            count,
+            operand,
+        } => format!(
+            "{}[{}]({})",
+            direction.op().name(),
+            count.bits(),
+            egraph.find(*operand).index()
+        ),
     }
 }
 
 fn show(cost: Option<usize>) -> String {
     match cost {
         None => "-".into(),
-        Some(c) if c >= witness::cycle_cost() => "CYCLE".into(),
         Some(c) => c.to_string(),
     }
 }
 
 /// The rule that minted node `idx` of `class`, or `seed`.
 fn minting_rule(sat: &Saturated, class: EClassId, idx: usize) -> String {
-    let tags = sat.egraph.tags(class);
-    let Some(&tag) = tags.get(idx) else {
+    let Some(tag) = sat.egraph.tags(class).nth(idx) else {
         return "unknown".into();
     };
-    match sat.egraph.provenance().origin(tag) {
+    match sat.egraph.journal().origin(tag) {
         None => "unknown".into(),
         Some(Origin::Seed) => "seed".into(),
         Some(Origin::Rule(app)) => sat
@@ -557,7 +564,11 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
     for &c in &reach_t {
         let idx = c_t[c.index()].expect("reachable under C_T");
         let mut any = false;
-        for &ch in egraph.nodes(c)[idx].children_slice() {
+        let node = egraph
+            .nodes(c)
+            .nth(idx)
+            .expect("a choice indexes its class's e-nodes");
+        for &ch in node.children_slice() {
             let ch = egraph.find(ch);
             any |= is_div[ch.index()] || below_diverges[ch.index()];
         }
@@ -573,14 +584,14 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
     let base = sat.optimized.cost.dag;
     let mut best_single = base;
     let mut best_single_class = None;
-    let mut swap_delta: HashMap<u32, i64> = HashMap::new();
+    let mut swap_delta: HashMap<EClassId, i64> = HashMap::new();
     for &c in &frontier {
         let mut m = c_g.clone();
         m[c.index()] = c_t[c.index()];
         let Some(cost) = witness::cost_if_well_founded(egraph, sat.root, &m, costs, shape) else {
             continue;
         };
-        swap_delta.insert(c.index() as u32, cost.dag as i64 - base as i64);
+        swap_delta.insert(c, cost.dag as i64 - base as i64);
         if cost.dag < best_single {
             best_single = cost.dag;
             best_single_class = Some(c);
@@ -644,11 +655,9 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
         let g = c_g[c.index()].expect("greedy is total on root-reachable classes");
         let dp_w = win.table.cost_of(c, w);
         let dp_g = win.table.cost_of(c, g);
-        let delta = swap_delta.get(&(c.index() as u32)).copied();
+        let delta = swap_delta.get(&c).copied();
         let rule_g = minting_rule(sat, c, g);
-        let cyc = witness::cycle_cost();
         let label = match (dp_w, dp_g, delta) {
-            (Some(a), _, _) if a >= cyc => "CYCLE-PRICED",
             (Some(a), Some(b), _) if a == b => "TIE",
             (Some(a), Some(b), _) if a < b => "LOCAL-MISS",
             (_, _, Some(d)) if d < 0 && rule_g != "seed" => "DISTRACTOR",
@@ -662,7 +671,7 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
         }
         if first.is_none() {
             first = Some(FirstDivergence {
-                class: c.index() as u32,
+                class: c.index(),
                 node_greedy: node_label(egraph, c, g),
                 node_witness: node_label(egraph, c, w),
                 dp_cost_greedy: show(dp_g),
@@ -688,7 +697,6 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
                 rule_greedy: rule_g,
                 stage: match trace.stage_of(c, w) {
                     Stage::Dp => "dp",
-                    Stage::Repair => "repair",
                     Stage::MinOfTwo => "min-of-two",
                 }
                 .into(),
@@ -758,7 +766,7 @@ fn main() {
                 witness::reachable_under(&sat.egraph, sat.root, &sat.optimized.choices).len();
             let (canon_choices, canon) =
                 witness::extract_under(&sat.egraph, sat.root, &costs, shape, Ties::Canonical);
-            let canon_arena = witness::arena_of(&sat.egraph, sat.root, canon_choices);
+            let canon_arena = witness::arena_of(&sat.egraph, sat.root, &canon_choices);
             let trace = witness::trace(&sat.egraph, sat.root, &costs, shape);
             let tied = witness::reachable_under(&sat.egraph, sat.root, &sat.optimized.choices)
                 .iter()

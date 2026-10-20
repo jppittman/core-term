@@ -1,7 +1,7 @@
 //! Withheld real-shader benchmark set — ShaderToy / iquilezles.org ports for
 //! the `FINAL` (publication-only) corpus tier.
 //!
-//! docs/plans/2026-08-05-egraph-nnue-research-workflow.md §0.2 defines
+//! docs/archive/plans/2026-08-05-egraph-nnue-research-workflow.md §0.2 defines
 //! `FINAL` as "real pixelflow kernels (the 5 named production kernels + real
 //! `kernel!` call sites harvested from the repo + validated ShaderToy
 //! imports) + one synthetic family. Never used for any selection decision;

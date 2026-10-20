@@ -2,7 +2,7 @@
 //!
 //! Given a set of candidate rewrite-rule applications, produce per-candidate
 //! move-ordering scores to guide equality saturation. That sentence is the
-//! entire contract; see `docs/plans/2026-07-07-guided-saturation-redesign.md`
+//! entire contract; see `docs/compiler/2026-07-07-guided-saturation-redesign.md`
 //! for the design this module exists to satisfy once training lands, purely
 //! supervised on hindsight rule-provenance labels from `crate::egraph::labeler`
 //! — no REINFORCE, no self-play.
@@ -11,8 +11,8 @@
 //!
 //! **Loud note, per that task's explicit instruction: this trait's shape
 //! changed.** The original contract scored a candidate against a *whole-graph*
-//! summary (`GraphSummary`, wrapping [`GraphAccumulator`]) plus a bare rule
-//! embedding (`RuleCandidate`). `docs/plans/2026-08-31-guide-design-revision.md`
+//! summary (`GraphSummary`, wrapping `GraphAccumulator`) plus a bare rule
+//! embedding (`RuleCandidate`). `docs/archive/plans/2026-08-31-guide-design-revision.md`
 //! §4 argues from measurement, not taste, that this is the wrong granularity:
 //! the dominant per-round cost is candidate-level deduplication (90.4% of
 //! scored candidates commit no change — §2.2), which is a property of *one
@@ -22,10 +22,10 @@
 //! e-class neighborhood + budget state, mirroring
 //! [`crate::egraph::candidate::CandidateFeatures`] (the same object minted for
 //! the strict-label training pipeline, `gen_strict_labels`) field for field —
-//! rather than [`GraphSummary`]/[`RuleCandidate`].
+//! rather than `GraphSummary`/`RuleCandidate`.
 //!
 //! `GraphAccumulator` itself is **not deleted** (segregation rule,
-//! `docs/plans/2026-08-31-guide-design-revision.md` §4 last paragraph: "the
+//! `docs/archive/plans/2026-08-31-guide-design-revision.md` §4 last paragraph: "the
 //! accumulator's whole-graph summary remains the right shape for the
 //! *extraction-cost* Judge, a genuinely different question from 'should this
 //! match fire now'"). It stays exactly where it was (`accumulator.rs`), still
@@ -53,10 +53,10 @@
 //!
 //! Kept, not deleted: the 2026-08-17 disposition inventory confirmed zero
 //! non-test callers for this whole surface but a live roadmap role
-//! (ROADMAP-ADMITTED, `docs/plans/2026-08-17-cost-model-domain.md` §0 row J10).
+//! (ROADMAP-ADMITTED, `docs/archive/plans/2026-08-17-cost-model-domain.md` §0 row J10).
 //! The extraction head this module used to share a backbone with is gone
 //! (its shape was deleted 2026-09-01; the denotation is kept, see
-//! docs/plans/2026-09-01-schedule-cost-model-denotation.md); what it shares now is only
+//! docs/compiler/2026-09-01-schedule-cost-model-denotation.md); what it shares now is only
 //! [`OpEmbeddings`], and the trunk that used to be "shared" is this head's
 //! own (`scoring.rs`).
 
@@ -126,7 +126,7 @@ fn shift1(emb: &[f32; K]) -> [f32; K] {
 /// those from a second computation (the anti-drift rule this module's own
 /// doc states: "there is exactly one place a caller can get this wrong"),
 /// `CandidateSummary` carries them too — additively, alongside the fields
-/// [`scoring::SaturationHead`]'s tower already consumed. `rule` and
+/// `scoring::SaturationHead`'s tower already consumed. `rule` and
 /// `match_class_node_count` come straight off `features.key` (already
 /// computed, nothing new to derive); `expr_node_count` has no home in
 /// [`CandidateFeatures`] (it's an episode-level constant, not part of any
@@ -136,13 +136,18 @@ fn shift1(emb: &[f32; K]) -> [f32; K] {
 /// `EGraph::node_count()` at the episode's start — see
 /// `saturate_guided_until_applications`).
 pub struct CandidateSummary {
+    /// The rule's embedding in the space the saturation head scores in.
     pub rule_embed: [f32; EMBED_DIM],
+    /// One-hop child ops of the matched class (see
+    /// [`CandidateFeatures::neighborhood_ops`](crate::egraph::candidate::CandidateFeatures::neighborhood_ops)).
     pub neighborhood_ops: Vec<OpKind>,
+    /// The application's ordinal over the registered budget; past `1.0` once
+    /// an episode samples beyond it.
     pub budget_fraction: f32,
     /// Which rule this candidate is, by stable identity
     /// ([`CandidateKey::rule`](crate::egraph::candidate::CandidateKey::rule))
     /// — consumed by the per-rule linear guides, not by
-    /// [`scoring::SaturationHead`]'s tower (which reads only `rule_embed`).
+    /// `scoring::SaturationHead`'s tower (which reads only `rule_embed`).
     ///
     /// A [`RuleId`] rather than a position: a per-rule weight vector keyed
     /// by index is repointed wholesale by a same-length reorder of the rule
@@ -150,7 +155,7 @@ pub struct CandidateSummary {
     /// [`crate::egraph::rules`].
     pub rule: RuleId,
     /// Node count of the matched e-class's canonical content
-    /// ([`ClassContentKey::node_count`]) — `train_guide`'s
+    /// (`ClassContentKey::node_count`) — `train_guide`'s
     /// `log_match_class` feature, before the `log1p` the linear model
     /// applies.
     pub match_class_node_count: usize,
@@ -301,6 +306,7 @@ impl SaturationGuide for Guide {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::{RuleSet, Saturation};
 
     // ========================================================================
     // shift_by / shift1
@@ -439,21 +445,19 @@ mod tests {
     #[test]
     fn candidate_summary_new_should_round_trip_features_and_rule_embed() {
         use crate::egraph::candidate::Firing;
-        use crate::egraph::ops;
-        use crate::egraph::{EGraph, ENode, Rewrite};
+        use crate::egraph::{ENode, Rewrite};
         use crate::math::algebra::Commutative;
 
-        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
-        let mut eg = EGraph::with_rules(rules);
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(OpKind::Add)];
+        let mut eg = Saturation::over(RuleSet::new(rules));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
 
         let firing = Firing {
-            rule: eg.rule_id(0).expect("the graph's only rule"),
+            rule: eg
+                .rules()
+                .id(eg.rules().indices().next().expect("the graph's only rule")),
             match_root: eg.find(sum),
             application_ordinal: 5,
             registered_budget: 20,

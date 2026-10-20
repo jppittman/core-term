@@ -11,7 +11,7 @@
 
 Objective: **return-mse**. Regression target: **centered** at B = **100**.
 
-Training regime (docs/plans/2026-09-01-guide-return-to-go.md §2b.3): **expr_node_count in [101, 1000], application_ordinal < 100**.
+Training regime (docs/archive/plans/2026-09-01-guide-return-to-go.md §2b.3): **expr_node_count in [101, 1000], application_ordinal < 100**.
 
 TRAIN: 18565784 records read, 17283072 dropped by the regime, 1282712 kept, 1282712 labelled samples.
 

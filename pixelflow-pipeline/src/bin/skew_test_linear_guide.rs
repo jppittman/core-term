@@ -1,9 +1,9 @@
 //! Mandatory train/deploy skew test for the linear saturation Guide heads:
-//! the strict-bit classifier (`docs/plans/2026-08-31-guide-design-revision.md`
+//! the strict-bit classifier (`docs/archive/plans/2026-08-31-guide-design-revision.md`
 //! §5, task 2 of the 2026-09-02 cold-start-training round: "for >=1000 DEV
 //! records, the trainer's forward and the deployed impl's score_candidates
 //! agree to <=1e-6") and, as of `--model return`, the return-to-go
-//! regressor (`docs/plans/2026-09-01-guide-return-to-go.md` §3.3: "for
+//! regressor (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §3.3: "for
 //! >=1000 DEV records, `|f_trainer + score_deployed| <= 1e-6`").
 //!
 //! # What this checks, and why it is two independent code paths
@@ -28,7 +28,7 @@
 //! [`LinearCandidateGuide`], comparing `Model::logit` to
 //! `score_candidates` directly (both already in "bigger is better"
 //! orientation, so no sign to account for). `--model return` replays an
-//! `R2gRecord` JSONL (`docs/plans/2026-09-01-guide-return-to-go.md` §8's
+//! `R2gRecord` JSONL (`docs/archive/plans/2026-09-01-guide-return-to-go.md` §8's
 //! schema) against [`LinearReturnGuide`], whose `score_candidates` is
 //! `-predicted_return` (that type's own doc, "The sign, spelled out") — so
 //! the bit-exactness check there is `|trainer_logit + score_deployed| <=

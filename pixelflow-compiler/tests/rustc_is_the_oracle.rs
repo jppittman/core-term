@@ -7,7 +7,7 @@
 //! Rust closure over `(x, y)`, and compares the baked value to the closure's.
 //!
 //! The failing cases were measured defects (Phase A1 of
-//! docs/plans/2026-09-25-the-language-is-kernel.md; probe p6 is the first
+//! docs/language/2026-09-25-the-language-is-kernel.md; probe p6 is the first
 //! test): lowering's `locals` was one flat map that no block ever popped, so
 //! an inner `let` overwrote an outer one for the rest of the kernel; `sema`'s
 //! table deleted a shadowed parameter outright; and a literal was parsed as
@@ -170,7 +170,7 @@ fn an_integer_literal_is_exact() {
 
 // ───────────────────── B1: the language's constructs ─────────────────────
 //
-// Each construct Phase B1 adds (docs/plans/2026-09-25-the-language-is-kernel.md
+// Each construct Phase B1 adds (docs/language/2026-09-25-the-language-is-kernel.md
 // §1.2, §1.3) is Rust syntax, so rustc is its oracle too: the same tokens
 // as an `if`, a `fn` and a `const` in host Rust.
 
@@ -323,7 +323,7 @@ fn a_const_never_contracts_as_rustc_never_does() {
 
 // ───────────────────── B2: folds over constant ranges ─────────────────────
 //
-// A fold (docs/plans/2026-09-25-the-language-is-kernel.md §1.5) is Rust's
+// A fold (docs/language/2026-09-25-the-language-is-kernel.md §1.5) is Rust's
 // iterator spelling of a reduction, so rustc is its oracle too: the same
 // tokens over the same range, as a host iterator. The bodies are chosen so
 // every term and every partial result is exact in `f32`, which makes the
@@ -589,7 +589,7 @@ fn a_range_from_consts_folds_as_rustcs_does() {
 
 // ─────────────── B3: records, and structural counts ───────────────
 //
-// A record (docs/plans/2026-09-25-the-language-is-kernel.md §1.3) is a Rust
+// A record (docs/language/2026-09-25-the-language-is-kernel.md §1.3) is a Rust
 // struct of `f32` fields, and the macro emits it as one: so the oracle for a
 // record's field arithmetic is the same tokens over the host struct itself.
 // A structural parameter (§1.4) is a Rust const generic, and the oracle for
@@ -720,7 +720,7 @@ fn a_tuple_let_binds_as_rustcs_does() {
 
 // ─────────────── D-a: kernel-typed parameters ───────────────
 //
-// A kernel-typed parameter (docs/plans/2026-09-25-the-language-is-kernel.md
+// A kernel-typed parameter (docs/language/2026-09-25-the-language-is-kernel.md
 // §1.3, Phase D-a) is Rust's `impl Fn(f32, f32) -> f32`, so rustc is its
 // oracle too: the block's `fn`s are host `fn`s of the same tokens, the
 // sample their last two arguments, and a Rust closure of an argument's

@@ -130,7 +130,7 @@ real gaps.**
    under two encoder refactors since the branch was opened) before
    merging. Worth either landing that verification or closing the PR if
    it's superseded.
-2. PRs #1049 (`egraph/graph.rs` STYLE.md naming) and #1051 (`egraph/cost.rs`
+2. PRs #1049 (`egraph/graph.rs` ../process/STYLE.md naming) and #1051 (`egraph/cost.rs`
    — believed superseded by 2026-08-22's in-tree fix, worth confirming and
    closing) remain open, unmerged, and `mergeable_state: behind`. A
    decision (rebase-and-land or close) from whoever owns that series would

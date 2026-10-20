@@ -9,6 +9,8 @@
 
 use core::ops::{Index, IndexMut};
 
+use crate::shift::ShiftCount;
+
 /// The op table: the single place an operation is declared.
 ///
 /// The enum, the roster, the count and both directions of the numbering are
@@ -23,7 +25,7 @@ use core::ops::{Index, IndexMut};
 /// of testing for it.
 ///
 /// The designs this replaced, and what each got wrong, are in
-/// `docs/designs/opkind-numbering-is-private.md` §4.
+/// `docs/archive/designs/opkind-numbering-is-private.md` §4.
 macro_rules! op_table {
     ($( $(#[$attr:meta])* $name:ident = $code:literal, )+) => {
         /// Unified enumeration of all IR operations.
@@ -140,7 +142,7 @@ op_table! {
     /// batch whose mask is uniform takes one arm, and that is a jump; only
     /// a mask that varies by lane blends, and the bitwise blend is the
     /// fallback for that one case, not the definition. It was named
-    /// `Select` until docs/plans/2026-09-25-the-language-is-kernel.md D18:
+    /// `Select` until docs/language/2026-09-25-the-language-is-kernel.md D18:
     /// that name hid the `if`, and the emitter built on the misreading —
     /// blend by default, a branch bought per node in `emit/guards.rs` —
     /// cost 73% of a glyph bake (docs/BACKLOG.md, X1).
@@ -180,7 +182,7 @@ op_table! {
     // --- Bound memory (lattices) ---
     /// Buffer leaf: a slot referencing a `BufferDecl` in the arena's buffer
     /// table. The declared extents are static IR; the contents are bound at
-    /// JIT-compile time. See `docs/designs/KERNELS_AND_LATTICES.md`.
+    /// JIT-compile time. See `docs/archive/designs/KERNELS_AND_LATTICES.md`.
     Buffer = 46,
     /// Read a bound buffer: `Gather(buffer, x, y)` where `buffer` is a
     /// `Buffer` leaf. Semantics match `DiscreteManifold::eval`: floor the
@@ -227,7 +229,7 @@ op_table! {
     /// Sequencing: evaluate the left, then the right. Unit-typed — it has
     /// no value, and nothing may read one — so it is a monoid whose identity
     /// is nothing: [`Monoid::SEQ`](crate::fold::Monoid::SEQ), the algebra
-    /// of the folds a lattice is (docs/plans/2026-09-16-collapse-is-a-fold.md
+    /// of the folds a lattice is (docs/archive/plans/2026-09-16-collapse-is-a-fold.md
     /// §2.4). Constructible only by those legalize passes: `kernel!` cannot
     /// name it and the e-graph's vocabularies decline it, as they do a
     /// `Write`. A backend that meets one as an instruction emits no bytes.
@@ -358,23 +360,19 @@ impl OpKind {
                 _ => false,
             },
 
-            // A shift count outside `0..32` has three answers. The folder
-            // reduces it mod 32 (`y as u32 & 31`, below); x86
+            // A count outside `0..WORD_BITS`, or a non-integral one, has
+            // three answers. The folder reduces it mod `WORD_BITS` (below); x86
             // (V)PSLLD/(V)PSRLD zero the whole destination for any count > 31
             // (Intel SDM); and aarch64's immediate encoding silently changes
             // ELEMENT SIZE — `emit_shl` computes `immh:immb = shift + 32`, so
             // at shift >= 32 `immh` becomes `1xxx`, which decodes as `.2D`
             // and shifts bits across the 32-bit lane boundary. A non-integral
             // count is refused for the same reason: the tiers disagree on how
-            // to narrow it. The emitters now assert this range, so a refused
-            // fold cannot be laundered into a bad encoding either.
+            // to narrow it. The emitters assert the same range, so a refused
+            // fold cannot be laundered into a bad encoding either. The arm
+            // declines exactly what `ShiftCount::from_literal` refuses.
             Self::Shl | Self::Shr => match args {
-                // The range test comes first and `||` short-circuits, so the
-                // cast below only runs on a value already known to be in
-                // `0..32` — where `as u32` is exact and total. (`f32::fract`
-                // would be the obvious spelling but is std-only; this crate
-                // is `no_std`.)
-                [_, count] => !(0.0..32.0).contains(count) || (*count as u32) as f32 != *count,
+                [_, count] => ShiftCount::from_literal(*count).is_none(),
                 _ => false,
             },
             _ => false,
@@ -498,7 +496,7 @@ impl OpKind {
             Self::Eq => "eq",
             Self::Ne => "ne",
             // Spelled as the `kernel!` method that lowers to it, which keeps its
-            // name until Phase B of docs/plans/2026-09-25-the-language-is-kernel.md
+            // name until Phase B of docs/language/2026-09-25-the-language-is-kernel.md
             // renames it `if`. This string is also what the training corpus
             // fingerprint, the arena's `Display` and `cost_by_name` carry, so
             // renaming the variant does not reach it. (`variant_name`, which
@@ -650,7 +648,7 @@ impl OpKind {
     ///
     /// `.select(a, b)` resolves to [`OpKind::If`], the node `if m { a } else
     /// { b }` lowers to. `if` is the spelling; the method keeps working
-    /// until Phase B of docs/plans/2026-09-25-the-language-is-kernel.md
+    /// until Phase B of docs/language/2026-09-25-the-language-is-kernel.md
     /// removes it (D15).
     #[must_use]
     pub fn from_method_call(name: &str, arg_count: usize) -> Option<Self> {
@@ -922,14 +920,18 @@ impl OpKind {
             // `FCMEQ`. Same epsilon bug as `Eq` above.
             Self::Ne => Some(Self::mask(x != y)),
             // Integer-domain binaries on lane bit patterns. The shift count is
-            // the RHS `Const`'s numeric value (the schedule reads it as
-            // `*v as u32 as u8`), and both shifts are logical — `vpslld` /
-            // `vpsrld`, zero-filling.
+            // the RHS `Const`'s numeric value (the schedule reads it through
+            // `ShiftCount::from_literal`), and both shifts are logical —
+            // `vpslld` / `vpsrld`, zero-filling.
             Self::IAdd => Some(f32::from_bits(
                 (x.to_bits() as i32).wrapping_add(y.to_bits() as i32) as u32,
             )),
-            Self::Shl => Some(f32::from_bits(x.to_bits() << (y as u32 & 31))),
-            Self::Shr => Some(f32::from_bits(x.to_bits() >> (y as u32 & 31))),
+            Self::Shl => Some(f32::from_bits(
+                x.to_bits() << (y as u32 & (ShiftCount::WORD_BITS - 1)),
+            )),
+            Self::Shr => Some(f32::from_bits(
+                x.to_bits() >> (y as u32 & (ShiftCount::WORD_BITS - 1)),
+            )),
             // Bitwise on lane bit patterns, matching the SIMD backends. On
             // canonical masks (1.0/0.0 here, all-ones/zero in the JIT) this
             // is logical AND/OR in both representations.
@@ -1011,7 +1013,7 @@ const _: () = {
 /// Handing out the table subscript instead would leak: a consumer that writes
 /// `index()` into its own format has made this crate's private numbering part
 /// of that format, and owes it a version bump for a change it cannot see.
-/// See `docs/designs/opkind-numbering-is-private.md`.
+/// See `docs/archive/designs/opkind-numbering-is-private.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OpCode(u8);
 
@@ -1150,7 +1152,8 @@ impl<T> Index<OpKind> for OpMap<T> {
 
     #[inline]
     fn index(&self, op: OpKind) -> &T {
-        // The only place in the workspace where an op becomes a subscript.
+        // With `OpSet`'s bit positions, the only place in the workspace
+        // where an op becomes a subscript.
         &self.slots[op.index()]
     }
 }
@@ -1159,6 +1162,70 @@ impl<T> IndexMut<OpKind> for OpMap<T> {
     #[inline]
     fn index_mut(&mut self, op: OpKind) -> &mut T {
         &mut self.slots[op.index()]
+    }
+}
+
+// ============================================================================
+// OpSet
+// ============================================================================
+
+// One bit per op in a `u64`. Like `OpCode`'s width, this is checked where it
+// would otherwise wrap silently: the 65th op fails the build, not a shift.
+const _: () = assert!(
+    OpKind::COUNT <= u64::BITS as usize,
+    "op set outgrew OpSet's width: widen its backing integer"
+);
+
+/// A set of [`OpKind`]s: [`OpMap<bool>`] in one word.
+///
+/// A set is a different object from a table of booleans, and a hot path asks
+/// different questions of it: "does any member of this class have one of
+/// these kinds" is an AND against a word, not a walk over a table. With
+/// [`OpMap`], it is the only way the numbering is turned into a subscript —
+/// here, a bit position — so callers never see which bit an op is, and its
+/// `Debug` lists the ops rather than the word.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OpSet(u64);
+
+impl core::fmt::Debug for OpSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
+    }
+}
+
+impl OpSet {
+    /// The set holding no op.
+    pub const EMPTY: Self = Self(0);
+
+    /// This set and `kind`.
+    #[must_use]
+    pub const fn with(self, kind: OpKind) -> Self {
+        Self(self.0 | 1 << kind.index())
+    }
+
+    /// Everything in this set or in `other`.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether `kind` is in the set.
+    #[must_use]
+    pub const fn contains(self, kind: OpKind) -> bool {
+        self.0 >> kind.index() & 1 == 1
+    }
+
+    /// The ops in the set, in [`OpMap::iter`] order.
+    pub fn iter(self) -> impl Iterator<Item = OpKind> {
+        let mut remaining = self.0;
+        core::iter::from_fn(move || {
+            if remaining == 0 {
+                return None;
+            }
+            let bit = remaining.trailing_zeros() as usize;
+            remaining &= remaining - 1;
+            Some(OpKind::ALL[bit])
+        })
     }
 }
 
@@ -1192,7 +1259,7 @@ const METHOD_ALIASES: &[(&str, OpKind)] = &[("powf", OpKind::Pow)];
 
 #[cfg(test)]
 mod index_space {
-    use super::{OpCode, OpKind};
+    use super::{OpCode, OpKind, OpSet};
 
     /// Density, totality and round-tripping are proved at compile time by the
     /// `const` block above, so there is no runtime test for them here.
@@ -1228,6 +1295,30 @@ mod index_space {
                 "byte {b} decoded to {decoded:?}"
             );
         }
+    }
+
+    /// A set holds exactly the ops put in it, and iterates them back.
+    #[test]
+    fn an_op_set_holds_what_was_put_in_it() {
+        let evens: OpSet = OpKind::all()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .fold(OpSet::EMPTY, |set, (_, op)| set.with(op));
+        for (i, op) in OpKind::all().enumerate() {
+            assert_eq!(evens.contains(op), i % 2 == 0, "{op:?}");
+        }
+        let expected: alloc::vec::Vec<OpKind> = OpKind::all()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(evens.iter().collect::<alloc::vec::Vec<_>>(), expected);
+        assert_eq!(OpSet::EMPTY.iter().count(), 0);
+        let odds = OpKind::all()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 1)
+            .fold(OpSet::EMPTY, |set, (_, op)| set.with(op));
+        assert_eq!(evens.union(odds).iter().count(), OpKind::COUNT);
     }
 
     /// `from_name` matches on `&str` and can never be exhaustive, so nothing
@@ -1896,6 +1987,7 @@ mod eval_ternary_arms {
 #[cfg(test)]
 mod fold_is_platform_specific {
     use super::OpKind;
+    use crate::ShiftCount;
 
     #[test]
     fn decline_to_fold_min_and_max_on_nan_or_a_signed_zero_mismatch() {
@@ -1947,6 +2039,37 @@ mod fold_is_platform_specific {
         assert!(OpKind::Shl.fold_is_platform_specific(&[1.0, 1.5]));
         assert!(!OpKind::Shl.fold_is_platform_specific(&[1.0, 5.0]));
         assert!(!OpKind::Shr.fold_is_platform_specific(&[1.0, 0.0]));
+        // `-0.0` is the integer 0, which every target shifts by: it folds.
+        assert!(!OpKind::Shl.fold_is_platform_specific(&[1.0, -0.0]));
+        assert!(!OpKind::Shr.fold_is_platform_specific(&[1.0, -0.0]));
+    }
+
+    /// The folder declines exactly the counts that are not a `ShiftCount`:
+    /// one definition of a valid count, so no value is a count to one reader
+    /// and not to another.
+    #[test]
+    fn the_folder_declines_a_shift_exactly_when_its_count_is_not_a_shift_count() {
+        for count in [
+            0.0,
+            -0.0,
+            1.0,
+            31.0,
+            32.0,
+            -1.0,
+            0.5,
+            2.5,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            for op in [OpKind::Shl, OpKind::Shr] {
+                assert_eq!(
+                    op.fold_is_platform_specific(&[1.0, count]),
+                    ShiftCount::from_literal(count).is_none(),
+                    "{op:?} by {count}"
+                );
+            }
+        }
     }
 
     #[test]

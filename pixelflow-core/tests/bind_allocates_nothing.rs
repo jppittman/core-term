@@ -114,7 +114,7 @@ fn setting_a_sole_holders_block_allocates_nothing() {
 }
 
 /// The per-call path of a program compiled once (a `kernel!` entry's `Args`,
-/// docs/plans/2026-09-25-the-language-is-kernel.md §1.4): every declared
+/// docs/language/2026-09-25-the-language-is-kernel.md §1.4): every declared
 /// argument set by position into a block the caller keeps, which allocates
 /// nothing once the block is the sole holder of its values — one call per
 /// cell per frame is the shape a text frame takes.

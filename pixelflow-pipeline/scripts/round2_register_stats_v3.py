@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Round 2 v3 statistics — the |R| effect with sweep order held fixed, and the
-order effect on its own (`docs/plans/2026-09-01-phase3-round2-registration-v3.md`).
+order effect on its own (`docs/archive/plans/2026-09-01-phase3-round2-registration-v3.md`).
 
 Reuses `round2_register_stats.py`'s loader and per-rule-set statistics
 verbatim (same HEADER, same GRID, same closure-aware-reference convention,

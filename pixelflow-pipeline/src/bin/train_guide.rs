@@ -1,5 +1,5 @@
 //! Cold-start supervised training for the saturation Guide, on strict labels
-//! (`docs/plans/2026-08-31-guide-design-revision.md` §3 option 3 stage 1, §5
+//! (`docs/archive/plans/2026-08-31-guide-design-revision.md` §3 option 3 stage 1, §5
 //! pre-registered experiment — this binary is the "supervised training
 //! pipeline... proceed against strict labels immediately" half of that
 //! section, NOT the accept/kill saturation-quality measurement itself).
@@ -936,7 +936,7 @@ fn main() {
         dev_fnv64: dev_fnv64.clone(),
         denominator_note: format!(
             "Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = {} \
-             (docs/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), \
+             (docs/archive/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), \
              imported by both gen_strict_labels and saturate_guided_until_applications so \
              budget_fraction means the same thing at mint time and at deploy time. The first \
              mint/train pass of this round (2026-09-01) used a 195-application placeholder \

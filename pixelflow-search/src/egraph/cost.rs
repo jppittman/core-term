@@ -137,11 +137,11 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
         OpKind::Ge => 3,
         OpKind::Eq => 3,
         OpKind::Ne => 3,
-        OpKind::If => 4,
-        OpKind::Tuple => 0,      // free (structural)
+        OpKind::If => 4, // the select; the arms are averaged where the DP adds them (`extract.rs`'s `below`)
+        OpKind::Tuple => 0, // free (structural)
         OpKind::TruncToInt => 1, // cvttps2dq
         OpKind::IntToFloat => 1, // cvtdq2ps
-        OpKind::IAdd => 1,       // paddd
+        OpKind::IAdd => 1, // paddd
         OpKind::Shl => 1,
         OpKind::Shr => 1,
         OpKind::BitAnd => 1,
@@ -229,7 +229,7 @@ impl Default for CostModel {
 
 impl CostModel {
     /// Create a cost model seeded with the handcrafted latency-prior cycle
-    /// table ([`latency_prior_cycles`]).
+    /// table (`latency_prior_cycles`).
     ///
     /// This is the default: an all-zero cost model makes every expression
     /// "free" and extraction degenerates to an arbitrary tie-break, so
@@ -242,7 +242,7 @@ impl CostModel {
 
     /// Create a cost model from the handcrafted latency-prior cycle table.
     ///
-    /// Source of truth: [`latency_prior_cycles`], shared with
+    /// Source of truth: `latency_prior_cycles`, shared with
     /// `nnue::factored::OpEmbeddings::init_with_latency_prior` so the static
     /// table and the Guide's op-embedding prior cannot drift apart.
     pub fn latency_prior() -> Self {
@@ -318,8 +318,6 @@ impl CostModel {
     }
 
     /// Get cost for an ENode.
-    ///
-    /// Uses `op.kind()` to convert at the boundary from `&dyn Op` to `OpKind`.
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
             // Buffer is a leaf like Var/Const: the cost of the read lives on
@@ -361,13 +359,16 @@ impl CostModel {
             //
             // Expensive, not infinite, is the distinction. The same one the
             // fold arm below makes, for the same reason.
-            ENode::Op { op, .. } => self.cost(op.kind()),
+            ENode::Op { op, .. } => self.cost(*op),
+            // A shift costs its table entry whatever its count: the count is
+            // an immediate, not an operand to evaluate.
+            ENode::Shift { direction, .. } => self.cost(direction.op()),
             // **A fold's own work is its combiner chain**: `len - 1`
             // applications of the monoid's operation. The body's `len`
             // evaluations are not here — a node's cost cannot see its
             // children's — they are applied where the DP adds the body in,
             // which is the one place that number exists. See
-            // `extract.rs`'s `fold_body_multiple`.
+            // `extract.rs`'s `below`.
             //
             // This was `usize::MAX / 4`, the prohibitive sentinel `Dwrt` also
             // carried then (it costs its table entry now, above), on the
@@ -404,8 +405,7 @@ impl CostModel {
     /// halves, because a node's own cost cannot see its children's:
     /// [`node_op_cost`](Self::node_op_cost) is `fold_cost(fold, 0)`, the
     /// combiner chain, and the DP multiplies the body's price by the trip
-    /// count where it has that price in hand (`extract.rs`'s
-    /// `fold_body_multiple`).
+    /// count where it has that price in hand (`extract.rs`'s `below`).
     ///
     /// Saturating: a nest of long folds over an expensive body is a price
     /// past any budget, not an overflow.
@@ -577,7 +577,6 @@ mod every_op_is_priceable {
 #[cfg(test)]
 mod cost_model_accessors {
     use super::{CostFunction, CostModel};
-    use crate::egraph::ops::op_from_kind;
     use crate::egraph::{EGraph, ENode};
     use pixelflow_ir::OpKind;
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
@@ -688,12 +687,11 @@ mod cost_model_accessors {
     /// fires on the difference.
     #[test]
     fn node_op_cost_prices_a_dwrt_node_dearly_but_finitely() {
+        let mut egraph = EGraph::new();
+        let inner = egraph.add(ENode::Var(0));
+        let axis = egraph.add(ENode::constant(0.0));
         let model = CostModel::latency_prior();
-        let op = op_from_kind(OpKind::Dwrt).expect("Dwrt has an Op impl");
-        let node = ENode::Op {
-            op,
-            children: vec![],
-        };
+        let node = ENode::apply(OpKind::Dwrt, &[inner, axis]);
         let cost = model.node_op_cost(&node);
         assert_eq!(cost, model.cost(OpKind::Dwrt), "priced from the table");
         assert!(cost < usize::MAX / 4, "finite, not a sentinel: {cost}");
@@ -711,11 +709,7 @@ mod cost_model_accessors {
         let lhs = egraph.add(ENode::constant(1.0));
         let rhs = egraph.add(ENode::constant(2.0));
         let model = CostModel::latency_prior();
-        let op = op_from_kind(OpKind::Add).expect("Add has an Op impl");
-        let node = ENode::Op {
-            op,
-            children: vec![lhs, rhs],
-        };
+        let node = ENode::apply(OpKind::Add, &[lhs, rhs]);
         assert_eq!(model.node_op_cost(&node), model.cost(OpKind::Add));
     }
 
@@ -725,7 +719,7 @@ mod cost_model_accessors {
     /// form, `Σ_{j<40} |X − j|` is priced exactly `fold_cost(fold, − + |·|)`.
     #[test]
     fn the_extractor_prices_a_fold_at_fold_cost() {
-        use crate::egraph::extract::extract;
+        use crate::egraph::extract::extract_dag;
         use crate::egraph::{Vocabulary, insert};
         use pixelflow_ir::ExprArena;
         use pixelflow_ir::fold::{Binder, Fold, Monoid};
@@ -743,7 +737,8 @@ mod cost_model_accessors {
         let mut egraph = EGraph::new();
         let class = insert(&a, root, &mut egraph, Vocabulary::Runtime).expect("a fold inserts");
         let model = CostModel::latency_prior();
-        let (_, _, cost) = extract(&egraph, class, &model);
+        let dag = extract_dag(&egraph, class, &model);
+        let cost = dag.total_cost;
 
         let body_cost = model.cost(OpKind::Sub) + model.cost(OpKind::Abs);
         assert_eq!(cost, model.fold_cost(range, body_cost));
@@ -764,11 +759,7 @@ mod cost_model_accessors {
         let mut egraph = EGraph::new();
         let lhs = egraph.add(ENode::constant(1.0));
         let rhs = egraph.add(ENode::constant(2.0));
-        let op = op_from_kind(OpKind::Add).expect("Add has an Op impl");
-        let node = ENode::Op {
-            op,
-            children: vec![lhs, rhs],
-        };
+        let node = ENode::apply(OpKind::Add, &[lhs, rhs]);
 
         let model = CostModel::latency_prior();
         assert_eq!(

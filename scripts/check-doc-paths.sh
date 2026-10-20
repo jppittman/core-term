@@ -2,7 +2,7 @@
 #
 # A plan or design may not name a source file the tree does not have.
 #
-# `docs/plans/2026-09-06-kernel-with-a-lattice.md` §4 asked for this check by
+# `docs/archive/plans/2026-09-06-kernel-with-a-lattice.md` §4 asked for this check by
 # name, after every stage of that programme deleted files that prose elsewhere
 # still described, and every stage found them by grepping rather than by a job
 # failing:
@@ -16,9 +16,9 @@
 # is an identifier, and a check that cries wolf is worse than no check.
 # A backticked `foo/bar.rs` is unambiguous, so that is what this reads.
 #
-# SCOPE -- plans, designs, superpowers/ and the loose docs at the root of
-# docs/, per docs/README.md's own classification, and the agent instructions
-# at the repository root (CLAUDE.md, AGENTS.md, GEMINI.md), which every
+# SCOPE -- every document under docs/ except the dated evidence (results/,
+# bugs/), every module's intent.md, and the agent instructions
+# at the repository root (../CLAUDE.md, ../AGENTS.md, ../GEMINI.md), which every
 # session reads before anything else. Those are the documents a reader *acts
 # on*, so a dead path in one sends somebody to a file that is not there.
 # `docs/results/` and `docs/bugs/` are dated evidence: a July audit naming a
@@ -36,7 +36,7 @@
 #      "deleted",
 #      "removed", "retired", "gone", "no longer", "never existed". A live plan
 #      saying "`ir_bridge.rs` is deleted by this change" is correct prose, not
-#      rot, and `docs/designs/opkind-numbering-is-private.md` is the worked
+#      rot, and `docs/archive/designs/opkind-numbering-is-private.md` is the worked
 #      example in the tree.
 #
 #   3. The pair is recorded in the baseline (see below).
@@ -61,13 +61,13 @@ sed 's|.*/||' "$existing_paths" | sort -u >"$existing_names"
 # banner routinely lists four dead paths and puts "were deleted" on the next
 # line, and line-scoped matching would flag the very sentence that fixes it.
 declares_death='delet|remov|retir|\bgone\b|no longer|never exist|used to |replaced by|absorbed|renamed|supersed|dropped|split into|moved to|collapsed into|folded into|is not in the tree'
-banner='ARCHIVED|Supersed|supersed|Retracted|retracted|Historical|historical|Obsolete|obsolete|Withdrawn|withdrawn'
+banner='ARCHIVED|Archived|Supersed|supersed|Retracted|retracted|Historical|historical|Obsolete|obsolete|Withdrawn|withdrawn'
 
 # THE BASELINE, and why one is needed at all.
 #
 # A path-existence check cannot tell "this file was deleted" from "this plan
 # proposes to create this file" -- both are absent from the tree, and only the
-# author's intent separates them. `2026-09-01-guide-candidate-context.md` is the
+# author's intent separates them. `../docs/compiler/2026-09-01-guide-candidate-context.md` is the
 # worked example: it designs `egraph/cell.rs` and `training/rule_conditioned.rs`,
 # neither of which exists, and it is correct to name them.
 #
@@ -136,16 +136,16 @@ done < <(
   # directory) -- plus the loose docs at the root of docs/, which are a mix of
   # design notes and analyses that a reader acts on the same way, and the
   # agent instructions, which a session acts on before it reads any of them.
-  # CLAUDE.md said a glyph was closed by a test that had been deleted, and
+  # ../CLAUDE.md said a glyph was closed by a test that had been deleted, and
   # this check, scoped to docs/ alone, passed.
   #
   # `docs/results/` and `docs/bugs/` stay out, deliberately: they are dated
   # evidence, and a July audit naming a file deleted in August is a correct
   # record of July rather than a defect.
   {
-    find docs/plans docs/designs docs/superpowers -name '*.md'
-    find docs -maxdepth 1 -name '*.md' ! -name 'README.md'
-    printf '%s\n' CLAUDE.md AGENTS.md GEMINI.md
+    find docs -name '*.md' ! -path 'docs/results/*' ! -path 'docs/bugs/*' ! -name 'README.md'
+    find . -name 'intent.md' -not -path './target*' | sed 's|^\./||'
+    printf '%s\n' ../CLAUDE.md ../AGENTS.md ../GEMINI.md
   } | sort
 )
 

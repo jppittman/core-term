@@ -19,13 +19,13 @@
 //! The weights sidecar (the objective/identity record written next to an
 //! extraction-head checkpoint) left with the extraction-head
 //! program on 2026-09-01; see
-//! docs/plans/2026-09-01-schedule-cost-model-denotation.md (which cites the
+//! docs/compiler/2026-09-01-schedule-cost-model-denotation.md (which cites the
 //! closed workshop paper, PR #1072, branch `claude/workshop-writeup`) and
 //! git history for it.
 //!
 //! Both functions below are thin `f64` wrappers around
 //! [`BenchResult::corrected_session_ns`] / [`crate::jit_bench::CostLabel`]
-//! (docs/plans/2026-08-17-cost-model-domain.md, J3/J4): the ordering they
+//! (docs/archive/plans/2026-08-17-cost-model-domain.md, J3/J4): the ordering they
 //! document is enforced there by the [`crate::jit_bench::LocalNs`] /
 //! [`crate::jit_bench::SessionNs`] newtypes, not merely described here in
 //! prose. Callers that track collection order should mint a

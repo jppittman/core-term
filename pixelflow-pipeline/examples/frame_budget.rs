@@ -1,4 +1,4 @@
-//! O4 of `docs/plans/2026-09-25-the-language-is-kernel.md`: what a terminal
+//! O4 of `docs/language/2026-09-25-the-language-is-kernel.md`: what a terminal
 //! frame costs, and what a zoom costs, measured on the path production takes
 //! today (C2a.0 — the "today" column; the per-cell column arrives with C2a.3).
 //!

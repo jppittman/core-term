@@ -1,4 +1,4 @@
-> **Retracted/Superseded (2026-09-07), ledger L046.** The regime-restricted Spearman rests on tree-cost deltas on a generated corpus and is not re-taken. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
+> **Retracted/Superseded (2026-09-07), ledger L046.** The regime-restricted Spearman rests on tree-cost deltas on a generated corpus and is not re-taken. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/compiler/2026-09-07-benchmark-correction.md`.
 
 # Guide return-to-go, round 4: training inside the selected regime, and confluence-aware credit
 
@@ -11,7 +11,7 @@
 > tree total (#1117). Full statement:
 > [docs/results/2026-09-02-phase3-instrument-changes.md](2026-09-02-phase3-instrument-changes.md).
 
-**Date:** 2026-09-01 (run) · **Registration:** `docs/plans/2026-09-01-guide-return-to-go.md` §2b.3 (selection rule) and §7 (comparison) · **Source rev:** `cf8814a8b4e83ca117bf69be2be44a3f6ddc449e`
+**Date:** 2026-09-01 (run) · **Registration:** `docs/archive/plans/2026-09-01-guide-return-to-go.md` §2b.3 (selection rule) and §7 (comparison) · **Source rev:** `cf8814a8b4e83ca117bf69be2be44a3f6ddc449e`
 
 **Selection rule, fixed before this round's training run** (§2b.3, from round 3's spread measurement alone): node-count band ∈ {101-250, 251-1000}, label budget B = 100 — the five (budget, band) cells where TRAIN and DEV independently agree that fewer than half the expressions show zero spread among the 11 guided orderings. A record enters training iff its source expression has 101 ≤ node count ≤ 1000 **and** `application_ordinal < 100`.
 

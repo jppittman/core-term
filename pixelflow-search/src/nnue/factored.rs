@@ -10,24 +10,24 @@
 //!   table the extractor actually uses.
 //!
 //! - The typed edge stream: a walk over an expression DAG — an [`ExprArena`]
-//!   subtree, or an e-graph [`Extraction`](crate::egraph::extract::Extraction)
-//!   — emits one [`CostEdge`] per parent→child slot, bound at a depth-encoded
-//!   [`PeSlot`]. A second reference to a shared node is a register reload
+//!   subtree (an e-graph extraction is walked as the arena its term
+//!   materializes as) — emits one [`CostEdge`] per parent→child slot, bound
+//!   at a depth-encoded [`PeSlot`]. A second reference to a shared node is a register reload
 //!   (`parent → Var`), exactly as the JIT's let-binding emitter sees it. An
 //!   [`EdgeTrace`] is that stream recorded in emission order, and an
-//!   [`EdgeSink`] is where a walk sends it — a parent-child edge is the
+//!   `EdgeSink` is where a walk sends it — a parent-child edge is the
 //!   up/down context primitive the Guide's candidate-context design folds.
 //!
 //! The extraction (value) head that used to sit on top of this — an
 //! accumulator feature vector, a backbone + value MLP, its checkpoint format
 //! — tied the static table on schedule-free kernels (workshop paper on branch
 //! `claude/workshop-writeup`, PR #1072, closed without merging — not in this
-//! tree; see docs/plans/2026-09-01-schedule-cost-model-denotation.md) and its
+//! tree; see docs/compiler/2026-09-01-schedule-cost-model-denotation.md) and its
 //! shape was deleted on 2026-09-01; history is in VCS. What this module keeps
 //! is the denotation a future residual reranker needs — the op vocabulary,
 //! the edge stream, and
 //! per-node variance classification
-//! (docs/plans/2026-09-01-schedule-cost-model-denotation.md).
+//! (docs/compiler/2026-09-01-schedule-cost-model-denotation.md).
 
 extern crate alloc;
 
@@ -36,7 +36,6 @@ use libm::{logf, sqrtf};
 
 use crate::egraph::Rewrite;
 use crate::egraph::cost::latency_prior_cycles;
-use crate::egraph::extract::Extraction;
 pub use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 use pixelflow_ir::kind::OpMap;
@@ -92,6 +91,7 @@ pub const MLP_HIDDEN: usize = 16;
 /// - `z_RHS`: what it PRODUCES (production prediction)
 /// - `z_LHS - z_RHS`: what CHANGED (the delta)
 /// - `z_LHS * z_RHS`: what's SHARED (preserved structure)
+///
 /// Arena-backed rule templates: one [`ArenaRuleTemplate`] per rule index.
 ///
 /// `None` slots are rules that define no structural template (or only one
@@ -302,7 +302,7 @@ impl ArenaRuleTemplates {
 /// similarity between operations.
 #[derive(Clone)]
 pub struct OpEmbeddings {
-    /// E[op][i] = i-th dimension of op's embedding.
+    /// `E[op][i]` = i-th dimension of op's embedding.
     /// Stored as one K-vector per op: `OpMap::LEN * K` = 50 × 32 = 1,600 floats.
     pub e: OpMap<[f32; K]>,
 }
@@ -349,7 +349,7 @@ impl OpEmbeddings {
     /// Initialize with latency priors in place.
     ///
     /// Dimension 0 = latency, squashed to `[0, 1]` from the shared
-    /// [`latency_prior_cycles`] cycle table (source of truth, also used by
+    /// `latency_prior_cycles` cycle table (source of truth, also used by
     /// `egraph::cost::CostModel::latency_prior`) via
     /// `ln(1+cycles) / ln(1+1000)`.
     ///
@@ -483,8 +483,8 @@ const fn const_exp(x: f64) -> f64 {
 /// Reduces x to [-pi, pi] first for accuracy.
 const fn const_sin(x: f64) -> f64 {
     // Reduce to [-pi, pi]
-    let pi: f64 = 3.141592653589793;
-    let two_pi: f64 = 6.283185307179586;
+    let pi: f64 = core::f64::consts::PI;
+    let two_pi: f64 = core::f64::consts::TAU;
     let mut r = x;
     // Simple modular reduction (good enough for small positive x)
     while r > pi {
@@ -508,8 +508,8 @@ const fn const_sin(x: f64) -> f64 {
 
 /// Const-compatible cos(x) via Taylor series.
 const fn const_cos(x: f64) -> f64 {
-    let pi: f64 = 3.141592653589793;
-    let two_pi: f64 = 6.283185307179586;
+    let pi: f64 = core::f64::consts::PI;
+    let two_pi: f64 = core::f64::consts::TAU;
     let mut r = x;
     while r > pi {
         r -= two_pi;
@@ -583,11 +583,11 @@ pub struct CostEdge {
 ///
 /// Denotation: an `EdgeTrace` is an expression DAG *as an edge multiset with
 /// order*. Two DAGs that emit the same trace are indistinguishable to every
-/// embedding-based consumer, which is why the train-side
-/// ([`EdgeTrace::from_arena_dag`]) and deploy-side
-/// ([`EdgeTrace::from_extraction`]) adapters share one walker: there is no
-/// second edge policy left to drift (pinned by
-/// `edge_traces_from_arena_and_extraction_agree` in `egraph::extract`).
+/// embedding-based consumer. An extracted term is walked as the arena it
+/// materializes as ([`EdgeTrace::from_arena_dag`]), so training and deploy
+/// share the one walker and there is no second edge policy to drift (pinned by
+/// `a_materialized_selection_records_the_edge_stream_of_its_arena` in
+/// `egraph::extract`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EdgeTrace {
     edges: Vec<CostEdge>,
@@ -606,18 +606,6 @@ impl EdgeTrace {
     #[must_use]
     pub fn from_arena_dag(arena: &ExprArena, root: ExprId) -> Self {
         Self::walk(&ArenaCostDag { arena, root })
-    }
-
-    /// Walk the DAG an [`Extraction`] will materialise: its chosen node per
-    /// reachable e-class, with every `Shl`/`Shr` count child pinned to its
-    /// class's `Const` representative ([`Extraction::pinned_choices`]) — the
-    /// same view `choices_to_arena` emits, so the trace describes the
-    /// compiled DAG and not whichever node the extraction happened to record
-    /// for a count class.
-    #[must_use]
-    pub fn from_extraction(extraction: &Extraction<'_>) -> Self {
-        let pinned = extraction.pinned_choices();
-        Self::walk(&ChoicesCostDag { extraction, pinned })
     }
 
     /// The recorded edges, in the walk's emission order.
@@ -736,14 +724,14 @@ fn walk_cost_dag<D: CostDag, S: EdgeSink>(dag: &D, sink: &mut S) -> u32 {
 }
 
 // ============================================================================
-// CostDag: the single view both adapters present to the walker
+// CostDag: the view an adapter presents to the walker
 // ============================================================================
 
 /// A DAG of chosen expression nodes, as the walker sees it.
 ///
-/// Implemented by exactly two adapters — [`ArenaCostDag`] and
-/// [`ChoicesCostDag`] — and consumed by exactly one walker,
-/// [`walk_cost_dag`]. Ids must be canonical: structurally shared
+/// Implemented by one adapter, [`ArenaCostDag`], and consumed by exactly one
+/// walker, [`walk_cost_dag`]; kept as the seam for the schedule-cost
+/// successor's other views of a DAG. Ids must be canonical: structurally shared
 /// subexpressions present the same id on every reference, because sharing
 /// is what the reload-edge policy keys on.
 trait CostDag {
@@ -802,86 +790,6 @@ impl CostDag for ArenaCostDag<'_> {
     }
 }
 
-/// An [`Extraction`] (an e-graph plus a validated, well-founded choice
-/// function) as a [`CostDag`].
-struct ChoicesCostDag<'a> {
-    extraction: &'a Extraction<'a>,
-    /// [`Extraction::pinned_choices`] — the same `Shl`/`Shr` count
-    /// substitution `choices_to_arena` applies, computed once so `resolve`
-    /// and `child_kind` walk the DAG `choices_to_arena` will actually
-    /// materialise. Using the raw (unpinned) `extraction.choice` here would
-    /// let the walker descend into a count class's non-`Const` alternative,
-    /// inflating the trace with nodes `choices_to_arena` never emits.
-    pinned: Vec<Option<usize>>,
-}
-
-impl ChoicesCostDag<'_> {
-    fn kind_of(node: &crate::egraph::ENode) -> OpKind {
-        use crate::egraph::ENode;
-        match node {
-            ENode::Var(_) => OpKind::Var,
-            ENode::Const(_) => OpKind::Const,
-            ENode::Buffer(_) => OpKind::Buffer,
-            ENode::Uniform(_) => OpKind::Uniform,
-            ENode::Param(_) => OpKind::Param,
-            ENode::Op { op, .. } => op.kind(),
-            ENode::Reduce { .. } => OpKind::Reduce,
-            // No op names a whole kernel, and a unit is the one leaf this
-            // walk cannot meet: only the runtime tier admits one.
-            ENode::Ref { key, .. } => panic!(
-                "ChoicesCostDag: {key:?} is a unit — a leaf only the runtime tier's \
-                 unit walk admits, and it has no OpKind"
-            ),
-        }
-    }
-
-    /// The pinned choice recorded for `class`'s canonical id, if any.
-    fn pinned_choice(&self, class: crate::egraph::EClassId) -> Option<usize> {
-        self.pinned.get(class.0 as usize).copied().flatten()
-    }
-}
-
-impl CostDag for ChoicesCostDag<'_> {
-    fn id_bound(&self) -> usize {
-        self.extraction.egraph().num_classes()
-    }
-
-    fn root(&self) -> u32 {
-        self.extraction.root().0
-    }
-
-    fn resolve(&self, id: u32, out: &mut Vec<u32>) -> Option<OpKind> {
-        use crate::egraph::{EClassId, ENode};
-        let egraph = self.extraction.egraph();
-        let canonical = egraph.find(EClassId(id));
-        let node_idx = self.pinned_choice(canonical)?;
-        let nodes = egraph.nodes(canonical);
-        let node = nodes.get(node_idx).unwrap_or_else(|| {
-            panic!(
-                "EdgeTrace::from_extraction: node_idx {} out of bounds for e-class {} (has {} nodes)",
-                node_idx,
-                canonical.0,
-                nodes.len()
-            )
-        });
-        {
-            let children = (node).children_slice();
-            for &child in children {
-                out.push(egraph.find(child).0);
-            }
-        }
-        Some(Self::kind_of(node))
-    }
-
-    fn child_kind(&self, id: u32) -> Option<OpKind> {
-        use crate::egraph::EClassId;
-        let egraph = self.extraction.egraph();
-        let canonical = egraph.find(EClassId(id));
-        let node_idx = self.pinned_choice(canonical)?;
-        egraph.nodes(canonical).get(node_idx).map(Self::kind_of)
-    }
-}
-
 // ============================================================================
 // Variance classification (denotation kept, accumulator shape deleted)
 // ============================================================================
@@ -890,7 +798,7 @@ impl CostDag for ChoicesCostDag<'_> {
 // MLP — was deleted after it tied the static table on schedule-free kernels
 // (workshop paper on branch `claude/workshop-writeup`, PR #1072, closed
 // without merging — not in this tree; see
-// docs/plans/2026-09-01-schedule-cost-model-denotation.md). An earlier pass
+// docs/compiler/2026-09-01-schedule-cost-model-denotation.md). An earlier pass
 // on this branch also restored the 4K per-level-sectioned edge accumulator that used to
 // feed it (flat + depth-encoded, × parent/child, plus this variance
 // histogram) under the name `LevelSectionedEdges`. Per JP's 2026-09-01
@@ -899,18 +807,18 @@ impl CostDag for ChoicesCostDag<'_> {
 // fractions bolted onto a bag-of-edges sum), so restoring it was restoring
 // the deleted SHAPE under a new name. It has been removed again; a
 // genuinely level-indexed accumulator is specified for the future in
-// docs/plans/2026-09-01-schedule-cost-model-denotation.md and is not built
+// docs/compiler/2026-09-01-schedule-cost-model-denotation.md and is not built
 // here. What survives is the denotation underneath it: per-node variance
 // classification, kept as the free function below plus
 // [`crate::egraph::extract::Extraction::chosen_variance`], which classifies
 // the materialised (chosen) DAG rather than re-deriving variance from the
-// e-graph (P1(c) of docs/plans/2026-08-17-cost-model-domain.md).
+// e-graph (P1(c) of docs/archive/plans/2026-08-17-cost-model-domain.md).
 
 /// Classify every node of `arena` into const / frame-uniform / scanline-
 /// uniform / pixel-varying, and return the fraction in each bucket. Shared
 /// by any caller that classifies an [`ExprArena`] directly and by
 /// [`crate::egraph::extract::Extraction::chosen_variance`], which
-/// materialises the chosen DAG via `choices_to_arena` and classifies that —
+/// materialises the chosen DAG and classifies that —
 /// one definition, imported, not restated.
 pub(crate) fn variance_histogram(arena: &ExprArena) -> [f32; SCALAR_FEATURE_COUNT] {
     let variance = pixelflow_ir::variance::compute_arena_variance(arena);
@@ -1032,7 +940,7 @@ mod tests {
     // see the module doc comment above `variance_histogram`). The
     // arena/extraction parity test lives in `egraph::extract` next to
     // `Extraction::chosen_variance`, mirroring
-    // `arena_and_extraction_walks_record_the_same_edge_stream`.
+    // `a_materialized_selection_records_the_edge_stream_of_its_arena`.
     // ========================================================================
 
     #[test]

@@ -1,6 +1,6 @@
 //! **The font's programs draw the builder's glyphs.**
 //!
-//! Phase D of docs/plans/2026-09-25-the-language-is-kernel.md deletes the
+//! Phase D of docs/language/2026-09-25-the-language-is-kernel.md deletes the
 //! builder ([`crate::fonts::loop_blinn::glyph`]); until then there are two
 //! definitions of a glyph, the builder's and the `kernel!` block the font's
 //! programs are written in, and a copy is a future divergence. So the two
@@ -28,6 +28,7 @@
 use super::*;
 use crate::fonts::loop_blinn::{MonotoneQuad, Piece};
 use crate::fonts::{Font, PIXEL_CENTER};
+use crate::test_support::program_digest;
 use pixelflow_core::Uniform;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 use pixelflow_ir::key::canonical;
@@ -240,3 +241,51 @@ fn arithmetic_bound(size: usize, [i, j]: [usize; 2]) -> f64 {
     let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
     ARC_TOLERANCE_UNIT * (1.0 + x + y + 2.0 * size as f64)
 }
+
+/// **What the optimizer selects for the font's programs is pinned.** The
+/// runtime tier saturates a structure once and extracts it at every shape
+/// asked, so this runs each count at three: the second and third extractions
+/// reuse what the first built. Past a side of four the selection stops
+/// moving, so the three are the ones that tell shapes apart: a point, a
+/// 2 px tile, and the size glyphs are drawn at.
+///
+/// It pins the arena the choices materialize to, through the runtime tier's
+/// cache, rather than a choice vector: that is the path extraction's
+/// shared setup is read through, and an arena digest is order-sensitive where
+/// the canonical key is not. The digests were recorded at the commit before
+/// the setup was lifted off the e-graph and cached beside it; a settlement
+/// that reorders equal-cost classes picks another term, and another term is
+/// another kernel.
+///
+/// A small program and a large one: forty pieces saturates to a graph of
+/// ~10,000 live classes.
+#[test]
+fn the_optimizer_selects_what_it_selected() {
+    const SHAPES: [u32; 3] = [1, 2, 16];
+    let observed: Vec<(usize, u32, u64)> = [2usize, 40]
+        .into_iter()
+        .flat_map(|count| SHAPES.map(|side| (count, side)))
+        .map(|(count, side)| {
+            let (arena, root) = program(count).linked_parts();
+            let optimized = optimize_runtime_arena(&arena, root, LatticeShape::new([side, side]))
+                .unwrap_or_else(|| panic!("{count} pieces at {side} px: the program declined"));
+            let (out, out_root) = &*optimized;
+            (count, side, program_digest(out, *out_root))
+        })
+        .collect();
+    assert_eq!(
+        observed, SELECTED_PROGRAM_DIGESTS,
+        "(pieces, side, digest): the optimizer selected other programs than the ones recorded"
+    );
+}
+
+/// `(pieces, side, digest)`, recorded at the commit before extraction's
+/// setup was shared.
+const SELECTED_PROGRAM_DIGESTS: [(usize, u32, u64); 6] = [
+    (2, 1, 0x3ca5_a4e1_9eb8_0b09),
+    (2, 2, 0xe91d_3bf3_3c80_3ac0),
+    (2, 16, 0x22ad_8819_7984_61a6),
+    (40, 1, 0x43f2_b8d9_85a2_0ab3),
+    (40, 2, 0xba96_1387_b292_5647),
+    (40, 16, 0xe951_37a9_d464_391e),
+];

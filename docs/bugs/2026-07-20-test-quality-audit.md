@@ -1,7 +1,7 @@
 # Test quality control pass — 2026-07-20
 
 Scope: (1) static audit of whether tests exercise only public API, per
-docs/STYLE.md's "Test Public API" rule, across all 11 library crates; (2)
+docs/process/STYLE.md's "Test Public API" rule, across all 11 library crates; (2)
 `cargo-mutants` mutation testing on `actor-scheduler` (full crate, 236 mutants)
 and a core-algebra subset of `pixelflow-core` (algebra.rs, dual.rs, ops/trig.rs,
 ops/compare.rs, mask.rs, combinators/select.rs — 375 mutants; a full-crate run
@@ -70,7 +70,7 @@ clean.
   leaves, distinct children) that arguably deserve *some* verification — the
   fix isn't obviously "delete them," it's a judgment call between adding a
   test-only introspection API vs. accepting this as a documented rule-break
-  (docs/STYLE.md's Flexibility clause) vs. rewriting as property tests over
+  (docs/process/STYLE.md's Flexibility clause) vs. rewriting as property tests over
   `eval()` output only.
 - `src/subdiv/mod.rs:848` `tile_scale_values` calls private `tile_scale()`
   directly; the same behavior is already covered via the public `eigen_patch()`
@@ -106,7 +106,7 @@ clean.
 ### pixelflow-core / pixelflow-ir (minor, not fixed)
 - `pixelflow-ir/src/backend/emit/mod.rs:4436-4481,4096-4133` call private
   `arena_to_schedule`/`needs_arena` with no public equivalent in-file — a
-  compiler/JIT-backend internals test, closer to the STYLE.md carve-out for
+  compiler/JIT-backend internals test, closer to the ../process/STYLE.md carve-out for
   "the only reasonable seam," but worth a second look.
 - `pixelflow-ir/src/backend/x86.rs:2121-2139` tests the internal `F32x16` lane
   type directly rather than through `Field::log2` — the kind of "hints at
@@ -118,7 +118,7 @@ clean.
   handles; no public equivalent exists for Metal layer config, and
   `resize_state` has an inline comment explaining why it checks OS ground
   truth instead of our own `poll_resize()` tracking. Left as-is — a
-  justified rule-break per STYLE.md's Flexibility clause.
+  justified rule-break per ../process/STYLE.md's Flexibility clause.
 
 ### pixelflow-compiler (minor)
 - `src/optimize.rs:1543-1607` bypasses the public `optimize()` entry point to
