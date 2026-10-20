@@ -70,9 +70,9 @@
 
 use crate::PLAN;
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Callable, CastExpr, ConstItem, Expr, FieldExpr,
-    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Method, MethodCallExpr, Name,
-    Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordId, Reduction, Role, Stmt,
+    Arity, BinaryExpr, BinaryOp, BlockExpr, CallExpr, Callable, CastExpr, ConstItem, Expr,
+    FieldExpr, FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Method, MethodCallExpr,
+    Name, Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordId, Reduction, Role, Stmt,
     UnaryOp, arity_mismatch, bare_name, same_name,
 };
 use crate::symbol::{SymbolKind, SymbolTable};
@@ -192,7 +192,7 @@ fn term_type(reduction: Reduction) -> (Ty, &'static str) {
 /// How an `OpKind` method types: what its receiver and arguments are, and
 /// what it gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MethodTyping {
+enum MethodTyping {
     /// Every operand an `f32`, and an `f32` out.
     Arithmetic,
     /// Two `f32`s in, a `bool` out.
@@ -209,7 +209,7 @@ pub(crate) enum MethodTyping {
 /// advertises refuses to be typed as arithmetic until it is given a typing
 /// here. `every_advertised_method_compiles` types every advertised op, so the
 /// addition fails there, for whoever makes it.
-pub(crate) fn method_typing(op: OpKind) -> MethodTyping {
+fn method_typing(op: OpKind) -> MethodTyping {
     match op {
         OpKind::Lt | OpKind::Le | OpKind::Gt | OpKind::Ge | OpKind::Eq | OpKind::Ne => {
             MethodTyping::Comparison
@@ -1163,7 +1163,11 @@ impl<'a> FnAnalyzer<'a> {
         }
         if Projection::from_name(&name).is_some() {
             // The parser keeps a projection's name a call at any arity but one.
-            return Err(arity_mismatch(call.func.span(), &name, 1, call.args.len()));
+            let arity = Arity {
+                want: 1,
+                got: call.args.len(),
+            };
+            return Err(arity_mismatch(call.func.span(), &name, arity));
         }
         Err(syn::Error::new(
             call.func.span(),
@@ -1187,13 +1191,17 @@ impl<'a> FnAnalyzer<'a> {
         let name = Name::of(&call.func);
         self.refuse_a_moved_kernel(&call.func, "applied")?;
         let [x, y] = call.args.as_slice() else {
+            let arity = Arity {
+                want: 2,
+                got: call.args.len(),
+            };
             return Err(syn::Error::new(
                 call.func.span(),
                 format!(
                     "the kernel `{name}` is applied at the two coordinates, `{name}(x, y)`, and \
                      {} {} supplied",
-                    call.args.len(),
-                    if call.args.len() == 1 { "was" } else { "were" },
+                    arity.got,
+                    arity.supplied_verb(),
                 ),
             ));
         };
@@ -1291,12 +1299,11 @@ impl<'a> FnAnalyzer<'a> {
             ));
         }
         if call.args.len() != signature.params.len() {
-            return Err(arity_mismatch(
-                call.func.span(),
-                &name,
-                signature.params.len(),
-                call.args.len(),
-            ));
+            let arity = Arity {
+                want: signature.params.len(),
+                got: call.args.len(),
+            };
+            return Err(arity_mismatch(call.func.span(), &name, arity));
         }
         for (position, (arg, &want)) in call.args.iter().zip(&signature.params).enumerate() {
             let what = format!(
@@ -2125,7 +2132,7 @@ mod tests {
     }
 
     #[test]
-    fn analyze_simple_kernel() {
+    fn a_kernel_over_the_axes_and_a_parameter_is_accepted() {
         accepted(quote! { |r: f32| X * X + Y * Y - r });
     }
 
@@ -2244,18 +2251,13 @@ mod tests {
     }
 
     #[test]
-    fn block_scoping() {
+    fn a_let_in_a_block_is_in_scope_for_the_rest_of_it() {
         accepted(quote! {
             |cx: f32| {
                 let dx = X - cx;
                 dx * dx
             }
         });
-    }
-
-    #[test]
-    fn known_methods_accepted() {
-        accepted(quote! { || X.sqrt().abs().sin().cos().clone() });
     }
 
     #[test]
@@ -3335,6 +3337,124 @@ mod tests {
         for input in [quote! { || DX(X, Y) }, quote! { || V() }] {
             let err = refusal(input);
             assert!(err.contains("takes 1 argument, but"), "got: {err}");
+        }
+    }
+
+    /// Every method name the front end advertises must survive both macros.
+    ///
+    /// A name `sema` accepts that lowering has no arm for, or the reverse, is a
+    /// disagreement between pipeline stages, so no test of a single stage can see
+    /// it: the stage under test is the one that is right. Nor can sampling: a
+    /// method is exercised only if some test happens to write a kernel calling it.
+    /// So run the real pipeline, both macros' versions of it, over the whole
+    /// advertised surface. Adding an op to `OpKind::is_dsl_method` or a
+    /// `LibraryMethod` without a path through every stage fails here, for whoever
+    /// adds it.
+    mod every_advertised_method_compiles {
+        use crate::ast::Method;
+        use crate::sema::{MethodTyping, method_typing};
+        use crate::{Identity, Optimize, front_end, macro_tier};
+        use pixelflow_ir::OpKind;
+        use proc_macro2::Span;
+        use quote::quote;
+        use syn::Ident;
+
+        /// Which macro's pipeline to run. `kernel!` saturates the e-graph between
+        /// sema and lowering; `kernel_raw!` goes straight across. The difference
+        /// between them is where the `hypot`/`fract` asymmetry lived, so both are
+        /// swept.
+        #[derive(Clone, Copy, Debug)]
+        enum Macro {
+            Kernel,
+            KernelRaw,
+        }
+
+        /// Expand a well-typed call of `method` through `which` macro's own
+        /// pipeline — the [`front_end`] [`kernel`] and [`kernel_raw`] run — and
+        /// report whether it yields code.
+        ///
+        /// Well-typed by `sema`'s own typing of the op: an `f32` operand is `X`,
+        /// a `bool` one is `X.lt(X)`. The sweep asks the stage under test what
+        /// it takes, which is fine for what this checks — that every stage has
+        /// a path for every advertised name — and the typing itself is pinned
+        /// by `sema`'s tests.
+        fn expand(which: Macro, method: &str, arg_count: usize) -> Result<(), String> {
+            let name = Ident::new(method, Span::call_site());
+            let number = quote!(X);
+            let mask = quote!(X.lt(X));
+            let (receiver, args): (proc_macro2::TokenStream, Vec<proc_macro2::TokenStream>) =
+                match OpKind::from_method_call(method, arg_count).map(method_typing) {
+                    Some(MethodTyping::Choice) => (mask, vec![number.clone(), number]),
+                    Some(MethodTyping::Comparison) | Some(MethodTyping::Arithmetic) | None => {
+                        (number.clone(), vec![number; arg_count])
+                    }
+                };
+            let body = quote! { || #receiver.#name(#(#args),*) };
+
+            let mut kernel_optimizer;
+            let mut raw_optimizer;
+            let optimizer: &mut dyn Optimize = match which {
+                Macro::Kernel => {
+                    kernel_optimizer = macro_tier();
+                    &mut kernel_optimizer
+                }
+                Macro::KernelRaw => {
+                    raw_optimizer = Identity;
+                    &mut raw_optimizer
+                }
+            };
+            front_end(body, optimizer)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+
+        #[test]
+        fn through_the_kernel_macros_pipeline() {
+            for (method, arg_count) in Method::advertised() {
+                assert_eq!(
+                    expand(Macro::Kernel, method, arg_count),
+                    Ok(()),
+                    "`kernel!(|| X.{method}(..))` is advertised but does not compile"
+                );
+            }
+        }
+
+        #[test]
+        fn through_the_kernel_raw_macros_pipeline() {
+            for (method, arg_count) in Method::advertised() {
+                assert_eq!(
+                    expand(Macro::KernelRaw, method, arg_count),
+                    Ok(()),
+                    "`kernel_raw!(|| X.{method}(..))` is advertised but does not compile"
+                );
+            }
+        }
+
+        /// The converse guard: a name nothing advertises must still be refused,
+        /// so the sweeps above cannot be satisfied by accepting everything.
+        #[test]
+        fn a_name_the_front_end_does_not_advertise_is_still_refused() {
+            assert!(expand(Macro::Kernel, "not_a_real_method", 0).is_err());
+            // A real op at the wrong arity is just as unadvertised.
+            assert!(expand(Macro::Kernel, "sqrt", 2).is_err());
+        }
+
+        /// A recognized name at the wrong arity must say so. Refusing it is not
+        /// enough: `sema` validates name and arity together, which makes
+        /// `.sqrt(1.0)` a hard error, so the refusal must report the arity rather
+        /// than fall into the typo-suggestion search, which would answer
+        /// `unknown method 'sqrt'; did you mean 'sqrt'?`.
+        #[test]
+        fn a_known_name_at_the_wrong_arity_reports_the_arity() {
+            let err = expand(Macro::Kernel, "sqrt", 2).expect_err("wrong arity must fail");
+            assert!(
+                err.contains("takes 0 arguments"),
+                "expected an arity diagnostic, got: {err}"
+            );
+            assert!(
+                !err.contains("did you mean"),
+                "a recognized name must not be sent to the typo search: {err}"
+            );
         }
     }
 }

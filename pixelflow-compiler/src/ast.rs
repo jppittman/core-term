@@ -879,24 +879,40 @@ pub(crate) struct CallExpr {
     pub args: Vec<Expr>,
 }
 
-/// The refusal of a call that supplies `got` arguments to a callee that takes
-/// `want`.
+/// How many arguments a callee takes, and how many a call supplied.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Arity {
+    pub want: usize,
+    pub got: usize,
+}
+
+impl Arity {
+    /// "was" or "were", agreeing with the number supplied.
+    pub(crate) fn supplied_verb(self) -> &'static str {
+        match self.got {
+            1 => "was",
+            _ => "were",
+        }
+    }
+}
+
+/// The refusal of a call that supplies `arity.got` arguments to a callee that
+/// takes `arity.want`.
 pub(crate) fn arity_mismatch(
     span: Span,
     callee: impl std::fmt::Display,
-    want: usize,
-    got: usize,
+    arity: Arity,
 ) -> syn::Error {
-    let plural = |count: usize, one: &'static str, many: &'static str| match count {
-        1 => one,
-        _ => many,
+    let Arity { want, got } = arity;
+    let plural = match want {
+        1 => "",
+        _ => "s",
     };
     syn::Error::new(
         span,
         format!(
-            "`{callee}` takes {want} argument{}, but {got} {} supplied",
-            plural(want, "", "s"),
-            plural(got, "was", "were"),
+            "`{callee}` takes {want} argument{plural}, but {got} {} supplied",
+            arity.supplied_verb(),
         ),
     )
 }

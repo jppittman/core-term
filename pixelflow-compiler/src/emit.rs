@@ -53,8 +53,8 @@ use quote::{format_ident, quote, quote_spanned};
 use syn::Ident;
 
 use crate::ast::{Callable, ClosureEntry, ConstItem, FnItem, KernelDef, Name, RecordItem, Role};
-use crate::lower::{Expansion, FoldRange, Holes, Lowered, Site, lower_entry};
-use crate::sema::{AnalyzedKernel, ConstValue, Scalar};
+use crate::lower::{Expansion, Holes, Lowered, Site, lower_entry};
+use crate::sema::{AnalyzedKernel, Bounds, ConstValue, Scalar};
 use pixelflow_ir::arena::Axis;
 use pixelflow_ir::{Binder, Monoid};
 
@@ -703,15 +703,15 @@ impl Staged {
     /// fold's bits (as [`node`] carries a `Fold`), its binder the one
     /// `close_fold` chooses, and its range — known, or this
     /// instantiation's ([`instantiated_range`]).
-    fn fold_at(monoid: Monoid, range: FoldRange) -> TokenStream {
+    fn fold_at(monoid: Monoid, bounds: Bounds) -> TokenStream {
         let first = Binder::from_slot(0).expect("the IR has a binder");
         let monoid_of = fold_from_bits(pixelflow_ir::Fold::new(monoid, first, 0..0));
-        let range = match range {
-            FoldRange::Known(range) => {
+        let range = match bounds {
+            Bounds::Known(range) => {
                 let (lo, hi) = (range.start, range.end);
                 emitted!(#lo..#hi)
             }
-            FoldRange::Structural(range) => instantiated_range(&range),
+            Bounds::Structural(range) => instantiated_range(&range),
         };
         emitted! {
             |__binder| ::pixelflow_core::__macro::ir::fold::Fold::new(
@@ -798,7 +798,7 @@ impl Site for Staged {
         Ok(self.step(emitted!(__arena.push_const(#name as f32))))
     }
 
-    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: FoldRange) -> Ident {
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, bounds: Bounds) -> Ident {
         let fold = self.fresh("__f");
         let depth = proc_macro2::Literal::usize_unsuffixed(depth);
         self.statements.push(emitted! {
@@ -806,7 +806,8 @@ impl Site for Staged {
                 .open_fold(#depth)
                 .expect("kernel! refused a fold nested past the binders at expansion");
         });
-        self.open.push((fold.clone(), Self::fold_at(monoid, range)));
+        self.open
+            .push((fold.clone(), Self::fold_at(monoid, bounds)));
         self.step(emitted!(#fold.index()))
     }
 

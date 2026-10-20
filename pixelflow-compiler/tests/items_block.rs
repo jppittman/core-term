@@ -201,8 +201,6 @@ fn an_entry_named_by_a_digit_has_an_args_record() {
 /// group, and rustc reads the type inside, so every position that names a
 /// type does too: a parameter, a return, a field, a `const`, a `let`, a
 /// structural parameter, a cast and a fold's `::<f32>`.
-// The `Args` record the entry brings is not under test.
-#[allow(dead_code)]
 mod typed_by_a_fragment {
     use super::*;
 
@@ -236,6 +234,18 @@ mod typed_by_a_fragment {
         let k = spelled::<3>(Pair { a: 2.0, b: 5.0 }, 7.0);
         assert_eq!(bake(&k), 18.0 + 140.0 + 6.0);
         assert_eq!(bake(&closure(4.0)), 8.0 + 3.0);
+
+        // Rebound from its `Args`, the program is the one built at those values.
+        let program = Manifold::compile(&k, [1, 1]);
+        let mut block = program.block();
+        SpelledArgs::<3> {
+            p: Pair { a: 3.0, b: 1.0 },
+            w: 2.0,
+        }
+        .write_into(&mut block)
+        .expect("spelled's own arguments");
+        let rebound = program.bind(&[]).with_uniforms(&block).eval_at(AT.0, AT.1);
+        assert_eq!(rebound, bake(&spelled::<3>(Pair { a: 3.0, b: 1.0 }, 2.0)));
     }
 }
 

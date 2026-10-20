@@ -192,10 +192,10 @@
 
 use crate::PLAN;
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ClosureEntry, ConstItem, Expr, FieldExpr,
-    FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr, Method,
-    MethodCallExpr, Name, Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordItem,
-    Reduction, Stmt, UnaryExpr, UnaryOp, arity_mismatch, is_f32, is_usize, same_name,
+    Arity, BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ClosureEntry, ConstItem, Expr,
+    FieldExpr, FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr,
+    Method, MethodCallExpr, Name, Param, ProjectExpr, Projection, RangeExpr, RecordField,
+    RecordItem, Reduction, Stmt, UnaryExpr, UnaryOp, arity_mismatch, is_f32, is_usize, same_name,
 };
 use proc_macro2::TokenStream;
 use syn::parse::{Parse, ParseStream};
@@ -1022,7 +1022,7 @@ fn unknown_method(name: &syn::Ident, arity: usize) -> syn::Error {
     // (`unknown method 'sqrt'; did you mean 'sqrt'?`). Say which arity the
     // name takes.
     if let Some((_, want)) = Method::advertised().find(|(known, _)| *known == text) {
-        return arity_mismatch(name.span(), &text, want, arity);
+        return arity_mismatch(name.span(), &text, Arity { want, got: arity });
     }
 
     let suggestion = Method::advertised().map(|(known, _)| known).find(|known| {
@@ -1992,7 +1992,7 @@ mod tests {
     /// A parameter's declared type is kept for `sema` to check; the parser
     /// does not judge it.
     #[test]
-    fn parse_scalar_params_keep_their_declared_types() {
+    fn a_parameter_keeps_the_type_it_was_declared_with() {
         let input = quote! { |cx: f32, m: bool| X * cx };
         let kernel = parse(input).unwrap();
         let entry = entry(&kernel);
@@ -2101,8 +2101,9 @@ mod tests {
         }
     }
 
+    /// A `let`'s annotation is kept beside its name, for `sema` to check.
     #[test]
-    fn parse_let_with_type_annotation_extracts_both_name_and_type() {
+    fn a_let_keeps_its_name_and_its_type_annotation() {
         let input = quote! {
             || {
                 let dx: f32 = X;

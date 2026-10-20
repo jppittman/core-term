@@ -49,7 +49,7 @@ kernel-taking entry). Only `pixelflow-graphics` uses it.
 - `tests/derivative_under_warp.rs`, `tests/the_library_is_the_builders.rs`,
   `tests/fold_is_kernel_over.rs`, `tests/binding_times.rs`,
   `tests/rustc_is_the_oracle.rs`, `tests/optimized_agrees_with_raw.rs`,
-  `tests/bake_vs_scalar_truth.rs`; `lib.rs` `every_advertised_method_compiles`.
+  `tests/bake_vs_scalar_truth.rs`; `sema.rs` `every_advertised_method_compiles`.
 - Unit tests: `emit.rs` `an_optimizer_is_offered_only_entries_it_can_read`; `sema.rs`
   `recursion_is_refused`; `parser.rs` `a_collection_spelled_any_way_is_refused_naming_its_sections`.
 

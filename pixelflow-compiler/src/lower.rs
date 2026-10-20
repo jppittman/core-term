@@ -97,15 +97,6 @@ impl Projection {
     }
 }
 
-/// The range a fold runs over, as lowering hands it to a [`Site`]: known
-/// here, and admitted by `sema` ([`range_bounds`]), or naming an entry's structural
-/// parameters, known when its host function is instantiated.
-#[derive(Debug, Clone)]
-pub(crate) enum FoldRange {
-    Known(Range<u32>),
-    Structural(StructuralRange),
-}
-
 /// Somewhere lowering builds a term: each step of the walk, as a call.
 ///
 /// Two of them, and they differ only in *when* a step runs ([`Expansion`]
@@ -152,14 +143,14 @@ pub(crate) trait Site {
     ///
     /// Where the position has no room.
     fn count(&mut self, position: usize, name: &Ident) -> syn::Result<Self::Term>;
-    /// Open a fold over `range` under `monoid`, `depth` folds being open
+    /// Open a fold over `bounds` under `monoid`, `depth` folds being open
     /// already: its index ([`ExprArena::open_fold`]).
     ///
     /// # Panics
     ///
     /// At `depth` [`Binder::COUNT`] or more: lowering refuses a fold nested
     /// that deep before it opens one.
-    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: FoldRange) -> Self::Term;
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, bounds: Bounds) -> Self::Term;
     /// Close the innermost open fold over `body` ([`ExprArena::close_fold`]).
     fn close_fold(&mut self, body: Self::Term) -> Self::Term;
     /// `kernel` applied at `(x, y)` ([`ExprArena::apply`]).
@@ -418,10 +409,10 @@ impl Site for Expansion {
         Ok(self.arena.push_param(hole))
     }
 
-    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: FoldRange) -> ExprId {
-        let fold = match range {
-            FoldRange::Known(range) => ExpansionFold::Known(monoid, range),
-            FoldRange::Structural(range) => ExpansionFold::Hole(monoid, self.holes.stride(range)),
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, bounds: Bounds) -> ExprId {
+        let fold = match bounds {
+            Bounds::Known(range) => ExpansionFold::Known(monoid, range),
+            Bounds::Structural(range) => ExpansionFold::Hole(monoid, self.holes.stride(range)),
         };
         let open = self
             .arena
@@ -656,10 +647,6 @@ impl<S: Site> Lowering<'_, S> {
         };
         let bounds = range_bounds(&fold.range, scope)
             .expect("sema refuses a range it cannot evaluate, admit or order");
-        let range = match bounds {
-            Bounds::Known(range) => FoldRange::Known(range),
-            Bounds::Structural(range) => FoldRange::Structural(range),
-        };
         // One placeholder per fold open at once, the `n`th for `n` open, so a
         // nested fold's rename never reaches its enclosing fold's index. No
         // more open than the IR has binders: the refusal names the depth,
@@ -670,7 +657,7 @@ impl<S: Site> Lowering<'_, S> {
         }
         let index = self
             .site
-            .open_fold(self.open_folds, monoid(fold.reduction), range);
+            .open_fold(self.open_folds, monoid(fold.reduction), bounds);
         self.frame.locals.push_scope();
         self.frame
             .locals
