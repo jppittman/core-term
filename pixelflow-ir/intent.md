@@ -11,8 +11,9 @@ except for the process-global store a `Ref` names into.
   dense `ExprId`, the identity tables, and what reachability means. Nothing
   else may depend on how a node is stored.
 - The meaning of a fold (`Fold`: monoid, binder, range), of a mask
-  (`OpKind::mask`, `is_bitwise_domain`), of a constant's bit pattern, and of
-  a name (`KernelKey`, `Ref`).
+  (`OpKind::mask`, `is_bitwise_domain`), of a reinterpretation (`Bits`,
+  `Float`: the same bits read as the other sort, a node that compiles to
+  nothing), of a constant's bit pattern, and of a name (`KernelKey`, `Ref`).
 - Composition: `Kernel::at` as substitution into `Var` leaves, `by_ref` and
   the linker. Composition substitutes and links; it never evaluates or
   optimizes.

@@ -146,6 +146,13 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
         OpKind::Shr => 1,
         OpKind::BitAnd => 1,
         OpKind::BitOr => 1,
+        // A reinterpretation is the same register: `program/lower.rs` maps
+        // the node to its operand and no backend emits anything for it. Zero
+        // is its price, not the absence of one — a positive cost would steer
+        // extraction away from a form that spells out a reinterpretation the
+        // hardware performs for free either way.
+        OpKind::Bits => 0,
+        OpKind::Float => 0,
         OpKind::Dwrt => LEGALIZATION_PRICE,
         OpKind::Buffer => 0,     // leaf, free
         OpKind::Gather => 10,    // memory read
@@ -493,6 +500,11 @@ mod every_op_is_priceable {
             OpKind::IntToFloat,
         ] {
             assert_eq!(cycles[op], 1, "{op:?} is a single instruction");
+        }
+
+        // The reinterpretations are no instruction at all.
+        for op in [OpKind::Bits, OpKind::Float] {
+            assert_eq!(cycles[op], 0, "{op:?} is the same register");
         }
     }
 

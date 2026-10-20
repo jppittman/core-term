@@ -216,6 +216,15 @@ pub(crate) fn arena_to_schedule(
                 });
                 ScheduledOp::Uniform(block, offset)
             }
+            // A reinterpretation is its operand: the same lanes, read as the
+            // other sort. It defines nothing and takes no `ValueId`; whatever
+            // reads it reads the operand, so no backend sees it and no `mov`
+            // is spent on it.
+            ExprNode::Unary(OpKind::Bits | OpKind::Float, child) => {
+                let operand = map_child(child);
+                id_map[idx] = operand;
+                continue;
+            }
             ExprNode::Unary(op, child) => ScheduledOp::Unary(legal(op), map_child(child)),
             // Shl/Shr fold their Const shift-count operand into an immediate, so
             // the count never becomes a scheduled value (matching the imm-only

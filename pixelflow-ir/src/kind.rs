@@ -153,11 +153,14 @@ op_table! {
 
     // --- Bit manipulation (integer-domain primitives) ---
     // These let exp/ln/log lower to arithmetic: each maps 1:1 to a single
-    // hardware instruction. Lanes are reinterpreted as i32 where noted;
-    // "reinterpret" itself is free (same register) and is not an op.
-    /// Truncate f32 lanes to i32 (`cvttps2dq` / `fcvtzs`).
+    // hardware instruction. A lane is read as an i32 where noted; the
+    // reinterpretation that gets it there is an op of its own, `Bits`, and
+    // `Float` is the one back (codes 53 and 54 below).
+    /// Truncate f32 lanes to i32 (`cvttps2dq` / `fcvtzs`): a *conversion*,
+    /// which changes the bits. The reinterpretation is [`OpKind::Bits`].
     TruncToInt = 38,
-    /// Convert i32 lanes to f32 (`cvtdq2ps` / `scvtf`).
+    /// Convert i32 lanes to f32 (`cvtdq2ps` / `scvtf`): a *conversion*,
+    /// which changes the bits. The reinterpretation is [`OpKind::Float`].
     IntToFloat = 39,
     /// Integer (i32) lane-wise add (`paddd` / `add .4s`).
     IAdd = 40,
@@ -234,6 +237,27 @@ op_table! {
     /// name it and the e-graph's vocabularies decline it, as they do a
     /// `Write`. A backend that meets one as an instruction emits no bytes.
     Seq = 52,
+
+    // --- Reinterpretation (Real ↔ Int, the same bits) ---
+    /// Read a real lane's bits as an integer: `Bits : Real → Int`. The value
+    /// is the same 32 bits in the same register, so it compiles to **zero
+    /// instructions** on every backend — the node *is* its operand
+    /// (`program/lower.rs` maps it to the operand's `ValueId`). It exists so
+    /// that a reinterpretation is written down where it happens:
+    /// `expand_log2` reads an exponent field out of `Bits(x)`, where it used
+    /// to shift a real and say `// int lanes` in a comment. Not a conversion:
+    /// [`OpKind::TruncToInt`] computes a different pattern.
+    ///
+    /// Never folded here: a fold would change the literal's *type*, and
+    /// until the arena carries one (docs/language/2026-10-17-the-arena-is-typed.md
+    /// T3) there is no typed literal to write.
+    Bits = 53,
+    /// Read an integer lane's bits as a real: `Float : Int → Real`, the
+    /// inverse of [`OpKind::Bits`], and like it zero instructions: the node is
+    /// its operand. `expand_exp2` builds `2^k` as `Float((k + 127) << 23)`.
+    /// Not a conversion: [`OpKind::IntToFloat`] computes a different pattern.
+    /// Never folded, for `Bits`'s reason.
+    Float = 54,
 }
 
 impl OpKind {
@@ -421,7 +445,9 @@ impl OpKind {
             | Self::Log2
             | Self::Log10
             | Self::TruncToInt
-            | Self::IntToFloat => 1,
+            | Self::IntToFloat
+            | Self::Bits
+            | Self::Float => 1,
 
             Self::Add
             | Self::Sub
@@ -519,6 +545,8 @@ impl OpKind {
             Self::Uniform => "uniform",
             Self::Param => "param",
             Self::Seq => "seq",
+            Self::Bits => "bits",
+            Self::Float => "float",
         }
     }
 
@@ -580,6 +608,8 @@ impl OpKind {
             "uniform" => Some(Self::Uniform),
             "param" => Some(Self::Param),
             "seq" => Some(Self::Seq),
+            "bits" => Some(Self::Bits),
+            "float" => Some(Self::Float),
             _ => None,
         }
     }
@@ -592,9 +622,10 @@ impl OpKind {
     /// them, [`Self::Add`]/[`Self::Sub`]/[`Self::Mul`]/[`Self::Div`] are real
     /// ops but are spelled `+ - * /`, never `.add(y)`, and
     /// [`Self::TruncToInt`]/[`Self::IAdd`]/[`Self::Shl`]/[`Self::Shr`]/
-    /// [`Self::BitAnd`]/[`Self::BitOr`]/[`Self::IntToFloat`] are primitives
-    /// that only ever arise from lowering passes (`Gather`/`Reduce`
-    /// expansion), never from surface syntax a kernel body writes directly.
+    /// [`Self::BitAnd`]/[`Self::BitOr`]/[`Self::IntToFloat`]/[`Self::Bits`]/
+    /// [`Self::Float`] are primitives that only ever arise from lowering
+    /// passes (`Gather`/`Reduce`/transcendental expansion), never from
+    /// surface syntax a kernel body writes directly.
     #[must_use]
     const fn is_dsl_method(self) -> bool {
         matches!(
@@ -693,6 +724,8 @@ impl OpKind {
             | Self::Shr
             | Self::BitAnd
             | Self::BitOr => 1,
+            // A reinterpretation is the same register: no instruction.
+            Self::Bits | Self::Float => 0,
             // Dwrt must be rewritten away before extraction; price it so the
             // extractor never prefers a surviving derivative over a decomposed
             // form. (A surviving Dwrt is then caught by a validation pass.)
@@ -818,6 +851,12 @@ impl OpKind {
             // it evaluates that lowering.
             Self::TruncToInt => Some(f32::from_bits((x as i32) as u32)),
             Self::IntToFloat => Some((x.to_bits() as i32) as f32),
+            // The reinterpretations are refused, not computed: the bits do
+            // not change, so there is nothing to compute, but the *type*
+            // does, and a folder that writes one `f32` back has no way to
+            // say so. Folding them is T3's, once a constant carries a `Lit`
+            // (docs/language/2026-10-17-the-arena-is-typed.md).
+            Self::Bits | Self::Float => None,
 
             // Transcendentals have no arm on purpose. `f32::sin` and friends
             // are std-only (absent from `core`) and would be a *second*
@@ -859,8 +898,10 @@ impl OpKind {
     /// Comparisons produce masks ([`Self::mask`] — all-ones, which reads as
     /// NaN); the integer-domain primitives reinterpret lanes as `i32` and are
     /// how exp/log lower to arithmetic; `If`/`BitAnd`/`BitOr` pass patterns
-    /// through. For all of them a non-finite float reading is the intended
-    /// output rather than an overflow, which is what separates them from
+    /// through; [`Self::Bits`] *is* the reading of a lane as a pattern, and
+    /// [`Self::Float`] is the reading back as a number, so it is not here.
+    /// For all of them a non-finite float reading is the intended output
+    /// rather than an overflow, which is what separates them from
     /// `1e38 * 1e38` — the case a folder is right to refuse.
     #[must_use]
     pub const fn is_bitwise_domain(self) -> bool {
@@ -880,6 +921,7 @@ impl OpKind {
                 | Self::IAdd
                 | Self::Shl
                 | Self::Shr
+                | Self::Bits
         )
     }
 
@@ -1476,6 +1518,8 @@ mod method_names {
             "shr",
             "bitand",
             "bitor",
+            "bits",
+            "float",
         ] {
             assert!(
                 !names.contains(&op),
@@ -1531,6 +1575,8 @@ mod from_method_call {
     fn rejects_lowering_only_primitives() {
         assert_eq!(OpKind::from_method_call("trunc_to_int", 0), None);
         assert_eq!(OpKind::from_method_call("shl", 1), None);
+        assert_eq!(OpKind::from_method_call("bits", 0), None);
+        assert_eq!(OpKind::from_method_call("float", 0), None);
     }
 
     #[test]
@@ -1695,6 +1741,7 @@ mod algebraic_properties {
         OpKind::IAdd,
         OpKind::Shl,
         OpKind::Shr,
+        OpKind::Bits,
     ];
 
     #[test]
@@ -1706,6 +1753,23 @@ mod algebraic_properties {
                 "{op:?} bitwise-domain mismatch"
             );
         }
+    }
+
+    /// A reinterpretation is unary, costs nothing, has no method spelling,
+    /// and is never folded: the bits are the same, the type is not, and
+    /// until a constant carries a type there is nothing to write back.
+    #[test]
+    fn bits_and_float_are_free_unspellable_and_unfolded() {
+        for op in [OpKind::Bits, OpKind::Float] {
+            assert_eq!(op.arity(), 1, "{op:?}");
+            assert_eq!(op.default_cost(), 0, "{op:?} is the same register");
+            assert_eq!(OpKind::from_method_call(op.name(), 0), None, "{op:?}");
+            for x in [0.0, -0.0, 1.0, f32::from_bits(127), f32::NAN] {
+                assert_eq!(op.eval_unary(x), None, "{op:?}({x:?}) must not fold");
+            }
+        }
+        assert!(OpKind::Bits.is_bitwise_domain(), "its result is a pattern");
+        assert!(!OpKind::Float.is_bitwise_domain(), "its result is a number");
     }
 
     /// `Seq` has a name and an arity like any op, and no way in from a
@@ -1751,7 +1815,9 @@ mod algebraic_properties {
                 | OpKind::Log2
                 | OpKind::Log10
                 | OpKind::TruncToInt
-                | OpKind::IntToFloat => 1,
+                | OpKind::IntToFloat
+                | OpKind::Bits
+                | OpKind::Float => 1,
 
                 OpKind::Add
                 | OpKind::Sub

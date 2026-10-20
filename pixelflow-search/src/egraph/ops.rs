@@ -34,6 +34,12 @@ use pixelflow_ir::OpKind;
 /// - `Shl` and `Shr` are held as `ENode::Shift`, which carries the count as a
 ///   parameter; they are not operations over operand classes, so no rule
 ///   could name one.
+/// - `Bits` and `Float`, the reinterpretations, are integer-domain ops like
+///   the rest and stay with them: runtime tier only, and nameable by no
+///   template. Their two identities (`Float(Bits(x)) = x` and the converse)
+///   are not rules, since naming them here would admit the ops to the macro
+///   tier as well; they are held opaque, and the pair compiles to nothing
+///   either way (`program/lower.rs`).
 #[must_use]
 pub fn template_may_name(kind: OpKind) -> bool {
     match kind {
@@ -89,7 +95,9 @@ pub fn template_may_name(kind: OpKind) -> bool {
         | OpKind::Shl
         | OpKind::Shr
         | OpKind::BitAnd
-        | OpKind::BitOr => false,
+        | OpKind::BitOr
+        | OpKind::Bits
+        | OpKind::Float => false,
     }
 }
 
@@ -154,6 +162,8 @@ impl Vocabulary {
                     | OpKind::IAdd
                     | OpKind::Shl
                     | OpKind::Shr
+                    | OpKind::Bits
+                    | OpKind::Float
             );
         // Opaque in both: representable as structure (two gathers hash-cons
         // into one e-class iff buffer identity and all three operands match),
@@ -209,7 +219,7 @@ mod tests {
         OpKind::Dwrt,
     ];
 
-    const RUNTIME_ONLY: [OpKind; 7] = [
+    const RUNTIME_ONLY: [OpKind; 9] = [
         OpKind::TruncToInt,
         OpKind::IntToFloat,
         OpKind::IAdd,
@@ -217,6 +227,8 @@ mod tests {
         OpKind::Shr,
         OpKind::BitAnd,
         OpKind::BitOr,
+        OpKind::Bits,
+        OpKind::Float,
     ];
 
     fn frozen(vocabulary: Vocabulary) -> Vec<OpKind> {
