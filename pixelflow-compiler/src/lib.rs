@@ -393,20 +393,25 @@ impl<P: Optimize> Optimize for DwrtFree<P> {
     }
 }
 
-/// Parse, analyze, lower, optimize, emit — the whole front end. The macros
-/// differ only in the optimizer they hand it.
+/// Parse, analyze, lower, optimize, emit — the whole front end, over
+/// `proc_macro2` tokens so that a test can run the pipeline the macros run.
+/// The macros differ only in the optimizer they hand it.
+///
+/// A refusal is a span and a claim, whichever stage makes it.
+fn front_end(
+    input: proc_macro2::TokenStream,
+    optimizer: &mut dyn Optimize,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let analyzed = parser::parse(input).and_then(sema::analyze)?;
+    emit::emit_kernel(&analyzed, optimizer)
+}
+
+/// [`front_end`] as a procedural macro: a refusal is the `compile_error!`
+/// at its span.
 fn expand(input: TokenStream, optimizer: &mut dyn Optimize) -> TokenStream {
-    let tokens = proc_macro2::TokenStream::from(input);
-    let analyzed = match parser::parse(tokens).and_then(sema::analyze) {
-        Ok(a) => a,
-        Err(e) => return e.to_compile_error().into(),
-    };
-    match emit::emit_kernel(&analyzed, optimizer) {
-        Ok(tokens) => tokens.into(),
-        Err(e) => syn::Error::new(proc_macro2::Span::call_site(), e)
-            .to_compile_error()
-            .into(),
-    }
+    front_end(input.into(), optimizer)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 /// Every method name the front end advertises must survive both macros.
@@ -433,7 +438,7 @@ fn expand(input: TokenStream, optimizer: &mut dyn Optimize) -> TokenStream {
 mod every_advertised_method_compiles {
     use crate::ast::Method;
     use crate::sema::{MethodTyping, method_typing};
-    use crate::{Identity, Optimize, emit, macro_tier, parser, sema};
+    use crate::{Identity, Optimize, front_end, macro_tier};
     use pixelflow_ir::OpKind;
     use proc_macro2::Span;
     use quote::quote;
@@ -450,7 +455,7 @@ mod every_advertised_method_compiles {
     }
 
     /// Expand a well-typed call of `method` through `which` macro's own
-    /// pipeline — the same calls [`kernel`] and [`kernel_raw`] make — and
+    /// pipeline — the [`front_end`] [`kernel`] and [`kernel_raw`] run — and
     /// report whether it yields code.
     ///
     /// Well-typed by `sema`'s own typing of the op: an `f32` operand is `X`,
@@ -471,8 +476,6 @@ mod every_advertised_method_compiles {
             };
         let body = quote! { || #receiver.#name(#(#args),*) };
 
-        let def = parser::parse(body).map_err(|e| e.to_string())?;
-        let analyzed = sema::analyze(def).map_err(|e| e.to_string())?;
         let mut kernel_optimizer;
         let mut raw_optimizer;
         let optimizer: &mut dyn Optimize = match which {
@@ -485,7 +488,9 @@ mod every_advertised_method_compiles {
                 &mut raw_optimizer
             }
         };
-        emit::emit_kernel(&analyzed, optimizer).map(|_| ())
+        front_end(body, optimizer)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     #[test]

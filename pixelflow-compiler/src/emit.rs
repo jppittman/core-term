@@ -87,7 +87,7 @@ use pixelflow_ir::{Binder, Monoid};
 pub(crate) fn emit_kernel(
     analyzed: &AnalyzedKernel,
     optimizer: &mut dyn Optimize,
-) -> Result<TokenStream, String> {
+) -> syn::Result<TokenStream> {
     match &analyzed.def {
         KernelDef::Closure(entry) => {
             let arena_code = entry_arena(entry.callable(), analyzed, optimizer)?;
@@ -140,7 +140,7 @@ fn entry_arena(
     entry: Callable<'_>,
     analyzed: &AnalyzedKernel,
     optimizer: &mut dyn Optimize,
-) -> Result<TokenStream, String> {
+) -> syn::Result<TokenStream> {
     let Lowered { arena, root, holes } = Expansion::lower(entry, analyzed)?;
     let context = EntryContext {
         arguments: analyzed
@@ -654,7 +654,7 @@ impl Staged {
     /// # Errors
     ///
     /// When the body has a construct lowering cannot express.
-    fn lower(entry: Callable<'_>, analyzed: &AnalyzedKernel) -> Result<TokenStream, String> {
+    fn lower(entry: Callable<'_>, analyzed: &AnalyzedKernel) -> syn::Result<TokenStream> {
         let mut site = Staged::default();
         let root = lower_entry(entry, analyzed, &mut site)?;
         let statements = site.statements;
@@ -775,7 +775,7 @@ impl Site for Staged {
         self.step(quote!(__arena.push_uniform(#slot)))
     }
 
-    fn kernel_parameter(&mut self, name: &Ident) -> Result<Ident, String> {
+    fn kernel_parameter(&mut self, name: &Ident) -> syn::Result<Ident> {
         let argument = self.fresh("__k");
         self.statements
             .push(quote! { let #argument = __arena.admit(#name); });
@@ -783,7 +783,7 @@ impl Site for Staged {
     }
 
     /// The host function's own `N as f32`: it is generic over `N`.
-    fn count(&mut self, _position: usize, name: &Ident) -> Result<Ident, String> {
+    fn count(&mut self, _position: usize, name: &Ident) -> syn::Result<Ident> {
         Ok(self.step(quote!(__arena.push_const(#name as f32))))
     }
 
@@ -836,16 +836,14 @@ fn opkind_to_tokens(kind: OpKind) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse;
-    use crate::sema::analyze;
+    use crate::front_end;
     use pixelflow_ir::optimize::Identity;
     use quote::quote;
 
     /// The expansion of `input`, unoptimized, as text.
     fn expansion(input: proc_macro2::TokenStream) -> String {
-        let analyzed = analyze(parse(input).expect("parses")).expect("analyzes");
-        emit_kernel(&analyzed, &mut Identity)
-            .expect("emits")
+        front_end(input, &mut Identity)
+            .expect("expands")
             .to_string()
     }
 
@@ -910,8 +908,9 @@ mod tests {
     /// emitted as lowered. An entry with neither is offered.
     #[test]
     fn an_optimizer_is_offered_only_entries_it_can_read() {
-        let analyzed = analyze(
-            parse(quote! {
+        let mut offered = Offered(0);
+        front_end(
+            quote! {
                 pub struct Bounds { pub x0: f32, pub x1: f32 }
                 pub fn counted<const N: usize>(r: f32) -> f32 {
                     r + (0..N).map(|i| (i as f32) * X).sum::<f32>()
@@ -923,12 +922,10 @@ mod tests {
                     a(X, Y) + b(X, Y)
                 }
                 pub fn plain(r: f32) -> f32 { r + X }
-            })
-            .expect("parses"),
+            },
+            &mut offered,
         )
-        .expect("analyzes");
-        let mut offered = Offered(0);
-        emit_kernel(&analyzed, &mut offered).expect("emits");
+        .expect("expands");
         assert_eq!(offered.0, 1, "`plain` alone");
     }
 }

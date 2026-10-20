@@ -30,7 +30,8 @@ that term to is an `Optimize` value, never a branch (§8).
 
 ## Contract
 `src/lib.rs` exports exactly `kernel!` and `kernel_raw!`, both `expand(input,
-optimizer)`. Behind them: `parser.rs` (tokens to `ast.rs`),
+optimizer)` over `front_end`, the one pipeline, in which every stage refuses with
+a `syn::Error` at the construct. Behind them: `parser.rs` (tokens to `ast.rs`),
 `sema.rs` (types, consts, call graph, binding times; scopes in `symbol.rs`),
 `lower.rs` (AST to a term at a `Site`), `emit.rs` (arena to `TokenStream`;
 `Staged` for a kernel-taking entry). Only `pixelflow-graphics` uses it.
