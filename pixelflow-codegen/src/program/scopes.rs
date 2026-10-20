@@ -322,7 +322,7 @@ fn attach_folds(scoped: &mut ScopedSchedule<()>, pending: Vec<PendingFold>) {
 
 /// Record `fold` as a [`ScopeFold`] opening in `parent`, then each of its
 /// children inside it — depth first, so a parent's index is always below its
-/// children's, which is the order the `Allocate` pass (`regalloc::local`) and
+/// children's, which is the order the `LinearScan` allocator (`regalloc::local`) and
 /// the frame layout both walk the tree in.
 fn attach_fold(scoped: &mut ScopedSchedule<()>, fold: PendingFold, parent: Scope) {
     let PendingFold {

@@ -9,7 +9,7 @@ crate that names a lane or a width.
 - The tier: `isa::detect` reads CPUID once per process; `PIXELFLOW_ISA` only
   narrows it; `jit_vector_bytes()` is the one width in the workspace.
 - The chain `Legalize → Lower → Nest → Own → Layout` (`pipeline.rs`,
-  `program/`), then `Select → Allocate → Assemble` (`emit::native`). A stage
+  `program/`), then `Select → LinearScan → Assemble` (`emit::native`). A stage
   is a `Pass`; the first `Err` ends the chain; the backend is chosen once.
 - Register allocation and carries (`emit/regalloc/`), the encoders, and
   executable memory (`mmap`/`mprotect`, W^X).
