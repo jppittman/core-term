@@ -36,7 +36,8 @@ its own `intent.md`. The CLI is `src/main.rs` (`Args`): paths to review;
 `--backend` (`anthropic`, `gemini`, `claude-code`, `dry-run`), `--system-one`
 (`none`, `jev`, `dry-run`), `--limiter`, `--min-confidence`, `--jobs`,
 `--findings-only`, `--out`, `--rules`, `--skills`; it calls `skills::load`,
-`rule::load_dir`, `review::{plan, review, identify, synthesize}`.
+`rule::load_dir`, `review::plan` and a `review::Session`'s `review`,
+`identify`, `synthesize`; `--min-confidence` is 0 to 1.
 
 ## Enforced by
 - `desloppify/tests/shipped_rules.rs`: every rule in `rules/` loads, and each
@@ -51,10 +52,10 @@ its own `intent.md`. The CLI is `src/main.rs` (`Args`): paths to review;
   the import and `fs` lines under Never; `grep` does today.
 
 ## Behind
-- `skills/pixelflow-architecture` (46 lines) and `skills/style-guide` (44)
-  are hand-kept distillations of CLAUDE.md (584) and STYLE.md (277), kept
-  so by choice: the whole of either in every rule prompt would cost more
-  than it buys (plan §5, as amended). Only `skills/ontology` is a symlink.
+- `skills/pixelflow-architecture` and `skills/style-guide` are hand-kept
+  distillations of CLAUDE.md and STYLE.md, a tenth of their length, kept so
+  by choice: the whole of either in every rule prompt would cost more than
+  it buys (plan §5, as amended). Only `skills/ontology` is a symlink.
 - Nothing in CI runs desloppify over the tree; only its own tests run.
 
 ## Decided in

@@ -22,7 +22,7 @@ use anyhow::Result;
 use desloppify::agent::{Answer, Ask, Question, Usage};
 use desloppify::decide::{Choice, Decide, Decided, Decisions};
 use desloppify::model::ModelLevel;
-use desloppify::review::{Reviewers, identify, plan, review, synthesize};
+use desloppify::review::{Session, plan};
 use desloppify::rule;
 use desloppify::skills;
 use serde_json::{Value, json};
@@ -440,29 +440,20 @@ async fn a_scripted_review_asks_the_recorded_questions_and_reports_the_recorded_
     let tree = Tree::new();
     let root = tree.0.display().to_string();
     let skills = skills::load(&tree.0.join("skills")).unwrap();
-    let rules = Arc::new(rule::load_dir(&tree.0.join("rules"), &skills).unwrap());
-    let calls = plan(&rules, &tree.files()).unwrap();
+    let rules = rule::load_dir(&tree.0.join("rules"), &skills).unwrap();
+    let calls = plan(rules, &tree.files()).unwrap();
 
-    let reviewers = Arc::new(Reviewers {
-        ask: Scripted {
+    let reviewers = Arc::new(Session::new(
+        Scripted {
             asked: Mutex::new(Vec::new()),
         },
-        decide: SystemOne {
+        SystemOne {
             requested: Mutex::new(Vec::new()),
         },
-        min_confidence: 0.7,
-    });
-    let mut report = review(reviewers.clone(), rules.clone(), calls)
-        .await
-        .unwrap();
-    let identified = identify(&reviewers.ask, &report).await.unwrap();
-    let identify_usage = identified.usage;
-    report.things = identified.things;
-    report.failures.extend(identified.failures);
-    let synthesis = synthesize(&reviewers.ask, &rules, &report)
-        .await
-        .unwrap()
-        .unwrap();
+    ));
+    let mut report = reviewers.clone().review(calls).await.unwrap();
+    let identify_usage = reviewers.identify(&mut report).await.unwrap();
+    let synthesis = reviewers.synthesize(&report).await.unwrap().unwrap();
 
     let mut questions: Vec<String> = reviewers
         .ask
@@ -498,8 +489,8 @@ async fn a_scripted_review_asks_the_recorded_questions_and_reports_the_recorded_
     failures.sort();
 
     let data = json!({
-        "findings": report.findings,
-        "things": report.things,
+        "findings": report.findings(),
+        "things": report.things(),
         "diagnoses": synthesis.diagnoses,
         "roots": synthesis.roots,
         "decisions": report.decisions,

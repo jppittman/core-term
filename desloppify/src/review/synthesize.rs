@@ -9,10 +9,11 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use super::module::{omitted, shape};
+use super::reply::{Step, ask};
 use super::{Diagnosis, Finding, Report, Root, Synthesis};
-use crate::agent::{Ask, Question};
+use crate::agent::Ask;
 use crate::model::ModelLevel;
-use crate::rule::{Rule, Verdict};
+use crate::rule::Verdict;
 
 /// The most outline lines the synthesis is shown, over every module a thing
 /// was named in, the modules with the most symptoms first.
@@ -106,23 +107,18 @@ struct Rooted {
     explains: Vec<usize>,
 }
 
-pub(super) async fn synthesize<A: Ask>(
-    agent: &A,
-    rules: &[Rule],
-    report: &Report,
-) -> Result<Option<Synthesis>> {
+pub(super) async fn synthesize<A: Ask>(agent: &A, report: &Report) -> Result<Option<Synthesis>> {
     if report.findings.is_empty() {
         return Ok(None);
     }
-    let prompt = brief(rules, report)?;
+    let prompt = brief(report)?;
     let schema = schema();
-    let question = Question {
+    let step = Step {
         level: ModelLevel::Frontier,
         system: LEAD,
-        prompt: &prompt,
-        schema: Some(&schema),
+        schema: &schema,
     };
-    let answer = agent.ask(&question).await?;
+    let answer = ask(agent, &step, &prompt).await?;
     let reply: Reply = serde_json::from_str(&answer.text)
         .with_context(|| format!("reply is not a synthesis: {}", answer.text))?;
 
@@ -169,10 +165,10 @@ fn within(numbers: &[usize], count: usize) -> Vec<usize> {
 
 /// The rules that found something, the things named, the outlines of their
 /// modules, then the findings by file, each numbered `F1`… in report order.
-fn brief(rules: &[Rule], report: &Report) -> Result<String> {
+fn brief(report: &Report) -> Result<String> {
     let mut brief = String::from("## Rules\n\n");
-    for rule in rules
-        .iter()
+    for rule in report
+        .rules()
         .filter(|r| report.findings.iter().any(|f| f.rule == r.id))
     {
         brief.push_str(&format!("- `{}`: {}\n", rule.id, rule.decision.question));

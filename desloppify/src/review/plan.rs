@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
@@ -27,7 +28,8 @@ fn seen(rule: &Rule) -> Seen {
     }
 }
 
-pub(super) fn plan(rules: &[Rule], files: &[PathBuf]) -> Result<Vec<Call>> {
+pub(super) fn plan(rules: Vec<Rule>, files: &[PathBuf]) -> Result<Vec<Call>> {
+    let rules: Vec<Arc<Rule>> = rules.into_iter().map(Arc::new).collect();
     let mut calls = Vec::new();
     // A crate-wide call holds every file's parts, so it can only be built
     // once the last file is read; each rule gets its own call per crate.
@@ -70,8 +72,9 @@ pub(super) fn plan(rules: &[Rule], files: &[PathBuf]) -> Result<Vec<Call>> {
                 Surroundings::ModuleIntent => module::intent(path)?,
                 Surroundings::None | Surroundings::ModuleRoot => None,
             };
+            let asking: Vec<_> = indexes.iter().map(|&i| rules[i].clone()).collect();
             calls.extend(snippets.into_iter().map(|snippet| Call {
-                rules: indexes.clone(),
+                rules: asking.clone(),
                 path: path.clone(),
                 snippet,
                 root: root.clone(),
@@ -80,7 +83,7 @@ pub(super) fn plan(rules: &[Rule], files: &[PathBuf]) -> Result<Vec<Call>> {
         }
     }
     calls.extend(crates.into_iter().map(|((rule, krate), files)| Call {
-        rules: vec![rule],
+        rules: vec![rules[rule].clone()],
         path: krate,
         snippet: under_headers(files),
         root: None,
