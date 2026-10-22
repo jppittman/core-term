@@ -1,7 +1,7 @@
 # The front end's stages are its modules, and the AST is their vocabulary
 
-**Status:** Proposed, implementing a ruling (JP, 2026-10-22: "the models that are missing become modules with tight APIs"). Layout and visibility
-only: what `kernel!` and `kernel_raw!` accept, emit and refuse does not change.
+**Status:** `Plan of record` (JP, 2026-10-22: "the models that are missing become modules with tight APIs"), implemented as the seven CLs of §3,
+every path §1.1 maps now in the tree. Layout and visibility only: what `kernel!` and `kernel_raw!` accept, emit and refuse does not change.
 **Verified against:** bab3441c4ed9143708423b42f921564d3b7edc5b. Every `file.rs:line` below is bab3441's; the series renames the six flat files into
 directories, so after it the bare names `ast.rs`, `sema.rs`, `emit.rs` and `symbol.rs` are gone.
 
