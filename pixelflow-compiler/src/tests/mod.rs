@@ -12,5 +12,6 @@
 
 mod ast;
 mod front_end;
+mod lower;
 mod parser;
 mod sema;

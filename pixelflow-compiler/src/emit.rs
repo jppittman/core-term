@@ -53,7 +53,7 @@ use quote::{format_ident, quote, quote_spanned};
 use syn::Ident;
 
 use crate::ast::{Callable, ClosureEntry, ConstItem, FnItem, KernelDef, Name, RecordItem, Role};
-use crate::lower::{Expansion, Holes, Lowered, Site, lower_entry};
+use crate::lower::{Expansion, Lowered, Site, lower_entry};
 use crate::sema::{AnalyzedKernel, Bounds, ConstValue, Scalar};
 use pixelflow_ir::arena::Axis;
 use pixelflow_ir::{Binder, Monoid};
@@ -192,35 +192,43 @@ fn entry_arena(
     analyzed: &AnalyzedKernel,
     optimizer: &mut dyn Optimize,
 ) -> syn::Result<(TokenStream, Vec<Scalar>)> {
-    let Lowered {
-        arena,
-        root,
-        holes,
-        scalars,
-    } = Expansion::lower(entry, analyzed)?;
+    let lowered = Expansion::lower(entry, analyzed)?;
     let context = EntryContext {
-        arguments: scalars.iter().map(argument).collect(),
+        arguments: lowered.scalars.iter().map(argument).collect(),
         structural: entry.structural,
-        holes: &holes,
+        lowered: &lowered,
     };
     if !entry.structural.is_empty() {
-        return Ok((arena_to_tokens(&arena, root, &context), scalars));
+        let tokens = arena_to_tokens(&lowered.arena, lowered.root, &context);
+        return Ok((tokens, lowered.scalars));
     }
 
     // Declining is ordinary and needs no arm: the lowered term stands, and a
     // kernel that reaches the runtime tier unoptimized is optimized there.
-    let (arena, root) = match optimizer.optimize(&arena, root).into_changed() {
+    let rewritten = match optimizer
+        .optimize(&lowered.arena, lowered.root)
+        .into_changed()
+    {
         // Extraction declares the uniforms it reaches in its own walk order
         // and drops the ones it does not; relinking puts back the entry's
         // declaration order, every scalar in it, which is the order a
         // positional binding supplies them in.
-        Some((optimized, optimized_root)) if !arena.uniforms().is_empty() => {
-            optimized.relink(optimized_root, arena.buffers(), arena.uniforms())
+        Some((optimized, optimized_root)) if !lowered.arena.uniforms().is_empty() => {
+            Some(optimized.relink(
+                optimized_root,
+                lowered.arena.buffers(),
+                lowered.arena.uniforms(),
+            ))
         }
-        Some(changed) => changed,
-        None => (arena, root),
+        changed => changed,
     };
-    Ok((arena_to_tokens(&arena, root, &context), scalars))
+    let (arena, root) = rewritten
+        .as_ref()
+        .map_or((&lowered.arena, lowered.root), |(arena, root)| {
+            (arena, *root)
+        });
+    let tokens = arena_to_tokens(arena, root, &context);
+    Ok((tokens, lowered.scalars))
 }
 
 /// What a scalar argument is in the host function: `param`, or
@@ -234,11 +242,12 @@ fn argument(scalar: &Scalar) -> TokenStream {
 
 /// What an entry's arena is emitted against: the argument each declared
 /// uniform defaults to, in declaration order, and — for a template — the
-/// structural parameters and open ranges its holes are filled from.
+/// structural parameters, and the lowering whose open folds' ranges
+/// ([`Lowered::range_of`]) its holes are filled from.
 struct EntryContext<'a> {
     arguments: Vec<TokenStream>,
     structural: &'a [Ident],
-    holes: &'a Holes,
+    lowered: &'a Lowered,
 }
 
 /// The closure form's expansion: a `Kernel`, or a closure over `f32`s.
@@ -603,7 +612,7 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
             let decoded = fold_from_bits(fold);
             // An open fold keeps its monoid and binder, which are
             // structure, and takes its range from this instantiation.
-            let emitted = match context.holes.range_of(fold) {
+            let emitted = match context.lowered.range_of(fold) {
                 None => decoded,
                 Some(range) => {
                     let range = instantiated_range(range);

@@ -13,7 +13,7 @@
 //!     ▼ Semantic Analysis (sema/)
 //! Analyzed AST
 //!     │
-//!     ▼ Arena lowering (lower.rs)
+//!     ▼ Arena lowering (lower/)
 //! ExprArena
 //!     │
 //!     ▼ `impl Optimize`  — `kernel!` saturates, `kernel_raw!` is `Identity`

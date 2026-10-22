@@ -72,7 +72,7 @@
   bound (`Fold::admits`) (B5). Production kernels move onto `kernel!` (C1,
   D-c).
 - **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser/`, `sema/`,
-  `lower.rs`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
+  `lower/`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
   `kernel_raw!`, `macro_tier()` and `DwrtFree` are still in `lib.rs`, and
   `kernel!` is `expand(input, &mut macro_tier())`: it saturates at expansion
   unless the term carries a `Dwrt` or structural parameters. That
@@ -159,7 +159,7 @@
 - **Lives:** the-language-is-kernel §1.4–§1.5, §1.7, O2; one-pipeline
   decisions (JP, 2026-09-25). In code, a structural parameter read as a value
   (`N as f32`) is lowered to a `Param(k)` hole the host function fills
-  (`count` in `pixelflow-compiler/src/lower.rs`), so it rides on the leaf
+  (`count` in `pixelflow-compiler/src/lower/site.rs`), so it rides on the leaf
   the Param entry says has no job left.
 
 ### Uniform (the parameter)
@@ -370,7 +370,7 @@
   macro-tier-is-arena-native and `2026-09-10-a-surviving-reduce-is-a-loop.md`
   2a″. Today it is still present, `Vocabulary::Templates` still admits it,
   and it has a new job: the template hole for a structural parameter read
-  as a value (`count` in `pixelflow-compiler/src/lower.rs`), which refuses
+  as a value (`count` in `pixelflow-compiler/src/lower/site.rs`), which refuses
   past 256 rather than wrapping.
 
 ### Binder
