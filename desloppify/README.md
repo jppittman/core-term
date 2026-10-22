@@ -48,6 +48,11 @@ TYPESAFE_API_KEY=...  cargo run -p desloppify -- --system-one jev path/to/src  #
    `--findings-only` skips it and prints the raw findings, one
    `path:line: [rule/outcome] message` per line, and the things named.
 
+A number a model echoes back — a symptom, a finding, a thing, a diagnosis —
+is checked against the list it counts: the one a prompt printed, or for a
+root's diagnoses the reply's own. One that names nothing fails that reply (a
+module's naming, or the whole synthesis) instead of shortening it.
+
 Small models make many calls and the large one makes one: each small call
 sees one rule and a little code, or one module, so none forgets a rule, and
 the frontier spends its judgment on the whole picture rather than on any

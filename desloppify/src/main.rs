@@ -296,7 +296,7 @@ fn print_findings(report: &Report) {
             .explains
             .iter()
             .map(|&i| {
-                let f = &report.findings()[i];
+                let f = report.finding(i);
                 format!("{}:{}", f.path.display(), f.line)
             })
             .collect();
