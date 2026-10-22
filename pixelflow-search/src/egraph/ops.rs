@@ -29,7 +29,7 @@ use pixelflow_ir::OpKind;
 /// - `RawGather` and `Seq` are built after the e-graph runs; sequencing is an
 ///   effect, so no rule may name it and no e-graph holds it.
 /// - `Reduce` is held as its own node, `ENode::Reduce`, which carries its fold
-///   as a parameter; it is not an op over operands that a rule could name.
+///   header as a parameter; it is not an op over operands that a rule could name.
 /// - `Tuple` has no fixed arity, which an inline-operand node cannot hold.
 /// - `Shl` and `Shr` are held as `ENode::Shift`, which carries the count as a
 ///   parameter; they are not operations over operand classes, so no rule

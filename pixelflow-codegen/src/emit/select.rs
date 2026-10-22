@@ -18,7 +18,7 @@ use crate::program::{
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use pixelflow_ir::fold::{Binder, Fold, KnownRange, Monoid};
+use pixelflow_ir::fold::{Binder, Fold, KNOWN_RANGE, KnownRange, Monoid};
 
 /// Selection: a scoped schedule as one machine function.
 pub(super) struct Select<B: IsaBackend>(pub(super) PhantomData<fn() -> B>);
@@ -168,14 +168,15 @@ impl<B: IsaBackend> Selector<'_, B> {
                 B::store(&mut self.b, store);
                 return Ok(());
             }
-            ScheduledOp::Reduce { fold, range, body } => {
+            ScheduledOp::Reduce { fold, lo, hi, body } => {
+                let range = KnownRange::of(*fold, *lo, *hi).expect(KNOWN_RANGE);
                 let j = scoped
                     .folds
                     .iter()
                     .position(|f| f.parent == scope && f.reduce == def.value)
                     .unwrap_or_else(|| panic!("{:?} opens no fold in its scope", def.value));
                 self.scheduled[scope_ix(scope)] += 1;
-                match self.fold(scope, j, (*fold, *range, *body))? {
+                match self.fold(scope, j, (*fold, range, *body))? {
                     Some(result) => result,
                     None => return Ok(()),
                 }
@@ -285,7 +286,7 @@ impl<B: IsaBackend> Selector<'_, B> {
             Some(&(index, trips)) => (Some(index), trips),
             None => (None, 1),
         };
-        let trips = parent_trips * u64::from(range.len());
+        let trips = parent_trips * range.len();
         let index = self.b.open_loop(head.label(), parent_loop, trips);
         let head_label = head.label();
         let params: Vec<B::Lane> = head.params().iter().map(|&p| B::param_lane(p)).collect();

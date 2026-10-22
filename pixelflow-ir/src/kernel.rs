@@ -27,7 +27,7 @@ use crate::expr::{
     Environment, ExprBuilderExt, ExprData, copy_subgraph, from_arena, splice, substitute_vars,
     to_arena,
 };
-use crate::fold::{Binder, Chain, Fold, Monoid, Placeholder};
+use crate::fold::{Binder, Bound, Chain, Fold, FoldHeader, Monoid, Placeholder};
 use crate::kind::OpKind;
 use crate::library::{self, Terms};
 use crate::lit::Lit;
@@ -756,7 +756,11 @@ impl Kernel {
         let body = body(&index);
         let (arena, root) = body.parts();
         let closed = arena.close_over(root, scope.placeholder, |binder| {
-            Fold::new(monoid, binder, range)
+            FoldHeader::new(
+                Fold::new(monoid, binder),
+                Bound::Lit(u64::from(range.start)),
+                Bound::Lit(u64::from(range.end)),
+            )
         });
         let (arena, root) = closed.unwrap_or_else(|IndexSpaceFull| {
             panic!(
@@ -1240,7 +1244,7 @@ impl Bits {
 mod tests {
     use super::*;
     use crate::arena::ExprNode;
-    use crate::fold::Fold;
+    use crate::fold::{Bound, Fold, FoldHeader};
 
     /// The count is still checked at runtime; the OPERAND no longer needs
     /// checking, because `Kernel::x().shl(32)` does not compile at all now —
@@ -1258,7 +1262,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "ends at most at 16777216 (2^24)")]
     fn a_fold_past_the_exact_bound_is_refused_by_the_builder_too() {
-        let past = Fold::EXACT_BOUND + 1;
+        let past = u32::try_from(Fold::EXACT_BOUND + 1).expect("2^24 + 1 fits u32");
         let _refused = Kernel::over(Monoid::SUM, 16_777_100..past, |i| i.clone());
     }
 
@@ -1283,7 +1287,9 @@ mod tests {
                 ExprNode::Binary(OpKind::Mul, ExprId(2), ExprId(0)),
                 ExprNode::Binary(OpKind::Add, ExprId(3), ExprId(1)),
                 ExprNode::Reduce {
-                    fold: Fold::new(Monoid::SUM, binder, 0..4),
+                    fold: Fold::new(Monoid::SUM, binder),
+                    lo: Bound::Lit(0),
+                    hi: Bound::Lit(4),
                     body: ExprId(4),
                 },
             ],
@@ -1553,7 +1559,9 @@ mod tests {
         let y = arena.push_var(Axis::Y.var());
         let body = arena.apply(&argument, [index, y]);
         let fold = arena
-            .close_fold(open, body, |binder| Fold::new(Monoid::SUM, binder, 0..3))
+            .close_fold(open, body, |binder| {
+                FoldHeader::new(Fold::new(Monoid::SUM, binder), Bound::Lit(0), Bound::Lit(3))
+            })
             .expect("a binder is free");
         assert_eq!(arena.uniforms(), k.uniforms());
         assert!(matches!(arena.node(fold), ExprNode::Reduce { .. }));

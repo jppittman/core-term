@@ -439,8 +439,12 @@ fn node_label(egraph: &EGraph, class: EClassId, idx: usize) -> String {
                 .collect();
             format!("{}({})", op.name(), cs.join(","))
         }
-        ENode::Reduce { fold, body } => {
-            format!("Reduce[{fold}]({})", egraph.find(*body).index())
+        ENode::Reduce { header, children } => {
+            let cs: Vec<String> = children
+                .iter()
+                .map(|&c| egraph.find(c).index().to_string())
+                .collect();
+            format!("Reduce[{header}]({})", cs.join(","))
         }
         ENode::Shift {
             direction,

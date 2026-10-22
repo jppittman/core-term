@@ -71,7 +71,7 @@ use pixelflow_ir::arena::{
     Axis, ExprArena, ExprId, IndexSpaceFull, OpenFold, UniformDecl, UniformIdentity,
 };
 use pixelflow_ir::library;
-use pixelflow_ir::{Binder, Fold, KnownRange, Monoid, OpKind};
+use pixelflow_ir::{Binder, Bound, Fold, FoldHeader, KnownRange, Monoid, OpKind};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::ops::Range;
@@ -140,7 +140,7 @@ impl Projection {
 /// parameters, known when its host function is instantiated.
 #[derive(Debug, Clone)]
 pub(crate) enum FoldRange {
-    Known(Range<u32>),
+    Known(Range<u64>),
     Structural(StructuralRange),
 }
 
@@ -248,28 +248,19 @@ fn monoid(reduction: Reduction) -> Monoid {
     }
 }
 
-/// A known fold's bounds at the IR's width, if [`KnownRange::admits`] them.
+/// A known fold's bounds, if [`KnownRange::admits`] them.
 ///
-/// `sema` holds a bound in 64 bits, as the control plane is, and has
-/// refused a range that runs backwards. The IR narrows a bound twice: its
-/// ends are `u32` today (widening them is A5 of the plan, deprioritized),
-/// and its index is an `f32` lane, exact to [`Fold::EXACT_BOUND`]. The
-/// lane is the tighter of the two, the one A5 would not lift, and the IR's
-/// to state; lowering asks it before building the body, so the refusal
-/// names the bounds, in the words of both narrowings.
-fn literal_range(lo: u64, hi: u64) -> Result<Range<u32>, String> {
-    let range = match (u32::try_from(lo), u32::try_from(hi)) {
-        (Ok(lo), Ok(hi)) => Some(lo..hi),
-        _ => None,
-    };
-    range.filter(KnownRange::admits).ok_or_else(|| {
+/// `sema` holds a bound in 64 bits, as the IR does, and has refused a range
+/// that runs backwards. What the IR narrows is the index, an `f32` lane,
+/// exact to [`Fold::EXACT_BOUND`]: the IR's to state, so lowering asks it
+/// before building the body and the refusal names the bounds.
+fn literal_range(lo: u64, hi: u64) -> Result<Range<u64>, String> {
+    Some(lo..hi).filter(KnownRange::admits).ok_or_else(|| {
         let bound = Fold::EXACT_BOUND;
         format!(
             "the range `{lo}..{hi}` reaches past {bound} (2^24): a fold's index is an `f32` \
              lane, which names every integer only that far, so past it indices would round \
-             together and the fold would not be the one written (`Fold::EXACT_BOUND`)\n\
-             note: a fold's ends are also `u32` in the IR today (`Fold`); 64-bit fold ends \
-             are A5 of {PLAN}, deprioritized, and would not widen the lane"
+             together and the fold would not be the one written (`Fold::EXACT_BOUND`)"
         )
     })
 }
@@ -283,13 +274,13 @@ const UNBOUND: f32 = f32::NAN;
 /// The range every open fold of a template is built over ([`Holes`]):
 /// empty, so that read as a program an open fold is its monoid's identity,
 /// never plausible pixels.
-const OPEN_RANGE: Range<u32> = 0..0;
+const OPEN_RANGE: Range<u64> = 0..0;
 
 /// The stride an open fold over a template's first distinct range text is
 /// built with; the `k`th's is this plus `k`. No known fold has it: lowering
 /// builds every known fold with `Fold::new`, whose stride is 1, so no known
 /// fold interns with an open one, and none reads as one.
-const HOLE_STRIDE: u32 = 2;
+const HOLE_STRIDE: u64 = 2;
 
 /// What a structural entry's template leaves open, for its host function to
 /// fill per instantiation (plan §1.4): each fold whose range names a
@@ -312,7 +303,7 @@ pub struct Holes {
 impl Holes {
     /// The stride an open fold over `range` is built with, over
     /// [`OPEN_RANGE`].
-    fn stride(&mut self, range: StructuralRange) -> Result<u32, String> {
+    fn stride(&mut self, range: StructuralRange) -> Result<u64, String> {
         let text = range.text();
         let index = match self.ranges.iter().position(|r| r.text() == text) {
             Some(index) => index,
@@ -321,9 +312,10 @@ impl Holes {
                 self.ranges.len() - 1
             }
         };
-        u32::try_from(index)
+        u64::try_from(index)
             .ok()
             .and_then(|index| HOLE_STRIDE.checked_add(index))
+            .filter(|&stride| stride <= Fold::EXACT_BOUND)
             .ok_or_else(|| {
                 format!(
                     "more distinct ranges over structural parameters than a placeholder can \
@@ -381,8 +373,8 @@ pub struct Expansion {
 /// template's hole ([`Holes`]).
 #[derive(Debug, Clone)]
 enum ExpansionFold {
-    Known(Monoid, Range<u32>),
-    Hole(Monoid, u32),
+    Known(Monoid, Range<u64>),
+    Hole(Monoid, u64),
 }
 
 impl Expansion {
@@ -508,10 +500,16 @@ impl Site for Expansion {
             .pop()
             .expect("lowering closes only the folds it opened");
         let fold_at = |binder: Binder| match fold {
-            ExpansionFold::Known(monoid, range) => Fold::new(monoid, binder, range),
-            ExpansionFold::Hole(monoid, stride) => {
-                Fold::strided(monoid, binder, OPEN_RANGE, stride)
-            }
+            ExpansionFold::Known(monoid, range) => FoldHeader::new(
+                Fold::new(monoid, binder),
+                Bound::Lit(range.start),
+                Bound::Lit(range.end),
+            ),
+            ExpansionFold::Hole(monoid, stride) => FoldHeader::new(
+                Fold::strided(monoid, binder, stride),
+                Bound::Lit(OPEN_RANGE.start),
+                Bound::Lit(OPEN_RANGE.end),
+            ),
         };
         self.arena
             .close_fold(open, body, fold_at)
@@ -1208,7 +1206,11 @@ mod tests {
     #[should_panic(expected = "no structural range of this entry names")]
     fn a_placeholder_no_hole_names_is_refused() {
         let binder = Binder::all().next().expect("a binder");
-        let stray = Fold::strided(Monoid::SUM, binder, OPEN_RANGE, HOLE_STRIDE);
+        let stray = FoldHeader::new(
+            Fold::strided(Monoid::SUM, binder, HOLE_STRIDE),
+            Bound::Lit(OPEN_RANGE.start),
+            Bound::Lit(OPEN_RANGE.end),
+        );
         let _unreachable = Holes::default().range_of(stray.known_range().expect(KNOWN_RANGE));
     }
 
@@ -1219,8 +1221,16 @@ mod tests {
         let binder = Binder::all().next().expect("a binder");
         let holes = Holes::default();
         for known in [
-            Fold::new(Monoid::SUM, binder, OPEN_RANGE),
-            Fold::strided(Monoid::SUM, binder, 0..8, HOLE_STRIDE),
+            FoldHeader::new(
+                Fold::new(Monoid::SUM, binder),
+                Bound::Lit(OPEN_RANGE.start),
+                Bound::Lit(OPEN_RANGE.end),
+            ),
+            FoldHeader::new(
+                Fold::strided(Monoid::SUM, binder, HOLE_STRIDE),
+                Bound::Lit(0),
+                Bound::Lit(8),
+            ),
         ] {
             let range = known.known_range().expect(KNOWN_RANGE);
             assert!(holes.range_of(range).is_none(), "{known}");
@@ -1337,7 +1347,7 @@ mod tests {
     #[test]
     fn a_fold_lowers_to_one_reduce_and_leaves_nothing_behind() {
         let (arena, root) = lowered(quote! { || (2..6).map(|i| X * (i as f32)).sum() });
-        let ExprNode::Reduce { fold, body } = arena.node(root) else {
+        let ExprNode::Reduce { fold, body, .. } = arena.node(root) else {
             panic!("expected a fold, got {}", arena.display(root));
         };
         assert_eq!(arena.known_range(root).expect(KNOWN_RANGE).range(), 2..6);
@@ -1363,7 +1373,10 @@ mod tests {
         let (arena, root) = lowered(quote! {
             || (0..3).map(|i| (0..4).map(|j| (i as f32) * (j as f32)).sum::<f32>()).sum()
         });
-        let ExprNode::Reduce { fold: outer, body } = arena.node(root) else {
+        let ExprNode::Reduce {
+            fold: outer, body, ..
+        } = arena.node(root)
+        else {
             panic!("expected the outer fold, got {}", arena.display(root));
         };
         let ExprNode::Reduce { fold: inner, .. } = arena.node(body) else {
@@ -1404,12 +1417,11 @@ mod tests {
         assert!(matches!(arena.node(root), ExprNode::Const(Lit::Real(v)) if v == 4.0));
     }
 
-    /// `sema` holds a bound in 64 bits; the IR's index is an `f32` lane,
-    /// exact to 2²⁴, and its fold ends are `u32`. A bound past the lane is
-    /// refused — past `u32` too, naming the plan's A5 — and 2²⁴ itself is
-    /// the last bound accepted.
+    /// `sema` holds a bound in 64 bits, as the IR does; the IR's index is an
+    /// `f32` lane, exact to 2²⁴. A bound past the lane is refused — past
+    /// `u32` too — and 2²⁴ itself is the last bound accepted.
     #[test]
-    fn a_bound_past_the_exact_index_is_refused_naming_a5() {
+    fn a_bound_past_the_exact_index_is_refused() {
         for past in [
             quote! { || (0..16777217).map(|i| i as f32).sum() },
             quote! { || (16777217..16777217).map(|i| i as f32).sum() },
@@ -1418,10 +1430,7 @@ mod tests {
             let Err(err) = lower_unanalyzed(past) else {
                 panic!("past 2^24 an f32 lane does not name every index");
             };
-            assert!(
-                err.contains("past 16777216 (2^24)") && err.contains("A5") && err.contains(PLAN),
-                "got: {err}"
-            );
+            assert!(err.contains("past 16777216 (2^24)"), "got: {err}");
         }
         let (arena, root) = lowered(quote! { || (16777215..16777216).map(|i| i as f32).sum() });
         let ExprNode::Reduce { .. } = arena.node(root) else {

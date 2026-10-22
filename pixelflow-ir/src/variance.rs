@@ -361,7 +361,7 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
             // `Fold` cannot hold an index that is not a binder, so this arm
             // no longer has to decline an analysis it used to be unable to
             // trust.
-            ExprNode::Reduce { fold, body } => {
+            ExprNode::Reduce { fold, body, .. } => {
                 result[body.0 as usize].without(Variance::from_var(fold.binder().var()))
             }
             // A store varies with what it stores and with where: its three
@@ -795,7 +795,7 @@ mod tests {
         // binder space, and this is the check that keeps them there.
         for i in 0..arena.len() {
             let id = crate::arena::ExprId(i as u32);
-            let ExprNode::Reduce { fold, body } = arena.node(id) else {
+            let ExprNode::Reduce { fold, body, .. } = arena.node(id) else {
                 continue;
             };
             let own = fold.binder().var();

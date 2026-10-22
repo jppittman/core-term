@@ -396,10 +396,13 @@ impl CostModel {
             //
             // An unpriceable monoid keeps the sentinel: extraction must not
             // choose a fold whose combiner has no operation to emit.
-            ENode::Reduce { fold, .. } => match super::fold_rules::combiner_op(fold.monoid()) {
-                Some(_) => self.fold_cost(*fold, node.known_range().expect(KNOWN_RANGE), 0),
-                None => usize::MAX / 4,
-            },
+            ENode::Reduce { header, .. } => {
+                let fold = header.fold();
+                match super::fold_rules::combiner_op(fold.monoid()) {
+                    Some(_) => self.fold_cost(fold, node.known_range().expect(KNOWN_RANGE), 0),
+                    None => usize::MAX / 4,
+                }
+            }
         }
     }
 
@@ -736,16 +739,16 @@ mod cost_model_accessors {
         use crate::egraph::extract::extract_dag;
         use crate::egraph::{Vocabulary, insert};
         use pixelflow_ir::ExprArena;
-        use pixelflow_ir::fold::{Binder, Fold, KNOWN_RANGE, Monoid};
+        use pixelflow_ir::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
 
         let binder = Binder::from_slot(0).expect("a live binder");
-        let fold = Fold::new(Monoid::SUM, binder, 0..40);
+        let fold = Fold::new(Monoid::SUM, binder);
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let j = a.push_var(binder.var());
         let diff = a.push_binary(OpKind::Sub, x, j);
         let body = a.push_unary(OpKind::Abs, diff);
-        let root = a.push_reduce(fold, body);
+        let root = a.push_reduce(fold, Bound::Lit(0), Bound::Lit(40), body);
 
         let mut egraph = EGraph::new();
         let class = insert(&a, root, &mut egraph, Vocabulary::Runtime).expect("a fold inserts");
@@ -757,7 +760,7 @@ mod cost_model_accessors {
         let range = a.known_range(root).expect(KNOWN_RANGE);
         assert_eq!(cost, model.fold_cost(fold, range, body_cost));
         assert_eq!(
-            model.node_op_cost(&ENode::Reduce { fold, body: class }),
+            model.node_op_cost(&ENode::reduce(fold, Bound::Lit(0), Bound::Lit(40), class)),
             model.fold_cost(fold, range, 0),
             "the node's own share is the fold with its body free"
         );

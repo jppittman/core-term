@@ -235,7 +235,9 @@ fn copy_node(
             let mapped: Vec<ExprId> = children.into_iter().map(&m).collect();
             arena.push_nary(*op, &mapped)
         }
-        ExprNode::Reduce { fold, body } => arena.push_reduce(*fold, m(*body)),
+        ExprNode::Reduce { fold, lo, hi, body } => {
+            arena.push_reduce(*fold, lo.map(m), hi.map(m), m(*body))
+        }
         // The binders are metadata, copied as a fold's are; the value is
         // the one child.
         ExprNode::Write {
@@ -1514,7 +1516,7 @@ fn horner_step(arena: &mut ExprArena, acc: ExprId, x: ExprId, add: ExprId) -> Ex
 #[cfg(test)]
 mod dwrt_tests {
     use super::*;
-    use crate::fold::{Binder, Fold, KNOWN_RANGE, Monoid};
+    use crate::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
 
     /// The first reduction binder — `Var(4)`, which these folds bind.
     fn binder() -> Binder {
@@ -1559,7 +1561,12 @@ mod dwrt_tests {
         // Differentiating a fold has no rule here: the pass must refuse.
         let mut a = ExprArena::new();
         let body = a.push_var(4);
-        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
+        let red = a.push_reduce(
+            Fold::new(Monoid::SUM, binder()),
+            Bound::Lit(0),
+            Bound::Lit(4),
+            body,
+        );
         let v0 = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, red, v0);
         assert!(lower_dwrt_owned(&a, root).is_err());
@@ -1576,7 +1583,12 @@ mod dwrt_tests {
     fn an_extent_is_not_an_expression() {
         let mut a = ExprArena::new();
         let body = a.push_var(4);
-        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
+        let red = a.push_reduce(
+            Fold::new(Monoid::SUM, binder()),
+            Bound::Lit(0),
+            Bound::Lit(4),
+            body,
+        );
         let ExprNode::Reduce { .. } = a.node(red) else {
             panic!("expected a range fold");
         };
@@ -1903,7 +1915,7 @@ impl Optimize for LowerDwrt {
 #[cfg(test)]
 mod nested_reduce_tests {
     use super::*;
-    use crate::fold::{Binder, Fold, KNOWN_RANGE, Monoid};
+    use crate::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
 
     /// Every `Reduce` reachable from `root`.
     fn reachable_reduces(arena: &ExprArena, root: ExprId) -> usize {
@@ -1940,12 +1952,22 @@ mod nested_reduce_tests {
         let inner_binder = Binder::from_slot(0).expect("slot 0 exists");
         let i = a.push_var(inner_binder.var());
         let inner_body = a.push_binary(OpKind::Add, x, i);
-        let inner = a.push_reduce(Fold::new(Monoid::SUM, inner_binder, 0..3), inner_body);
+        let inner = a.push_reduce(
+            Fold::new(Monoid::SUM, inner_binder),
+            Bound::Lit(0),
+            Bound::Lit(3),
+            inner_body,
+        );
 
         let outer_binder = Binder::from_slot(1).expect("slot 1 exists");
         let j = a.push_var(outer_binder.var());
         let outer_body = a.push_binary(OpKind::Add, inner, j);
-        let root = a.push_reduce(Fold::new(Monoid::SUM, outer_binder, 0..2), outer_body);
+        let root = a.push_reduce(
+            Fold::new(Monoid::SUM, outer_binder),
+            Bound::Lit(0),
+            Bound::Lit(2),
+            outer_body,
+        );
 
         let origin = |default| UniformDecl {
             id: UniformIdentity::mint(),
@@ -1975,7 +1997,7 @@ mod nested_reduce_tests {
         );
         // A fold's range is read through the arena, which panics on any other
         // node: keep the shape check first.
-        let ranges_over = |id: ExprId, range: core::ops::Range<u32>| {
+        let ranges_over = |id: ExprId, range: core::ops::Range<u64>| {
             matches!(legalized.node(id), ExprNode::Reduce { .. })
                 && legalized.known_range(id).expect(KNOWN_RANGE).range() == range
         };

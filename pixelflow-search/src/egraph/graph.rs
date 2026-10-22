@@ -1577,13 +1577,15 @@ fn instantiate_template<S: NodeSink>(
         ExprData::Ref(k) => {
             panic!("instantiate_template: Ref({k:?}) in a rewrite RHS template")
         }
-        ExprData::Reduce(fold) => {
-            let body = node
+        ExprData::Reduce(header) => {
+            let mut kids = node
                 .children()
+                .map(|c| instantiate_template(sink, c, bindings));
+            let body = kids
                 .next()
-                .expect("a Reduce template has its body as its one child");
-            let body = instantiate_template(sink, body, bindings);
-            sink.make(ENode::Reduce { fold, body })
+                .expect("a Reduce template has its body as its first child");
+            let (lo, hi) = header.attach(kids);
+            sink.make(ENode::reduce(header.fold(), lo, hi, body))
         }
         ExprData::Op(kind) => {
             assert!(
@@ -1621,10 +1623,12 @@ fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> ECla
                     children.iter().map(|c| resolve(*c, &planned)).collect();
                 sink.make(ENode::apply(*op, &operands))
             }
-            HeadNode::Reduce { fold, body } => sink.make(ENode::Reduce {
-                fold: *fold,
-                body: resolve(*body, &planned),
-            }),
+            HeadNode::Reduce { fold, lo, hi, body } => sink.make(ENode::reduce(
+                *fold,
+                lo.map(|h| resolve(h, &planned)),
+                hi.map(|h| resolve(h, &planned)),
+                resolve(*body, &planned),
+            )),
             HeadNode::Shift {
                 direction,
                 count,
@@ -2007,17 +2011,14 @@ mod tests {
     #[test]
     fn a_canonical_node_reads_every_operand_through_find() {
         use pixelflow_ir::ShiftCount;
-        use pixelflow_ir::fold::{Binder, Fold, Monoid};
+        use pixelflow_ir::fold::{Binder, Bound, Fold, Monoid};
 
         let mut eg = EGraph::new();
         let kept = eg.add(ENode::Var(0));
         let merged = eg.add(ENode::Var(1));
         let survivor = eg.union(kept, merged);
-        let fold = Fold::new(
-            Monoid::SUM,
-            Binder::from_slot(0).expect("a live binder"),
-            0..4,
-        );
+        let fold = Fold::new(Monoid::SUM, Binder::from_slot(0).expect("a live binder"));
+        let sum_to_four = |body| ENode::reduce(fold, Bound::Lit(0), Bound::Lit(4), body);
         let shift = |operand| ENode::Shift {
             direction: crate::egraph::ShiftDirection::Right,
             count: ShiftCount::from_literal(8.0).expect("in range"),
@@ -2029,13 +2030,7 @@ mod tests {
                 ENode::apply(OpKind::Add, &[survivor, survivor]),
             ),
             (shift(merged), shift(survivor)),
-            (
-                ENode::Reduce { fold, body: merged },
-                ENode::Reduce {
-                    fold,
-                    body: survivor,
-                },
-            ),
+            (sum_to_four(merged), sum_to_four(survivor)),
         ];
         for (stale, canonical) in stale_and_canonical {
             assert_eq!(eg.canonical_node(stale), canonical);
@@ -3411,7 +3406,7 @@ mod tests {
 #[cfg(test)]
 mod variance_fact_tests {
     use super::*;
-    use pixelflow_ir::{Binder, Fold, Monoid};
+    use pixelflow_ir::{Binder, Bound, Fold, Monoid};
 
     /// **Free of what any member is free of.** `X − X` is seeded `{X}` from
     /// its children; the graph then learns it equals `0`, and the class is
@@ -3468,10 +3463,12 @@ mod variance_fact_tests {
         let i = eg.add(ENode::Var(binder.var()));
         let x = eg.add(ENode::Var(0));
         let body = eg.add(ENode::apply(OpKind::Mul, &[i, x]));
-        let fold = eg.add(ENode::Reduce {
-            fold: Fold::new(Monoid::SUM, binder, 0..8),
+        let fold = eg.add(ENode::reduce(
+            Fold::new(Monoid::SUM, binder),
+            Bound::Lit(0),
+            Bound::Lit(8),
             body,
-        });
+        ));
         assert_eq!(
             eg.variance(body),
             Variance::X.union(Variance::from_var(binder.var()))

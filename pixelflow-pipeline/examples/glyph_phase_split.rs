@@ -65,7 +65,7 @@ fn tile_for(density: f32) -> u32 {
 /// These are the numbers baked into the program. Two glyphs agree on a
 /// program only if they agree on this whole multiset, so it — not the piece
 /// count, which is a proxy for it — is what a cache key partitions on.
-fn trip_counts(arena: &ExprArena, root: ExprId) -> Vec<u32> {
+fn trip_counts(arena: &ExprArena, root: ExprId) -> Vec<u64> {
     let mut seen = vec![false; arena.len()];
     let mut stack = vec![root];
     let mut trips = Vec::new();
@@ -84,7 +84,7 @@ fn trip_counts(arena: &ExprArena, root: ExprId) -> Vec<u32> {
 
 /// The next power of two at or above `n` — the bucket a quantized trip count
 /// would round up to.
-fn bucket(n: u32) -> u32 {
+fn bucket(n: u64) -> u64 {
     n.max(1).next_power_of_two()
 }
 
@@ -117,11 +117,11 @@ fn main() {
         let mut kernels = 0usize;
         // The distinct programs a font needs: one per distinct trip-count
         // multiset, and one per distinct bucketed multiset.
-        let mut exact: BTreeSet<Vec<u32>> = BTreeSet::new();
-        let mut bucketed: BTreeSet<Vec<u32>> = BTreeSet::new();
+        let mut exact: BTreeSet<Vec<u64>> = BTreeSet::new();
+        let mut bucketed: BTreeSet<Vec<u64>> = BTreeSet::new();
         // Padding cost of one global program: every glyph runs the maximum.
-        let mut max_trip = 0u32;
-        let mut trip_histogram: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut max_trip = 0u64;
+        let mut trip_histogram: BTreeMap<u64, usize> = BTreeMap::new();
 
         for ch in WARM_RANGE {
             if only.is_some_and(|c| c != ch) {

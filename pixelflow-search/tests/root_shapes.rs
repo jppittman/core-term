@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprArena, ExprId};
-use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
+use pixelflow_ir::{Binder, Bound, Fold, Monoid, OpKind};
 use pixelflow_search::egraph::{
     Rewrite, RuleIdx, RuleSet, Saturation, Vocabulary, all_rules, derivative_rules, fold_rules,
     insert, saturate_with_full_budget,
@@ -216,9 +216,19 @@ fn terms(a: &mut ExprArena) -> Vec<ExprId> {
     let row = a.push_const(0.0);
     let read = a.push_gather(buffer, i, row);
     let weighted = bin(a, OpKind::Mul, read, x);
-    roots.push(a.push_reduce(Fold::new(Monoid::SUM, binder, 0..4), weighted));
+    roots.push(a.push_reduce(
+        Fold::new(Monoid::SUM, binder),
+        Bound::Lit(0),
+        Bound::Lit(4),
+        weighted,
+    ));
     let constant_body = a.push_const(1.0);
-    roots.push(a.push_reduce(Fold::new(Monoid::SUM, binder, 0..0), constant_body));
+    roots.push(a.push_reduce(
+        Fold::new(Monoid::SUM, binder),
+        Bound::Lit(0),
+        Bound::Lit(0),
+        constant_body,
+    ));
     roots
 }
 

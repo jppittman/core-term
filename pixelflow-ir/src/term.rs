@@ -27,7 +27,7 @@
 //! written down.
 
 use crate::arena::{BufferDecl, UniformDecl};
-use crate::fold::{Binder, Fold};
+use crate::fold::{Binder, Bound, Fold};
 use crate::key::KernelKey;
 use crate::kind::OpKind;
 use crate::lit::Lit;
@@ -124,13 +124,19 @@ pub enum Shape<'a, R> {
     /// A fold: `⊕_{k} body[fold.binder() := k]` over its range's visited
     /// indices (see [`Fold`](crate::Fold)'s doc).
     ///
-    /// Deliberately *not* a [`Shape::Op`]. A fold's algebra, binder and range
-    /// are metadata, not operands: handing them to a walker as children is
-    /// what let the combiner's `Const` share an e-class with any literal of
-    /// the same value, and put a trip count within reach of every arithmetic
-    /// rule in the set. The one child is the body, and the binder is bound in
-    /// it — this is the only shape in the language that binds anything.
-    Reduce { fold: Fold, body: R },
+    /// Deliberately *not* a [`Shape::Op`]. A fold's algebra and binder are
+    /// metadata, not operands, and so is a bound that is known: handing them
+    /// to a walker as children is what let the combiner's `Const` share an
+    /// e-class with any literal of the same value, and put a trip count within
+    /// reach of every arithmetic rule in the set. The children are the body
+    /// and each value bound, and the binder is bound in the body — this is the
+    /// only shape in the language that binds anything.
+    Reduce {
+        fold: Fold,
+        lo: Bound<R>,
+        hi: Bound<R>,
+        body: R,
+    },
     /// A store — mirrors [`ExprNode::Write`](crate::arena::ExprNode::Write).
     /// One child, the value; the binders are metadata, as a fold's are. An
     /// e-graph `insert` declines one: an effect is not a value any rule may

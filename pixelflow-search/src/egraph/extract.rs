@@ -968,10 +968,15 @@ impl Selection {
                     operand_ids.push(arena.embed(Shape::Const(Lit::Real(count.literal()))));
                     Shape::Op(direction.op(), Children::Many(&operand_ids))
                 }
-                ENode::Reduce { fold, .. } => Shape::Reduce {
-                    fold: *fold,
-                    body: operand_ids[0],
-                },
+                ENode::Reduce { header, .. } => {
+                    let (lo, hi) = header.attach(operand_ids[1..].iter().copied());
+                    Shape::Reduce {
+                        fold: header.fold(),
+                        lo,
+                        hi,
+                        body: operand_ids[0],
+                    }
+                }
             };
             ids.push(arena.embed(shape));
         }
@@ -1679,8 +1684,7 @@ fn below(node: &ENode, mut operand: impl Iterator<Item = usize>) -> usize {
         ENode::Reduce { .. } => {
             let body = operand.next().expect("a fold has a body");
             let range = node.known_range().expect(KNOWN_RANGE);
-            usize::try_from((body as u64).saturating_mul(u64::from(range.len())))
-                .unwrap_or(usize::MAX)
+            usize::try_from((body as u64).saturating_mul(range.len())).unwrap_or(usize::MAX)
         }
         ENode::Op { op: OpKind::If, .. } => {
             let mask = operand.next().expect("an If has a mask");
@@ -3825,11 +3829,11 @@ mod tests {
     /// literal the fold's sibling names is the same arena node.
     #[test]
     fn a_shift_under_a_fold_body_materializes_with_its_count() {
-        use pixelflow_ir::fold::{Binder, Fold, Monoid};
+        use pixelflow_ir::fold::{Binder, Bound, Fold, Monoid};
         use pixelflow_ir::{ExprArena, OpKind};
 
         let binder = Binder::from_slot(0).expect("a live binder");
-        let fold = Fold::new(Monoid::SUM, binder, 0..4);
+        let fold = Fold::new(Monoid::SUM, binder);
 
         // root = Add(Reduce(Shift(x, 3)), three)
         let mut eg = EGraph::new();
@@ -3840,10 +3844,7 @@ mod tests {
             count: ShiftCount::from_literal(3.0).expect("3 is a count"),
             operand: x,
         });
-        let reduce = eg.add(ENode::Reduce {
-            fold,
-            body: shifted,
-        });
+        let reduce = eg.add(ENode::reduce(fold, Bound::Lit(0), Bound::Lit(4), shifted));
         let root = eg.add(ENode::apply(OpKind::Add, &[reduce, three]));
 
         let extraction = Extraction::from_backfill(&eg, root, alloc::vec![None; eg.num_classes()]);
@@ -3853,7 +3854,7 @@ mod tests {
         let ex = expected.push_var(0);
         let e3 = expected.push_const(3.0);
         let eshl = expected.push_binary(OpKind::Shl, ex, e3);
-        let ereduce = expected.push_reduce(fold, eshl);
+        let ereduce = expected.push_reduce(fold, Bound::Lit(0), Bound::Lit(4), eshl);
         let eroot = expected.push_binary(OpKind::Add, ereduce, e3);
         assert_eq!(arena_root, eroot);
         assert_eq!(

@@ -318,7 +318,8 @@ its edge.
 ### 3.3 Codegen, placement, regalloc (`pixelflow-codegen`)
 
 - `ScheduledOp::Reduce { fold, lo: Bound, hi: Bound, body }`, `Bound::{Known(u64),
-  Value(ValueId)}`, copied from the arena node in `arena_to_schedule`. There is no bound
+  Value(ValueId)}` (one generic `Bound<R>`, so `Known` is spelled `Lit`; A2b), copied from
+  the arena node in `arena_to_schedule`. There is no bound
   `Const` to read or to keep out of the schedule.
 - **L1's mechanism.** `Known` keeps `self.constant(..)`, a pool constant, at today's points
   (`lo` at `select.rs:273`, `end` at `:311`) and today's `trips = parent_trips * len`
@@ -541,7 +542,20 @@ A5's deletion, which removes code #1427 only re-scopes.
   after its fold (the mean `Σ_{i<n} f / n`), so the parent has it. Gate: byte_probe empty in
   both columns on every row, the mean row included; canonical keys and `KernelKey` digests
   unchanged. Anything that moves is argued in the PR, with the sibling-fold rows
-  (`pixelflow-codegen/tests/support/sibling_rows.rs`) as byte-level arbiter.
+  (`pixelflow-codegen/tests/support/sibling_rows.rs`) as byte-level arbiter. **Done:**
+  byte_probe empty in both columns on every row under `PIXELFLOW_ISA=avx512` and `=avx2`, the
+  mean rows included, and the 29 font programs' keys and digests unchanged. The
+  bounds are `u64` and the stored header is packed (`FoldHeader` 32 bytes, three counts and
+  four bytes, against 48 unpacked), so the nodes grew by what a `Reduce` holds and no more:
+  `NodeData` and `ExprData` 16 to 32 and `ENode` 24 to 48, each pinned by `size_of` beside its
+  type; `ExprNode` (a view) 24 to 56, held by a tripwire raised from 32 to 64 and by nothing
+  tighter. The growth was measured the
+  way `EClassId`'s was (`node.rs`: native release build, interleaved parent/head pairs, one
+  process each, `ru_maxrss`): peak RSS median 89.3 to 104.8 MB (+17%) on the cold compile of
+  the 29 programs ASCII needs (8 pairs) and 16.2 to 17.8 MB (+10%) on the n=40 program (10
+  pairs); callgrind instructions on the 29 programs +5.2% (saturation +7.8%, extraction
+  +3.4%). That is the size of growth that kept `EClassId` at `u32` (+18%, +8%), so narrowing
+  the stored header is the open question the numbers pose, and is not A2b's.
 - **A3. Value bounds in the IR and e-graph.** `over_values` (`pub(crate)`), the
   `push_reduce` refusals (`BoundVaries`, `BoundSort`, `BoundOutOfDomain`),
   `BoundArithmetic` at `over_values`, L4 in both variance functions, L7, `KnownBound` (L8), the rules

@@ -16,7 +16,7 @@
 include!("deep_frame.rs");
 
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, UniformDecl, UniformIdentity};
-use pixelflow_ir::fold::{Binder, Fold, Monoid};
+use pixelflow_ir::fold::{Binder, Bound, Fold, Monoid};
 use pixelflow_ir::Kernel;
 
 /// Rows the lattice every sibling-fold kernel is compiled over has. Small:
@@ -83,8 +83,8 @@ pub fn glyph_like() -> (ExprArena, ExprId) {
     let square = a.push_binary(OpKind::Mul, clamped, clamped);
     let area = a.push_binary(OpKind::Mul, square, rest);
 
-    let fold = Fold::new(Monoid::SUM, binder(), 0..PIECES);
-    let total = a.push_reduce(fold, area);
+    let fold = Fold::new(Monoid::SUM, binder());
+    let total = a.push_reduce(fold, Bound::Lit(0), Bound::Lit(u64::from(PIECES)), area);
     let magnitude = a.push_unary(OpKind::Abs, total);
     let root = a.push_binary(OpKind::Min, magnitude, one);
     (a, root)
@@ -105,14 +105,14 @@ pub fn two_sibling_folds() -> (ExprArena, ExprId) {
     let eighth = a.push_const(0.125);
     let sy = a.push_binary(OpKind::Mul, y, eighth);
     let scaled = a.push_binary(OpKind::Mul, shifted, sy);
-    let first = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..6), scaled);
+    let first = a.push_reduce(Fold::new(Monoid::SUM, binder()), Bound::Lit(0), Bound::Lit(6), scaled);
 
     let step = a.push_const(0.75);
     let si = a.push_binary(OpKind::Mul, i, step);
     let behind = a.push_binary(OpKind::Sub, x, si);
     let floor = a.push_const(-2.0);
     let bounded = a.push_binary(OpKind::Max, behind, floor);
-    let second = a.push_reduce(Fold::new(Monoid::MIN, binder(), 0..4), bounded);
+    let second = a.push_reduce(Fold::new(Monoid::MIN, binder()), Bound::Lit(0), Bound::Lit(4), bounded);
 
     let root = a.push_binary(OpKind::Add, first, second);
     (a, root)
@@ -137,7 +137,7 @@ pub fn parked_roots(terms: u64) -> (ExprArena, ExprId) {
         })
         .collect();
     let body = sum_tree(&mut a, &cells);
-    let root = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..3), body);
+    let root = a.push_reduce(Fold::new(Monoid::SUM, binder()), Bound::Lit(0), Bound::Lit(3), body);
     (a, root)
 }
 
@@ -173,7 +173,7 @@ pub fn guarded_if_in_fold() -> (ExprArena, ExprId) {
     let cold = a.push_unary(OpKind::Sqrt, lifted);
 
     let body = a.push_ternary(OpKind::If, mask, hot, cold);
-    let root = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
+    let root = a.push_reduce(Fold::new(Monoid::SUM, binder()), Bound::Lit(0), Bound::Lit(4), body);
     (a, root)
 }
 
@@ -399,7 +399,12 @@ pub fn mean() -> (ExprArena, ExprId) {
     let half = a.push_const(0.5);
     let si = a.push_binary(OpKind::Mul, i, half);
     let term = a.push_binary(OpKind::Add, sx, si);
-    let total = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..MEAN_TERMS), term);
+    let total = a.push_reduce(
+        Fold::new(Monoid::SUM, binder()),
+        Bound::Lit(0),
+        Bound::Lit(u64::from(MEAN_TERMS)),
+        term,
+    );
     let divisor = a.push_const(MEAN_TERMS as f32);
     let mean = a.push_binary(OpKind::Div, total, divisor);
     let floor = a.push_const(0.0);

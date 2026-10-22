@@ -20,7 +20,7 @@ pub(crate) use scopes::Nest;
 use alloc::vec::Vec;
 
 use pixelflow_ir::Lit;
-use pixelflow_ir::fold::{Binder, Fold, KnownRange};
+use pixelflow_ir::fold::{Binder, Bound, Fold};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::variance::Variance;
 
@@ -133,7 +133,7 @@ pub(crate) enum ScheduledOp {
     /// remainder is. Reads no register — the schedule's order *is* the
     /// sequencing — and defines no value.
     Seq(ValueId, ValueId),
-    /// A surviving bounded fold: `⊕` over the indices of `range`, under
+    /// A surviving bounded fold: `⊕` over the indices from `lo` to `hi`, under
     /// `fold`'s algebra and binder, whose body is the value named by `body` —
     /// in *this schedule's* numbering (`lower::arena_to_schedule` maps it like
     /// any other child). `scopes::extract_folds` carves the body's closure out
@@ -142,12 +142,13 @@ pub(crate) enum ScheduledOp {
     /// it opens the loop for the [`Scope::Fold`] this def opens. It is never
     /// an operand of the scope this def sits in.
     ///
-    /// `range` is the schedule's copy of the fold's range, made where the
-    /// arena node is in hand (`lower::arena_to_schedule`), and the one
-    /// selection reads: nothing after lowering reads it off `fold`.
+    /// `lo` and `hi` are the arena node's bounds, copied where the node is in
+    /// hand (`lower::arena_to_schedule`); selection reads the range from them
+    /// with `KnownRange::of`. Literal until A4: lowering refuses a value bound.
     Reduce {
         fold: Fold,
-        range: KnownRange,
+        lo: Bound<ValueId>,
+        hi: Bound<ValueId>,
         body: ValueId,
     },
 }

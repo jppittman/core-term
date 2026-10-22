@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use crate::arena::{BufferDecl, BufferId, RETIRED_COORD_AXES, UniformDecl, UniformId};
 use crate::dag::{Builder, Dag, Id, Node, SideTable};
-use crate::fold::Fold;
+use crate::fold::FoldHeader;
 use crate::key::KernelKey;
 use crate::kind::OpKind;
 use crate::lit::Lit;
@@ -38,20 +38,22 @@ pub enum ExprData {
     /// Operator node. Arity (unary, binary, ternary, nary) is a property of the
     /// DAG edge count (`node.child_count()`).
     Op(OpKind),
-    /// A fold. Its one child is the body; everything else about it —
-    /// monoid, binder, domain — is [`Fold`], and lives here rather than in
-    /// `Const` children.
+    /// A fold. Its children are the body, then each bound that is a value;
+    /// everything else about it — monoid, binder, step, and each bound that
+    /// is a literal — is [`FoldHeader`], and lives here rather than in `Const`
+    /// children.
     ///
     /// The alternative encoding is `Op(OpKind::Reduce)` over
     /// `[Const(combiner), Const(binder), Const(count), body]`, which is what
     /// this replaced. It costs a reader the question "is this float really a
     /// small integer, and is that integer really a binder slot?" — a question
     /// with no type-level answer, asked with `floorf` and a magic range, and
-    /// re-asked by every pass. `Fold` answers it once, by construction, and
-    /// `Fold::to_bits` gives the total order the cache keys need.
+    /// re-asked by every pass. `FoldHeader` answers it once, by construction,
+    /// and `FoldHeader::to_bits` gives the total order the cache keys need.
     ///
-    /// One child, so "arity is a property of the edge count" still holds.
-    Reduce(Fold),
+    /// "Arity is a property of the edge count" still holds: the header's
+    /// [`arity`](FoldHeader::arity) is that count.
+    Reduce(FoldHeader),
     /// A kernel named rather than spliced — the content-addressed key a
     /// [`KernelStore`](crate::store) resolves.
     ///
@@ -113,7 +115,7 @@ pub(crate) trait ExprBuilderExt {
     fn push_binary(&mut self, op: OpKind, a: Id, b: Id) -> Id;
     fn push_ternary(&mut self, op: OpKind, a: Id, b: Id, c: Id) -> Id;
     fn push_nary(&mut self, op: OpKind, children: &[Id]) -> Id;
-    fn push_reduce(&mut self, fold: Fold, body: Id) -> Id;
+    fn push_reduce(&mut self, header: FoldHeader, children: &[Id]) -> Id;
     fn push_ref(&mut self, key: KernelKey) -> Id;
 }
 
@@ -169,8 +171,15 @@ impl ExprBuilderExt for Builder<ExprData> {
     }
 
     #[inline]
-    fn push_reduce(&mut self, fold: Fold, body: Id) -> Id {
-        self.push_unique(ExprData::Reduce(fold), &[body])
+    fn push_reduce(&mut self, header: FoldHeader, children: &[Id]) -> Id {
+        assert_eq!(
+            children.len(),
+            header.arity(),
+            "a fold header with {} value bounds was given {} children",
+            header.arity() - 1,
+            children.len().saturating_sub(1)
+        );
+        self.push_unique(ExprData::Reduce(header), children)
     }
 
     #[inline]
@@ -315,7 +324,7 @@ pub fn from_arena_roots(
                     ExprNode::Buffer(buf) => b.push_buffer(buf),
                     ExprNode::Uniform(uni) => b.push_uniform(uni),
                     ExprNode::Ref(key) => b.push_ref(key),
-                    ExprNode::Reduce { fold, .. } => b.push_reduce(fold, child_ids[0]),
+                    ExprNode::Reduce { .. } => b.push_reduce(arena.fold_header(id), &child_ids),
                     // Post-legalize only: no `Kernel` holds a store, and a
                     // term language a `Kernel` is made of has no word for one.
                     ExprNode::Write { .. } => panic!(
@@ -381,7 +390,10 @@ pub fn to_arena_roots(
             ExprData::Buffer(b) => arena.push_buffer(b),
             ExprData::Uniform(u) => arena.push_uniform(u),
             ExprData::Ref(key) => arena.push_ref(key),
-            ExprData::Reduce(fold) => arena.push_reduce(fold, child_ids[0]),
+            ExprData::Reduce(header) => {
+                let (lo, hi) = header.attach(child_ids[1..].iter().copied());
+                arena.push_reduce(header.fold(), lo, hi, child_ids[0])
+            }
             ExprData::Op(op) => match child_ids.len() {
                 1 => arena.push_unary(op, child_ids[0]),
                 2 => arena.push_binary(op, child_ids[0], child_ids[1]),
@@ -728,6 +740,22 @@ mod tests {
             &donor_env,
         );
         assert_eq!(target_env.uniforms, [r, a, b, c]);
+    }
+
+    /// A fold node's edges are its body and one per value bound, and the
+    /// builder refuses a node whose edges disagree with its header.
+    #[test]
+    #[should_panic(expected = "value bounds was given")]
+    fn a_fold_with_a_child_its_header_has_no_bound_for_is_refused() {
+        let binder = crate::fold::Binder::from_slot(0).expect("slot 0");
+        let header = FoldHeader::new(
+            crate::fold::Fold::new(crate::fold::Monoid::SUM, binder),
+            crate::fold::Bound::Lit(0),
+            crate::fold::Bound::Lit(4),
+        );
+        let mut b = Builder::new();
+        let x = b.push_var(0);
+        let _refused = b.push_reduce(header, &[x, x]);
     }
 
     #[test]

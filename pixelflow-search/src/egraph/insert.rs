@@ -9,6 +9,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
+use pixelflow_ir::fold::FoldHeader;
 use pixelflow_ir::{Children, Ir, Shape};
 
 use super::graph::EGraph;
@@ -169,8 +170,13 @@ pub fn insert<I: Ir>(
                     // No vocabulary check: a fold is not an op, so there is
                     // nothing for a vocabulary to admit or refuse. It enters
                     // as itself, under either.
-                    Shape::Reduce { body, .. } => {
+                    Shape::Reduce { body, lo, hi, .. } => {
                         tasks.push(Task::Complete(r));
+                        // Reverse, so children pop in `children()` order: the
+                        // body, then `lo`'s, then `hi`'s.
+                        for child in [hi.value(), lo.value()].into_iter().flatten() {
+                            tasks.push(Task::Visit(child));
+                        }
                         tasks.push(Task::Visit(body));
                         continue;
                     }
@@ -202,9 +208,15 @@ pub fn insert<I: Ir>(
                             egraph.add(node)
                         }
                     },
-                    Shape::Reduce { fold, .. } => {
-                        let body = built.pop().expect("the body was visited first");
-                        egraph.add(ENode::Reduce { fold, body })
+                    Shape::Reduce { fold, lo, hi, .. } => {
+                        // The header refuses a value bound by name before
+                        // `built` is touched.
+                        let header = FoldHeader::new(fold, lo.erased(), hi.erased());
+                        let start = built.len() - header.arity();
+                        let (lo, hi) = header.attach(built[start + 1..].iter().copied());
+                        let node = ENode::reduce(fold, lo, hi, built[start]);
+                        built.truncate(start);
+                        egraph.add(node)
                     }
                     _ => unreachable!("Complete is scheduled only for compound shapes"),
                 };
@@ -248,7 +260,12 @@ pub fn inserted_class_count<I: Ir>(term: &I, root: I::Ref) -> usize {
                     }
                 }
             },
-            Shape::Reduce { body, .. } => stack.push(body),
+            // A value bound's class counts, as `insert` makes it.
+            Shape::Reduce { body, lo, hi, .. } => {
+                stack.push(body);
+                stack.extend(lo.value());
+                stack.extend(hi.value());
+            }
             Shape::Write { value, .. } => stack.push(value),
             _ => {}
         }
@@ -259,7 +276,10 @@ pub fn inserted_class_count<I: Ir>(term: &I, root: I::Ref) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_ir::{ExprArena, ExprId, Kernel, KernelKey, KernelStore, OpKind, Variance};
+    use pixelflow_ir::fold::{Binder, Fold, Monoid};
+    use pixelflow_ir::{
+        Bound, ExprArena, ExprId, Kernel, KernelKey, KernelStore, Lit, OpKind, Variance,
+    };
 
     /// `Ref(named)·Y` over a fresh arena, the reference, and the key it names.
     fn named_times_y() -> (ExprArena, ExprId, ExprId, KernelKey) {
@@ -495,6 +515,47 @@ mod tests {
     fn an_open_unit_is_refused() {
         let key = KernelStore::intern(&Kernel::y().add(&Kernel::constant(0.75)));
         EGraph::new().admit_unit(key, Variance::Y.union(Variance::BINDERS));
+    }
+
+    /// A fold whose `lo` is a term (the constant `2`'s): the arena cannot build
+    /// one before A3, so the term is a test's own.
+    struct ValueBounded;
+
+    impl Ir for ValueBounded {
+        type Ref = u8;
+
+        fn project(&self, r: u8) -> Shape<'_, u8> {
+            let binder = Binder::from_slot(0).expect("a binder");
+            match r {
+                0 => Shape::Var(0),
+                2 => Shape::Const(Lit::Real(1.0)),
+                _ => Shape::Reduce {
+                    fold: Fold::new(Monoid::SUM, binder),
+                    lo: Bound::Value(2),
+                    hi: Bound::Lit(4),
+                    body: 0,
+                },
+            }
+        }
+
+        fn embed(&mut self, _: Shape<'_, u8>) -> u8 {
+            unreachable!("insert reads a term and never writes one")
+        }
+    }
+
+    /// A value bound reaches the graph's one fold constructor and is refused
+    /// there by name, as in the arena, until A3 lifts it.
+    #[test]
+    #[should_panic(expected = "a fold bound that is a value")]
+    fn insert_refuses_a_value_bound_by_name() {
+        let _ = insert(&ValueBounded, 1, &mut EGraph::new(), Vocabulary::Runtime);
+    }
+
+    /// A value bound's class is one `insert` would make, so the measure the
+    /// budgets key on counts it: the fold, its body, and its `lo`'s constant.
+    #[test]
+    fn a_value_bounds_class_is_counted() {
+        assert_eq!(inserted_class_count(&ValueBounded, 1), 3);
     }
 
     /// A key names one referent, so it has one variance: admitting it again
