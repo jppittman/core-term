@@ -666,7 +666,7 @@ fn push_deriv_children(node: &ExprNode, stack: &mut Vec<ExprId>) {
             // d = 0 without touching the operand.
             OpKind::Floor | OpKind::Ceil | OpKind::Round => {}
             // No rule: the error surfaces at the node, not its children.
-            OpKind::TruncToInt | OpKind::IntToFloat => {}
+            OpKind::TruncToInt | OpKind::IntToFloat | OpKind::Bits | OpKind::Float => {}
             _ => stack.push(a),
         },
         ExprNode::Binary(op, a, b) => match op {
@@ -727,7 +727,11 @@ fn diff_node(arena: &mut ExprArena, id: ExprId, rules: &Rules) -> Result<ExprId,
                 OpKind::Floor | OpKind::Ceil | OpKind::Round => {
                     return Ok(arena.push_const(0.0));
                 }
-                OpKind::TruncToInt | OpKind::IntToFloat => {
+                // The conversions, and the reinterpretations: `Real → Int`
+                // and back are not `Real → Real`, so there is no derivative
+                // to take. Refused by name until the arena's types make the
+                // case unbuildable (docs/language/2026-10-17-the-arena-is-typed.md T5).
+                OpKind::TruncToInt | OpKind::IntToFloat | OpKind::Bits | OpKind::Float => {
                     return Err("lower_dwrt: cannot differentiate integer/bit-manipulation ops");
                 }
                 _ => {}
@@ -1160,9 +1164,10 @@ fn expand_atan2(arena: &mut ExprArena, y: ExprId, x: ExprId) -> ExprId {
 ///
 /// Split `x = xi + xf` (xi integer, xf ∈ [0,1)); approximate `2^xf` by the
 /// degree-5 Taylor polynomial [`EXP2_POLY`]; reconstruct `2^xi` by writing the IEEE-754
-/// exponent field directly: `2^xi = bitcast((int(xi) + 127) << 23)`. Built from
-/// the bit-manip primitives (`TruncToInt`/`IntToFloat`/`IAdd`/`Shl`) — these are
-/// the float↔int conversions a backend cannot avoid for exp/log.
+/// exponent field directly: `2^xi = Float((int(xi) + 127) << 23)`. Built from
+/// the integer-domain primitives (`TruncToInt`/`IAdd`/`Shl`), with the
+/// reinterpretation back to a real spelled as the `Float` node it is — the
+/// same register, no instruction — rather than left to a comment.
 fn expand_exp2(arena: &mut ExprArena, arg_x: ExprId) -> ExprId {
     // Clamp to a safe exponent range to avoid int overflow / inf.
     let lo = arena.push_const(-EXP2_CLAMP);
@@ -1181,13 +1186,15 @@ fn expand_exp2(arena: &mut ExprArena, arg_x: ExprId) -> ExprId {
         p = horner_step(arena, p, xf, c);
     }
 
-    // 2^xi = bitcast((int(xi) + 127) << 23).
+    // 2^xi = Float((int(xi) + 127) << 23): the biased exponent, shifted into
+    // its field, read back as the real whose bits those are.
     let xi_int = arena.push_unary(OpKind::TruncToInt, xi);
     let bias = arena.push_const(f32::from_bits(127)); // integer 127 as lane bits
     let biased = arena.push_binary(OpKind::IAdd, xi_int, bias);
     // A literal `ShiftCount::from_literal` accepts, so the emitter takes it as written.
     let shift = arena.push_const(23.0);
-    let pow2i = arena.push_binary(OpKind::Shl, biased, shift); // bitcast result
+    let pow2i_bits = arena.push_binary(OpKind::Shl, biased, shift);
+    let pow2i = arena.push_unary(OpKind::Float, pow2i_bits);
 
     // 2^x = 2^xf · 2^xi
     let val = arena.push_binary(OpKind::Mul, p, pow2i);
@@ -1213,19 +1220,22 @@ fn expand_exp2(arena: &mut ExprArena, arg_x: ExprId) -> ExprId {
 /// Uses `If` on a `Ge` mask for the range reduction, so (like the other
 /// bit-manipulating expansions) this is value-path only.
 fn expand_log2(arena: &mut ExprArena, x: ExprId) -> ExprId {
-    // Reinterpret x's bits as int (free) and extract exponent: e = (bits >> 23) - 127.
-    // Shift amount read by value -> plain 23.0.
+    // x's bits, as the integer they are: the one node both fields below read.
+    let bits = arena.push_unary(OpKind::Bits, x);
+
+    // Exponent: e = (bits >> 23) - 127. Shift amount read by value -> plain 23.0.
     let shift23 = arena.push_const(23.0);
-    let exp_field = arena.push_binary(OpKind::Shr, x, shift23); // int lanes
+    let exp_field = arena.push_binary(OpKind::Shr, bits, shift23);
     let exp_f = arena.push_unary(OpKind::IntToFloat, exp_field);
     let bias = arena.push_const(127.0);
     let e = arena.push_binary(OpKind::Sub, exp_f, bias);
 
-    // Mantissa m = bitcast((bits & 0x007FFFFF) | 0x3F800000) ∈ [1, 2).
+    // Mantissa m = Float((bits & 0x007FFFFF) | 0x3F800000) ∈ [1, 2).
     let mant_mask = arena.push_const(f32::from_bits(0x007F_FFFF));
     let one_bits = arena.push_const(f32::from_bits(0x3F80_0000));
-    let mant = arena.push_binary(OpKind::BitAnd, x, mant_mask);
-    let m = arena.push_binary(OpKind::BitOr, mant, one_bits);
+    let mant = arena.push_binary(OpKind::BitAnd, bits, mant_mask);
+    let m_bits = arena.push_binary(OpKind::BitOr, mant, one_bits);
+    let m = arena.push_unary(OpKind::Float, m_bits);
 
     // Range-reduce: if m ≥ √2 { m /= 2; e += 1 } so t = m − 1 ∈ [−0.293, 0.414].
     let sqrt2 = arena.push_const(core::f32::consts::SQRT_2);
@@ -1327,7 +1337,7 @@ pub const EXP2_POLY: [f32; 6] = [
 
 /// Exponent range `exp2` saturates to, rather than overflowing to `inf`.
 ///
-/// `2^n` is built as `bitcast((int(n) + 127) << 23)`, so an unclamped `n` past
+/// `2^n` is built as `Float((int(n) + 127) << 23)`, so an unclamped `n` past
 /// this walks out of the exponent field and produces a value that is not a
 /// power of two at all. CLAUDE.md lists the saturation as behavior every target
 /// agrees on; clamping here is what makes that true.
@@ -1586,47 +1596,36 @@ mod dwrt_tests {
         const BOUND_MEMORY: &str = "lower_dwrt: cannot differentiate a bound-memory read";
         const INT_BIT: &str = "lower_dwrt: cannot differentiate integer/bit-manipulation ops";
 
-        // TruncToInt: no derivative for a discontinuous bit-reinterpret.
-        // Wrapping a Gather (itself undifferentiable) distinguishes this
-        // arm's own message from a leaked child error — if
-        // `push_deriv_children`'s TruncToInt/IntToFloat arm wrongly marked
-        // the operand as needing a derivative, the child's `BOUND_MEMORY`
-        // error would surface here instead of `INT_BIT`.
+        // The unary integer-domain arm: the two conversions and the two
+        // reinterpretations. Each is its own alternative in the grouped arm,
+        // so each is tried. Wrapping a Gather (itself undifferentiable)
+        // distinguishes the arm's own message from a leaked child error — if
+        // `push_deriv_children`'s arm wrongly marked the operand as needing a
+        // derivative, the child's `BOUND_MEMORY` error would surface here
+        // instead of `INT_BIT`.
         use crate::arena::{BufferDecl, BufferIdentity};
-        let mut a = ExprArena::new();
-        let b = a.declare_buffer(BufferDecl {
-            id: BufferIdentity::mint(),
-            width: 2,
-            height: 1,
-        });
-        let gx = a.push_var(0);
-        let zero = a.push_const(0.0);
-        let g = a.push_gather(b, gx, zero);
-        let e = a.push_unary(OpKind::TruncToInt, g);
-        let v0 = a.push_const(0.0);
-        let root = a.push_binary(OpKind::Dwrt, e, v0);
-        match lower_dwrt_owned(&a, root) {
-            Err(msg) => assert_eq!(msg, INT_BIT),
-            Ok(_) => panic!("expected {INT_BIT:?}"),
-        }
-
-        // IntToFloat, the other half of the unary integer-domain arm. Wrapped
-        // around a Gather for the same reason as TruncToInt above.
-        let mut a = ExprArena::new();
-        let b = a.declare_buffer(BufferDecl {
-            id: BufferIdentity::mint(),
-            width: 2,
-            height: 1,
-        });
-        let gx = a.push_var(0);
-        let zero = a.push_const(0.0);
-        let g = a.push_gather(b, gx, zero);
-        let e = a.push_unary(OpKind::IntToFloat, g);
-        let v0 = a.push_const(0.0);
-        let root = a.push_binary(OpKind::Dwrt, e, v0);
-        match lower_dwrt_owned(&a, root) {
-            Err(msg) => assert_eq!(msg, INT_BIT),
-            Ok(_) => panic!("expected {INT_BIT:?}"),
+        for op in [
+            OpKind::TruncToInt,
+            OpKind::IntToFloat,
+            OpKind::Bits,
+            OpKind::Float,
+        ] {
+            let mut a = ExprArena::new();
+            let b = a.declare_buffer(BufferDecl {
+                id: BufferIdentity::mint(),
+                width: 2,
+                height: 1,
+            });
+            let gx = a.push_var(0);
+            let zero = a.push_const(0.0);
+            let g = a.push_gather(b, gx, zero);
+            let e = a.push_unary(op, g);
+            let v0 = a.push_const(0.0);
+            let root = a.push_binary(OpKind::Dwrt, e, v0);
+            match lower_dwrt_owned(&a, root) {
+                Err(msg) => assert_eq!(msg, INT_BIT, "for {op:?}"),
+                Ok(_) => panic!("expected {INT_BIT:?} for {op:?}"),
+            }
         }
 
         // IAdd/Shl/Shr/BitAnd/BitOr: integer/bit-manipulation primitives, at

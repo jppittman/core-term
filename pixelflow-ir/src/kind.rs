@@ -154,11 +154,14 @@ op_table! {
 
     // --- Bit manipulation (integer-domain primitives) ---
     // These let exp/ln/log lower to arithmetic: each maps 1:1 to a single
-    // hardware instruction. Lanes are reinterpreted as i32 where noted;
-    // "reinterpret" itself is free (same register) and is not an op.
-    /// Truncate f32 lanes to i32 (`cvttps2dq` / `fcvtzs`).
+    // hardware instruction. A lane is read as an i32 where noted; the
+    // reinterpretation that gets it there is an op of its own, `Bits`, and
+    // `Float` is the one back (codes 53 and 54 below).
+    /// Truncate f32 lanes to i32 (`cvttps2dq` / `fcvtzs`): a *conversion*,
+    /// which changes the bits. The reinterpretation is [`OpKind::Bits`].
     TruncToInt = 38,
-    /// Convert i32 lanes to f32 (`cvtdq2ps` / `scvtf`).
+    /// Convert i32 lanes to f32 (`cvtdq2ps` / `scvtf`): a *conversion*,
+    /// which changes the bits. The reinterpretation is [`OpKind::Float`].
     IntToFloat = 39,
     /// Integer (i32) lane-wise add (`paddd` / `add .4s`).
     IAdd = 40,
@@ -235,6 +238,27 @@ op_table! {
     /// name it and the e-graph's vocabularies decline it, as they do a
     /// `Write`. A backend that meets one as an instruction emits no bytes.
     Seq = 52,
+
+    // --- Reinterpretation (Real ↔ Int, the same bits) ---
+    /// Read a real lane's bits as an integer: `Bits : Real → Int`. The value
+    /// is the same 32 bits in the same register, so it compiles to **zero
+    /// instructions** on every backend — the node *is* its operand
+    /// (`program/lower.rs` maps it to the operand's `ValueId`). It exists so
+    /// that a reinterpretation is written down where it happens:
+    /// `expand_log2` reads an exponent field out of `Bits(x)`, where it used
+    /// to shift a real and say `// int lanes` in a comment. Not a conversion:
+    /// [`OpKind::TruncToInt`] computes a different pattern.
+    ///
+    /// Never folded here: a fold would change the literal's *type*, and
+    /// until the arena carries one (docs/language/2026-10-17-the-arena-is-typed.md
+    /// T3) there is no typed literal to write.
+    Bits = 53,
+    /// Read an integer lane's bits as a real: `Float : Int → Real`, the
+    /// inverse of [`OpKind::Bits`], and like it zero instructions: the node is
+    /// its operand. `expand_exp2` builds `2^k` as `Float((k + 127) << 23)`.
+    /// Not a conversion: [`OpKind::IntToFloat`] computes a different pattern.
+    /// Never folded, for `Bits`'s reason.
+    Float = 54,
 }
 
 impl OpKind {
@@ -420,7 +444,9 @@ impl OpKind {
             | Self::Log2
             | Self::Log10
             | Self::TruncToInt
-            | Self::IntToFloat => 1,
+            | Self::IntToFloat
+            | Self::Bits
+            | Self::Float => 1,
 
             Self::Add
             | Self::Sub
@@ -518,6 +544,8 @@ impl OpKind {
             Self::Uniform => "uniform",
             Self::Param => "param",
             Self::Seq => "seq",
+            Self::Bits => "bits",
+            Self::Float => "float",
         }
     }
 
@@ -579,6 +607,8 @@ impl OpKind {
             "uniform" => Some(Self::Uniform),
             "param" => Some(Self::Param),
             "seq" => Some(Self::Seq),
+            "bits" => Some(Self::Bits),
+            "float" => Some(Self::Float),
             _ => None,
         }
     }
@@ -591,9 +621,10 @@ impl OpKind {
     /// them, [`Self::Add`]/[`Self::Sub`]/[`Self::Mul`]/[`Self::Div`] are real
     /// ops but are spelled `+ - * /`, never `.add(y)`, and
     /// [`Self::TruncToInt`]/[`Self::IAdd`]/[`Self::Shl`]/[`Self::Shr`]/
-    /// [`Self::BitAnd`]/[`Self::BitOr`]/[`Self::IntToFloat`] are primitives
-    /// that only ever arise from lowering passes (`Gather`/`Reduce`
-    /// expansion), never from surface syntax a kernel body writes directly.
+    /// [`Self::BitAnd`]/[`Self::BitOr`]/[`Self::IntToFloat`]/[`Self::Bits`]/
+    /// [`Self::Float`] are primitives that only ever arise from lowering
+    /// passes (`Gather`/`Reduce`/transcendental expansion), never from
+    /// surface syntax a kernel body writes directly.
     #[must_use]
     const fn is_dsl_method(self) -> bool {
         matches!(
@@ -692,6 +723,8 @@ impl OpKind {
             | Self::Shr
             | Self::BitAnd
             | Self::BitOr => 1,
+            // A reinterpretation is the same register: no instruction.
+            Self::Bits | Self::Float => 0,
             // Dwrt must be rewritten away before extraction; price it so the
             // extractor never prefers a surviving derivative over a decomposed
             // form. (A surviving Dwrt is then caught by a validation pass.)
@@ -815,10 +848,15 @@ impl OpKind {
             // reinterpret it as i32, exactly as the hardware instructions do
             // (`cvttps2dq` / `cvtdq2ps`). They exist so exp/log can lower to
             // arithmetic. The integer they produce still rides in a real
-            // lane by convention: `Lit` has no integer until the
-            // reinterpretation is an op of its own (`Bits`/`Float`).
+            // lane by convention: `Lit` has no integer yet (T3 of
+            // docs/language/2026-10-17-the-arena-is-typed.md).
             Self::TruncToInt => f32::from_bits((x as i32) as u32),
             Self::IntToFloat => (x.to_bits() as i32) as f32,
+            // The reinterpretations are refused, not computed: the bits do
+            // not change, so there is nothing to compute, but the *type*
+            // does, and `Lit` has no integer to write back. Folding them is
+            // T3's (docs/language/2026-10-17-the-arena-is-typed.md).
+            Self::Bits | Self::Float => return None,
 
             // Transcendentals have no arm on purpose. `f32::sin` and friends
             // are std-only (absent from `core`) and would be a *second*
@@ -837,11 +875,13 @@ impl OpKind {
     /// A comparison's result is a mask, which the folder spells as
     /// [`Lit::Mask`] and never as a float; the integer-domain primitives
     /// reinterpret lanes as `i32` and are how exp/log lower to arithmetic;
-    /// `If`/`BitAnd`/`BitOr` pass patterns through. For the ones whose
-    /// result still rides in a real lane, a non-finite float reading is the
-    /// intended output rather than an overflow, which is what separates them
-    /// from `1e38 * 1e38` — the case a folder is right to refuse. The
-    /// predicate lasts exactly until every result has its own type.
+    /// `If`/`BitAnd`/`BitOr` pass patterns through; [`Self::Bits`] *is* the
+    /// reading of a lane as a pattern, and [`Self::Float`] is the reading
+    /// back as a number, so it is not here. For the ones whose result still
+    /// rides in a real lane, a non-finite float reading is the intended
+    /// output rather than an overflow, which is what separates them from
+    /// `1e38 * 1e38` — the case a folder is right to refuse. The predicate
+    /// lasts exactly until every result has its own type.
     #[must_use]
     pub const fn is_bitwise_domain(self) -> bool {
         matches!(
@@ -860,6 +900,7 @@ impl OpKind {
                 | Self::IAdd
                 | Self::Shl
                 | Self::Shr
+                | Self::Bits
         )
     }
 
@@ -1488,6 +1529,8 @@ mod method_names {
             "shr",
             "bitand",
             "bitor",
+            "bits",
+            "float",
         ] {
             assert!(
                 !names.contains(&op),
@@ -1543,11 +1586,295 @@ mod from_method_call {
     fn rejects_lowering_only_primitives() {
         assert_eq!(OpKind::from_method_call("trunc_to_int", 0), None);
         assert_eq!(OpKind::from_method_call("shl", 1), None);
+        assert_eq!(OpKind::from_method_call("bits", 0), None);
+        assert_eq!(OpKind::from_method_call("float", 0), None);
     }
 
     #[test]
     fn rejects_an_unrecognized_name() {
         assert_eq!(OpKind::from_method_call("not_a_real_op", 0), None);
+    }
+}
+
+#[cfg(test)]
+mod algebraic_properties {
+    use super::OpKind;
+    use crate::lit::Lit;
+
+    const COMMUTATIVE: &[OpKind] = &[
+        OpKind::Add,
+        OpKind::Mul,
+        OpKind::Min,
+        OpKind::Max,
+        OpKind::Eq,
+        OpKind::Ne,
+    ];
+
+    #[test]
+    fn flag_add_mul_min_max_eq_ne_as_commutative_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_commutative(),
+                COMMUTATIVE.contains(&op),
+                "{op:?} commutativity mismatch"
+            );
+        }
+    }
+
+    const ASSOCIATIVE: &[OpKind] = &[OpKind::Add, OpKind::Mul, OpKind::Min, OpKind::Max];
+
+    #[test]
+    fn flag_add_mul_min_max_as_associative_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_associative(),
+                ASSOCIATIVE.contains(&op),
+                "{op:?} associativity mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn return_zero_for_add_sub_one_for_mul_div_and_none_otherwise() {
+        for op in OpKind::all() {
+            let want = match op {
+                OpKind::Add | OpKind::Sub => Some(0.0),
+                OpKind::Mul | OpKind::Div => Some(1.0),
+                _ => None,
+            };
+            assert_eq!(op.identity(), want, "{op:?} identity mismatch");
+        }
+    }
+
+    #[test]
+    fn return_zero_annihilator_only_for_mul() {
+        for op in OpKind::all() {
+            let want = if op == OpKind::Mul { Some(0.0) } else { None };
+            assert_eq!(op.annihilator(), want, "{op:?} annihilator mismatch");
+        }
+    }
+
+    const IDEMPOTENT: &[OpKind] = &[OpKind::Min, OpKind::Max, OpKind::Abs];
+
+    #[test]
+    fn flag_min_max_abs_as_idempotent_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_idempotent(),
+                IDEMPOTENT.contains(&op),
+                "{op:?} idempotence mismatch"
+            );
+        }
+    }
+
+    const NOT_SEED_OPS: &[OpKind] = &[
+        OpKind::Var,
+        OpKind::Const,
+        OpKind::Tuple,
+        OpKind::MulAdd,
+        OpKind::Lt,
+        OpKind::Le,
+        OpKind::Gt,
+        OpKind::Ge,
+        OpKind::Eq,
+        OpKind::Ne,
+        OpKind::If,
+        OpKind::Buffer,
+        OpKind::Gather,
+        OpKind::RawGather,
+        OpKind::Reduce,
+        OpKind::Uniform,
+        OpKind::Param,
+        OpKind::Seq,
+    ];
+
+    #[test]
+    fn exclude_leaves_masks_and_memory_ops_from_seed_ops() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_seed_op(),
+                !NOT_SEED_OPS.contains(&op),
+                "{op:?} seed-op eligibility mismatch"
+            );
+        }
+    }
+
+    const BITWISE_DOMAIN: &[OpKind] = &[
+        OpKind::Lt,
+        OpKind::Le,
+        OpKind::Gt,
+        OpKind::Ge,
+        OpKind::Eq,
+        OpKind::Ne,
+        OpKind::If,
+        OpKind::BitAnd,
+        OpKind::BitOr,
+        OpKind::TruncToInt,
+        OpKind::IntToFloat,
+        OpKind::IAdd,
+        OpKind::Shl,
+        OpKind::Shr,
+        OpKind::Bits,
+    ];
+
+    #[test]
+    fn flag_masks_bitops_and_integer_primitives_as_bitwise_domain() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_bitwise_domain(),
+                BITWISE_DOMAIN.contains(&op),
+                "{op:?} bitwise-domain mismatch"
+            );
+        }
+    }
+
+    /// A reinterpretation is unary, costs nothing, has no method spelling,
+    /// and is never folded: the bits are the same, the type is not, and
+    /// `Lit` has no integer to write back until T3.
+    #[test]
+    fn bits_and_float_are_free_unspellable_and_unfolded() {
+        for op in [OpKind::Bits, OpKind::Float] {
+            assert_eq!(op.arity(), 1, "{op:?}");
+            assert_eq!(op.default_cost(), 0, "{op:?} is the same register");
+            assert_eq!(OpKind::from_method_call(op.name(), 0), None, "{op:?}");
+            for x in [0.0, -0.0, 1.0, f32::from_bits(127), f32::NAN] {
+                assert_eq!(
+                    op.eval_unary(Lit::Real(x)),
+                    None,
+                    "{op:?}({x:?}) must not fold"
+                );
+            }
+        }
+        assert!(OpKind::Bits.is_bitwise_domain(), "its result is a pattern");
+        assert!(!OpKind::Float.is_bitwise_domain(), "its result is a number");
+    }
+
+    /// `Seq` has a name and an arity like any op, and no way in from a
+    /// `kernel!` body: the surface set refuses it, so a store's sequencing
+    /// is spelled only by the passes that build one.
+    #[test]
+    fn seq_is_a_binary_op_no_kernel_body_can_call() {
+        assert_eq!(OpKind::Seq.arity(), 2);
+        assert_eq!(OpKind::from_name("seq"), Some(OpKind::Seq));
+        assert_eq!(OpKind::from_method_call("seq", 1), None);
+        assert!(OpKind::Seq.is_monoid(), "the unit monoid's combine");
+        assert!(!OpKind::Seq.is_seed_op());
+    }
+
+    #[test]
+    fn match_each_ops_actual_operand_count() {
+        for op in OpKind::all() {
+            let want = match op {
+                OpKind::Var
+                | OpKind::Const
+                | OpKind::Tuple
+                | OpKind::Buffer
+                | OpKind::Uniform
+                | OpKind::Param => 0,
+
+                OpKind::Neg
+                | OpKind::Sqrt
+                | OpKind::Rsqrt
+                | OpKind::Abs
+                | OpKind::Recip
+                | OpKind::Floor
+                | OpKind::Ceil
+                | OpKind::Round
+                | OpKind::Sin
+                | OpKind::Cos
+                | OpKind::Tan
+                | OpKind::Asin
+                | OpKind::Acos
+                | OpKind::Atan
+                | OpKind::Exp
+                | OpKind::Exp2
+                | OpKind::Ln
+                | OpKind::Log2
+                | OpKind::Log10
+                | OpKind::TruncToInt
+                | OpKind::IntToFloat
+                | OpKind::Bits
+                | OpKind::Float => 1,
+
+                OpKind::Add
+                | OpKind::Sub
+                | OpKind::Mul
+                | OpKind::Div
+                | OpKind::Min
+                | OpKind::Max
+                | OpKind::Atan2
+                | OpKind::Pow
+                | OpKind::Lt
+                | OpKind::Le
+                | OpKind::Gt
+                | OpKind::Ge
+                | OpKind::Eq
+                | OpKind::Ne
+                | OpKind::IAdd
+                | OpKind::Shl
+                | OpKind::Shr
+                | OpKind::BitAnd
+                | OpKind::BitOr
+                | OpKind::Dwrt
+                | OpKind::RawGather
+                | OpKind::Seq => 2,
+
+                OpKind::MulAdd | OpKind::If | OpKind::Gather => 3,
+
+                OpKind::Reduce => 1,
+            };
+            assert_eq!(op.arity(), want, "{op:?} arity mismatch");
+        }
+    }
+
+    #[test]
+    fn distinguish_leaf_arithmetic_memory_and_transcendental_costs() {
+        // Not exhaustive (unlike the predicates above): default_cost's price
+        // table is a design choice, not a closed algebraic property, so a few
+        // ops from each priced tier is enough to catch "the whole function
+        // got replaced by a constant" without freezing every literal in the
+        // table against future re-tuning.
+        assert_eq!(OpKind::Var.default_cost(), 0);
+        assert_eq!(OpKind::Neg.default_cost(), 1);
+        assert_eq!(OpKind::Add.default_cost(), 4);
+        assert_eq!(OpKind::Mul.default_cost(), 5);
+        assert_eq!(OpKind::Gather.default_cost(), 10);
+        assert_eq!(OpKind::Sin.default_cost(), 15);
+        assert_eq!(
+            OpKind::Dwrt.default_cost(),
+            1_000_000,
+            "Dwrt must outprice every real op so a surviving one is never preferred"
+        );
+    }
+}
+
+#[cfg(test)]
+mod from_name {
+    use super::OpKind;
+
+    #[test]
+    fn round_trip_every_ops_own_name_including_structural_ops() {
+        // `method_names::every_returned_name_resolves` only walks
+        // `known_method_names()`, which deliberately excludes every
+        // structural op (`method_names::excludes_every_structural_op`) — so
+        // those ops' `from_name` arms need their own coverage here.
+        for op in OpKind::all() {
+            assert_eq!(
+                OpKind::from_name(op.name()),
+                Some(op),
+                "{op:?}'s own name does not parse back to itself"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_the_powf_alias_for_pow() {
+        assert_eq!(OpKind::from_name("powf"), Some(OpKind::Pow));
+    }
+
+    #[test]
+    fn reject_an_unrecognized_name() {
+        assert_eq!(OpKind::from_name("not_a_real_op"), None);
     }
 }
 

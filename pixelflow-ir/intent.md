@@ -12,8 +12,9 @@ except for the process-global store a `Ref` names into.
   else may depend on how a node is stored.
 - The meaning of a fold (`Fold`: monoid, binder, range), of a constant
   (`Lit`: a real by its bits or a mask by its truth, never a lane whose bits
-  mean one or the other by convention), of the bitwise domain
-  (`is_bitwise_domain`), and of a name (`KernelKey`, `Ref`).
+  mean one or the other by convention), of a reinterpretation (`Bits`/`Float`:
+  the same bits read as the other sort, compiling to nothing), of the bitwise
+  domain (`is_bitwise_domain`), and of a name (`KernelKey`, `Ref`).
 - Composition: `Kernel::at` as substitution into `Var` leaves, `by_ref` and
   the linker. Composition substitutes and links; it never evaluates or
   optimizes.
@@ -64,10 +65,9 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   re-exported, so the arena is visible to consumers; `pixelflow-graphics`
   uses `pixelflow_ir` directly in `fonts/loop_blinn.rs` (`ExprArena`) and
   `render/packed.rs` (exprarena-on-dag Stage D, not started; D16).
-- A constant is typed (`Lit`), but a node is not: one `f32` lane is a real
-  and an integer by convention, and a computed mask is a lane like any other.
-  `Real`/`Int`/`Mask` on nodes and `Lit::Int` are ruled (kernels-evaluate-kernels
-  §2) and wait on T2–T3 of docs/language/2026-10-17-the-arena-is-typed.md.
+- A constant is typed (`Lit`), but a node is not: a lane is a real or an integer
+  by convention, a computed mask a lane like any other. Node sorts and `Lit::Int`
+  are ruled (kernels-evaluate-kernels §2) and wait on the arena-is-typed T3.
 - `Var(u8)` means an axis or a binder by range; `Fold`'s ends are `u32`,
   `Binder` a `u8`, against the 64-bit control-plane rule. The ends, read as a
   `KnownRange`, move into the node next (a-bound-is-a-value A2b).

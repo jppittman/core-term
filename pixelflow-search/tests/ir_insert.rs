@@ -65,6 +65,8 @@ fn templates_vocabulary_refuses_the_runtime_only_ops() {
         OpKind::IAdd,
         OpKind::Shl,
         OpKind::Shr,
+        OpKind::Bits,
+        OpKind::Float,
     ] {
         assert!(
             !Vocabulary::Templates.admits(kind),

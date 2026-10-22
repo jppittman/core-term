@@ -14,6 +14,9 @@ for (§4); that is the input of `select` (§10).
   that read it; a loop reads at its `Reduce` (`Own`).
 - Where a block goes: an `If`'s arms that own work, true arm first, go
   immediately before the `If`; values stay in construction order (`Layout`).
+- Which nodes define a value: a `Bits`/`Float` reinterpretation defines none
+  and takes no `ValueId` — lowering maps it to its operand, so no backend
+  meets it and it is zero instructions on every target (`lower.rs`).
 - A fold's range in the schedule: `ScheduledOp::Reduce` carries the
   `KnownRange` `arena_to_schedule` reads off the arena node, and selection
   reads that copy, never the `Fold` header.
