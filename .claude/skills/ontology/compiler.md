@@ -82,7 +82,8 @@
   programs"). Before extracting in a template, give template inputs a
   meaning of their own (B6).
 - **Lives:** the-language-is-kernel §1.1, §1.4, §1.7–§1.8, D9. Templates are
-  `Staged` and the `Param` holes of `pixelflow-compiler/src/{emit,lower}.rs`.
+  `Staged` (`pixelflow-compiler/src/emit/staged.rs`) and the `Param` holes of
+  `pixelflow-compiler/src/emit/arena.rs` and `pixelflow-compiler/src/lower/site.rs`.
 
 ### Pass, legalize, Optimize
 
