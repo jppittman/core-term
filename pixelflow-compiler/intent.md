@@ -37,9 +37,9 @@ that term to is an `Optimize` value, never a branch (§8).
 optimizer)` over `front_end`, the one pipeline (`parser::parse`, `sema::analyze`,
 `emit::emit_kernel`), in which every stage refuses with a `syn::Error` spanned
 at the construct (one exception: a block with no entry has no construct to
-span, and is refused at the invocation). Behind them: `parser.rs` (tokens to
+span, and is refused at the invocation). Behind them: `src/parser/` (tokens to
 the vocabulary, `src/ast/`, whose `KernelDef` is a sum of the closure and items
-spellings; its contract is `src/ast/mod.rs`, its intent `src/ast/intent.md`),
+spellings; each has its contract in its `mod.rs`, its intent in its `intent.md`),
 `sema.rs` (types, consts, call graph, binding times; scopes are the vocabulary's
 `Scopes`), `lower.rs` (AST to a term at a
 `Site`), `emit.rs` (arena to `TokenStream`; the private `Staged` site for a
@@ -54,8 +54,8 @@ kernel-taking entry). Only `pixelflow-graphics` uses it.
   `tests/rustc_is_the_oracle.rs`, `tests/optimized_agrees_with_raw.rs`,
   `tests/bake_vs_scalar_truth.rs`; `sema.rs` `every_advertised_method_compiles`.
 - Unit tests: `emit.rs` `an_optimizer_is_offered_only_entries_it_can_read`; `sema.rs`
-  `recursion_is_refused`; `parser.rs` `a_collection_spelled_any_way_is_refused_naming_its_sections`;
-  `src/tests/ast.rs` and `src/tests/parser.rs`, the vocabulary's and the operators', through `parse`.
+  `recursion_is_refused`; `src/tests/parser.rs`, the parser's fifty-four through `parse`,
+  `a_collection_spelled_any_way_is_refused_naming_its_sections` among them; `src/tests/ast.rs`, the vocabulary's.
 
 ## Behind
 - Sema's mask/scalar typing (`Ty::Bool` against `Ty::F32`) is the arena's job:

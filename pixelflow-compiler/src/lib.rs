@@ -7,7 +7,7 @@
 //! ```text
 //! Source (macro input)
 //!     │
-//!     ▼ Parser (parser.rs)
+//!     ▼ Parser (parser/)
 //! AST (ast/)
 //!     │
 //!     ▼ Semantic Analysis (sema.rs)

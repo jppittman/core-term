@@ -71,7 +71,7 @@
   derivative, the binder's choice and rename (`close_over`), or a range's
   bound (`Fold::admits`) (B5). Production kernels move onto `kernel!` (C1,
   D-c).
-- **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser.rs`, `sema.rs`,
+- **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser/`, `sema.rs`,
   `lower.rs`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
   `kernel_raw!`, `macro_tier()` and `DwrtFree` are still in `lib.rs`, and
   `kernel!` is `expand(input, &mut macro_tier())`: it saturates at expansion
