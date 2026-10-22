@@ -49,9 +49,9 @@ Rust type tree. Key properties:
 | `Kernel::dwrt` (`dx`, `dy`) | derivation | symbolic differentiation, resolved before emission |
 
 **Your job**: keep the basis minimal. `Fix` — iteration as a dimension — used to be here and
-is not: it could not be given a static extent, and the language's answer to iteration is
-unrolling at construction. If you propose a primitive, say what it denotes and why it cannot
-be an unrolled DAG.
+is not: it could not be given a bound fixed before the lattice is traversed, and the language's
+answer to iteration is the fold, which the e-graph may unroll and extraction may keep as a
+loop. If you propose a primitive, say what it denotes and why it cannot be a fold.
 
 ### Composition Laws
 

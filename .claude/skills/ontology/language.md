@@ -463,9 +463,9 @@
   `Scope::Fold` (`pixelflow-codegen/src/program/mod.rs`);
   `pixelflow-search/src/egraph/fold_rules.rs`. Decided in a-fold-is-a-node
   §2, §5, §6; a-surviving-reduce-is-a-loop; collapse-is-a-fold; one-pipeline
-  decisions. CLAUDE.md said "no iteration binder" until 2026-10-20 (stale
-  then, one-pipeline Appendix B); it now names the fold as the one binder and
-  forbids a bound that is a function of a coordinate.
+  decisions. CLAUDE.md said "no iteration binder" (stale, one-pipeline
+  Appendix B) until a-bound-is-a-value's A1; it now names the fold as the one
+  binder and forbids a bound that is a function of a coordinate.
 
 ### Monoid (SEQ)
 

@@ -100,10 +100,11 @@
 > might rename select if…"* And, on a draft that wrote the control points in
 > as constants: *"No, make the coordinates of the control points uniforms."*
 
-**Reversed 2026-10-20.** The relaxation this quote left room for is taken, and the atlas
-sentence is reversed: a count may have any variance but a coordinate's, and a font at a
-tile extent is one program ([a bound is a value](2026-10-20-a-bound-is-a-value.md),
-rulings 1, 3 and 6).
+**Reversed 2026-10-20.** The relaxation this quote left room for is ruled taken, and the
+atlas sentence is reversed ([a bound is a value](2026-10-20-a-bound-is-a-value.md), rulings
+1, 3 and 6): a count is to have any variance but a coordinate's (its A4), and a font at a
+tile extent is to be one program (its B2). Until then the quote's rule, constant ranges, is
+what the tree does.
 
 ---
 
@@ -327,8 +328,9 @@ So the language has none:
     `piece_term`: "The cut to the rows is an identity"), so that cut
     changes no bit.
   - **Reversed 2026-10-20** ([a bound is a value](2026-10-20-a-bound-is-a-value.md) B2):
-    a glyph becomes a call, and one program serves every piece count at a tile extent, so
-    nothing chooses a program by piece count.
+    at B2 a glyph becomes a call, one program serves every piece count at a tile extent, and
+    nothing chooses a program by piece count. Until then the worked example above is what the
+    tree does.
   - **Superseded (2026-10-09; §1.7's record):** the worked example as it
     stood here, a cell's glyph id one uniform and the font its glyphs under
     a balanced tree of `if id < k`, so that choosing a glyph took about
@@ -354,9 +356,9 @@ So the language has none:
 
 ### 1.7 A font at a zoom level is one program per piece count
 
-> **Reversed 2026-10-20** by [a bound is a value](2026-10-20-a-bound-is-a-value.md): a font
-> at a tile extent is one program, not one per piece count. `FontPrograms` goes at that
-> plan's B4. This section records what C1 built.
+> **Reversed 2026-10-20** by [a bound is a value](2026-10-20-a-bound-is-a-value.md): at its B2
+> a font at a tile extent becomes one program, not one per piece count, and `FontPrograms`
+> goes at its B4. Until then this section is what the tree does; it records what C1 built.
 
 ```rust
 kernel! {

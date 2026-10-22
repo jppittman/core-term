@@ -504,8 +504,10 @@ A5's deletion, which removes code #1427 only re-scopes.
   extent adds 7 programs and 0 saturations. `⌨` (DejaVu; Noto has none) is 262 pieces, 310
   defs, a 1.4 KiB frame.
 - **A1. Docs.** §5's rows marked A1, under the order above; the docs/README.md entry and
-  the BACKLOG plan-table row. Gate: `scripts/check-doc-paths.sh`. **Done** except the
-  the-language-is-kernel `:179`/`:186` rows (after #1431) and its D-table rows (after #1323).
+  the BACKLOG plan-table row. Gate: `scripts/check-doc-paths.sh`. **Done** except
+  the-language-is-kernel §1.3's `usize` row and its "how many instances the host composed"
+  sentence (§5's `:179`/`:186`, `:192`/`:199` after A1), after #1431, and its D-table rows,
+  after #1323.
 - **A2a. One reader of a fold's range.** `ExprArena::known_range(id)` and the e-graph's
   `known_range(class)`, implemented over today's header, become the only readers of a
   fold's range, and every consumer moves to them (`fold_rules.rs`, `arena.rs`,
