@@ -100,8 +100,9 @@ what `main` uses — and nothing is public only so a test can reach it: what
 a rule shows the model is read from the prompts a review sends, path
 scoping from the binary run at the repository root. Time is an injected
 `Clock`, so the limiters are tested without sleeping; `review` is tested
-with a scripted `Ask` and `Decide`; Jev is tested against a local server
-speaking its API.
+with a scripted `Ask` and `Decide`, and every prompt and schema it sends is
+held to a golden transcript; Jev is tested against a local server speaking its
+API.
 
 ## Rules — `rules/<id>.json`
 

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use super::identify::shape;
+use super::module::{omitted, shape};
 use super::{Diagnosis, Finding, Report, Root, Synthesis};
 use crate::agent::{Ask, Question};
 use crate::model::ModelLevel;
@@ -254,10 +254,7 @@ fn outlines(report: &Report) -> Result<String> {
     let mut left = MAX_SHAPE_LINES;
     for (component, paths) in modules {
         if left == 0 {
-            outlines.push_str(&format!(
-                "== {} == (omitted: over budget)\n",
-                component.display()
-            ));
+            outlines.push_str(&omitted(component));
             continue;
         }
         let (shape, used) = shape(component, paths.into_iter(), left)?;
