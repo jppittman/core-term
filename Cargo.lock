@@ -1665,7 +1665,6 @@ dependencies = [
 name = "pixelflow-compiler"
 version = "0.1.0"
 dependencies = [
- "pixelflow-codegen",
  "pixelflow-core",
  "pixelflow-ir",
  "pixelflow-search",

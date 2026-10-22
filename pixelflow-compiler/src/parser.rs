@@ -4,14 +4,14 @@
 //!
 //! ## Grammar
 //!
-//! A `kernel!` is a block of items, parsed by syn as a `File`; the closure
-//! form is sugar for a block with one entry. A body is parsed by syn as a Rust
+//! A `kernel!` is a block of items, parsed by syn as a `File`, or one closure
+//! entry. A body is parsed by syn as a Rust
 //! expression, so precedence and associativity are Rust's. Of that syntax,
 //! this is the kernel language — what every stage accepts:
 //!
 //! ```text
 //! kernel  ::= item*                          -- the items form
-//!           | '|' params '|' expr            -- sugar: one entry, its type inferred
+//!           | '|' params '|' expr            -- the closure form: one entry, its type inferred
 //! item    ::= VIS? 'struct' RECORD '{' (field (',' field)* ','?)? '}'
 //!                                            -- a record of `f32` fields
 //!           | VIS? 'const' IDENT ':' 'f32' '=' cexpr ';'
@@ -86,7 +86,7 @@
 //!
 //! VIS        -- `pub`, `pub(crate)`, …: a visibility, kept on the host item
 //! RECORD     -- the name of one of the block's records
-//! METHOD     -- an `OpKind` method, a `LIBRARY_METHODS` composition, or `clone`
+//! METHOD     -- an `OpKind` method, a `LibraryMethod` composition, or `clone`
 //! PROJECTION -- V, DX, DY, DXX, DXY, DYY
 //! KERNEL     -- a kernel-typed parameter in scope
 //! ```
@@ -143,7 +143,9 @@
 //! closure with a type annotation, a pattern, more than one
 //! parameter, a return type or a qualifier; type arguments on a method
 //! (`::<f32>` on `.sum` and `.product` excepted); an `as` to any type but
-//! `f32`; a path or a call from outside the block; `%` and `!` (no IR op);
+//! `f32`; a path or a call from outside the block; a method the language
+//! does not have, a known one at the wrong arity, and the `Kernel` methods
+//! `.at()`, `.constant()` and `.collapse()`; `%` and `!` (no IR op);
 //! a `let` whose pattern is neither a plain name nor a tuple of them (`mut`,
 //! `ref`, `@`, a record's pattern); a tuple `let` whose value is not a tuple
 //! of as many expressions, with a pattern within its pattern, a `_` or a
@@ -155,19 +157,16 @@
 //! Rust expression syntax, named in the refusal. Nothing is passed through
 //! for a later stage to refuse: the AST holds only what the language means.
 //!
-//! Parsed, and refused by `sema`: an unbound or retired name; a coordinate in
-//! a helper; a call to an entry or to an unknown function; recursion; an
-//! unknown method or a
-//! known one at the wrong arity; a type error (every expression is an `f32`
-//! or a `bool`; a `usize` is used only as `i as f32`; a record only by name);
+//! Parsed, and refused by `sema`: an unbound name, `Z` and `W` among them; a coordinate in
+//! a helper; a call to an entry or to an unknown function; recursion; a
+//! type error (every expression is an `f32` or a `bool`; a `usize` is used only as `i as f32`; a record only by name);
 //! a record's field that is not an `f32` (§1.3); a
 //! record returned, built, chosen by an `if`, or used in arithmetic or a
 //! comparison (Phase D, D7); an unknown field; an `as` of anything but a
 //! `usize` name; an integer an `f32` does not hold exactly where a value is
 //! expected; a `const` whose initializer is not a `cexpr` or an `iexpr`; a
 //! negated `usize`; a range whose bounds are not constant or that runs
-//! backwards; `.at()`,
-//! `.constant()`, `.collapse()`; a block with no final expression; an
+//! backwards; a block with no final expression; an
 //! `Args` record's name taken twice; a function type spelled any way but
 //! `impl Fn(f32, f32) -> f32`; a kernel used as anything but applied, with
 //! two `f32`s, or passed by name to a helper's kernel-typed parameter — in
@@ -175,11 +174,14 @@
 //! return, `as` (Phase D-a); a kernel passed on twice on one path, or used
 //! after it is passed on on that path, or passed on inside a fold's body —
 //! what rustc refuses of an `impl Fn` it moves (E0382, E0507); and a
-//! parameter, `let` or index named after a projection.
+//! parameter, `let` or index named after a projection; and a projection called
+//! with other than one argument (`type_of_call`: the parser leaves the name a
+//! call, so the refusal says what to rename).
 //!
-//! Refused by lowering, where the language meets the IR's widths: a range
+//! Refused by `sema`, where the language meets the IR's widths: a range
 //! bound past 2²⁴, the last integer bound a fold's index — an `f32` lane —
-//! names exactly, and folds nested deeper than the IR has binders. A range
+//! names exactly, and folds nested deeper than the IR has binders (lowering
+//! refuses the same depth where an inlined helper's fold adds to it). A range
 //! over a structural parameter is refused the same ways when its host
 //! function is instantiated, by rustc, in a `const` block.
 //!
@@ -191,22 +193,24 @@
 
 use crate::PLAN;
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ConstItem, Expr, FieldExpr, FnItem,
-    FoldExpr, FunctionType, IdentExpr, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr,
-    MethodCallExpr, Param, RangeExpr, RecordField, RecordItem, Reduction, Spelling, Stmt,
-    UnaryExpr, UnaryOp,
+    Arity, BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ClosureEntry, ConstItem, Expr,
+    FieldExpr, FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr,
+    Method, MethodCallExpr, Name, Param, ProjectExpr, Projection, RangeExpr, RecordField,
+    RecordItem, Reduction, Stmt, UnaryExpr, UnaryOp, arity_mismatch, is_f32, is_usize, same_name,
 };
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{Pat, Token, Type};
 
-/// The name of the closure sugar's one entry. It is never emitted: the
-/// closure form expands to an expression, not to a named function.
-const SUGAR_ENTRY: &str = "__kernel";
-
-/// Parse kernel input from token stream.
-pub fn parse(input: TokenStream) -> syn::Result<KernelDef> {
+/// Parse a `kernel!` invocation's tokens: the closure form or a block of
+/// items.
+///
+/// # Errors
+///
+/// A spanned `syn::Error` for syntax the language has no meaning for (the
+/// module doc lists them).
+pub(crate) fn parse(input: TokenStream) -> syn::Result<KernelDef> {
     syn::parse2(input)
 }
 
@@ -219,22 +223,16 @@ impl Parse for KernelDef {
     }
 }
 
-/// `|param: Type, ...| body`: sugar for a block with one entry, its return
-/// type inferred.
+/// `|param: Type, ...| body`: one entry, its return type inferred.
 fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
     input.parse::<Token![|]>()?;
 
     let mut params = Vec::new();
 
-    // Handle empty params: || body
     if !input.peek(Token![|]) {
-        // Parse parameter list manually
         loop {
-            // Parse identifier
             let ident: syn::Ident = input.parse()?;
-            // Parse colon
             input.parse::<Token![:]>()?;
-            // Parse type
             let ty: Type = input.parse()?;
             refuse_a_collection(&ty)?;
             refuse_a_kernel_in_a_closure(&ty)?;
@@ -244,10 +242,8 @@ fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
                 ty: Box::new(ty),
             });
 
-            // Check for comma or end of params
             if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
-                // Allow trailing comma before |
                 if input.peek(Token![|]) {
                     break;
                 }
@@ -259,25 +255,10 @@ fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
 
     input.parse::<Token![|]>()?;
 
-    // Parse the body expression
     let syn_expr: syn::Expr = input.parse()?;
-    let body = convert_expr(syn_expr)?;
+    let body = convert_expr(syn_expr, Nesting::ROOT)?;
 
-    let entry = FnItem {
-        attrs: Vec::new(),
-        vis: syn::Visibility::Public(Default::default()),
-        name: syn::Ident::new(SUGAR_ENTRY, Span::call_site()),
-        structural: Vec::new(),
-        params,
-        ret: None,
-        body,
-    };
-    Ok(KernelDef {
-        spelling: Spelling::Closure,
-        records: Vec::new(),
-        consts: Vec::new(),
-        fns: vec![entry],
-    })
+    Ok(KernelDef::Closure(ClosureEntry { params, body }))
 }
 
 /// The items form: records, `const`s and `fn`s, as a `syn::File`.
@@ -289,21 +270,20 @@ fn parse_items(input: ParseStream) -> syn::Result<KernelDef> {
             "an inner attribute has no meaning in a `kernel!` block",
         ));
     }
-    let mut def = KernelDef {
-        spelling: Spelling::Items,
-        records: Vec::new(),
-        consts: Vec::new(),
-        fns: Vec::new(),
-    };
+    let (mut records, mut consts, mut fns) = (Vec::new(), Vec::new(), Vec::new());
     for item in file.items {
         match item {
-            syn::Item::Struct(item) => def.records.push(convert_record(item)?),
-            syn::Item::Const(item) => def.consts.push(convert_const(item)?),
-            syn::Item::Fn(item) => def.fns.push(convert_fn(item)?),
+            syn::Item::Struct(item) => records.push(convert_record(item)?),
+            syn::Item::Const(item) => consts.push(convert_const(item)?),
+            syn::Item::Fn(item) => fns.push(convert_fn(item)?),
             other => return Err(refuse_item(&other)),
         }
     }
-    Ok(def)
+    Ok(KernelDef::Items {
+        records,
+        consts,
+        fns,
+    })
 }
 
 /// An item that is not a record, a `const` or a `fn`, named by its kind.
@@ -346,12 +326,7 @@ fn convert_record(item: syn::ItemStruct) -> syn::Result<RecordItem> {
             ),
         ));
     }
-    if let Some(where_clause) = &item.generics.where_clause {
-        return Err(syn::Error::new_spanned(
-            where_clause,
-            "a `where` clause on a record: there are no generics to bound",
-        ));
-    }
+    refuse_where_clause(&item.generics, "a record")?;
     let named = match item.fields {
         syn::Fields::Named(named) => named,
         syn::Fields::Unnamed(unnamed) => {
@@ -410,7 +385,7 @@ fn convert_const(item: syn::ItemConst) -> syn::Result<ConstItem> {
         vis: item.vis,
         name: item.ident,
         ty: *item.ty,
-        init: convert_expr(*item.expr)?,
+        init: convert_expr(*item.expr, Nesting::ROOT)?,
     })
 }
 
@@ -485,8 +460,8 @@ fn convert_fn(item: syn::ItemFn) -> syn::Result<FnItem> {
         name: sig.ident,
         structural,
         params,
-        ret: Some(ret),
-        body: Expr::Block(convert_block(*item.block)?),
+        ret,
+        body: Expr::Block(convert_block(*item.block, Nesting::ROOT)?),
     })
 }
 
@@ -495,13 +470,10 @@ fn convert_fn(item: syn::ItemFn) -> syn::Result<FnItem> {
 /// default and a `where` clause are refused: the language's one value bound
 /// when its program is compiled is a count.
 fn structural_parameters(generics: &syn::Generics) -> syn::Result<Vec<syn::Ident>> {
-    if let Some(where_clause) = &generics.where_clause {
-        return Err(syn::Error::new_spanned(
-            where_clause,
-            "a `where` clause in a `kernel!` block: a structural parameter is a `usize`, and \
-             there is nothing to bound",
-        ));
-    }
+    refuse_where_clause(
+        generics,
+        "an entry (its structural parameters are `usize`s)",
+    )?;
     let mut structural = Vec::with_capacity(generics.params.len());
     for param in &generics.params {
         let syn::GenericParam::Const(count) = param else {
@@ -619,14 +591,15 @@ fn refuse_a_kernel_in_a_closure(ty: &Type) -> syn::Result<()> {
 }
 
 /// A parameter typed as a collection — an array `[R; N]` or a slice `[R]`,
-/// through references and parentheses — is refused where it is written: the
-/// language has none.
+/// through references, parentheses and a macro's invisible group — is refused
+/// where it is written: the language has none.
 fn refuse_a_collection(ty: &Type) -> syn::Result<()> {
     fn names_a_collection(ty: &Type) -> bool {
         match ty {
             Type::Array(_) | Type::Slice(_) => true,
             Type::Reference(reference) => names_a_collection(&reference.elem),
             Type::Paren(inner) => names_a_collection(&inner.elem),
+            Type::Group(inner) => names_a_collection(&inner.elem),
             _ => false,
         }
     }
@@ -709,155 +682,205 @@ fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
             ),
         ));
     }
-    if let Some(where_clause) = &generics.where_clause {
-        return Err(syn::Error::new_spanned(
-            where_clause,
-            "a `where` clause in a `kernel!` block: there are no generics to bound",
-        ));
+    refuse_where_clause(generics, "a `const` or a helper")
+}
+
+/// The one refusal of a `where` clause, on whatever `what` is: with no
+/// generics to bound, a clause has nothing to say.
+fn refuse_where_clause(generics: &syn::Generics, what: &str) -> syn::Result<()> {
+    match &generics.where_clause {
+        Some(where_clause) => Err(syn::Error::new_spanned(
+            // An empty clause prints no tokens, so spanning the clause would
+            // fall back to the whole invocation; the keyword is always there.
+            where_clause.where_token,
+            format!("a `where` clause on {what}: there are no generics to bound"),
+        )),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// The deepest an expression may nest: a body of `MAX_NESTING` terms in a
+/// chain (`a + b + …`, `x.f().g()…`, a long `else if`) converts, one more is
+/// refused. Every level costs the stack of [`convert_expr`] and its arm, and
+/// then of `sema` and lowering below it, which walk no deeper an AST than
+/// this one.
+///
+/// Measured in a dev build of `kernel_raw!` on rustc's 8 MiB thread stack,
+/// the whole pipeline overflows at about 2,058 terms of a sum, 1,736 of a
+/// method chain, 2,219 of unary minus and 1,836 of an `else if` chain. The
+/// bound is half the smallest (868) rounded to a power of two, 1,024: the
+/// stack keeps a margin of 1.7x over the worst shape, for a host whose frames
+/// are somewhat larger. A host with a smaller stack than rustc's default can
+/// still overflow; that is not a bound this crate can set.
+///
+/// The bound covers only the shapes `syn` parses flat (a sum, a
+/// method chain, `as`, a field, `else if`, and a run of prefix operators,
+/// `----X`), which arrive here whole. It does **not** cover a nested
+/// delimiter: `syn` recurses by itself on one before this parser sees a node,
+/// and it overflows well below `MAX_NESTING`. Measured on `syn::parse2::<Expr>`
+/// alone, in a dev build on rustc's 8 MiB thread stack, tokens built
+/// iteratively so no `from_str` recursion is involved: `if c { if c { … } … }`
+/// holds to about 400 levels, `{{…}}` to about 480, `-(-(…))` to about 590,
+/// `f(f(…))` and `X.max(X.max(…))` to about 650, `((…))` to about 770, while a
+/// run of prefix operators holds to about 2,390. So a program nested 500 to
+/// 800 deep in a delimiter still crashes the compiler with no diagnostic, and
+/// no bound in this crate can reach it: a refusal there needs a token pre-scan
+/// that restates `syn`'s grammar, or a stack the compiler does not own.
+const MAX_NESTING: usize = 1024;
+
+/// How deep in a body's expression the conversion is: the depth of the
+/// `convert_expr` that is running, handed down by value so a level that is
+/// finished takes its count with it.
+#[derive(Clone, Copy)]
+struct Nesting(usize);
+
+impl Nesting {
+    /// Outside every expression.
+    const ROOT: Self = Self(0);
+
+    /// One level below this, or the refusal of an expression past
+    /// [`MAX_NESTING`].
+    fn deeper(self, expr: &syn::Expr) -> syn::Result<Self> {
+        match self.0 < MAX_NESTING {
+            true => Ok(Self(self.0 + 1)),
+            false => Err(refuse_nesting(expr)),
+        }
+    }
+}
+
+/// The refusal of an expression nested past [`MAX_NESTING`]. Cold, and
+/// pointed at the node's own head token ([`head_span`]): the refused
+/// expression is the whole unconverted rest of the chain, and the span of a
+/// subtree is a recursive walk of all of it, which overflows rustc's stack on
+/// a chain far enough past the bound.
+#[cold]
+#[inline(never)]
+fn refuse_nesting(expr: &syn::Expr) -> syn::Error {
+    syn::Error::new(
+        head_span(expr),
+        format!(
+            "expression nested deeper than {MAX_NESTING}\n\
+             \n\
+             note: each level of a body's nesting is a level of the compiler's own stack\n\
+             help: bind the parts with `let`, or move one into a helper `fn`"
+        ),
+    )
+}
+
+/// The span of the token that makes `expr` the shape it is (its operator,
+/// method name, keyword or delimiter), in constant time. Never `Spanned::span`
+/// of the node, which walks every descendant.
+fn head_span(expr: &syn::Expr) -> Span {
+    match expr {
+        syn::Expr::Binary(binary) => binary.op.span(),
+        syn::Expr::Unary(unary) => unary.op.span(),
+        syn::Expr::MethodCall(method) => method.method.span(),
+        syn::Expr::Call(call) => call.paren_token.span.join(),
+        syn::Expr::If(expr_if) => expr_if.if_token.span,
+        syn::Expr::Paren(paren) => paren.paren_token.span.join(),
+        syn::Expr::Field(field) => field.member.span(),
+        syn::Expr::Cast(cast) => cast.as_token.span,
+        syn::Expr::Block(block) => block.block.brace_token.span.join(),
+        _ => Span::call_site(),
+    }
 }
 
 /// Convert syn::Expr to our AST Expr.
-fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
+///
+/// Only a dispatcher: this is the function every nesting level of a body
+/// recurses through, so what a level costs is this frame plus its arm's, and
+/// each arm is a function of its own with its own temporaries. A refusal's
+/// text is built in [`refuse_expression`], off the recursive path.
+fn convert_expr(expr: syn::Expr, nesting: Nesting) -> syn::Result<Expr> {
+    let nesting = nesting.deeper(&expr)?;
     match expr {
-        syn::Expr::Path(expr_path) => {
-            // Simple identifier: X, cx, etc.
-            if expr_path.path.segments.len() == 1 && expr_path.qself.is_none() {
-                let segment = &expr_path.path.segments[0];
-                if segment.arguments.is_empty() {
-                    return Ok(Expr::Ident(IdentExpr {
-                        name: segment.ident.clone(),
-                        span: segment.ident.span(),
-                    }));
-                }
-            }
-            // A qualified path names something outside the block.
-            Err(syn::Error::new_spanned(
-                &expr_path,
-                format!(
-                    "a path in a kernel body: `{}`\n\
-                     \n\
-                     note: a kernel body sees X, Y (in an entry), its parameters, the block's \
-                     `const`s, and the `let` bindings in scope; a name from the enclosing Rust \
-                     scope is not captured\n\
-                     help: declare the value as a `const` of this block, or as a parameter of \
-                     this kernel",
-                    quote::quote!(#expr_path)
-                ),
-            ))
+        syn::Expr::Path(expr_path) => convert_path(expr_path),
+        syn::Expr::Lit(expr_lit) => convert_lit(expr_lit),
+        syn::Expr::Binary(expr_binary) => convert_binary(expr_binary, nesting),
+        syn::Expr::Unary(expr_unary) => convert_unary(expr_unary, nesting),
+        syn::Expr::MethodCall(expr_method) => convert_method_call(expr_method, nesting),
+        syn::Expr::Call(expr_call) => convert_call(expr_call, nesting),
+        syn::Expr::If(expr_if) => convert_if(expr_if, nesting),
+        syn::Expr::Paren(expr_paren) => convert_paren(expr_paren, nesting),
+        syn::Expr::Field(expr_field) => convert_field(expr_field, nesting),
+        syn::Expr::Cast(expr_cast) => convert_cast(expr_cast, nesting),
+        syn::Expr::Block(expr_block) => convert_labeled_block(expr_block, nesting),
+        refused => Err(refuse_expression(&refused)),
+    }
+}
+
+/// A name: `X`, `cx`. A path of any other shape names something outside the
+/// block.
+fn convert_path(expr_path: syn::ExprPath) -> syn::Result<Expr> {
+    if expr_path.path.segments.len() == 1 && expr_path.qself.is_none() {
+        let segment = &expr_path.path.segments[0];
+        if segment.arguments.is_empty() {
+            return Ok(Expr::Ident(segment.ident.clone()));
         }
+    }
+    Err(syn::Error::new_spanned(
+        &expr_path,
+        format!(
+            "a path in a kernel body: `{}`\n\
+             \n\
+             note: a kernel body sees X, Y (in an entry), its parameters, the block's \
+             `const`s, and the `let` bindings in scope; a name from the enclosing Rust \
+             scope is not captured\n\
+             help: declare the value as a `const` of this block, or as a parameter of \
+             this kernel",
+            quote::quote!(#expr_path)
+        ),
+    ))
+}
 
-        syn::Expr::Lit(expr_lit) => Ok(Expr::Literal(LiteralExpr {
-            value: literal_value(&expr_lit.lit)?,
-            span: expr_lit.lit.span(),
-        })),
+fn convert_lit(expr_lit: syn::ExprLit) -> syn::Result<Expr> {
+    Ok(Expr::Literal(LiteralExpr {
+        value: literal_value(&expr_lit.lit)?,
+        span: expr_lit.lit.span(),
+    }))
+}
 
-        syn::Expr::Binary(expr_binary) => {
-            let op = binary_op(&expr_binary.op)?;
-            let span = expr_binary.op.span();
-            let lhs = convert_expr(*expr_binary.left)?;
-            let rhs = convert_expr(*expr_binary.right)?;
-            Ok(Expr::Binary(BinaryExpr {
-                op,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-                span,
-            }))
-        }
+fn convert_binary(expr_binary: syn::ExprBinary, nesting: Nesting) -> syn::Result<Expr> {
+    let op = binary_op(&expr_binary.op)?;
+    let span = expr_binary.op.span();
+    let lhs = convert_expr(*expr_binary.left, nesting)?;
+    let rhs = convert_expr(*expr_binary.right, nesting)?;
+    Ok(Expr::Binary(BinaryExpr {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span,
+    }))
+}
 
-        syn::Expr::Unary(expr_unary) => {
-            let op = unary_op(&expr_unary.op)?;
-            let span = expr_unary.op.span();
-            let operand = convert_expr(*expr_unary.expr)?;
-            Ok(Expr::Unary(UnaryExpr {
-                op,
-                operand: Box::new(operand),
-                span,
-            }))
-        }
+fn convert_unary(expr_unary: syn::ExprUnary, nesting: Nesting) -> syn::Result<Expr> {
+    let op = unary_op(&expr_unary.op)?;
+    let span = expr_unary.op.span();
+    let operand = convert_expr(*expr_unary.expr, nesting)?;
+    Ok(Expr::Unary(UnaryExpr {
+        op,
+        operand: Box::new(operand),
+        span,
+    }))
+}
 
-        syn::Expr::MethodCall(expr_method) => {
-            if let Some(range) = a_range(&expr_method.receiver) {
-                return convert_range_method(range, &expr_method);
-            }
-            if let Some((range, map)) = a_mapped_range(&expr_method.receiver) {
-                return convert_fold_terminal(range, map, &expr_method);
-            }
-            // Built before the receiver is converted, returned after it: the
-            // receiver's own refusal, the innermost, comes first, as rustc's
-            // does (`(0..4).rev().map(…)` is about `.rev`).
-            let collection = a_collection_iterated(&expr_method);
-            if let Some(arguments) = &expr_method.turbofish {
-                return Err(syn::Error::new_spanned(
-                    arguments,
-                    "type arguments on a method in a kernel body\n\
-                     \n\
-                     note: every value in a kernel body is an `f32` or a `bool`; no method is \
-                     generic",
-                ));
-            }
-            let receiver = convert_expr(*expr_method.receiver)?;
-            if let Some(refusal) = collection {
-                return Err(refusal);
-            }
-            let args = expr_method
-                .args
-                .into_iter()
-                .map(convert_expr)
-                .collect::<syn::Result<Vec<_>>>()?;
-            Ok(Expr::MethodCall(MethodCallExpr {
-                receiver: Box::new(receiver),
-                span: expr_method.method.span(),
-                method: expr_method.method,
-                args,
-            }))
-        }
+fn convert_paren(expr_paren: syn::ExprParen, nesting: Nesting) -> syn::Result<Expr> {
+    let inner = convert_expr(*expr_paren.expr, nesting)?;
+    Ok(Expr::Paren(Box::new(inner)))
+}
 
-        syn::Expr::Call(expr_call) => {
-            // Free function call: V(m), DX(expr), a helper, etc.
-            // Extract the function name from the callee
-            if let syn::Expr::Path(ref path) = *expr_call.func {
-                if path.path.segments.len() == 1 && path.qself.is_none() {
-                    let func = path.path.segments[0].ident.clone();
-                    let args = expr_call
-                        .args
-                        .into_iter()
-                        .map(convert_expr)
-                        .collect::<syn::Result<Vec<_>>>()?;
-                    return Ok(Expr::Call(CallExpr {
-                        span: func.span(),
-                        func,
-                        args,
-                    }));
-                }
-            }
-            // A qualified callee names something outside the block.
-            Err(syn::Error::new_spanned(
-                &expr_call.func,
-                format!(
-                    "a qualified call in a kernel body: `{}`\n\
-                     \n\
-                     note: a body calls the block's helpers (private `fn`s) and the \
-                     projections V, DX, DY, DXX, DXY, DYY, by name; an operation on a value is \
-                     a method, `x.sqrt()`",
-                    quote::quote!(#expr_call)
-                ),
-            ))
-        }
-
-        syn::Expr::If(expr_if) => convert_if(expr_if),
-
-        syn::Expr::Paren(expr_paren) => {
-            let inner = convert_expr(*expr_paren.expr)?;
-            Ok(Expr::Paren(Box::new(inner)))
-        }
-
+/// The refusal of an expression the language has no form for, naming what it
+/// found. Cold and never inlined: a `format!` in [`convert_expr`] would put
+/// its temporaries in the frame of every level of every body.
+#[cold]
+#[inline(never)]
+fn refuse_expression(expr: &syn::Expr) -> syn::Error {
+    match expr {
         // A value with parts, built in a body. A record enters a kernel as a
         // parameter and is read by field; a tuple is taken apart where it is
         // written, by a `let` (D7's front half), and a tuple or a record
         // built as a value — passed, returned, chosen — is Phase D (D7).
-        syn::Expr::Tuple(expr_tuple) => Err(syn::Error::new(
+        syn::Expr::Tuple(expr_tuple) => syn::Error::new(
             expr_tuple.paren_token.span.join(),
             format!(
                 "a tuple in a kernel body\n\
@@ -867,23 +890,23 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                  note: a tuple as a value — passed, returned or chosen — is Phase D (D7 of \
                  {PLAN})"
             ),
-        )),
+        ),
 
         // There are no collection types (§1.3, §1.6): nothing is read by
         // index, a slice is a range of indices, and nothing builds an array.
-        syn::Expr::Index(expr_index) => Err(no_collection_types(
-            &expr_index,
+        syn::Expr::Index(expr_index) => no_collection_types(
+            expr_index,
             "indexing",
             "a value is an `f32` or a `bool` and a record is read by field, `p.x0`; nothing \
              is read by index, and a slice is a range of indices",
-        )),
-        syn::Expr::Array(_) | syn::Expr::Repeat(_) => Err(no_collection_types(
-            &expr,
+        ),
+        syn::Expr::Array(_) | syn::Expr::Repeat(_) => no_collection_types(
+            expr,
             "an array",
             "several values are several parameters, or several `let`s",
-        )),
+        ),
 
-        syn::Expr::Struct(expr_struct) => Err(syn::Error::new_spanned(
+        syn::Expr::Struct(expr_struct) => syn::Error::new_spanned(
             &expr_struct.path,
             format!(
                 "a record literal in a kernel body\n\
@@ -892,30 +915,21 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                  body reads its fields, `p.x0`\n\
                  note: building a record, and returning one, are Phase D (D7 of {PLAN})"
             ),
-        )),
+        ),
 
-        syn::Expr::Field(expr_field) => convert_field(expr_field),
-
-        syn::Expr::Range(expr_range) => Err(syn::Error::new_spanned(
+        syn::Expr::Range(expr_range) => syn::Error::new_spanned(
             expr_range,
             format!(
                 "a range in a kernel body\n\
                  \n\
                  note: a range is the domain of a fold: {FOLD_SPELLINGS}"
             ),
-        )),
-
-        syn::Expr::Cast(expr_cast) => convert_cast(expr_cast),
-
-        syn::Expr::Block(expr_block) => {
-            let block = convert_block(expr_block.block)?;
-            Ok(Expr::Block(block))
-        }
+        ),
 
         // Iteration with state has no denotation in a DAG. A bounded
         // reduction is a fold over a constant range.
         syn::Expr::Loop(_) | syn::Expr::While(_) | syn::Expr::ForLoop(_) => {
-            Err(syn::Error::new_spanned(
+            syn::Error::new_spanned(
                 expr,
                 format!(
                     "a loop in a kernel body\n\
@@ -923,24 +937,24 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                      note: the language is a DAG: nothing iterates with state\n\
                      note: a bounded reduction over a constant range is a fold: {FOLD_SPELLINGS}"
                 ),
-            ))
+            )
         }
 
-        syn::Expr::Assign(_) => Err(syn::Error::new_spanned(
+        syn::Expr::Assign(_) => syn::Error::new_spanned(
             expr,
             "assignment in a kernel body\n\
              \n\
              note: a kernel body binds a name once, with `let`; nothing is mutable",
-        )),
+        ),
 
-        syn::Expr::Return(_) => Err(syn::Error::new_spanned(
+        syn::Expr::Return(_) => syn::Error::new_spanned(
             expr,
             "`return` in a kernel body\n\
              \n\
              note: a body is an expression; its value is its final expression",
-        )),
+        ),
 
-        syn::Expr::Closure(_) => Err(syn::Error::new_spanned(
+        syn::Expr::Closure(_) => syn::Error::new_spanned(
             expr,
             format!(
                 "a closure in a kernel body\n\
@@ -951,24 +965,24 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                  `k(x, y)` (Phase D-a of {PLAN}); a private `fn` in the block is a helper, \
                  called by name"
             ),
-        )),
+        ),
 
         // `syn::Expr` is `#[non_exhaustive]`, so the arm stays; it refuses at
         // the token, naming the syntax, and nothing is passed through.
-        other => Err(syn::Error::new_spanned(
-            &other,
+        other => syn::Error::new_spanned(
+            other,
             format!(
                 "unsupported expression in a kernel body: `{}`",
                 quote::quote!(#other)
             ),
-        )),
+        ),
     }
 }
 
 /// `p.x0`: a named field. Which record `p` is, and whether it has the field,
 /// are `sema`'s questions. A tuple's field, `p.0`, is refused: a record's
 /// fields have names.
-fn convert_field(expr_field: syn::ExprField) -> syn::Result<Expr> {
+fn convert_field(expr_field: syn::ExprField, nesting: Nesting) -> syn::Result<Expr> {
     let member = match expr_field.member {
         syn::Member::Named(member) => member,
         syn::Member::Unnamed(index) => {
@@ -985,8 +999,7 @@ fn convert_field(expr_field: syn::ExprField) -> syn::Result<Expr> {
         }
     };
     Ok(Expr::Field(FieldExpr {
-        base: Box::new(convert_expr(*expr_field.base)?),
-        span: member.span(),
+        base: Box::new(convert_expr(*expr_field.base, nesting)?),
         member,
     }))
 }
@@ -994,7 +1007,7 @@ fn convert_field(expr_field: syn::ExprField) -> syn::Result<Expr> {
 /// `if c { a } else { b }`, and `else if` chains. The `else` is required —
 /// there is no unit for an `if` without one to be — and `if let` is not a
 /// choice between two values.
-fn convert_if(expr_if: syn::ExprIf) -> syn::Result<Expr> {
+fn convert_if(expr_if: syn::ExprIf, nesting: Nesting) -> syn::Result<Expr> {
     let span = expr_if.if_token.span;
     if let syn::Expr::Let(pattern) = *expr_if.cond {
         return Err(syn::Error::new_spanned(
@@ -1013,15 +1026,188 @@ fn convert_if(expr_if: syn::ExprIf) -> syn::Result<Expr> {
              body has no unit for the missing arm to be",
         ));
     };
-    let cond = convert_expr(*expr_if.cond)?;
-    let then_branch = convert_block(expr_if.then_branch)?;
-    let else_branch = convert_expr(*else_expr)?;
+    let cond = convert_expr(*expr_if.cond, nesting)?;
+    let then_branch = convert_block(expr_if.then_branch, nesting)?;
+    let else_branch = convert_expr(*else_expr, nesting)?;
     Ok(Expr::If(IfExpr {
         cond: Box::new(cond),
         then_branch,
         else_branch: Box::new(else_branch),
         span,
     }))
+}
+
+/// `receiver.method(args)`: a fold's terminal, a method of the language, or
+/// a refusal of any other name.
+fn convert_method_call(
+    mut expr_method: syn::ExprMethodCall,
+    nesting: Nesting,
+) -> syn::Result<Expr> {
+    if let Some(range) = take_range(&mut expr_method.receiver) {
+        return convert_range_method(range, MethodTail::take(&mut expr_method), nesting);
+    }
+    if let Some(mapped) = take_mapped_range(&mut expr_method.receiver) {
+        return convert_fold_terminal(mapped, MethodTail::take(&mut expr_method), nesting);
+    }
+    // Built before the receiver is converted, returned after it: the
+    // receiver's own refusal, the innermost, comes first, as rustc's
+    // does (`(0..4).rev().map(…)` is about `.rev`).
+    let collection = a_collection_iterated(&expr_method);
+    if let Some(arguments) = &expr_method.turbofish {
+        return Err(syn::Error::new_spanned(
+            arguments,
+            "type arguments on a method in a kernel body\n\
+             \n\
+             note: every value in a kernel body is an `f32` or a `bool`; no method is \
+             generic",
+        ));
+    }
+    let receiver = convert_expr(*expr_method.receiver, nesting)?;
+    if let Some(refusal) = collection {
+        return Err(refusal);
+    }
+    let args = expr_method
+        .args
+        .into_iter()
+        .map(|arg| convert_expr(arg, nesting))
+        .collect::<syn::Result<Vec<_>>>()?;
+    let method = resolve_method(&expr_method.method, args.len())?;
+    Ok(Expr::MethodCall(MethodCallExpr {
+        receiver: Box::new(receiver),
+        name: expr_method.method,
+        method,
+        args,
+    }))
+}
+
+/// Methods of `Kernel`, not of the language: a body composes by applying a
+/// kernel-typed parameter, `k(x, y)`, and the host composes `Kernel` values.
+const RETIRED_METHODS: [&str; 3] = ["at", "constant", "collapse"];
+
+/// Maximum per-character difference for a same-length method name to be
+/// suggested as a typo fix (e.g. `sqrtt` -> `sqrt`).
+const MAX_TYPO_CHAR_DIFF: usize = 2;
+
+/// What `name` denotes called with `arity` arguments, or the refusal of it:
+/// the one place a method's spelling is read.
+fn resolve_method(name: &syn::Ident, arity: usize) -> syn::Result<Method> {
+    let text = Name::of(name).to_string();
+    if RETIRED_METHODS.contains(&text.as_str()) {
+        return Err(syn::Error::new(
+            name.span(),
+            format!(
+                "`.{text}()` inside a kernel body sampled a manifold-typed \
+                 parameter, and there are none\n\
+                 help: compose `Kernel` values instead: `Kernel::at` is the warp"
+            ),
+        ));
+    }
+    Method::resolve(&text, arity).ok_or_else(|| unknown_method(name, arity))
+}
+
+/// The refusal of a method name nothing advertises, or of a known one at
+/// the wrong arity.
+fn unknown_method(name: &syn::Ident, arity: usize) -> syn::Error {
+    let text = Name::of(name).to_string();
+
+    // A recognized name at the wrong arity is not an unknown name: the typo
+    // search below would find the very name just declared unknown
+    // (`unknown method 'sqrt'; did you mean 'sqrt'?`). Say which arity the
+    // name takes.
+    if let Some((_, want)) = Method::advertised().find(|(known, _)| *known == text) {
+        return arity_mismatch(name.span(), &text, Arity { want, got: arity });
+    }
+
+    let suggestion = Method::advertised().map(|(known, _)| known).find(|known| {
+        known.to_lowercase() == text.to_lowercase()
+            || (known.len() == text.len()
+                && known
+                    .chars()
+                    .zip(text.chars())
+                    .filter(|(a, b)| a != b)
+                    .count()
+                    <= MAX_TYPO_CHAR_DIFF)
+    });
+
+    let msg = match suggestion {
+        Some(similar) => format!(
+            "unknown method '{text}'\n\
+             help: did you mean '{similar}'?"
+        ),
+        None => format!(
+            "unknown method '{text}'\n\
+             note: common methods: sqrt, abs, sin, cos, exp, min, max, clone\n\
+             help: see Kernel's method surface for what is available"
+        ),
+    };
+
+    syn::Error::new(name.span(), msg)
+}
+
+/// A free call by a single name: a projection, resolved here, or a helper or
+/// a kernel, which only `sema` can tell apart (it takes the scope).
+fn convert_call(expr_call: syn::ExprCall, nesting: Nesting) -> syn::Result<Expr> {
+    let syn::Expr::Path(ref path) = *expr_call.func else {
+        return Err(refuse_a_qualified_call(&expr_call));
+    };
+    if path.path.segments.len() != 1 || path.qself.is_some() {
+        return Err(refuse_a_qualified_call(&expr_call));
+    }
+    let segment = &path.path.segments[0];
+    if !segment.arguments.is_empty() {
+        return Err(refuse_type_arguments_on_a_call(segment));
+    }
+    let func = segment.ident.clone();
+    let args = expr_call
+        .args
+        .into_iter()
+        .map(|arg| convert_expr(arg, nesting))
+        .collect::<syn::Result<Vec<_>>>()?;
+    // A projection takes one argument. At any other arity the name stays a
+    // call, so `sema` refuses it after the binding checks: a kernel parameter
+    // named `DX` and applied at two coordinates is a binding named after a
+    // projection, and that refusal says what to rename.
+    let Some(projection) = Projection::from_name(&Name::of(&func)) else {
+        return Ok(Expr::Call(CallExpr { func, args }));
+    };
+    Ok(match <[Expr; 1]>::try_from(args) {
+        Ok([arg]) => Expr::Project(ProjectExpr {
+            projection,
+            arg: Box::new(arg),
+            span: func.span(),
+        }),
+        Err(args) => Expr::Call(CallExpr { func, args }),
+    })
+}
+
+/// A call names its callee and nothing else: the types of a helper are its
+/// signature's.
+fn refuse_type_arguments_on_a_call(segment: &syn::PathSegment) -> syn::Error {
+    syn::Error::new_spanned(
+        &segment.arguments,
+        format!(
+            "type arguments on a call in a kernel body: `{}`\n\
+             \n\
+             note: a helper's parameter and return types are written once, in its \
+             `fn` signature; a call passes its arguments and names no type",
+            quote::quote!(#segment)
+        ),
+    )
+}
+
+/// A qualified callee names something outside the block.
+fn refuse_a_qualified_call(expr_call: &syn::ExprCall) -> syn::Error {
+    syn::Error::new_spanned(
+        &expr_call.func,
+        format!(
+            "a qualified call in a kernel body: `{}`\n\
+             \n\
+             note: a body calls the block's helpers (private `fn`s) and the \
+             projections V, DX, DY, DXX, DXY, DYY, by name; an operation on a value is \
+             a method, `x.sqrt()`",
+            quote::quote!(#expr_call)
+        ),
+    )
 }
 
 // ─────────────────────────────── folds ───────────────────────────────
@@ -1039,37 +1225,113 @@ const FOLD_MONOIDS: [(Reduction, [&str; 2], [&str; 2]); 2] = [
     (Reduction::Max, ["f32", "NEG_INFINITY"], ["f32", "max"]),
 ];
 
+/// A method call apart from its receiver: all a fold reads of the call
+/// itself, owned so the closure that is its body moves rather than copies.
+struct MethodTail {
+    method: syn::Ident,
+    turbofish: Option<syn::AngleBracketedGenericArguments>,
+    args: syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
+}
+
+impl MethodTail {
+    /// The call's method, type arguments and arguments, moved out of it; the
+    /// call is read no further, since a fold's receiver is a range.
+    fn take(call: &mut syn::ExprMethodCall) -> Self {
+        Self {
+            method: call.method.clone(),
+            turbofish: call.turbofish.take(),
+            args: std::mem::take(&mut call.args),
+        }
+    }
+}
+
 /// The range a method is called on, through its parentheses: the `(a..b)`
-/// of `(a..b).any(…)`.
-fn a_range(receiver: &syn::Expr) -> Option<&syn::ExprRange> {
+/// of `(a..b).any(…)`. Taken out of the receiver, which is left without it;
+/// any other receiver is untouched.
+fn take_range(receiver: &mut syn::Expr) -> Option<syn::ExprRange> {
     match receiver {
-        syn::Expr::Paren(paren) => a_range(&paren.expr),
-        syn::Expr::Range(range) => Some(range),
+        syn::Expr::Paren(paren) => take_range(&mut paren.expr),
+        syn::Expr::Range(range) => Some(syn::ExprRange {
+            attrs: std::mem::take(&mut range.attrs),
+            start: range.start.take(),
+            limits: range.limits,
+            end: range.end.take(),
+        }),
         _ => None,
     }
 }
 
 /// `(a..b).map(f)`: the range and the `map` call a fold's terminal method is
 /// called on.
-fn a_mapped_range(receiver: &syn::Expr) -> Option<(&syn::ExprRange, &syn::ExprMethodCall)> {
+struct MappedRange {
+    range: syn::ExprRange,
+    map: MethodTail,
+}
+
+/// A [`MappedRange`], taken out of the receiver as [`take_range`] does.
+fn take_mapped_range(receiver: &mut syn::Expr) -> Option<MappedRange> {
     let syn::Expr::MethodCall(map) = receiver else {
         return None;
     };
-    if map.method != "map" {
+    if RangeMethod::of(&map.method) != Some(RangeMethod::Map) {
         return None;
     }
-    Some((a_range(&map.receiver)?, map))
+    let range = take_range(&mut map.receiver)?;
+    Some(MappedRange {
+        range,
+        map: MethodTail::take(map),
+    })
 }
 
-/// The methods that iterate: a fold's `.map`, `.any` and `.all`.
-const ITERATING_METHODS: [&str; 3] = ["map", "any", "all"];
+/// The methods that iterate, by name: a fold's `.map`, `.any` and `.all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeMethod {
+    /// `.map(|i| e)`: an iterator, which a terminal method ends.
+    Map,
+    /// `.any(|i| m)`: a fold by itself.
+    Any,
+    /// `.all(|i| m)`: a fold by itself.
+    All,
+}
+
+impl RangeMethod {
+    /// The one reading of an iterating method's name.
+    fn of(method: &syn::Ident) -> Option<Self> {
+        match Name::of(method).to_string().as_str() {
+            "map" => Some(Self::Map),
+            "any" => Some(Self::Any),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+/// The method that ends `(a..b).map(|i| e)`, by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FoldTerminal {
+    Sum,
+    Product,
+    Fold,
+}
+
+impl FoldTerminal {
+    /// The one reading of a terminal method's name.
+    fn of(method: &syn::Ident) -> Option<Self> {
+        match Name::of(method).to_string().as_str() {
+            "sum" => Some(Self::Sum),
+            "product" => Some(Self::Product),
+            "fold" => Some(Self::Fold),
+            _ => None,
+        }
+    }
+}
 
 /// The methods that make a collection something to iterate: an array's or a
 /// slice's, by value or by reference.
 const COLLECTION_METHODS: [&str; 2] = ["into_iter", "iter"];
 
 /// The refusal of a collection iterated: one of [`COLLECTION_METHODS`], or
-/// one of [`ITERATING_METHODS`] with a closure called on anything but a
+/// one of [`RangeMethod`]'s `map`, `any` and `all` with a closure called on anything but a
 /// range — and not a closure out of place, which the closure's own refusal
 /// would say. The one iteration is a fold, and it ranges over integers.
 fn a_collection_iterated(call: &syn::ExprMethodCall) -> Option<syn::Error> {
@@ -1080,9 +1342,7 @@ fn a_collection_iterated(call: &syn::ExprMethodCall) -> Option<syn::Error> {
             &format!("the one iteration is a fold, over a range: {FOLD_SPELLINGS}"),
         ));
     }
-    if !ITERATING_METHODS.iter().any(|name| call.method == name) {
-        return None;
-    }
+    RangeMethod::of(&call.method)?;
     if !call
         .args
         .iter()
@@ -1107,13 +1367,17 @@ const TUPLE_LET: &str = "`let (a, b) = (e1, e2);` binds each name to its express
 
 /// A method called on a range itself: `.any(|i| m)` and `.all(|i| m)` are
 /// folds, and nothing else is a value.
-fn convert_range_method(range: &syn::ExprRange, call: &syn::ExprMethodCall) -> syn::Result<Expr> {
-    let reduction = match call.method.to_string().as_str() {
-        "any" => Reduction::Any,
-        "all" => Reduction::All,
-        "map" => {
+fn convert_range_method(
+    range: syn::ExprRange,
+    call: MethodTail,
+    nesting: Nesting,
+) -> syn::Result<Expr> {
+    let reduction = match RangeMethod::of(&call.method) {
+        Some(RangeMethod::Any) => Reduction::Any,
+        Some(RangeMethod::All) => Reduction::All,
+        Some(RangeMethod::Map) => {
             return Err(syn::Error::new_spanned(
-                call,
+                &call.method,
                 format!(
                     "a mapped range is an iterator, not a value\n\
                      \n\
@@ -1121,55 +1385,58 @@ fn convert_range_method(range: &syn::ExprRange, call: &syn::ExprMethodCall) -> s
                 ),
             ));
         }
-        other => {
+        None => {
             return Err(syn::Error::new(
                 call.method.span(),
                 format!(
-                    "`.{other}` on a range\n\
+                    "`.{}` on a range\n\
                      \n\
-                     note: a range is the domain of a fold: {FOLD_SPELLINGS}"
+                     note: a range is the domain of a fold: {FOLD_SPELLINGS}",
+                    call.method
                 ),
             ));
         }
     };
-    refuse_turbofish(call)?;
-    let (binder, body) = the_closure(call)?;
+    refuse_turbofish(&call)?;
+    let span = call.method.span();
+    let (binder, body) = the_closure(call, nesting)?;
     Ok(Expr::Fold(FoldExpr {
         reduction,
-        range: convert_range(range)?,
+        range: convert_range(range, nesting)?,
         binder,
         body: Box::new(body),
-        span: call.method.span(),
+        span,
     }))
 }
 
 /// The method that ends `(a..b).map(|i| e)`: the reduction the fold combines
 /// its terms under.
 fn convert_fold_terminal(
-    range: &syn::ExprRange,
-    map: &syn::ExprMethodCall,
-    call: &syn::ExprMethodCall,
+    MappedRange { range, map }: MappedRange,
+    call: MethodTail,
+    nesting: Nesting,
 ) -> syn::Result<Expr> {
-    let reduction = match call.method.to_string().as_str() {
-        "sum" => sum_or_product(call, Reduction::Sum)?,
-        "product" => sum_or_product(call, Reduction::Product)?,
-        "fold" => fold_monoid(call)?,
-        other => {
+    let reduction = match FoldTerminal::of(&call.method) {
+        Some(FoldTerminal::Sum) => sum_or_product(&call, Reduction::Sum)?,
+        Some(FoldTerminal::Product) => sum_or_product(&call, Reduction::Product)?,
+        Some(FoldTerminal::Fold) => fold_monoid(&call)?,
+        None => {
             return Err(syn::Error::new(
                 call.method.span(),
                 format!(
-                    "`.{other}` does not end a fold\n\
+                    "`.{}` does not end a fold\n\
                      \n\
-                     note: a fold is spelled {FOLD_SPELLINGS}"
+                     note: a fold is spelled {FOLD_SPELLINGS}",
+                    call.method
                 ),
             ));
         }
     };
-    refuse_turbofish(map)?;
-    let (binder, body) = the_closure(map)?;
+    refuse_turbofish(&map)?;
+    let (binder, body) = the_closure(map, nesting)?;
     Ok(Expr::Fold(FoldExpr {
         reduction,
-        range: convert_range(range)?,
+        range: convert_range(range, nesting)?,
         binder,
         body: Box::new(body),
         span: call.method.span(),
@@ -1179,7 +1446,7 @@ fn convert_fold_terminal(
 /// `.sum()` and `.product()` take no arguments, and a type argument only if
 /// it is the one type the terms have: `.sum::<f32>()`, which rustc needs
 /// wherever nothing else says what the sum is.
-fn sum_or_product(call: &syn::ExprMethodCall, reduction: Reduction) -> syn::Result<Reduction> {
+fn sum_or_product(call: &MethodTail, reduction: Reduction) -> syn::Result<Reduction> {
     if let Some(arguments) = &call.turbofish {
         let names_f32 = match arguments.args.iter().collect::<Vec<_>>().as_slice() {
             [syn::GenericArgument::Type(ty)] => is_f32(ty),
@@ -1207,21 +1474,10 @@ fn sum_or_product(call: &syn::ExprMethodCall, reduction: Reduction) -> syn::Resu
     Ok(reduction)
 }
 
-/// Whether `ty` is exactly `f32`: the one type a fold's terms, and the one
-/// conversion's target, may name.
-fn is_f32(ty: &Type) -> bool {
-    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("f32"))
-}
-
-/// Whether `ty` is exactly `usize`: the one type a structural parameter has.
-fn is_usize(ty: &Type) -> bool {
-    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("usize"))
-}
-
 /// `operand as f32`. The conversion's target is always `f32`, so any other
 /// is refused here and the AST does not hold one; what may be converted — a
 /// `usize`, by name — is `sema`'s question, since it needs the name's type.
-fn convert_cast(expr_cast: syn::ExprCast) -> syn::Result<Expr> {
+fn convert_cast(expr_cast: syn::ExprCast, nesting: Nesting) -> syn::Result<Expr> {
     if !is_f32(&expr_cast.ty) {
         return Err(syn::Error::new_spanned(
             &expr_cast.ty,
@@ -1234,13 +1490,13 @@ fn convert_cast(expr_cast: syn::ExprCast) -> syn::Result<Expr> {
     }
     Ok(Expr::Cast(CastExpr {
         span: expr_cast.as_token.span,
-        operand: Box::new(convert_expr(*expr_cast.expr)?),
+        operand: Box::new(convert_expr(*expr_cast.expr, nesting)?),
     }))
 }
 
 /// `.fold(identity, operation)` names a monoid only as one of
 /// [`FOLD_MONOIDS`]; any other `.fold` is refused, naming them.
-fn fold_monoid(call: &syn::ExprMethodCall) -> syn::Result<Reduction> {
+fn fold_monoid(call: &MethodTail) -> syn::Result<Reduction> {
     refuse_turbofish(call)?;
     let refusal = || {
         syn::Error::new(
@@ -1281,7 +1537,7 @@ fn is_path(expr: &syn::Expr, segments: &[&str; 2]) -> bool {
 }
 
 /// A method of a fold that takes no type argument.
-fn refuse_turbofish(call: &syn::ExprMethodCall) -> syn::Result<()> {
+fn refuse_turbofish(call: &MethodTail) -> syn::Result<()> {
     match &call.turbofish {
         Some(arguments) => Err(syn::Error::new_spanned(
             arguments,
@@ -1296,8 +1552,9 @@ fn refuse_turbofish(call: &syn::ExprMethodCall) -> syn::Result<()> {
 
 /// The one argument of a fold's `.map`, `.any` or `.all`: a closure whose
 /// parameter is the fold's index and whose body is the fold's body.
-fn the_closure(call: &syn::ExprMethodCall) -> syn::Result<(syn::Ident, Expr)> {
-    let [syn::Expr::Closure(closure)] = call.args.iter().collect::<Vec<_>>()[..] else {
+fn the_closure(call: MethodTail, nesting: Nesting) -> syn::Result<(syn::Ident, Expr)> {
+    let args = call.args.into_iter().collect::<Vec<_>>();
+    let Ok([syn::Expr::Closure(closure)]) = <[syn::Expr; 1]>::try_from(args) else {
         return Err(syn::Error::new(
             call.method.span(),
             format!(
@@ -1332,7 +1589,9 @@ fn the_closure(call: &syn::ExprMethodCall) -> syn::Result<(syn::Ident, Expr)> {
     }
     let [param] = closure.inputs.iter().collect::<Vec<_>>()[..] else {
         return Err(syn::Error::new_spanned(
-            &closure.inputs,
+            // `|| body` has no parameter tokens to span: the opening bar is
+            // the closure's first token that always exists.
+            closure.or1_token,
             "a fold's closure takes one parameter, the index it ranges over",
         ));
     };
@@ -1351,12 +1610,12 @@ fn the_closure(call: &syn::ExprMethodCall) -> syn::Result<(syn::Ident, Expr)> {
             ));
         }
     };
-    Ok((binder, convert_expr((*closure.body).clone())?))
+    Ok((binder, convert_expr(*closure.body, nesting)?))
 }
 
 /// `a..b`: both bounds, half-open. Whether they are constant, and run
 /// forwards, is `sema`'s question: it evaluates them.
-fn convert_range(range: &syn::ExprRange) -> syn::Result<RangeExpr> {
+fn convert_range(range: syn::ExprRange, nesting: Nesting) -> syn::Result<RangeExpr> {
     if let syn::RangeLimits::Closed(dots) = &range.limits {
         return Err(syn::Error::new_spanned(
             dots,
@@ -1365,17 +1624,23 @@ fn convert_range(range: &syn::ExprRange) -> syn::Result<RangeExpr> {
              help: write the end one past the last index",
         ));
     }
-    let (Some(lo), Some(hi)) = (&range.start, &range.end) else {
-        return Err(syn::Error::new_spanned(
-            range,
+    let span = range.limits.span();
+    match (range.start, range.end) {
+        (Some(lo), Some(hi)) => Ok(RangeExpr {
+            lo: Box::new(convert_expr(*lo, nesting)?),
+            hi: Box::new(convert_expr(*hi, nesting)?),
+            span,
+        }),
+        (start, end) => Err(syn::Error::new_spanned(
+            syn::ExprRange {
+                attrs: range.attrs,
+                start,
+                limits: range.limits,
+                end,
+            },
             "a fold's range names both of its bounds: `a..b`",
-        ));
-    };
-    Ok(RangeExpr {
-        lo: Box::new(convert_expr((**lo).clone())?),
-        hi: Box::new(convert_expr((**hi).clone())?),
-        span: range.limits.span(),
-    })
+        )),
+    }
 }
 
 /// A binary operator, or the refusal that names it. `%` has no IR op, and a
@@ -1416,7 +1681,7 @@ fn binary_op(op: &syn::BinOp) -> syn::Result<BinaryOp> {
     Err(syn::Error::new_spanned(op, message))
 }
 
-/// A unary operator, or the refusal that names it. `!` has no IR op yet.
+/// A unary operator, or the refusal that names it. `!` has no IR op.
 fn unary_op(op: &syn::UnOp) -> syn::Result<UnaryOp> {
     if let Some(op) = UnaryOp::from_syn(op) {
         return Ok(op);
@@ -1437,22 +1702,37 @@ fn unary_op(op: &syn::UnOp) -> syn::Result<UnaryOp> {
     Err(syn::Error::new_spanned(op, message))
 }
 
+/// A `{ .. }` in expression position. A block is a value, so a label has
+/// nothing to jump to.
+fn convert_labeled_block(expr_block: syn::ExprBlock, nesting: Nesting) -> syn::Result<Expr> {
+    match expr_block.label {
+        Some(label) => Err(syn::Error::new_spanned(
+            label,
+            "a block label in a kernel body\n\
+             \n\
+             note: a block is a value, the last expression in it; there is no `break` \
+             to name it, so a label has no use",
+        )),
+        None => convert_block(expr_block.block, nesting).map(Expr::Block),
+    }
+}
+
 /// Convert a syn::Block to our BlockExpr.
-fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
+fn convert_block(block: syn::Block, nesting: Nesting) -> syn::Result<BlockExpr> {
     let span = block.brace_token.span.join();
-    let mut stmts = Vec::with_capacity(block.stmts.len());
+    let count = block.stmts.len();
+    let mut stmts = Vec::with_capacity(count);
     let mut final_expr = None;
 
-    for (i, stmt) in block.stmts.iter().enumerate() {
-        let is_last = i == block.stmts.len() - 1;
+    for (i, stmt) in block.stmts.into_iter().enumerate() {
+        let is_last = i + 1 == count;
 
         match stmt {
-            syn::Stmt::Local(local) => stmts.push(convert_let(local)?),
+            syn::Stmt::Local(local) => stmts.push(convert_let(local, nesting)?),
 
             syn::Stmt::Expr(expr, semi) => {
-                let converted = convert_expr(expr.clone())?;
+                let converted = convert_expr(expr, nesting)?;
                 if is_last && semi.is_none() {
-                    // Final expression without semicolon - this is the block's value
                     final_expr = Some(Box::new(converted));
                 } else {
                     stmts.push(Stmt::Expr(converted));
@@ -1498,12 +1778,12 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
 
 /// A `let`: a plain name bound to its expression, or `let (a, b) = (e1,
 /// e2);`, each name bound to its own expression (D7's front half).
-fn convert_let(local: &syn::Local) -> syn::Result<Stmt> {
+fn convert_let(local: syn::Local, nesting: Nesting) -> syn::Result<Stmt> {
     let (pattern, annotation) = match &local.pat {
         Pat::Type(pat_type) => (&*pat_type.pat, Some(&*pat_type.ty)),
         pattern => (pattern, None),
     };
-    let init = local.init.as_ref().ok_or_else(|| {
+    let init = local.init.ok_or_else(|| {
         syn::Error::new_spanned(
             &local.pat,
             "let binding must have an initializer\n\
@@ -1512,9 +1792,9 @@ fn convert_let(local: &syn::Local) -> syn::Result<Stmt> {
              help:   let dx = X - cx;",
         )
     })?;
-    // The `else` branch used to be dropped unread. It could never run — a
-    // plain name always matches, and so does a tuple of them — so accepting
-    // it would compile a branch nobody can reach, silently.
+    // A plain name always matches, and so does a tuple of them, so an `else`
+    // branch could never run: accepting one would compile a branch nobody
+    // can reach, silently.
     if let Some((else_token, _)) = &init.diverge {
         return Err(syn::Error::new_spanned(
             else_token,
@@ -1526,19 +1806,34 @@ fn convert_let(local: &syn::Local) -> syn::Result<Stmt> {
              help: remove the `else` branch",
         ));
     }
-    match pattern {
-        Pat::Ident(pat_ident) => {
-            let name = plain_name(pat_ident, &local.pat)?;
-            Ok(Stmt::Let(Box::new(LetStmt {
-                span: name.span(),
-                name,
-                ty: annotation.cloned(),
-                init: convert_expr((*init.expr).clone())?,
-            })))
-        }
-        Pat::Tuple(names) => convert_let_tuple(names, annotation, &init.expr),
-        pattern => Err(refuse_let_pattern(pattern)),
-    }
+    let bindings = match pattern {
+        Pat::Ident(pat_ident) => vec![Binding {
+            name: plain_name(pat_ident, &local.pat)?,
+            ty: annotation.cloned(),
+            value: *init.expr,
+        }],
+        Pat::Tuple(names) => tuple_let(names, annotation, *init.expr)?,
+        pattern => return Err(refuse_let_pattern(pattern)),
+    };
+    bindings
+        .into_iter()
+        .map(|binding| {
+            Ok(LetStmt {
+                name: binding.name,
+                ty: binding.ty,
+                init: convert_expr(binding.value, nesting)?,
+            })
+        })
+        .collect::<syn::Result<Vec<_>>>()
+        .map(Stmt::Let)
+}
+
+/// A name a `let` binds, with the annotation and the expression it is bound
+/// to, before the expression is converted.
+struct Binding {
+    name: syn::Ident,
+    ty: Option<Type>,
+    value: syn::Expr,
 }
 
 /// `let (a, b) = (e1, e2);`: plain names, as many as the tuple of
@@ -1546,11 +1841,11 @@ fn convert_let(local: &syn::Local) -> syn::Result<Stmt> {
 /// taken apart where it is written and nowhere else, so nothing of it is
 /// left to be a value (D7's front half); a pattern within the pattern, a
 /// `_`, and a value that is not a tuple of expressions are refused.
-fn convert_let_tuple(
+fn tuple_let(
     pattern: &syn::PatTuple,
     annotation: Option<&Type>,
-    init: &syn::Expr,
-) -> syn::Result<Stmt> {
+    mut init: syn::Expr,
+) -> syn::Result<Vec<Binding>> {
     let mut names: Vec<syn::Ident> = Vec::with_capacity(pattern.elems.len());
     for element in &pattern.elems {
         let name = match element {
@@ -1578,7 +1873,7 @@ fn convert_let_tuple(
             }
             other => return Err(refuse_let_pattern(other)),
         };
-        if names.contains(&name) {
+        if names.iter().any(|bound| same_name(bound, &name)) {
             return Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -1598,31 +1893,29 @@ fn convert_let_tuple(
              note: a kernel body has no unit value to take apart",
         ));
     }
-    let values = match tuple_expression(init) {
-        Some(values) => values,
-        None => {
-            return Err(syn::Error::new_spanned(
-                init,
-                format!(
-                    "the value of a tuple `let` is a tuple of expressions, `(e1, e2)`\n\
-                     \n\
-                     note: a tuple is taken apart where it is written; a tuple computed — \
-                     returned, passed or chosen — is a tuple value, which is Phase D (D7 of \
-                     {PLAN})"
-                ),
-            ));
-        }
-    };
-    if values.len() != names.len() {
+    let Some(tuple) = tuple_expression(&mut init) else {
         return Err(syn::Error::new_spanned(
-            init,
+            &init,
+            format!(
+                "the value of a tuple `let` is a tuple of expressions, `(e1, e2)`\n\
+                 \n\
+                 note: a tuple is taken apart where it is written; a tuple computed — \
+                 returned, passed or chosen — is a tuple value, which is Phase D (D7 of \
+                 {PLAN})"
+            ),
+        ));
+    };
+    if tuple.elems.len() != names.len() {
+        let found = tuple.elems.len();
+        return Err(syn::Error::new_spanned(
+            &init,
             format!(
                 "mismatched types: expected a tuple with {} elements, found one with {} \
                  elements\n\
                  \n\
                  note: `let ({}) = …` binds each name to one expression of the tuple",
                 names.len(),
-                values.len(),
+                found,
                 names
                     .iter()
                     .map(ToString::to_string)
@@ -1631,25 +1924,22 @@ fn convert_let_tuple(
             ),
         ));
     }
+    let values = std::mem::take(&mut tuple.elems);
     let types = element_types(annotation, names.len())?;
-    let mut lets = Vec::with_capacity(names.len());
-    for ((name, value), ty) in names.into_iter().zip(values).zip(types) {
-        lets.push(LetStmt {
-            span: name.span(),
-            name,
-            ty,
-            init: convert_expr(value.clone())?,
-        });
-    }
-    Ok(Stmt::LetTuple(lets))
+    Ok(names
+        .into_iter()
+        .zip(values)
+        .zip(types)
+        .map(|((name, value), ty)| Binding { name, ty, value })
+        .collect())
 }
 
-/// The expressions of a tuple, through parentheses, or `None` for anything
+/// The tuple an expression is, through parentheses, or `None` for anything
 /// else.
-fn tuple_expression(expr: &syn::Expr) -> Option<Vec<&syn::Expr>> {
+fn tuple_expression(expr: &mut syn::Expr) -> Option<&mut syn::ExprTuple> {
     match expr {
-        syn::Expr::Paren(paren) => tuple_expression(&paren.expr),
-        syn::Expr::Tuple(tuple) => Some(tuple.elems.iter().collect()),
+        syn::Expr::Paren(paren) => tuple_expression(&mut paren.expr),
+        syn::Expr::Tuple(tuple) => Some(tuple),
         _ => None,
     }
 }
@@ -1715,10 +2005,10 @@ fn literal_value(lit: &syn::Lit) -> syn::Result<Literal> {
 /// A float literal rounds once, to the nearest `f32` — the value rustc gives
 /// the same literal.
 ///
-/// It used to be parsed as `f64` and then cast, which rounds twice, and the
-/// two disagree wherever the `f64` lands exactly on the midpoint between two
-/// `f32`s and the cast breaks the tie to even: `1.00000005960464477539062500001`
-/// is `1 + 2⁻²³` rounded once and `1.0` rounded twice.
+/// Parsing through `f64` first would round twice, and the two disagree
+/// wherever the `f64` lands exactly on the midpoint between two `f32`s and
+/// the cast breaks the tie to even: `1.00000005960464477539062500001` is
+/// `1 + 2⁻²³` rounded once and `1.0` rounded twice.
 fn float_value(float: &syn::LitFloat) -> syn::Result<f32> {
     refuse_a_foreign_suffix(float.suffix(), float)?;
     rounded_once(float.base10_digits(), float)
@@ -1819,50 +2109,24 @@ mod tests {
     use quote::quote;
 
     /// The closure sugar's one entry.
-    fn entry(def: &KernelDef) -> &FnItem {
-        assert_eq!(def.spelling, Spelling::Closure);
-        assert_eq!(def.fns.len(), 1);
-        &def.fns[0]
+    fn entry(def: &KernelDef) -> &ClosureEntry {
+        let KernelDef::Closure(entry) = def else {
+            panic!("the closure form parses to a closure entry");
+        };
+        entry
     }
 
     #[test]
-    fn parse_simple_kernel() {
+    fn the_closure_sugar_is_one_entry_with_an_inferred_return_type() {
         let input = quote! { |r: f32| X * X + Y * Y - r };
         let kernel = parse(input).unwrap();
         let entry = entry(&kernel);
         assert_eq!(entry.params.len(), 1);
         assert_eq!(entry.params[0].name.to_string(), "r");
-        assert_eq!(entry.role(), Role::Entry);
-        assert!(entry.ret.is_none(), "the sugar's type is inferred");
     }
 
     #[test]
-    fn parse_empty_params() {
-        let input = quote! { || X * X + Y * Y };
-        let kernel = parse(input).unwrap();
-        assert_eq!(entry(&kernel).params.len(), 0);
-    }
-
-    #[test]
-    fn parse_multiple_params() {
-        let input = quote! { |cx: f32, cy: f32, r: f32| X - cx };
-        let kernel = parse(input).unwrap();
-        assert_eq!(entry(&kernel).params.len(), 3);
-    }
-
-    #[test]
-    fn parse_method_call() {
-        let input = quote! { |r: f32| (X * X + Y * Y).sqrt() - r };
-        let kernel = parse(input).unwrap();
-        // Should successfully parse the .sqrt() method call
-        match &entry(&kernel).body {
-            Expr::Binary(_) => {} // Expected: sqrt() - r
-            _ => panic!("expected binary expression"),
-        }
-    }
-
-    #[test]
-    fn parse_block_expr() {
+    fn a_block_body_parses_its_lets_and_final_expression() {
         let input = quote! {
             |cx: f32, cy: f32| {
                 let dx = X - cx;
@@ -1883,7 +2147,7 @@ mod tests {
     /// A parameter's declared type is kept for `sema` to check; the parser
     /// does not judge it.
     #[test]
-    fn parse_scalar_params_keep_their_declared_types() {
+    fn a_parameter_keeps_the_type_it_was_declared_with() {
         let input = quote! { |cx: f32, m: bool| X * cx };
         let kernel = parse(input).unwrap();
         let entry = entry(&kernel);
@@ -1918,8 +2182,7 @@ mod tests {
     /// naming §1.3, since a record is read by field; a tuple as a value and
     /// a tuple's field naming Phase D (D7), since a tuple is taken apart
     /// where it is written and so is never one; a record literal naming
-    /// Phase D (D7). (They named B3 until the tuple `let` came, which is
-    /// `a_tuple_let_binds_each_name_to_its_expression`.)
+    /// Phase D (D7).
     #[test]
     fn a_record_pattern_a_tuple_value_and_a_record_literal_are_refused_naming_their_phase() {
         let cases: [(TokenStream, &str, &str); 4] = [
@@ -1993,8 +2256,9 @@ mod tests {
         }
     }
 
+    /// A `let`'s annotation is kept beside its name, for `sema` to check.
     #[test]
-    fn parse_let_with_type_annotation_extracts_both_name_and_type() {
+    fn a_let_keeps_its_name_and_its_type_annotation() {
         let input = quote! {
             || {
                 let dx: f32 = X;
@@ -2006,7 +2270,8 @@ mod tests {
             Expr::Block(block) => {
                 assert_eq!(block.stmts.len(), 1);
                 match &block.stmts[0] {
-                    Stmt::Let(let_stmt) => {
+                    Stmt::Let(lets) => {
+                        let let_stmt = &lets[0];
                         assert_eq!(let_stmt.name.to_string(), "dx");
                         let ty = let_stmt.ty.as_ref().expect("expected a type annotation");
                         if let Type::Path(type_path) = ty {
@@ -2172,31 +2437,78 @@ mod tests {
         }
     }
 
+    /// Runs `work` on a thread with `stack` bytes, so that a test of the bound
+    /// cannot take the test process down with it.
+    fn on_a_stack<T: Send + 'static>(stack: usize, work: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(stack)
+            .spawn(work)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    /// Every chain shape the parser converts level by level while `syn`
+    /// parses it flat: `terms` deep exactly, in a closure body.
+    fn chains(terms: usize) -> [(&'static str, String); 4] {
+        [
+            ("a sum", vec!["X"; terms].join(" + ")),
+            ("a method chain", format!("X{}", ".abs()".repeat(terms - 1))),
+            ("a field chain", format!("X{}", ".x".repeat(terms - 1))),
+            (
+                "an else-if chain",
+                format!("{}{{ 1.0 }}", "if X < 1.0 { 1.0 } else ".repeat(terms - 1)),
+            ),
+        ]
+    }
+
+    fn parse_body(body: &str) -> Result<(), String> {
+        let input: TokenStream = format!("|| {body}").parse().unwrap();
+        parse(input).map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// A macro that generates a body writes a long left-leaning sum, and the
+    /// parser recurses once per term, so what a term costs in stack is how
+    /// long a body can be. The bound's whole claim is that a body at it
+    /// parses on rustc's own 8 MiB thread stack, so this runs on exactly
+    /// that one: a frame that grows past the bound's margin (1.7x) aborts
+    /// here rather than in a user's build.
+    #[test]
+    fn a_chain_at_the_bound_parses_within_a_compiler_threads_stack() {
+        const RUSTC_THREAD_STACK: usize = 8 * 1024 * 1024;
+        for (shape, body) in chains(MAX_NESTING - 1) {
+            let parsed = on_a_stack(RUSTC_THREAD_STACK, move || parse_body(&body));
+            assert_eq!(parsed, Ok(()), "{shape}");
+        }
+    }
+
+    /// Past the bound the program is refused where it is, not crashed, and
+    /// the refusal costs the same however far past: it runs on rustc's own
+    /// stack, 20 times the bound out (`syn`'s own recursive parse and drop of
+    /// a chain overflow at about 25 times in a dev build, which this crate
+    /// cannot hold), because a refusal that walks the remaining chain (a span
+    /// of the whole subtree did) overflows there while the same test on a
+    /// larger stack passes.
+    #[test]
+    fn a_chain_past_the_bound_is_refused_not_a_crash() {
+        const RUSTC_THREAD_STACK: usize = 8 * 1024 * 1024;
+        for terms in [MAX_NESTING + 1, MAX_NESTING * 20] {
+            for (shape, body) in chains(terms) {
+                let refused = on_a_stack(RUSTC_THREAD_STACK, move || parse_body(&body));
+                let message = refused.expect_err(shape);
+                assert!(
+                    message.contains(&format!("nested deeper than {MAX_NESTING}")),
+                    "{shape}, {terms} terms: {message}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_literal_that_is_not_a_number_is_refused() {
         for other in [quote!(true), quote!("text"), quote!('c')] {
             let err = literal(other).expect_err("not a number");
             assert!(err.contains("only numeric literals"), "got: {err}");
-        }
-    }
-
-    #[test]
-    fn parse_block_body_with_a_scalar_param() {
-        let input = quote! {
-            |x: f32| {
-                let a = X + x;
-                a
-            }
-        };
-        let kernel = parse(input).unwrap();
-        assert_eq!(entry(&kernel).params.len(), 1);
-
-        match &entry(&kernel).body {
-            Expr::Block(block) => {
-                assert_eq!(block.stmts.len(), 1, "expected 1 let statement");
-                assert!(block.expr.is_some(), "expected final expression");
-            }
-            other => panic!("expected block expression, got {other:?}"),
         }
     }
 
@@ -2213,16 +2525,15 @@ mod tests {
             pub fn circle(cx: f32) -> f32 { sq(X - cx) - R }
         };
         let def = parse(input).unwrap();
-        assert_eq!(def.spelling, Spelling::Items);
-        assert_eq!(def.consts.len(), 2);
-        assert!(matches!(def.consts[0].vis, syn::Visibility::Inherited));
-        assert!(matches!(def.consts[1].vis, syn::Visibility::Public(_)));
-        assert_eq!(def.fns.len(), 2);
-        assert_eq!(def.fns[0].role(), Role::Helper);
-        assert_eq!(def.fns[0].attrs.len(), 1, "the doc comment is kept");
-        assert_eq!(def.fns[1].role(), Role::Entry);
-        assert_eq!(def.fns[1].params.len(), 1);
-        assert!(def.fns[1].ret.is_some(), "the return type is declared");
+        assert!(matches!(def, KernelDef::Items { .. }));
+        assert_eq!(def.consts().len(), 2);
+        assert!(matches!(def.consts()[0].vis, syn::Visibility::Inherited));
+        assert!(matches!(def.consts()[1].vis, syn::Visibility::Public(_)));
+        assert_eq!(def.fns().len(), 2);
+        assert_eq!(def.fns()[0].role(), Role::Helper);
+        assert_eq!(def.fns()[0].attrs.len(), 1, "the doc comment is kept");
+        assert_eq!(def.fns()[1].role(), Role::Entry);
+        assert_eq!(def.fns()[1].params.len(), 1);
     }
 
     /// `if c { a } else { b }` and an `else if` chain parse as the choice.
@@ -2269,6 +2580,61 @@ mod tests {
         }
     }
 
+    /// What the parser would otherwise drop is refused: a turbofish on a call
+    /// (`convert_path` refuses one on a name) and a block's label.
+    #[test]
+    fn a_turbofish_on_a_call_and_a_block_label_are_refused_rather_than_dropped() {
+        let cases: [(TokenStream, &str); 2] = [
+            (
+                quote! { fn h(a: f32) -> f32 { a } pub fn f() -> f32 { h::<u8>(X) } },
+                "type arguments on a call",
+            ),
+            (quote! { || 'l: { X } }, "a block label"),
+        ];
+        for (input, expected) in cases {
+            let err = refusal(input);
+            assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+        }
+    }
+
+    /// An empty `where` and a parameterless fold closure print no tokens, so a
+    /// refusal spanned at the clause or at the parameter list would carry the
+    /// whole invocation's span. These are refused at the `where` keyword and
+    /// at the closure's opening bar. The span itself is not observable here:
+    /// proc-macro2 outside a running macro keeps no locations, and the crate
+    /// does not take its `span-locations` feature for one test. It holds by
+    /// construction, `new_spanned` over a token the input always has, and
+    /// this pins that the inputs are refused at the parser with their text.
+    #[test]
+    fn a_refusal_over_nothing_is_spanned_at_a_token_that_exists() {
+        let cases: [(TokenStream, &str); 4] = [
+            (
+                quote! { pub fn e<const N: usize>() -> f32 where { X } },
+                "a `where` clause on",
+            ),
+            (
+                quote! { pub struct R where { x: f32 } pub fn f(r: R) -> f32 { X } },
+                "a `where` clause on",
+            ),
+            (
+                quote! { fn h() -> f32 where { X } pub fn f() -> f32 { h() } },
+                "a `where` clause on",
+            ),
+            (
+                quote! { || (0..3).map(|| X).sum::<f32>() },
+                "a fold's closure takes one parameter",
+            ),
+        ];
+        for (input, expected) in cases {
+            let shown = input.to_string();
+            let err = refusal(input);
+            assert!(
+                err.contains(expected),
+                "expected `{expected}`, got: {err} for {shown}"
+            );
+        }
+    }
+
     /// `%` and `!` have no IR op; each is refused by name at the operator.
     #[test]
     fn rem_and_not_are_refused_by_name() {
@@ -2292,8 +2658,8 @@ mod tests {
             pub fn f(p: Row) -> f32 { p.x0 }
         })
         .expect("parses");
-        let [row] = def.records.as_slice() else {
-            panic!("one record, got {:?}", def.records);
+        let [row] = def.records() else {
+            panic!("one record, got {:?}", def.records());
         };
         assert_eq!(row.name.to_string(), "Row");
         assert!(matches!(row.vis, syn::Visibility::Public(_)));
@@ -2366,8 +2732,8 @@ mod tests {
             pub fn f() -> f32 { X }
         })
         .expect("parses");
-        let [row] = def.records.as_slice() else {
-            panic!("one record, got {}", def.records.len());
+        let [row] = def.records() else {
+            panic!("one record, got {}", def.records().len());
         };
         let paths: Vec<String> = row
             .attrs
@@ -2387,13 +2753,13 @@ mod tests {
             pub fn f<const N: usize, const M: usize>(r: f32) -> f32 { h(r) }
         })
         .expect("parses");
-        let names: Vec<String> = def.fns[1]
+        let names: Vec<String> = def.fns()[1]
             .structural
             .iter()
             .map(ToString::to_string)
             .collect();
         assert_eq!(names, ["N", "M"]);
-        assert!(def.fns[0].structural.is_empty());
+        assert!(def.fns()[0].structural.is_empty());
     }
 
     // ───────────────────────────── folds ─────────────────────────────
@@ -2587,6 +2953,19 @@ mod tests {
         }
     }
 
+    /// A collection reaching `kernel!` through a macro's `$t:ty` fragment, a
+    /// type inside an invisible group, is a collection as it is spelled
+    /// bare.
+    #[test]
+    fn a_collection_inside_a_macros_type_fragment_is_refused_as_one() {
+        let fragment = proc_macro2::Group::new(proc_macro2::Delimiter::None, quote! { [f32; 2] });
+        let err = refusal(quote! { |v: #fragment| X });
+        assert!(
+            err.contains("a collection-typed parameter"),
+            "expected the collection's refusal, got: {err}"
+        );
+    }
+
     // ───────────────────────────── tuple lets ─────────────────────────────
 
     /// The one tuple `let` of `|| { input; X }`, flattened.
@@ -2595,7 +2974,7 @@ mod tests {
         let Expr::Block(block) = &entry(&def).body else {
             panic!("a block");
         };
-        let [Stmt::LetTuple(lets)] = block.stmts.as_slice() else {
+        let [Stmt::Let(lets)] = block.stmts.as_slice() else {
             panic!("one tuple `let`, got {:?}", block.stmts);
         };
         lets.clone()
@@ -2603,8 +2982,7 @@ mod tests {
 
     /// `let (a, b) = (e1, e2);` is flattened: each name bound to its own
     /// expression, with its own annotation when the tuple type gives one,
-    /// in one statement that binds them all at once (D7's front half). It
-    /// used to be refused, naming B3.
+    /// in one statement that binds them all at once (D7's front half).
     #[test]
     fn a_tuple_let_binds_each_name_to_its_expression() {
         let lets = tuple_let(quote! { let (a, b) = (X, Y + 1.0) });
@@ -2756,19 +3134,18 @@ mod tests {
 
     /// A `fn` signature carries nothing the language cannot honor: an
     /// entry's generics are `const N: usize` and nothing else, and a helper
-    /// has none — it reads its entry's through its arguments. (The helper's
-    /// refusal named B3 until B3 was done without helper generics.)
+    /// has none — it reads its entry's through its arguments.
     #[test]
     fn a_fn_signature_is_plain() {
-        let cases: [(TokenStream, &str); 9] = [
-            (
-                quote! { fn h<const N: usize>(x: f32) -> f32 { x } pub fn f() -> f32 { X } },
-                "generics on a helper",
-            ),
-            (
-                quote! { fn h<const N: usize>(x: f32) -> f32 { x } pub fn f() -> f32 { X } },
-                "pass `n as f32`",
-            ),
+        let err = refusal(quote! {
+            fn h<const N: usize>(x: f32) -> f32 { x }
+            pub fn f() -> f32 { X }
+        });
+        assert!(
+            err.contains("generics on a helper") && err.contains("pass `n as f32`"),
+            "got: {err}"
+        );
+        let cases: [(TokenStream, &str); 7] = [
             (quote! { pub fn f<T>() -> f32 { X } }, "B3"),
             (quote! { pub fn f<'a>() -> f32 { X } }, "lifetime parameter"),
             (
@@ -2799,8 +3176,8 @@ mod tests {
             pub fn f(k: impl Fn(f32, f32) -> f32, r: f32) -> f32 { k(X, Y) * r }
         })
         .expect("an entry's kernel-typed parameter parses");
-        assert!(def.fns[0].params[0].is_kernel());
-        assert!(!def.fns[0].params[1].is_kernel());
+        assert!(def.fns()[0].params[0].is_kernel());
+        assert!(!def.fns()[0].params[1].is_kernel());
         // However it is spelled: bare, in parentheses, through a macro's
         // `$t:ty` (an invisible group), or as some other function.
         let grouped = proc_macro2::Group::new(
@@ -2819,6 +3196,59 @@ mod tests {
                 err.contains("E0562") && err.contains("Phase D-a"),
                 "{closure}: got {err}"
             );
+        }
+    }
+
+    // ───────────────────────────── methods ─────────────────────────────
+
+    #[test]
+    fn an_unknown_method_is_refused_by_name() {
+        let err = refusal(quote! { |r: f32| X.unknownmethod() });
+        assert!(err.contains("unknown method"));
+    }
+
+    #[test]
+    fn typo_suggestion_for_method_matches_case_insensitively() {
+        // "SQRT" differs from "sqrt" in every char position case-sensitively,
+        // so only the case-insensitive fallback catches it.
+        let err = refusal(quote! { || X.SQRT() });
+        assert!(err.contains("did you mean 'sqrt'"), "{err}");
+    }
+
+    #[test]
+    fn a_method_name_near_a_method_gets_a_suggestion() {
+        // One character from `sqrt`; only that a suggestion is offered is
+        // asserted, so the vocabulary may grow another near name.
+        let err = refusal(quote! { || X.sqrx() });
+        assert!(err.contains("did you mean"), "{err}");
+    }
+
+    #[test]
+    fn a_method_name_of_a_methods_length_but_far_from_it_gets_no_suggestion() {
+        // `qqqq` is the length of `sqrt` and differs from it in three
+        // characters, past MAX_TYPO_CHAR_DIFF: matching length alone must not
+        // be enough to suggest one.
+        let err = refusal(quote! { || X.qqqq() });
+        assert!(!err.contains("did you mean"), "{err}");
+    }
+
+    #[test]
+    fn a_method_name_far_from_every_length_gets_no_suggestion() {
+        // Far from every method however the vocabulary grows.
+        let err = refusal(quote! { || X.qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq() });
+        assert!(!err.contains("did you mean"), "{err}");
+    }
+
+    /// A retired method is refused by name, with the way out.
+    #[test]
+    fn a_retired_method_is_refused() {
+        for input in [
+            quote! { || X.at(Y, X) },
+            quote! { || X.constant() },
+            quote! { || X.collapse() },
+        ] {
+            let err = refusal(input);
+            assert!(err.contains("Kernel::at"), "got: {err}");
         }
     }
 }

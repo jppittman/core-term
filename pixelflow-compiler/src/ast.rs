@@ -5,8 +5,8 @@
 //! ## Design Philosophy
 //!
 //! The AST is a **source-level representation** that preserves the structure
-//! the user wrote. It does NOT attempt to mirror PixelFlow's type-level AST
-//! (the `Sqrt<Add<Mul<X,X>,...>>` trees) - that's what the generated code produces.
+//! the user wrote. It is not the IR: lowering builds the IR, an `ExprArena`,
+//! from it.
 //!
 //! The compiler's job is to transform this source AST into Rust code that
 //! rebuilds the corresponding arena fragment at load time.
@@ -15,16 +15,19 @@
 //!
 //! ```text
 //! KernelDef
-//!   ├── spelling: Closure | Items     // how the macro's value is spelled
-//!   ├── records: [RecordItem, ...]    // `struct R { a: f32, b: f32 }`
-//!   ├── consts: [ConstItem, ...]      // `const NAME: f32 = expr;`
-//!   └── fns: [FnItem, ...]            // `pub fn` entries and private helpers
+//!   ├── Closure(ClosureEntry)         // `|a: f32, …| e`: one entry, its type inferred
+//!   │     ├── params: [(name, type), ...]
+//!   │     └── body: Expr
+//!   └── Items                         // `kernel! { … }`
+//!         ├── records: [RecordItem, ...]  // `struct R { a: f32, b: f32 }`
+//!         ├── consts: [ConstItem, ...]    // `const NAME: f32 = expr;`
+//!         └── fns: [FnItem, ...]          // `pub fn` entries and private helpers
 //!
 //! FnItem
 //!   ├── vis                           // `pub` makes an entry; private is a helper
 //!   ├── structural: [name, ...]       // an entry's `const N: usize` parameters
-//!   ├── params: [(name, type), ...]   // scalar and record parameters
-//!   ├── ret: type                     // declared; absent only for the closure sugar
+//!   ├── params: [(name, type), ...]   // scalar, record and kernel parameters
+//!   ├── ret: type                     // declared
 //!   └── body: Expr
 //!
 //! Expr
@@ -33,7 +36,8 @@
 //!   ├── Binary(op, lhs, rhs)           // a + b, x * y
 //!   ├── Unary(op, operand)             // -x
 //!   ├── MethodCall(receiver, method, args) // x.sqrt(), a.max(b)
-//!   ├── Call(func, args)               // DX(e), a helper: f(x, y)
+//!   ├── Project(projection, arg)       // DX(e)
+//!   ├── Call(func, args)               // a helper: f(x, y), or a kernel: k(x, y)
 //!   ├── If(cond, then, else)           // if c { a } else { b }
 //!   ├── Fold(reduction, range, binder, body) // (0..N).map(|i| e).sum()
 //!   ├── Cast(operand)                  // i as f32
@@ -42,57 +46,181 @@
 //!   └── Paren(inner)                   // (a + b)
 //! ```
 
+use pixelflow_ir::{OpKind, known_method_names};
 use proc_macro2::Span;
 use syn::ext::IdentExt;
 use syn::{Ident, Type};
 
-/// A complete kernel definition: the items of a `kernel!` block.
+/// A complete kernel definition: what a `kernel!` invocation spells.
 ///
-/// The closure form `|a: f32, …| e` is sugar for a block with one entry, so
-/// every stage after the parser sees one shape; only emission asks how the
-/// result is spelled.
+/// A sum of the two spellings. The closure form is one entry — parameters and
+/// a body, its type inferred — and its expansion is an expression; the items
+/// form is a block of records, `const`s and `fn`s, and its expansion is
+/// items. The stages that treat both alike read [`Self::records`],
+/// [`Self::consts`] and [`Self::fns`], which a closure has none of.
 #[derive(Debug, Clone)]
-pub struct KernelDef {
-    /// How the macro's value is spelled.
-    pub spelling: Spelling,
-    /// The block's records, in declaration order: [`RecordId`] indexes this.
-    pub records: Vec<RecordItem>,
-    /// The block's `const` items, in declaration order.
-    pub consts: Vec<ConstItem>,
-    /// The block's `fn` items — entries and helpers — in declaration order.
-    pub fns: Vec<FnItem>,
+pub(crate) enum KernelDef {
+    /// `kernel!(|a: f32, …| e)`: the expansion is an expression — a `Kernel`
+    /// with no parameters, a closure over their `f32`s with some, each one a
+    /// uniform.
+    Closure(ClosureEntry),
+    /// `kernel! { struct …; const …; fn …; pub fn … }`: the expansion is
+    /// items — a host struct per record, a host `const` per `pub const`, and
+    /// per entry a host `fn` and, when it has parameters, its `Args` record.
+    Items {
+        /// The block's records, in declaration order: [`RecordId`] indexes
+        /// this.
+        records: Vec<RecordItem>,
+        /// The block's `const` items, in declaration order.
+        consts: Vec<ConstItem>,
+        /// The block's `fn` items — entries and helpers — in declaration
+        /// order.
+        fns: Vec<FnItem>,
+    },
 }
 
 impl KernelDef {
+    /// The block's records, in declaration order.
+    pub(crate) fn records(&self) -> &[RecordItem] {
+        match self {
+            KernelDef::Closure(_) => &[],
+            KernelDef::Items { records, .. } => records,
+        }
+    }
+
+    /// The block's `const` items, in declaration order.
+    pub(crate) fn consts(&self) -> &[ConstItem] {
+        match self {
+            KernelDef::Closure(_) => &[],
+            KernelDef::Items { consts, .. } => consts,
+        }
+    }
+
+    /// The block's `fn` items, in declaration order.
+    pub(crate) fn fns(&self) -> &[FnItem] {
+        match self {
+            KernelDef::Closure(_) => &[],
+            KernelDef::Items { fns, .. } => fns,
+        }
+    }
+
     /// The record a declared type names, if it names one of the block's.
     ///
     /// The one resolution of a record's name: `sema` types a parameter by
     /// it, and lowering and emission lay a record parameter out by it, so no
     /// two stages can disagree about which record a type is.
-    pub fn record_named(&self, ty: &Type) -> Option<RecordId> {
-        let Type::Path(path) = ty else {
-            return None;
-        };
-        if path.qself.is_some() {
-            return None;
-        }
-        let ident = path.path.get_ident()?;
-        self.records
+    pub(crate) fn record_named(&self, ty: &Type) -> Option<RecordId> {
+        let name = bare_name(ty)?;
+        self.records()
             .iter()
-            .position(|record| record.name == *ident)
+            .position(|record| same_name(&record.name, name))
             .map(RecordId)
     }
 
     /// The record `id` names.
-    pub fn record(&self, id: RecordId) -> &RecordItem {
-        &self.records[id.0]
+    pub(crate) fn record(&self, id: RecordId) -> &RecordItem {
+        &self.records()[id.0]
     }
+}
+
+/// The closure form's one entry: `|a: f32, …| e`.
+///
+/// It has no name, no visibility and no declared return type, because it
+/// is never a host function: its type is inferred, and it has no
+/// structural parameters, records or helpers to be generic over.
+#[derive(Debug, Clone)]
+pub(crate) struct ClosureEntry {
+    pub params: Vec<Param>,
+    /// The kernel body expression.
+    pub body: Expr,
+}
+
+impl ClosureEntry {
+    pub(crate) fn callable(&self) -> Callable<'_> {
+        Callable {
+            name: None,
+            role: Role::Entry,
+            structural: &[],
+            params: &self.params,
+            body: &self.body,
+        }
+    }
+}
+
+/// What `sema` and lowering read of a function: its role, its structural
+/// and ordinary parameters, and its body. An item's [`FnItem::callable`] and
+/// the closure's [`ClosureEntry::callable`] are the two ways to have one, so
+/// a stage that handles an entry handles either spelling of it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Callable<'a> {
+    /// The function's name; the closure form has none.
+    pub name: Option<&'a Ident>,
+    pub role: Role,
+    /// An entry's structural parameters; a helper has none.
+    pub structural: &'a [Ident],
+    pub params: &'a [Param],
+    pub body: &'a Expr,
+}
+
+impl<'a> Callable<'a> {
+    /// Its kernel-typed parameters in declaration order: the order their
+    /// arguments are admitted in, and so the order each argument's uniforms
+    /// are declared in, after the function's own
+    /// ([`AnalyzedKernel::parameters`](crate::sema::AnalyzedKernel::parameters))
+    /// — `Kernel`'s rule for a composition's operands, which a positional
+    /// binding of the composed program reads (O3 of the plan).
+    pub(crate) fn kernel_parameters(&self) -> impl Iterator<Item = &'a Ident> {
+        self.params
+            .iter()
+            .filter(|param| param.is_kernel())
+            .map(|param| &param.name)
+    }
+}
+
+/// A name as the language compares it: an identifier without its `r#`.
+///
+/// rustc reads `r#a` and `a` as one name, so a stage that keys a map by the
+/// written spelling would let a raw one walk around a refusal of the other
+/// (a second `fn r#f` beside `f`), or miss what the other bound. Every map
+/// keyed by a name, and every comparison of two, is by this, built only from
+/// an identifier ([`Name::of`]) or, for the two the language spells itself,
+/// from its text ([`Name::spelled`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Name(Ident);
+
+impl Name {
+    /// The name an identifier spells, whichever way it is spelled.
+    pub(crate) fn of(ident: &Ident) -> Self {
+        Name(ident.unraw())
+    }
+
+    /// A name the language spells itself, as plain text: `X` and `Y`.
+    pub(crate) fn spelled(text: &str) -> Self {
+        Name(Ident::new(text, Span::call_site()))
+    }
+}
+
+impl std::fmt::Display for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq<str> for Name {
+    fn eq(&self, text: &str) -> bool {
+        self.0 == text
+    }
+}
+
+/// Whether two identifiers spell one name.
+pub(crate) fn same_name(a: &Ident, b: &Ident) -> bool {
+    Name::of(a) == Name::of(b)
 }
 
 /// Which of the block's records a type is: an index into
 /// [`KernelDef::records`], in declaration order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RecordId(pub usize);
+pub(crate) struct RecordId(usize);
 
 /// `struct R { a: f32, b: f32 }`: a record of named `f32` fields
 /// (docs/language/2026-09-25-the-language-is-kernel.md §1.3).
@@ -102,7 +230,7 @@ pub struct RecordId(pub usize);
 /// is one uniform per field, in field order, and a helper's is its
 /// argument's fields.
 #[derive(Debug, Clone)]
-pub struct RecordItem {
+pub(crate) struct RecordItem {
     /// Its attributes (any but `repr` and `cfg`), re-emitted on the host
     /// struct.
     pub attrs: Vec<syn::Attribute>,
@@ -115,7 +243,7 @@ pub struct RecordItem {
 
 /// One named field of a record. `sema` requires its type to be `f32`.
 #[derive(Debug, Clone)]
-pub struct RecordField {
+pub(crate) struct RecordField {
     /// Its attributes (any but `repr` and `cfg`), re-emitted on the host
     /// struct's field.
     pub attrs: Vec<syn::Attribute>,
@@ -124,23 +252,10 @@ pub struct RecordField {
     pub ty: Type,
 }
 
-/// How a `kernel!` invocation spells its value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Spelling {
-    /// `kernel!(|a: f32, …| e)`: one entry, and the expansion is an
-    /// expression — a `Kernel` with no parameters, a closure over their
-    /// `f32`s with some, each one a uniform.
-    Closure,
-    /// `kernel! { struct …; const …; fn …; pub fn … }`: the expansion is
-    /// items — a host struct per record, a host `const` per `pub const`, and
-    /// per entry a host `fn` and, when it has parameters, its `Args` record.
-    Items,
-}
-
 /// A `const NAME: f32 = expr;` or `const NAME: usize = expr;` item,
 /// evaluated at expansion.
 #[derive(Debug, Clone)]
-pub struct ConstItem {
+pub(crate) struct ConstItem {
     /// Doc comments, re-emitted on a `pub const`'s host twin.
     pub attrs: Vec<syn::Attribute>,
     /// `pub` makes the value a host `const` too.
@@ -153,7 +268,7 @@ pub struct ConstItem {
 
 /// A `fn` item: an entry when `pub`, a helper otherwise.
 #[derive(Debug, Clone)]
-pub struct FnItem {
+pub(crate) struct FnItem {
     /// Doc comments, re-emitted on an entry's host function.
     pub attrs: Vec<syn::Attribute>,
     /// `pub` makes an entry — the macro emits a host function for it. A
@@ -166,16 +281,15 @@ pub struct FnItem {
     /// in a range's bounds or as `N as f32`. A helper has none.
     pub structural: Vec<Ident>,
     pub params: Vec<Param>,
-    /// The declared return type. `None` only for the closure sugar, whose
-    /// type is inferred.
-    pub ret: Option<Type>,
+    /// The declared return type.
+    pub ret: Type,
     /// The kernel body expression.
     pub body: Expr,
 }
 
 /// What a `fn` item is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
+pub(crate) enum Role {
     /// A program: it may read `X` and `Y`, and the macro emits a host
     /// function for it.
     Entry,
@@ -184,8 +298,18 @@ pub enum Role {
 }
 
 impl FnItem {
+    pub(crate) fn callable(&self) -> Callable<'_> {
+        Callable {
+            name: Some(&self.name),
+            role: self.role(),
+            structural: &self.structural,
+            params: &self.params,
+            body: &self.body,
+        }
+    }
+
     /// An entry is any `fn` with a visibility; a helper has none.
-    pub fn role(&self) -> Role {
+    pub(crate) fn role(&self) -> Role {
         match self.vis {
             syn::Visibility::Inherited => Role::Helper,
             _ => Role::Entry,
@@ -194,7 +318,7 @@ impl FnItem {
 
     /// Whether a parameter is kernel-typed: the entry is then a composition,
     /// built when its host function is called (plan Phase D-a).
-    pub fn takes_a_kernel(&self) -> bool {
+    pub(crate) fn takes_a_kernel(&self) -> bool {
         self.params.iter().any(Param::is_kernel)
     }
 
@@ -203,15 +327,17 @@ impl FnItem {
     /// its program declares the kernel's uniforms after its own, and the
     /// record could rebind only a program whose argument declares none.
     /// Binding a composed program is O3 of the plan.
-    pub fn has_args_record(&self) -> bool {
+    pub(crate) fn has_args_record(&self) -> bool {
         !self.params.is_empty() && !self.takes_a_kernel()
     }
 
     /// The name of an entry's `Args` record: the entry's name in
     /// UpperCamelCase, then `Args` — `shifted_radius` has
-    /// `ShiftedRadiusArgs` (plan §1.4). `sema` refuses one that collides,
-    /// and emission names the record by it.
-    pub fn args_record(&self) -> Ident {
+    /// `ShiftedRadiusArgs` (plan §1.4). Dropping the underscores can leave a
+    /// digit first, which no identifier starts with, so the name then gains
+    /// one leading underscore: `_2d` has `_2dArgs`, `__3` has `_3Args`.
+    /// `sema` refuses one that collides, and emission names the record by it.
+    pub(crate) fn args_record(&self) -> Ident {
         let camel: String = self
             .name
             .unraw()
@@ -226,13 +352,18 @@ impl FnItem {
                     .flatten()
             })
             .collect();
-        Ident::new(&format!("{camel}Args"), self.name.span())
+        let lead = if camel.starts_with(char::is_numeric) {
+            "_"
+        } else {
+            ""
+        };
+        Ident::new(&format!("{lead}{camel}Args"), self.name.span())
     }
 }
 
 /// A declared parameter: a scalar, one of the block's records, or a kernel.
 #[derive(Debug, Clone)]
-pub struct Param {
+pub(crate) struct Param {
     /// Parameter name.
     pub name: Ident,
     /// The declared type (`f32`, a record or `impl Fn(f32, f32) -> f32`;
@@ -242,7 +373,7 @@ pub struct Param {
 
 impl Param {
     /// Whether the parameter is kernel-typed, `impl Fn(f32, f32) -> f32`.
-    pub fn is_kernel(&self) -> bool {
+    pub(crate) fn is_kernel(&self) -> bool {
         FunctionType::of(&self.ty) == FunctionType::Kernel
     }
 }
@@ -256,7 +387,7 @@ impl Param {
 /// this one, and lowering and emission find an entry's kernel-typed
 /// parameters by it, so no two stages can disagree about which they are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FunctionType {
+pub(crate) enum FunctionType {
     /// Not a function.
     NotOne,
     /// `impl Fn(f32, f32) -> f32`.
@@ -268,7 +399,7 @@ pub enum FunctionType {
 
 impl FunctionType {
     /// The classification of `ty`.
-    pub fn of(ty: &Type) -> Self {
+    pub(crate) fn of(ty: &Type) -> Self {
         match ty {
             Type::Paren(inner) => Self::of(&inner.elem),
             Type::Group(inner) => Self::of(&inner.elem),
@@ -344,25 +475,42 @@ impl FunctionType {
     }
 }
 
-/// Whether `ty` is `f32`, by its own name.
-fn is_f32(ty: &Type) -> bool {
+/// The one name a declared type is, by itself: `f32`, `usize`, a record's.
+///
+/// The one reading of "this type is the bare name N", which every stage that
+/// classifies a declaration builds on. A macro's `$t:ty` fragment arrives as
+/// a type inside an invisible group, and rustc reads the type inside, so this
+/// does too: a spelling is the same type in every position. A path with a
+/// leading `::`, a qualified self or generic arguments names nothing bare.
+pub(crate) fn bare_name(ty: &Type) -> Option<&Ident> {
     match ty {
-        Type::Path(path) => path.qself.is_none() && path.path.is_ident("f32"),
-        Type::Group(inner) => is_f32(&inner.elem),
-        _ => false,
+        Type::Group(inner) => bare_name(&inner.elem),
+        Type::Path(path) if path.qself.is_none() => path.path.get_ident(),
+        _ => None,
     }
+}
+
+/// Whether `ty` is exactly `f32`: the one type a fold's terms, a kernel's
+/// coordinates and value, and the one conversion's target, may name.
+pub(crate) fn is_f32(ty: &Type) -> bool {
+    bare_name(ty).is_some_and(|name| name == "f32")
+}
+
+/// Whether `ty` is exactly `usize`: the one type a structural parameter has.
+pub(crate) fn is_usize(ty: &Type) -> bool {
+    bare_name(ty).is_some_and(|name| name == "usize")
 }
 
 /// An expression in the kernel body.
 ///
 /// Every variant is syntax the language gives a meaning to. What it does not
-/// — a tuple, a field, a range, a path from outside the block — the parser
+/// — a tuple, a tuple's field, a range, a path from outside the block — the parser
 /// refuses at the token, with a span; nothing is carried along to be refused
 /// by a later stage.
 #[derive(Debug, Clone)]
-pub enum Expr {
+pub(crate) enum Expr {
     /// A variable reference (X, Y, cx, etc.).
-    Ident(IdentExpr),
+    Ident(Ident),
 
     /// A numeric literal (1.0, 2.5f32, etc.).
     Literal(LiteralExpr),
@@ -376,7 +524,10 @@ pub enum Expr {
     /// A method call (x.sqrt(), a.max(b), etc.).
     MethodCall(MethodCallExpr),
 
-    /// A free function call: a projection (`DX(e)`) or a helper (`f(x, y)`).
+    /// A derivative projection: `DX(e)`.
+    Project(ProjectExpr),
+
+    /// A free function call: a helper (`f(x, y)`) or a kernel (`k(x, y)`).
     Call(CallExpr),
 
     /// The choice: `if c { a } else { b }`.
@@ -401,18 +552,19 @@ pub enum Expr {
 impl Expr {
     /// Where the expression is, for a diagnostic to point at: an operator's
     /// token, a name, a block's braces.
-    pub fn span(&self) -> Span {
+    pub(crate) fn span(&self) -> Span {
         match self {
-            Expr::Ident(e) => e.span,
+            Expr::Ident(name) => name.span(),
             Expr::Literal(e) => e.span,
             Expr::Binary(e) => e.span,
             Expr::Unary(e) => e.span,
-            Expr::MethodCall(e) => e.span,
-            Expr::Call(e) => e.span,
+            Expr::MethodCall(e) => e.name.span(),
+            Expr::Project(e) => e.span,
+            Expr::Call(e) => e.func.span(),
             Expr::If(e) => e.span,
             Expr::Fold(e) => e.span,
             Expr::Cast(e) => e.span,
-            Expr::Field(e) => e.span,
+            Expr::Field(e) => e.member.span(),
             Expr::Block(e) => e.span,
             Expr::Paren(inner) => inner.span(),
         }
@@ -422,10 +574,10 @@ impl Expr {
     /// it is not a name. A `usize` and a record are both written only by
     /// name: nothing in a body computes a count (plan §1.6) or builds a
     /// record (Phase D, D7).
-    pub fn named(&self) -> Option<&Ident> {
+    pub(crate) fn named(&self) -> Option<&Ident> {
         match self {
             Expr::Paren(inner) => inner.named(),
-            Expr::Ident(ident) => Some(&ident.name),
+            Expr::Ident(name) => Some(name),
             _ => None,
         }
     }
@@ -435,19 +587,9 @@ impl Expr {
 /// parameter or a `let` alias of one — which `sema` checks, with the
 /// member one of the record's fields.
 #[derive(Debug, Clone)]
-pub struct FieldExpr {
+pub(crate) struct FieldExpr {
     pub base: Box<Expr>,
     pub member: Ident,
-    /// The member's span.
-    pub span: Span,
-}
-
-/// An identifier expression.
-#[derive(Debug, Clone)]
-pub struct IdentExpr {
-    pub name: Ident,
-    /// The name's span.
-    pub span: Span,
 }
 
 /// A numeric literal: the number it denotes, decided by the parser.
@@ -460,14 +602,14 @@ pub struct IdentExpr {
 /// asks those two questions here, so no two stages can answer them
 /// differently.
 #[derive(Debug, Clone)]
-pub struct LiteralExpr {
+pub(crate) struct LiteralExpr {
     pub value: Literal,
     pub span: Span,
 }
 
 /// What a numeric literal denotes, before its position gives it a type.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Literal {
+pub(crate) enum Literal {
     /// A float literal, or an integer suffixed `f32` (a float literal to
     /// rustc): the `f32` it rounds to, once.
     F32(f32),
@@ -478,13 +620,16 @@ pub enum Literal {
 impl LiteralExpr {
     /// The `f32` this literal denotes where a value is expected.
     ///
-    /// An integer is refused unless an `f32` holds it exactly: at most
-    /// [`f32::MANTISSA_DIGITS`] significant bits. An integer's digits claim
-    /// exactness, and rustc has no rounding of its own to borrow here: it
-    /// refuses an unsuffixed integer where an `f32` is expected. `16777217`
-    /// (2²⁴ + 1) is the first integer refused; `1099511627776` (2⁴⁰) is
-    /// accepted.
-    pub fn f32_value(&self) -> syn::Result<f32> {
+    /// An integer's digits claim exactness, and rustc has no rounding of its
+    /// own to borrow here: it refuses an unsuffixed integer where an `f32`
+    /// is expected. `16777217` (2²⁴ + 1) is the first integer refused;
+    /// `1099511627776` (2⁴⁰) is accepted.
+    ///
+    /// # Errors
+    ///
+    /// An integer an `f32` does not hold exactly: more than
+    /// [`f32::MANTISSA_DIGITS`] significant bits.
+    pub(crate) fn f32_value(&self) -> syn::Result<f32> {
         match self.value {
             Literal::F32(value) => Ok(value),
             // Exact, and finite: below 2¹²⁸, an integer with at most
@@ -510,7 +655,11 @@ impl LiteralExpr {
     /// const: an integer, at most `usize::MAX`. A `usize` is 64 bits on
     /// every target this language compiles for (x86-64 and aarch64), and
     /// the control plane is 64-bit.
-    pub fn usize_value(&self) -> syn::Result<u64> {
+    ///
+    /// # Errors
+    ///
+    /// A float literal, or an integer past `usize::MAX`.
+    pub(crate) fn usize_value(&self) -> syn::Result<u64> {
         let Literal::Int(n) = self.value else {
             return Err(syn::Error::new(
                 self.span,
@@ -544,7 +693,7 @@ fn significant_bits(n: u128) -> u32 {
 
 /// Binary operators we recognize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
+pub(crate) enum BinaryOp {
     Add,
     Sub,
     Mul,
@@ -563,7 +712,7 @@ pub enum BinaryOp {
 
 /// A binary expression.
 #[derive(Debug, Clone)]
-pub struct BinaryExpr {
+pub(crate) struct BinaryExpr {
     pub op: BinaryOp,
     pub lhs: Box<Expr>,
     pub rhs: Box<Expr>,
@@ -573,13 +722,13 @@ pub struct BinaryExpr {
 
 /// Unary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnaryOp {
+pub(crate) enum UnaryOp {
     Neg,
 }
 
 /// A unary expression.
 #[derive(Debug, Clone)]
-pub struct UnaryExpr {
+pub(crate) struct UnaryExpr {
     pub op: UnaryOp,
     pub operand: Box<Expr>,
     /// The operator's span.
@@ -588,33 +737,191 @@ pub struct UnaryExpr {
 
 /// A method call expression.
 #[derive(Debug, Clone)]
-pub struct MethodCallExpr {
+pub(crate) struct MethodCallExpr {
     /// The receiver (what the method is called on).
     pub receiver: Box<Expr>,
-    /// The method name (sqrt, sin, max, etc.).
-    pub method: Ident,
+    /// The method as written (sqrt, sin, max, etc.): its spelling and span,
+    /// for a diagnostic to quote and point at.
+    pub name: Ident,
+    /// What the name denotes at this call's arity, resolved once by the
+    /// parser: every later stage reads this, never the spelling.
+    pub method: Method,
     /// Method arguments (empty for sqrt, one arg for max, etc.).
     pub args: Vec<Expr>,
-    /// The method name's span.
+}
+
+/// A method name as the language reads it, `clone` included.
+const CLONE: &str = "clone";
+
+/// What a method call denotes: one of the three things a name can mean.
+///
+/// Resolved from the written name and the number of arguments by
+/// [`Method::resolve`], which every stage that asks "which method is this"
+/// reads, so no two of them can disagree about which methods exist or what
+/// arity each takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Method {
+    /// `.clone()`: the identity. An arena expression is a value, so a copy of
+    /// one is itself.
+    Clone,
+    /// A primitive: one [`OpKind`], at the arity `OpKind::from_method_call`
+    /// admits it.
+    Op(OpKind),
+    /// A fixed composition of primitives, which the IR's `library` defines.
+    Library(LibraryMethod),
+}
+
+/// A method that denotes a fixed composition of primitive ops rather than a
+/// single [`OpKind`]: the syntax's name for one of `pixelflow_ir::library`'s
+/// definitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LibraryMethod {
+    Fract,
+    Hypot,
+    Clamp,
+}
+
+impl LibraryMethod {
+    /// Each one's spelling and the arguments it takes, not counting the
+    /// receiver.
+    const ALL: [(Self, &'static str, usize); 3] = [
+        (Self::Fract, "fract", 0),
+        (Self::Hypot, "hypot", 1),
+        (Self::Clamp, "clamp", 2),
+    ];
+}
+
+impl Method {
+    /// The method `name` denotes when called with `arity` arguments, not
+    /// counting the receiver, or `None` if no method has that name at that
+    /// arity.
+    ///
+    /// Name and arity are resolved together, so `.sqrt(1.0)` is no method
+    /// rather than a `sqrt` that something later finds malformed.
+    pub(crate) fn resolve(name: &str, arity: usize) -> Option<Self> {
+        if name == CLONE && arity == 0 {
+            return Some(Self::Clone);
+        }
+        if let Some(op) = OpKind::from_method_call(name, arity) {
+            return Some(Self::Op(op));
+        }
+        LibraryMethod::ALL
+            .into_iter()
+            .find(|&(_, spelling, arguments)| spelling == name && arguments == arity)
+            .map(|(library, ..)| Self::Library(library))
+    }
+
+    /// Every method the language has, as `(name, arity)`, the arity not
+    /// counting the receiver: the surface a body may call.
+    pub(crate) fn advertised() -> impl Iterator<Item = (&'static str, usize)> {
+        let ops = known_method_names().map(|name| {
+            let op = OpKind::from_name(name)
+                .expect("known_method_names() only yields names from_name parses");
+            (name, op.arity() - 1)
+        });
+        let libraries = LibraryMethod::ALL
+            .into_iter()
+            .map(|(_, spelling, arguments)| (spelling, arguments));
+        ops.chain(libraries).chain([(CLONE, 0)])
+    }
+}
+
+/// A derivative projection, called as `DX(e)`.
+///
+/// Resolved from the callee's name by [`Projection::from_name`], once, in
+/// the parser. Nothing can shadow a projection's name — `sema` refuses every
+/// item, parameter, `let` and index named after one — so a call to one with its
+/// one argument is a projection wherever it stands, and no later stage asks
+/// again. At any other arity it stays a [`CallExpr`], which `sema` refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Projection {
+    /// `V(e)`: the value itself. Every arena expression is already
+    /// value-space, so it is the identity.
+    Value,
+    Dx,
+    Dy,
+    Dxx,
+    Dxy,
+    Dyy,
+}
+
+impl Projection {
+    /// The projection a name denotes, if any.
+    pub(crate) fn from_name(name: &Name) -> Option<Self> {
+        match name.to_string().as_str() {
+            "V" => Some(Self::Value),
+            "DX" => Some(Self::Dx),
+            "DY" => Some(Self::Dy),
+            "DXX" => Some(Self::Dxx),
+            "DXY" => Some(Self::Dxy),
+            "DYY" => Some(Self::Dyy),
+            _ => None,
+        }
+    }
+}
+
+/// `DX(e)`: the projection of one argument.
+#[derive(Debug, Clone)]
+pub(crate) struct ProjectExpr {
+    pub projection: Projection,
+    pub arg: Box<Expr>,
+    /// The callee's span.
     pub span: Span,
 }
 
-/// A free function call expression (DX(expr), a helper, etc.).
+/// A free function call expression: a helper, or a kernel-typed parameter
+/// applied.
 #[derive(Debug, Clone)]
-pub struct CallExpr {
-    /// The function being called (V, DX, DY, a helper's name).
+pub(crate) struct CallExpr {
+    /// The function being called (a helper's name, or a kernel's).
     pub func: Ident,
     /// Function arguments.
     pub args: Vec<Expr>,
-    /// The function name's span.
-    pub span: Span,
+}
+
+/// How many arguments a callee takes, and how many a call supplied.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Arity {
+    pub want: usize,
+    pub got: usize,
+}
+
+impl Arity {
+    /// "was" or "were", agreeing with the number supplied.
+    pub(crate) fn supplied_verb(self) -> &'static str {
+        match self.got {
+            1 => "was",
+            _ => "were",
+        }
+    }
+}
+
+/// The refusal of a call that supplies `arity.got` arguments to a callee that
+/// takes `arity.want`.
+pub(crate) fn arity_mismatch(
+    span: Span,
+    callee: impl std::fmt::Display,
+    arity: Arity,
+) -> syn::Error {
+    let Arity { want, got } = arity;
+    let plural = match want {
+        1 => "",
+        _ => "s",
+    };
+    syn::Error::new(
+        span,
+        format!(
+            "`{callee}` takes {want} argument{plural}, but {got} {} supplied",
+            arity.supplied_verb(),
+        ),
+    )
 }
 
 /// `if cond { then } else { otherwise }`. The `else` is required: a body is
 /// an expression, and there is no unit. An `else if` chain is an `If` in
 /// the `else` position.
 #[derive(Debug, Clone)]
-pub struct IfExpr {
+pub(crate) struct IfExpr {
     pub cond: Box<Expr>,
     pub then_branch: BlockExpr,
     pub else_branch: Box<Expr>,
@@ -631,7 +938,7 @@ pub struct IfExpr {
 /// are constant, evaluated by `sema` at expansion, and the binder is a
 /// `usize`, which a body makes a value of only by `i as f32`.
 #[derive(Debug, Clone)]
-pub struct FoldExpr {
+pub(crate) struct FoldExpr {
     pub reduction: Reduction,
     pub range: RangeExpr,
     /// The closure's parameter: the index the body reads.
@@ -644,7 +951,7 @@ pub struct FoldExpr {
 
 /// The half-open `lo..hi` a fold ranges over.
 #[derive(Debug, Clone)]
-pub struct RangeExpr {
+pub(crate) struct RangeExpr {
     pub lo: Box<Expr>,
     pub hi: Box<Expr>,
     /// The `..` token's span.
@@ -653,7 +960,7 @@ pub struct RangeExpr {
 
 /// Which monoid a fold combines its terms under, as the source spells it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reduction {
+pub(crate) enum Reduction {
     /// `.map(|i| e).sum()`: `+`, identity 0.
     Sum,
     /// `.map(|i| e).product()`: `×`, identity 1.
@@ -673,7 +980,7 @@ pub enum Reduction {
 /// accepts one operand: a `usize`, by name, a fold's index, a `usize` const
 /// or an entry's structural parameter.
 #[derive(Debug, Clone)]
-pub struct CastExpr {
+pub(crate) struct CastExpr {
     pub operand: Box<Expr>,
     /// The `as` token's span.
     pub span: Span,
@@ -684,40 +991,36 @@ impl CastExpr {
     /// operand is not a name. Only a name can be a `usize`: nothing in a
     /// body computes one (plan §1.6), so a `usize` expression is always a
     /// fold's index, a `usize` const or a structural parameter.
-    pub fn named(&self) -> Option<&Ident> {
+    pub(crate) fn named(&self) -> Option<&Ident> {
         self.operand.named()
     }
 }
 
 /// A statement in a block.
 #[derive(Debug, Clone)]
-pub enum Stmt {
-    /// A let binding: `let dx = X - cx;`
-    Let(Box<LetStmt>),
-    /// `let (a, b) = (e1, e2);`, flattened: each name bound to its
-    /// expression, and all at once — every expression is evaluated where the
-    /// statement stands, before any of its names binds, as Rust evaluates the
-    /// tuple before taking it apart (D7's front half). There is no tuple
-    /// left behind to be a value.
-    LetTuple(Vec<LetStmt>),
+pub(crate) enum Stmt {
+    /// `let dx = X - cx;`, or `let (a, b) = (e1, e2);` flattened: each name
+    /// bound to its expression, and all at once — every expression is
+    /// evaluated where the statement stands, before any of its names binds,
+    /// as Rust evaluates the tuple before taking it apart (D7's front half).
+    /// There is no tuple left behind to be a value, and the one-name `let`
+    /// is the list of one.
+    Let(Vec<LetStmt>),
     /// An expression statement: `foo();`
     Expr(Expr),
 }
 
 /// A let statement.
 #[derive(Debug, Clone)]
-pub struct LetStmt {
+pub(crate) struct LetStmt {
     pub name: Ident,
     pub ty: Option<Type>,
     pub init: Expr,
-    // Kept for AST-node uniformity; the name carries its own span.
-    #[allow(dead_code)]
-    pub span: Span,
 }
 
 /// A block expression.
 #[derive(Debug, Clone)]
-pub struct BlockExpr {
+pub(crate) struct BlockExpr {
     pub stmts: Vec<Stmt>,
     /// The final expression (if any).
     pub expr: Option<Box<Expr>>,
@@ -727,7 +1030,7 @@ pub struct BlockExpr {
 
 impl BinaryOp {
     /// Convert from syn's BinOp.
-    pub fn from_syn(op: &syn::BinOp) -> Option<Self> {
+    pub(crate) fn from_syn(op: &syn::BinOp) -> Option<Self> {
         match op {
             syn::BinOp::Add(_) => Some(BinaryOp::Add),
             syn::BinOp::Sub(_) => Some(BinaryOp::Sub),
@@ -748,7 +1051,7 @@ impl BinaryOp {
 
 impl UnaryOp {
     /// Convert from syn's UnOp.
-    pub fn from_syn(op: &syn::UnOp) -> Option<Self> {
+    pub(crate) fn from_syn(op: &syn::UnOp) -> Option<Self> {
         match op {
             syn::UnOp::Neg(_) => Some(UnaryOp::Neg),
             _ => None,
@@ -759,6 +1062,28 @@ impl UnaryOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one reading of a bare type name: through a macro's invisible
+    /// group, and for nothing a path spells with more than its name.
+    #[test]
+    fn a_bare_name_is_seen_through_a_group_and_nothing_longer() {
+        let fragment = proc_macro2::Group::new(proc_macro2::Delimiter::None, quote::quote!(f32));
+        let grouped: Type = syn::parse_quote!(#fragment);
+        assert!(matches!(grouped, Type::Group(_)));
+        assert!(is_f32(&grouped) && !is_usize(&grouped));
+        assert!(is_usize(&syn::parse_quote!(usize)));
+        for refused in [
+            syn::parse_quote!(::f32),
+            syn::parse_quote!(std::primitive::f32),
+            syn::parse_quote!(<f32>::Item),
+            syn::parse_quote!(Vec<f32>),
+            syn::parse_quote!((f32)),
+            syn::parse_quote!(&f32),
+        ] {
+            let refused: Type = refused;
+            assert_eq!(bare_name(&refused), None, "{}", quote::quote!(#refused));
+        }
+    }
 
     #[test]
     fn binary_op_from_syn_maps_every_supported_syn_binop_to_its_own_variant() {
@@ -813,6 +1138,8 @@ mod tests {
             ("shifted_radius2", "ShiftedRadius2Args"),
             ("a__b_", "ABArgs"),
             ("r#type", "TypeArgs"),
+            ("_1", "_1Args"),
+            ("__3", "_3Args"),
         ] {
             let item: FnItem = FnItem {
                 attrs: Vec::new(),
@@ -820,11 +1147,8 @@ mod tests {
                 name: syn::parse_str(entry).expect("an identifier"),
                 structural: Vec::new(),
                 params: Vec::new(),
-                ret: None,
-                body: Expr::Paren(Box::new(Expr::Ident(IdentExpr {
-                    name: syn::parse_quote!(X),
-                    span: Span::call_site(),
-                }))),
+                ret: syn::parse_quote!(f32),
+                body: Expr::Paren(Box::new(Expr::Ident(syn::parse_quote!(X)))),
             };
             assert_eq!(item.args_record().to_string(), args, "{entry}");
         }

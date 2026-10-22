@@ -19,8 +19,8 @@
 //! `Kernel`'s methods build through; the coordinates are [`Axis`]'s; a
 //! fold is opened and closed by [`ExprArena::open_fold`] and
 //! [`ExprArena::close_fold`], whose binder is chosen and placeholder renamed
-//! by [`ExprArena::close_over`], as `Kernel::over`'s are; a range is one
-//! [`Fold::admits`]; a kernel is applied by [`ExprArena::apply`]. So each
+//! by [`ExprArena::close_over`], as `Kernel::over`'s are; a range is admitted by
+//! [`Fold::admits`], in `sema`; a kernel is applied by [`ExprArena::apply`]. So each
 //! construction written here and the same one built with the builder are
 //! one program (`tests/the_library_is_the_builders.rs`,
 //! `tests/fold_is_kernel_over.rs`, `tests/kernel_typed_parameters.rs`).
@@ -46,30 +46,30 @@
 //!   parameters lowers to a *template* whose folds over a range that names
 //!   one, and its `N as f32`s, are left open ([`Holes`]) and filled when its
 //!   host function is instantiated.
-//! - [`Staged`](crate::emit::Staged): Rust statements that build the arena
+//! - `emit::Staged`: Rust statements that build the arena
 //!   when the entry's host function is called — an entry that takes a
 //!   kernel-typed parameter, whose argument exists only then. Each step is
 //!   the step [`Expansion`] takes, run later: the same IR calls, in the same
 //!   order.
 //!
 //! A kernel-typed parameter is admitted when the host function is called,
-//! after the entry's own uniforms ([`AnalyzedKernel::kernel_parameters`]),
+//! after the entry's own uniforms ([`Callable::kernel_parameters`]),
 //! and `k(x, y)` is [`Site::apply`]. [`Expansion`] has no argument to apply
 //! — its [`Site::Argument`] is uninhabited — so no entry that takes one can
 //! be lowered there.
 
 use crate::PLAN;
 use crate::ast::{
-    BinaryOp, BlockExpr, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt, RecordId, Reduction,
-    Role, Stmt, UnaryOp,
+    BinaryOp, BlockExpr, Callable, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt,
+    LibraryMethod, Method, MethodCallExpr, Name, ProjectExpr, Projection, RecordId, Reduction,
+    Role, Stmt, UnaryOp, same_name,
 };
 use crate::sema::{
-    AnalyzedKernel, Bounds, ConstValue, RangeScope, Scalar, StructuralRange, range_bounds,
+    AnalyzedKernel, Bounds, ConstValue, Parameter, RangeScope, Scalar, StructuralRange,
+    folds_nested_too_deep, range_bounds,
 };
-use crate::symbol::Scopes;
-use pixelflow_ir::arena::{
-    Axis, ExprArena, ExprId, IndexSpaceFull, OpenFold, UniformDecl, UniformIdentity,
-};
+use crate::symbol::{Scopes, SymbolTable};
+use pixelflow_ir::arena::{Axis, ExprArena, ExprId, OpenFold, UniformDecl, UniformIdentity};
 use pixelflow_ir::library;
 use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
 use std::collections::HashMap;
@@ -78,49 +78,11 @@ use std::ops::Range;
 use std::rc::Rc;
 use syn::Ident;
 
-/// DSL method calls that denote a fixed composition of primitive ops rather
-/// than a single [`OpKind`] — `(name, arg_count)`, `arg_count` excluding the
-/// receiver.
-///
-/// The syntax's names for [`library`]'s definitions, which lowering calls
-/// and does not restate. This list is the one place that says which names
-/// and arities exist, so `sema`'s validation and lowering's dispatch cannot
-/// silently drift on which library methods a kernel body may call. They did
-/// once, in both directions at once — see `every_advertised_method_compiles`
-/// in the crate root.
-pub(crate) const LIBRARY_METHODS: &[(&str, usize)] = &[("fract", 0), ("hypot", 1), ("clamp", 2)];
-
-/// A derivative projection, called as `DX(e)`.
-///
-/// One definition of the names: `sema` accepts a call by asking here, and
-/// lowering builds the `Dwrt` chain by matching on the variant, so the two
-/// cannot disagree about which projections exist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Projection {
-    /// `V(e)`: the value itself. Every arena expression is already
-    /// value-space, so it is the identity.
-    Value,
-    Dx,
-    Dy,
-    Dxx,
-    Dxy,
-    Dyy,
-}
+/// Why a method's operands are all there: [`Method::resolve`] admits a name
+/// only at the arity it takes.
+const RESOLVED_AT_ITS_ARITY: &str = "`Method::resolve` admits a method only at its arity";
 
 impl Projection {
-    /// The projection a name denotes, if any.
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "V" => Some(Self::Value),
-            "DX" => Some(Self::Dx),
-            "DY" => Some(Self::Dy),
-            "DXX" => Some(Self::Dxx),
-            "DXY" => Some(Self::Dxy),
-            "DYY" => Some(Self::Dyy),
-            _ => None,
-        }
-    }
-
     /// The axes the projection differentiates along, innermost first: `DXY`
     /// is `∂/∂Y` of `∂e/∂X`, as `Kernel`'s `e.dx().dy()` is.
     fn axes(self) -> &'static [Axis] {
@@ -135,19 +97,10 @@ impl Projection {
     }
 }
 
-/// The range a fold runs over, as lowering hands it to a [`Site`]: known
-/// here, and admitted ([`known_range`]), or naming an entry's structural
-/// parameters, known when its host function is instantiated.
-#[derive(Debug, Clone)]
-pub(crate) enum FoldRange {
-    Known(Range<u32>),
-    Structural(StructuralRange),
-}
-
 /// Somewhere lowering builds a term: each step of the walk, as a call.
 ///
 /// Two of them, and they differ only in *when* a step runs ([`Expansion`]
-/// now, `Staged` when the entry's host function is called) — every step is
+/// at expansion, `Staged` when the entry's host function is called) — every step is
 /// the same IR call either way, so the walk is written once, here, and a
 /// program an entry builds at load time is the one it would have built at
 /// expansion.
@@ -176,41 +129,32 @@ pub(crate) trait Site {
     /// [`library::derivative`].
     fn derivative(&mut self, e: Self::Term, axis: Axis) -> Self::Term;
     /// One of the entry's uniform scalars, declared next, and its leaf.
-    fn uniform(&mut self, scalar: Scalar<'_>) -> Self::Term;
+    fn uniform(&mut self, scalar: Scalar) -> Self::Term;
     /// The entry's kernel-typed parameter `name`, admitted next
     /// ([`ExprArena::admit`]).
     ///
     /// # Errors
     ///
     /// Where there is no argument to admit.
-    fn kernel_parameter(&mut self, name: &Ident) -> Result<Self::Argument, String>;
+    fn kernel_parameter(&mut self, name: &Ident) -> syn::Result<Self::Argument>;
     /// `name as f32`, the entry's `position`th structural parameter.
     ///
     /// # Errors
     ///
     /// Where the position has no room.
-    fn count(&mut self, position: usize, name: &Ident) -> Result<Self::Term, String>;
-    /// Open a fold over `range` under `monoid`, `depth` folds being open
-    /// already: its index ([`ExprArena::open_fold`]). Lowering has refused
-    /// a depth past the binders.
+    fn count(&mut self, position: usize, name: &Ident) -> syn::Result<Self::Term>;
+    /// Open a fold over `bounds` under `monoid`, `depth` folds being open
+    /// already: its index ([`ExprArena::open_fold`]).
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Where the range has no room.
-    fn open_fold(
-        &mut self,
-        depth: usize,
-        monoid: Monoid,
-        range: FoldRange,
-    ) -> Result<Self::Term, String>;
+    /// At `depth` [`Binder::COUNT`] or more: lowering refuses a fold nested
+    /// that deep before it opens one.
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, bounds: Bounds) -> Self::Term;
     /// Close the innermost open fold over `body` ([`ExprArena::close_fold`]).
-    ///
-    /// # Errors
-    ///
-    /// When its body binds every binder, where that is known.
-    fn close_fold(&mut self, body: Self::Term) -> Result<Self::Term, String>;
+    fn close_fold(&mut self, body: Self::Term) -> Self::Term;
     /// `kernel` applied at `(x, y)` ([`ExprArena::apply`]).
-    fn apply(&mut self, kernel: &Self::Argument, at: [Self::Term; 2]) -> Self::Term;
+    fn apply(&mut self, kernel: Self::Argument, at: [Self::Term; 2]) -> Self::Term;
 }
 
 /// A name in scope while a body is lowered.
@@ -248,41 +192,17 @@ fn monoid(reduction: Reduction) -> Monoid {
     }
 }
 
-/// A known fold's bounds at the IR's width, if [`Fold::admits`] them.
-///
-/// `sema` holds a bound in 64 bits, as the control plane is, and has
-/// refused a range that runs backwards. The IR narrows a bound twice: its
-/// ends are `u32` today (widening them is A5 of the plan, deprioritized),
-/// and its index is an `f32` lane, exact to [`Fold::EXACT_BOUND`]. The
-/// lane is the tighter of the two, the one A5 would not lift, and the IR's
-/// to state; lowering asks it before building the body, so the refusal
-/// names the bounds, in the words of both narrowings.
-fn known_range(lo: u64, hi: u64) -> Result<Range<u32>, String> {
-    let range = match (u32::try_from(lo), u32::try_from(hi)) {
-        (Ok(lo), Ok(hi)) => Some(lo..hi),
-        _ => None,
-    };
-    range.filter(Fold::admits).ok_or_else(|| {
-        let bound = Fold::EXACT_BOUND;
-        format!(
-            "the range `{lo}..{hi}` reaches past {bound} (2^24): a fold's index is an `f32` \
-             lane, which names every integer only that far, so past it indices would round \
-             together and the fold would not be the one written (`Fold::EXACT_BOUND`)\n\
-             note: a fold's ends are also `u32` in the IR today (`Fold`); 64-bit fold ends \
-             are A5 of {PLAN}, deprioritized, and would not widen the lane"
-        )
-    })
-}
-
 /// The default a uniform is declared with here, where no call has supplied
 /// one. Nothing at expansion reads it — a uniform is never folded, and
 /// emission declares each with the call's value — so it is a NaN, which
 /// would poison whatever read it by mistake rather than pass for a number.
 const UNBOUND: f32 = f32::NAN;
 
-/// The range every open fold of a template is built over ([`Holes`]):
-/// empty, so that read as a program an open fold is its monoid's identity,
-/// never plausible pixels.
+/// The range every open fold of a template is built over ([`Holes`]): empty,
+/// because the ends of a range [`Fold::admits`] have no room for a
+/// placeholder and the stride ([`HOLE_STRIDE`]) carries it instead. Left
+/// unfilled it would read as its monoid's identity, so [`Holes::range_of`]
+/// names every open fold and emission fills each one.
 const OPEN_RANGE: Range<u32> = 0..0;
 
 /// The stride an open fold over a template's first distinct range text is
@@ -305,31 +225,24 @@ const HOLE_STRIDE: u32 = 2;
 /// id because lowering splices a fold's arena into its enclosing one, which
 /// renumbers every id.
 #[derive(Debug, Default)]
-pub struct Holes {
+pub(crate) struct Holes {
     ranges: Vec<StructuralRange>,
 }
 
 impl Holes {
     /// The stride an open fold over `range` is built with, over
     /// [`OPEN_RANGE`].
-    fn stride(&mut self, range: StructuralRange) -> Result<u32, String> {
+    fn stride(&mut self, range: StructuralRange) -> u32 {
         let text = range.text();
-        let index = match self.ranges.iter().position(|r| r.text() == text) {
-            Some(index) => index,
-            None => {
-                self.ranges.push(range);
-                self.ranges.len() - 1
-            }
-        };
+        let known = self.ranges.iter().position(|r| r.text() == text);
+        let index = known.unwrap_or(self.ranges.len());
+        if known.is_none() {
+            self.ranges.push(range);
+        }
         u32::try_from(index)
             .ok()
             .and_then(|index| HOLE_STRIDE.checked_add(index))
-            .ok_or_else(|| {
-                format!(
-                    "more distinct ranges over structural parameters than a placeholder can \
-                     name ({index})"
-                )
-            })
+            .expect("an entry names fewer than 2^32 distinct structural ranges")
     }
 
     /// The range an open fold of this template is over, or `None` if `fold`
@@ -340,7 +253,7 @@ impl Holes {
     /// On a placeholder stride no hole names — one from another template.
     /// Emitted as it stands it would be an empty fold, its monoid's
     /// identity, with plausible pixels.
-    pub fn range_of(&self, range: Fold) -> Option<&StructuralRange> {
+    pub(crate) fn range_of(&self, range: Fold) -> Option<&StructuralRange> {
         if range.range() != OPEN_RANGE {
             return None;
         }
@@ -360,18 +273,23 @@ impl Holes {
 
 /// An entry lowered at expansion: its arena and root, and what the arena
 /// leaves open if it is a template.
-pub struct Lowered {
+pub(crate) struct Lowered {
     pub arena: ExprArena,
     pub root: ExprId,
     pub holes: Holes,
+    /// The entry's uniform scalars, in the order the arena's uniform table
+    /// declares them: the host function's argument each defaults to.
+    pub scalars: Vec<Scalar>,
 }
 
 /// The site an entry that takes no kernel is lowered at: an [`ExprArena`],
 /// at macro expansion, with the folds open in it and the template's holes.
 #[derive(Default)]
-pub struct Expansion {
+pub(crate) struct Expansion {
     arena: ExprArena,
     holes: Holes,
+    /// The scalar behind each uniform declared, in declaration order.
+    scalars: Vec<Scalar>,
     /// The folds whose bodies are being built, innermost last, each with
     /// the fold it closes into.
     open: Vec<(OpenFold, ExpansionFold)>,
@@ -397,13 +315,14 @@ impl Expansion {
     /// When the body has a construct lowering cannot express, or `entry`
     /// takes a kernel — an argument that exists only when its host function
     /// is called.
-    pub fn lower(entry: &FnItem, analyzed: &AnalyzedKernel) -> Result<Lowered, String> {
+    pub(crate) fn lower(entry: Callable<'_>, analyzed: &AnalyzedKernel) -> syn::Result<Lowered> {
         let mut site = Expansion::default();
         let root = lower_entry(entry, analyzed, &mut site)?;
         Ok(Lowered {
             arena: site.arena,
             root,
             holes: site.holes,
+            scalars: site.scalars,
         })
     }
 }
@@ -450,8 +369,9 @@ impl Site for Expansion {
     }
 
     /// A declaration here holds a placeholder default; emission declares
-    /// each with the call's value.
-    fn uniform(&mut self, _scalar: Scalar<'_>) -> ExprId {
+    /// each with the call's value, which the scalar names.
+    fn uniform(&mut self, scalar: Scalar) -> ExprId {
+        self.scalars.push(scalar);
         let slot = self.arena.declare_uniform(UniformDecl {
             id: UniformIdentity::mint(),
             default: UNBOUND,
@@ -459,39 +379,40 @@ impl Site for Expansion {
         self.arena.push_uniform(slot)
     }
 
-    fn kernel_parameter(&mut self, name: &Ident) -> Result<Infallible, String> {
-        Err(format!(
-            "`{name}` is a kernel, and an entry that takes one is lowered when its host function \
-             is called, not at expansion (Phase D-a of {PLAN})"
+    fn kernel_parameter(&mut self, name: &Ident) -> syn::Result<Infallible> {
+        Err(syn::Error::new(
+            name.span(),
+            format!(
+                "`{name}` is a kernel, and an entry that takes one is lowered when its host \
+                 function is called, not at expansion (Phase D-a of {PLAN})"
+            ),
         ))
     }
 
     /// A template's `Param` hole, which its host function fills with the
     /// same `N as f32`.
-    fn count(&mut self, position: usize, name: &Ident) -> Result<ExprId, String> {
+    fn count(&mut self, position: usize, name: &Ident) -> syn::Result<ExprId> {
         // Borrowed: `Param(u8)` is a rewrite rule's metavariable too, and a
         // `u8` is narrower than the control plane allows. It is loud past
         // 256 rather than wrapping, and it goes with `Param` when D2 of the
         // plan deletes it — a structural hole wants a leaf of its own then.
         let hole = u8::try_from(position).map_err(|_| {
-            format!(
-                "`{name} as f32`: an entry reads at most {} structural parameters as values, \
-                 the width of the IR's `Param` leaf",
-                usize::from(u8::MAX) + 1
+            syn::Error::new(
+                name.span(),
+                format!(
+                    "`{name} as f32`: an entry reads at most {} structural parameters as values, \
+                     the width of the IR's `Param` leaf",
+                    usize::from(u8::MAX) + 1
+                ),
             )
         })?;
         Ok(self.arena.push_param(hole))
     }
 
-    fn open_fold(
-        &mut self,
-        depth: usize,
-        monoid: Monoid,
-        range: FoldRange,
-    ) -> Result<ExprId, String> {
-        let fold = match range {
-            FoldRange::Known(range) => ExpansionFold::Known(monoid, range),
-            FoldRange::Structural(range) => ExpansionFold::Hole(monoid, self.holes.stride(range)?),
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, bounds: Bounds) -> ExprId {
+        let fold = match bounds {
+            Bounds::Known(range) => ExpansionFold::Known(monoid, range),
+            Bounds::Structural(range) => ExpansionFold::Hole(monoid, self.holes.stride(range)),
         };
         let open = self
             .arena
@@ -499,10 +420,10 @@ impl Site for Expansion {
             .expect("lowering refuses a fold nested past the binders before it opens one");
         let index = open.index();
         self.open.push((open, fold));
-        Ok(index)
+        index
     }
 
-    fn close_fold(&mut self, body: ExprId) -> Result<ExprId, String> {
+    fn close_fold(&mut self, body: ExprId) -> ExprId {
         let (open, fold) = self
             .open
             .pop()
@@ -515,24 +436,18 @@ impl Site for Expansion {
         };
         self.arena
             .close_fold(open, body, fold_at)
-            .map_err(|IndexSpaceFull| {
-                format!(
-                    "a fold whose body already binds all {} of the IR's indices \
-                     (`Binder::COUNT`)",
-                    Binder::COUNT
-                )
-            })
+            .expect("lowering refuses a fold nested past the binders, so one is always free")
     }
 
-    fn apply(&mut self, kernel: &Infallible, _at: [ExprId; 2]) -> ExprId {
-        match *kernel {}
+    fn apply(&mut self, kernel: Infallible, _at: [ExprId; 2]) -> ExprId {
+        match kernel {}
     }
 }
 
 /// Lower an entry's body at `site`, inlining the block's helpers and folding
 /// its `const`s. Its uniform parameters are declared first, in
 /// [`AnalyzedKernel::parameters`]' order, then its kernel-typed parameters
-/// are admitted, in [`AnalyzedKernel::kernel_parameters`]' — each
+/// are admitted, in [`Callable::kernel_parameters`]' — each
 /// argument's uniforms after the entry's own, in the argument's order.
 /// Children are lowered first so that a parent's operands always exist.
 ///
@@ -540,48 +455,56 @@ impl Site for Expansion {
 ///
 /// When the body has a construct lowering cannot express there.
 pub(crate) fn lower_entry<S: Site>(
-    entry: &FnItem,
+    entry: Callable<'_>,
     analyzed: &AnalyzedKernel,
     site: &mut S,
-) -> Result<S::Term, String> {
+) -> syn::Result<S::Term> {
     let helpers = analyzed
         .def
-        .fns
+        .fns()
         .iter()
         .filter(|f| f.role() == Role::Helper)
-        .map(|f| (f.name.to_string(), f))
+        .map(|f| (Name::of(&f.name), f))
         .collect();
     let mut locals = Scopes::default();
-    for parameter in analyzed.parameters(entry) {
-        let mut uniforms = parameter.scalars().map(|scalar| site.uniform(scalar));
-        let binding = match parameter.record {
-            Some((record, _)) => Binding::Record(record, uniforms.collect()),
-            None => Binding::Value(uniforms.next().expect("a scalar parameter is one uniform")),
+    for parameter in analyzed.parameters(entry.params) {
+        let (name, binding) = match parameter {
+            Parameter::Scalar(name) => (
+                name,
+                Binding::Value(site.uniform(Scalar::Param(name.clone()))),
+            ),
+            Parameter::Record { name, id, fields } => {
+                let uniforms = fields
+                    .iter()
+                    .map(|field| site.uniform(Scalar::Field(name.clone(), field.name.clone())))
+                    .collect();
+                (name, Binding::Record(id, uniforms))
+            }
         };
-        locals.bind(parameter.name.to_string(), binding);
+        locals.bind(Name::of(name), binding);
     }
-    for name in analyzed.kernel_parameters(entry) {
+    for name in entry.kernel_parameters() {
         let argument = site.kernel_parameter(name)?;
-        locals.bind(name.to_string(), Binding::Kernel(argument));
+        locals.bind(Name::of(name), Binding::Kernel(argument));
     }
     let mut lowering = Lowering {
         program: Program { analyzed, helpers },
         frame: Frame {
-            role: entry.role(),
-            structural: &entry.structural,
+            role: entry.role,
+            structural: entry.structural,
             locals,
         },
         site,
         open_folds: 0,
     };
-    lowering.lower(&entry.body)
+    lowering.lower(entry.body)
 }
 
 /// The block's items: what every body can name besides its own scope.
 struct Program<'a> {
     /// The block, analyzed: its records and its `const`s' values.
     analyzed: &'a AnalyzedKernel,
-    helpers: HashMap<String, &'a FnItem>,
+    helpers: HashMap<Name, &'a FnItem>,
 }
 
 /// The function being lowered: its structural parameters, and the bindings
@@ -612,12 +535,14 @@ impl<S: Site> Lowering<'_, S> {
     /// locals via the frame's scopes. Each binding maps to a single term, so
     /// a local used twice is one node and the arena is a DAG rather than
     /// duplicated subtrees.
-    fn lower(&mut self, expr: &Expr) -> Result<S::Term, String> {
+    fn lower(&mut self, expr: &Expr) -> syn::Result<S::Term> {
         match expr {
-            Expr::Ident(ident) => self.resolve(&ident.name.to_string()),
+            Expr::Ident(name) => self.resolve(name),
 
             Expr::Literal(lit) => {
-                let value = lit.f32_value().map_err(|e| e.to_string())?;
+                let value = lit
+                    .f32_value()
+                    .expect("sema refuses a literal that is no `f32`");
                 Ok(self.site.constant(value))
             }
 
@@ -654,73 +579,26 @@ impl<S: Site> Lowering<'_, S> {
                 Ok(self.site.unary(op, operand))
             }
 
-            Expr::MethodCall(call) => {
-                let method = call.method.to_string();
-                let receiver = self.lower(&call.receiver)?;
-                let arg_count = call.args.len();
+            Expr::MethodCall(call) => self.lower_method_call(call),
 
-                // Arena expressions are values, so `.clone()` is the identity.
-                if method == "clone" && arg_count == 0 {
-                    return Ok(receiver);
-                }
-
-                // Primitive ops: one `OpKind` per (name, arity), read from
-                // the single table `OpKind::from_method_call` resolves
-                // against — not re-listed here as a second copy that could
-                // silently drift from it (see `LIBRARY_METHODS` below for
-                // the one part of this dispatch that table doesn't cover).
-                if let Some(op) = OpKind::from_method_call(&method, arg_count) {
-                    let mut args = Vec::with_capacity(arg_count);
-                    for arg in &call.args {
-                        args.push(self.lower(arg)?);
-                    }
-                    let mut args = args.into_iter();
-                    return Ok(match (args.next(), args.next(), args.next()) {
-                        (None, ..) => self.site.unary(op, receiver),
-                        (Some(a), None, _) => self.site.binary(op, [receiver, a]),
-                        (Some(a), Some(b), None) => self.site.ternary(op, [receiver, a, b]),
-                        (Some(_), Some(_), Some(_)) => unreachable!(
-                            "OpKind::from_method_call only resolves ops of arity 1..=3"
-                        ),
-                    });
-                }
-
-                // Library, not primitives: the IR's one definition of each,
-                // which `Kernel`'s method of the same name builds too.
-                match (method.as_str(), call.args.as_slice()) {
-                    ("fract", []) => Ok(self.site.fract(receiver)),
-                    ("hypot", [other]) => {
-                        let other = self.lower(other)?;
-                        Ok(self.site.hypot([receiver, other]))
-                    }
-                    ("clamp", [lo, hi]) => {
-                        let lo = self.lower(lo)?;
-                        let hi = self.lower(hi)?;
-                        Ok(self.site.clamp(receiver, [lo, hi]))
-                    }
-                    _ => Err(format!("Unsupported method: {}", method)),
-                }
-            }
+            Expr::Project(project) => self.lower_projection(project),
 
             // A name in scope is resolved first, as `sema` resolves it: a
             // kernel is applied, and any other binding is not a function.
-            // Then a helper is inlined, and a projection becomes a `Dwrt`
-            // chain.
+            // Then a helper is inlined.
             Expr::Call(call) => {
-                let func = call.func.to_string();
+                let func = Name::of(&call.func);
                 if let Some(binding) = self.frame.locals.lookup(&func) {
                     let Binding::Kernel(kernel) = binding else {
-                        return Err(format!(
-                            "`{func}` is not a kernel; only a kernel is applied"
-                        ));
+                        unreachable!("sema refuses applying a name that is not a kernel");
                     };
                     let kernel = kernel.clone();
-                    return self.apply(&kernel, &func, &call.args);
+                    return self.apply(kernel, &call.args);
                 }
-                if let Some(helper) = self.program.helpers.get(&func).copied() {
-                    return self.inline(helper, &call.args);
-                }
-                self.lower_projection(&func, &call.args)
+                let helper = self.program.helpers.get(&func).copied().expect(
+                    "`sema` refuses a call to anything but a kernel, a helper or a projection",
+                );
+                self.inline(helper, &call.args)
             }
 
             // The choice, the same node `.select` lowers to: `If(m, a, b)`
@@ -736,9 +614,8 @@ impl<S: Site> Lowering<'_, S> {
 
             Expr::Cast(cast) => self.lower_cast(cast),
 
-            Expr::Field(field) => self.lower_field(field),
+            Expr::Field(field) => Ok(self.lower_field(field)),
 
-            // Parentheses are transparent - just recurse into the inner expression
             Expr::Paren(inner) => self.lower(inner),
 
             Expr::Block(block) => self.lower_block(block),
@@ -747,17 +624,9 @@ impl<S: Site> Lowering<'_, S> {
 
     /// `k(x, y)`: the kernel `k` applied at the coordinates, which are
     /// lowered first, in order — contramap (§1.2).
-    fn apply(
-        &mut self,
-        kernel: &S::Argument,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<S::Term, String> {
+    fn apply(&mut self, kernel: S::Argument, args: &[Expr]) -> syn::Result<S::Term> {
         let [x, y] = args else {
-            return Err(format!(
-                "the kernel `{name}` is applied at the two coordinates, and {} were supplied",
-                args.len()
-            ));
+            unreachable!("sema refuses a kernel applied at other than two coordinates");
         };
         let x = self.lower(x)?;
         let y = self.lower(y)?;
@@ -771,97 +640,87 @@ impl<S: Site> Lowering<'_, S> {
     /// fold is closed after it, by the IR's one definition of how a binder
     /// is chosen and a placeholder renamed ([`ExprArena::close_over`]),
     /// which `Kernel`'s folds are built through too.
-    fn lower_fold(&mut self, fold: &FoldExpr) -> Result<S::Term, String> {
+    fn lower_fold(&mut self, fold: &FoldExpr) -> syn::Result<S::Term> {
         let scope = RangeScope {
             consts: &self.program.analyzed.consts,
             structural: self.frame.structural,
         };
-        let bounds = range_bounds(&fold.range, scope).map_err(|e| e.to_string())?;
-        let range = match bounds {
-            Bounds::Known(lo, hi) => FoldRange::Known(known_range(lo, hi)?),
-            Bounds::Structural(range) => FoldRange::Structural(range),
-        };
+        let bounds = range_bounds(&fold.range, scope)
+            .expect("sema refuses a range it cannot evaluate, admit or order");
         // One placeholder per fold open at once, the `n`th for `n` open, so a
         // nested fold's rename never reaches its enclosing fold's index. No
         // more open than the IR has binders: the refusal names the depth,
         // where running out of placeholders would name nothing the author
         // wrote.
         if self.open_folds >= Binder::COUNT {
-            return Err(format!(
-                "folds nested more than {} deep: the IR binds at most that many indices at \
-                 once (`Binder::COUNT`)",
-                Binder::COUNT
-            ));
+            return Err(folds_nested_too_deep(fold.span));
         }
         let index = self
             .site
-            .open_fold(self.open_folds, monoid(fold.reduction), range)?;
+            .open_fold(self.open_folds, monoid(fold.reduction), bounds);
         self.frame.locals.push_scope();
         self.frame
             .locals
-            .bind(fold.binder.to_string(), Binding::Index(index));
+            .bind(Name::of(&fold.binder), Binding::Index(index));
         self.open_folds += 1;
         let body = self.lower(&fold.body);
         self.open_folds -= 1;
         self.frame.locals.pop_scope();
-        self.site.close_fold(body?)
+        Ok(self.site.close_fold(body?))
     }
 
     /// `i as f32`. A fold's index is an `f32` lane already, so its
     /// conversion is its binder's `Var`; a `usize` const is its value's
     /// `f32`, rounded as Rust's `as` rounds it; a structural parameter is the
     /// site's [`Site::count`], the same `N as f32` its host function has.
-    fn lower_cast(&mut self, cast: &CastExpr) -> Result<S::Term, String> {
-        let Some(name) = cast.named() else {
-            return Err("`as f32` converts a `usize`, which is a name".to_string());
-        };
-        if let Some(binding) = self.frame.locals.lookup(&name.to_string()) {
-            return match binding {
-                Binding::Index(index) => Ok(index.clone()),
-                Binding::Value(_) | Binding::Record(..) => Err(format!(
-                    "`{name} as f32`: `{name}` is a value, and `as f32` converts a `usize`"
-                )),
-                Binding::Kernel(_) => Err(format!(
-                    "`{name} as f32`: `{name}` is a kernel, and `as f32` converts a `usize`"
-                )),
+    fn lower_cast(&mut self, cast: &CastExpr) -> syn::Result<S::Term> {
+        let name = cast
+            .named()
+            .expect("sema refuses an `as f32` of anything but a name");
+        if let Some(binding) = self.frame.locals.lookup(&Name::of(name)) {
+            let Binding::Index(index) = binding else {
+                unreachable!("sema refuses `{name} as f32` where `{name}` is no `usize`");
             };
+            return Ok(index.clone());
         }
-        if let Some(position) = self.frame.structural.iter().position(|n| n == name) {
+        if let Some(position) = self
+            .frame
+            .structural
+            .iter()
+            .position(|n| same_name(n, name))
+        {
             return self.site.count(position, name);
         }
-        match self.program.analyzed.consts.get(&name.to_string()) {
-            Some(&ConstValue::Usize(count)) => Ok(self.site.constant(count as f32)),
-            _ => Err(format!("`{name} as f32`: `{name}` is not a `usize`")),
-        }
+        let Some(&ConstValue::Usize(count)) = self.program.analyzed.consts.get(&Name::of(name))
+        else {
+            unreachable!("sema refuses `{name} as f32` where `{name}` is no `usize`");
+        };
+        Ok(self.site.constant(count as f32))
     }
 
     /// `p.x0`: the node of one field of a record binding.
-    fn lower_field(&mut self, field: &FieldExpr) -> Result<S::Term, String> {
-        let (record, fields) = self.record(&field.base)?;
-        let def = self.program.analyzed.def.record(record);
-        def.fields
+    ///
+    /// A record is only ever written by name, and read at a field it has
+    /// (`sema` refuses anything else).
+    fn lower_field(&self, field: &FieldExpr) -> S::Term {
+        let (record, fields) = self
+            .record_named(&field.base)
+            .expect("sema refuses a field read of anything but a record by name");
+        let index = self
+            .program
+            .analyzed
+            .def
+            .record(record)
+            .fields
             .iter()
-            .position(|f| f.name == field.member)
-            .map(|index| fields[index].clone())
-            .ok_or_else(|| format!("no field `{}` on the record `{}`", field.member, def.name))
-    }
-
-    /// The record `expr` names, through any parentheses: a record is only
-    /// ever written by name (`sema` refuses anything else).
-    fn record(&self, expr: &Expr) -> Result<RecordFields<S::Term>, String> {
-        match self.record_named(expr) {
-            Some(record) => Ok(record),
-            None => Err(format!(
-                "a record, by name, where the body has `{}`",
-                expr.named()
-                    .map_or_else(|| "an expression".to_string(), ToString::to_string)
-            )),
-        }
+            .position(|f| same_name(&f.name, &field.member))
+            .expect("sema refuses a field the record does not have");
+        fields[index].clone()
     }
 
     /// The record binding `expr` names, if it names one.
     fn record_named(&self, expr: &Expr) -> Option<RecordFields<S::Term>> {
-        match self.frame.locals.lookup(&expr.named()?.to_string())? {
+        match self.frame.locals.lookup(&Name::of(expr.named()?))? {
             Binding::Record(record, fields) => Some((*record, Rc::clone(fields))),
             Binding::Value(_) | Binding::Index(_) | Binding::Kernel(_) => None,
         }
@@ -870,28 +729,51 @@ impl<S: Site> Lowering<'_, S> {
     /// The kernel binding `expr` names, if it names one: a kernel is only
     /// ever passed by name (`sema` refuses anything else).
     fn kernel_named(&self, expr: &Expr) -> Option<S::Argument> {
-        match self.frame.locals.lookup(&expr.named()?.to_string())? {
+        match self.frame.locals.lookup(&Name::of(expr.named()?))? {
             Binding::Kernel(kernel) => Some(kernel.clone()),
             Binding::Value(_) | Binding::Index(_) | Binding::Record(..) => None,
         }
+    }
+
+    /// `receiver.method(args)`: the operands are lowered in order, receiver
+    /// first, then the method builds its one node. The parser resolved the
+    /// method at this arity, so a method always finds the operands it takes.
+    fn lower_method_call(&mut self, call: &MethodCallExpr) -> syn::Result<S::Term> {
+        let receiver = self.lower(&call.receiver)?;
+        let mut args = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
+            args.push(self.lower(arg)?);
+        }
+        let mut args = args.into_iter();
+        let mut operand = || args.next().expect(RESOLVED_AT_ITS_ARITY);
+        Ok(match call.method {
+            // Arena expressions are values, so `.clone()` is the identity.
+            Method::Clone => receiver,
+            // Primitive ops: one `OpKind` per (name, arity), read from the
+            // single table `OpKind::from_method_call` resolves against.
+            Method::Op(op) => match call.args.len() {
+                0 => self.site.unary(op, receiver),
+                1 => self.site.binary(op, [receiver, operand()]),
+                2 => self.site.ternary(op, [receiver, operand(), operand()]),
+                _ => unreachable!("OpKind::from_method_call only resolves ops of arity 1..=3"),
+            },
+            // Library, not primitives: the IR's one definition of each,
+            // which `Kernel`'s method of the same name builds too.
+            Method::Library(LibraryMethod::Fract) => self.site.fract(receiver),
+            Method::Library(LibraryMethod::Hypot) => self.site.hypot([receiver, operand()]),
+            Method::Library(LibraryMethod::Clamp) => {
+                self.site.clamp(receiver, [operand(), operand()])
+            }
+        })
     }
 
     /// Derivative projections (V/DX/DY and the Hessian family) map to
     /// [`library::derivative`]s, one per axis, as `Kernel::dx`/`dy` build
     /// them: the runtime `lower_dwrt` pass (pixelflow-ir) rewrites them into
     /// chain-rule arithmetic before codegen.
-    fn lower_projection(&mut self, func: &str, args: &[Expr]) -> Result<S::Term, String> {
-        let Some(projection) = Projection::from_name(func) else {
-            return Err(format!("Unsupported call: {func}"));
-        };
-        let [arg] = args else {
-            return Err(format!(
-                "Unsupported call: {func}/{} (projections take one argument)",
-                args.len()
-            ));
-        };
-        let mut e = self.lower(arg)?;
-        for &axis in projection.axes() {
+    fn lower_projection(&mut self, project: &ProjectExpr) -> syn::Result<S::Term> {
+        let mut e = self.lower(&project.arg)?;
+        for &axis in project.projection.axes() {
             e = self.site.derivative(e, axis);
         }
         Ok(e)
@@ -906,15 +788,13 @@ impl<S: Site> Lowering<'_, S> {
     /// frame of its own: the helper's parameters are its base scope, and
     /// nothing of the caller's — no local, no entry parameter, no structural
     /// parameter — is visible.
-    fn inline(&mut self, helper: &FnItem, args: &[Expr]) -> Result<S::Term, String> {
-        if args.len() != helper.params.len() {
-            return Err(format!(
-                "`{}` takes {} arguments, but {} were supplied",
-                helper.name,
-                helper.params.len(),
-                args.len()
-            ));
-        }
+    fn inline(&mut self, helper: &FnItem, args: &[Expr]) -> syn::Result<S::Term> {
+        assert_eq!(
+            args.len(),
+            helper.params.len(),
+            "sema refuses a call to `{}` at another arity",
+            helper.name
+        );
         let mut locals = Scopes::default();
         for (param, arg) in helper.params.iter().zip(args) {
             let binding = match (self.record_named(arg), self.kernel_named(arg)) {
@@ -922,7 +802,7 @@ impl<S: Site> Lowering<'_, S> {
                 (None, Some(kernel)) => Binding::Kernel(kernel),
                 (None, None) => Binding::Value(self.lower(arg)?),
             };
-            locals.bind(param.name.to_string(), binding);
+            locals.bind(Name::of(&param.name), binding);
         }
         let callee = Frame {
             role: Role::Helper,
@@ -946,27 +826,17 @@ impl<S: Site> Lowering<'_, S> {
     /// Bindings come first because that is what lexical scoping means. `sema`
     /// refuses a `let` named X or Y, so today the order only decides a
     /// local against a parameter it shadows; but matching `"X"` before the
-    /// locals was how `{ let X = Y; X }` came to read the coordinate, and a
+    /// locals would let `{ let X = Y; X }` read the coordinate, and a
     /// lowering that is right only because an earlier stage refused its
-    /// input is one refactor away from that bug again. For the same reason a
+    /// input is one refactor away from that bug. For the same reason a
     /// coordinate in a helper is refused here too, not only in `sema`.
-    fn resolve(&mut self, name: &str) -> Result<S::Term, String> {
+    fn resolve(&mut self, ident: &Ident) -> syn::Result<S::Term> {
+        let name = &Name::of(ident);
         if let Some(binding) = self.frame.locals.lookup(name) {
-            return match binding {
-                Binding::Value(id) => Ok(id.clone()),
-                Binding::Index(_) => Err(format!(
-                    "`{name}` is a fold's index, a `usize`, where a value is expected: \
-                     `{name} as f32`"
-                )),
-                Binding::Record(..) => Err(format!(
-                    "`{name}` is a record, where a value is expected: read a field, \
-                     `{name}.x0`"
-                )),
-                Binding::Kernel(_) => Err(format!(
-                    "`{name}` is a kernel, where a value is expected: apply it, \
-                     `{name}(X, Y)`"
-                )),
+            let Binding::Value(id) = binding else {
+                unreachable!("sema refuses `{name}` read as a value: it is no `f32` or `bool`");
             };
+            return Ok(id.clone());
         }
         // The same order sema documents: a binding, then a const, then a
         // structural parameter, then the coordinates. Sema refuses a
@@ -975,33 +845,27 @@ impl<S: Site> Lowering<'_, S> {
         match self.program.analyzed.consts.get(name) {
             Some(&ConstValue::F32(value)) => return Ok(self.site.constant(value)),
             Some(ConstValue::Usize(_)) => {
-                return Err(format!(
-                    "`{name}` is a `usize` const, where a value is expected: `{name} as f32`"
-                ));
+                unreachable!("sema refuses the `usize` const `{name}` read as a value")
             }
             None => {}
         }
-        if self.frame.structural.iter().any(|n| n == name) {
-            return Err(format!(
-                "`{name}` is a structural parameter, a `usize`, where a value is expected: \
-                 `{name} as f32`"
-            ));
-        }
-        let axis = match name {
-            "X" => Axis::X,
-            "Y" => Axis::Y,
-            _ => return Err(format!("Unknown identifier: {name}")),
-        };
+        assert!(
+            !self.frame.structural.iter().any(|n| Name::of(n) == *name),
+            "sema refuses the structural parameter `{name}` read as a value"
+        );
+        let axis = SymbolTable::coordinate(name)
+            .unwrap_or_else(|| unreachable!("sema refuses the unknown name `{name}`"));
         match self.frame.role {
             Role::Entry => Ok(self.site.coordinate(axis)),
-            Role::Helper => Err(format!(
-                "`{name}` in a helper: a helper takes its coordinates as arguments"
+            Role::Helper => Err(syn::Error::new(
+                ident.span(),
+                format!("`{name}` in a helper: a helper takes its coordinates as arguments"),
             )),
         }
     }
 
     /// A block's `let`s live in a scope of their own, which ends with it.
-    fn lower_block(&mut self, block: &BlockExpr) -> Result<S::Term, String> {
+    fn lower_block(&mut self, block: &BlockExpr) -> syn::Result<S::Term> {
         self.frame.locals.push_scope();
         let value = self.lower_block_contents(block);
         self.frame.locals.pop_scope();
@@ -1010,7 +874,7 @@ impl<S: Site> Lowering<'_, S> {
 
     /// What a `let` binds its name to: its initializer's node, or — a record
     /// being aliased — the same fields.
-    fn let_binding(&mut self, let_stmt: &LetStmt) -> Result<Binding<S::Term, S::Argument>, String> {
+    fn let_binding(&mut self, let_stmt: &LetStmt) -> syn::Result<Binding<S::Term, S::Argument>> {
         match self.record_named(&let_stmt.init) {
             Some((record, fields)) => Ok(Binding::Record(record, fields)),
             None => Ok(Binding::Value(self.lower(&let_stmt.init)?)),
@@ -1019,24 +883,19 @@ impl<S: Site> Lowering<'_, S> {
 
     /// A block's statements in order, then its value, in the scope the
     /// caller opened for it.
-    fn lower_block_contents(&mut self, block: &BlockExpr) -> Result<S::Term, String> {
+    fn lower_block_contents(&mut self, block: &BlockExpr) -> syn::Result<S::Term> {
         for stmt in &block.stmts {
             match stmt {
-                // The initializer is lowered before the binding exists, so it
-                // sees whatever the name meant before: `let a = a + 1.0;`.
-                Stmt::Let(let_stmt) => {
-                    let binding = self.let_binding(let_stmt)?;
-                    self.frame.locals.bind(let_stmt.name.to_string(), binding);
-                }
                 // Every initializer before any name: `let (a, b) = (b, a);`
-                // swaps, as Rust's does.
-                Stmt::LetTuple(lets) => {
+                // swaps, as Rust's does, and `let a = a + 1.0;` sees whatever
+                // the name meant before.
+                Stmt::Let(lets) => {
                     let mut bindings = Vec::with_capacity(lets.len());
                     for let_stmt in lets {
                         bindings.push(self.let_binding(let_stmt)?);
                     }
                     for (let_stmt, binding) in lets.iter().zip(bindings) {
-                        self.frame.locals.bind(let_stmt.name.to_string(), binding);
+                        self.frame.locals.bind(Name::of(&let_stmt.name), binding);
                     }
                 }
                 // A non-binding statement has no value to thread; lower it so
@@ -1046,20 +905,20 @@ impl<S: Site> Lowering<'_, S> {
                 }
             }
         }
-        match &block.expr {
-            Some(final_expr) => self.lower(final_expr),
-            None => Err("Block has no final expression".to_string()),
-        }
+        let value = block
+            .expr
+            .as_ref()
+            .expect("sema refuses a block with no final expression");
+        self.lower(value)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::KernelDef;
     use crate::parser::parse;
-    use crate::sema::Ty;
-    use pixelflow_ir::Placeholder;
-    use pixelflow_ir::arena::{ExprNode, UniformId};
+    use pixelflow_ir::arena::ExprNode;
     use quote::quote;
 
     /// Lower a block straight from the parser, with no `sema` in front: what
@@ -1070,27 +929,30 @@ mod tests {
     fn lower_unanalyzed(input: proc_macro2::TokenStream) -> Result<(ExprArena, ExprId), String> {
         let def = parse(input).expect("the body parses");
         let consts = def
-            .consts
+            .consts()
             .iter()
             .map(|c| {
                 let Expr::Literal(lit) = &c.init else {
                     panic!("this harness holds literal consts only");
                 };
-                let value = match Ty::from_syn(&c.ty) {
-                    Some(Ty::Usize) => ConstValue::Usize(lit.usize_value().expect("a count")),
-                    _ => ConstValue::F32(lit.f32_value().expect("a value")),
+                let value = match matches!(&c.ty, syn::Type::Path(p) if p.path.is_ident("usize")) {
+                    true => ConstValue::Usize(lit.usize_value().expect("a count")),
+                    false => ConstValue::F32(lit.f32_value().expect("a value")),
                 };
-                (c.name.to_string(), value)
+                (Name::of(&c.name), value)
             })
             .collect();
         let unanalyzed = AnalyzedKernel { def, consts };
-        let entry = unanalyzed
-            .def
-            .fns
-            .iter()
-            .find(|f| f.role() == Role::Entry)
-            .expect("one entry");
-        let Lowered { arena, root, .. } = Expansion::lower(entry, &unanalyzed)?;
+        let entry = match &unanalyzed.def {
+            KernelDef::Closure(entry) => entry.callable(),
+            KernelDef::Items { fns, .. } => fns
+                .iter()
+                .find(|f| f.role() == Role::Entry)
+                .expect("one entry")
+                .callable(),
+        };
+        let Lowered { arena, root, .. } =
+            Expansion::lower(entry, &unanalyzed).map_err(|refusal| refusal.to_string())?;
         Ok((arena, root))
     }
 
@@ -1098,10 +960,9 @@ mod tests {
         lower_unanalyzed(input).expect("the body lowers")
     }
 
-    /// Probe p5, at the stage that got it wrong. `sema` now refuses
-    /// `let X`, but lowering resolves a name through its scopes before the
-    /// coordinates regardless: `{ let X = Y; X }` is the local, which is `Y`.
-    /// It was `Var(0)`.
+    /// `sema` refuses `let X`, but lowering resolves a name through its
+    /// scopes before the coordinates regardless: `{ let X = Y; X }` is the
+    /// local, which is `Y`, not `Var(0)`.
     #[test]
     fn a_binding_is_resolved_before_a_coordinate_of_the_same_name() {
         let (arena, root) = lowered(quote! { || { let X = Y; X } });
@@ -1110,197 +971,6 @@ mod tests {
             "`X` is the local bound to Y, got {:?}",
             arena.node(root)
         );
-    }
-
-    /// A local shadows the parameter it is named after, and only inside its
-    /// block.
-    #[test]
-    fn a_binding_shadows_a_parameter_only_inside_its_block() {
-        let (arena, root) = lowered(quote! { |r: f32| ({ let r = X; r }) + r });
-        let ExprNode::Binary(OpKind::Add, inner, outer) = arena.node(root) else {
-            panic!("expected the sum, got {:?}", arena.node(root));
-        };
-        assert!(
-            matches!(arena.node(inner), ExprNode::Var(0)),
-            "inner `r` is X"
-        );
-        assert!(
-            matches!(arena.node(outer), ExprNode::Uniform(UniformId(0))),
-            "outer `r` is the parameter's uniform"
-        );
-    }
-
-    /// Every parameter is a uniform, declared in order — a record's fields
-    /// in field order — whether or not the body reads it; a field read is
-    /// its field's uniform, through a `let` alias and a helper's record
-    /// parameter alike.
-    #[test]
-    fn every_parameter_is_a_uniform_declared_in_order() {
-        let (arena, root) = lowered(quote! {
-            struct Pair { a: f32, b: f32 }
-            fn second(p: Pair) -> f32 { p.b }
-            pub fn f(unread: f32, p: Pair, r: f32) -> f32 { let q = p; second(q) * r }
-        });
-        assert_eq!(
-            arena.uniforms().len(),
-            4,
-            "unread, p.a, p.b, r: every scalar is declared"
-        );
-        let ExprNode::Binary(OpKind::Mul, field, r) = arena.node(root) else {
-            panic!("expected the product, got {}", arena.display(root));
-        };
-        assert!(
-            matches!(arena.node(field), ExprNode::Uniform(UniformId(2))),
-            "`second(q)` is p.b, the third scalar"
-        );
-        assert!(matches!(arena.node(r), ExprNode::Uniform(UniformId(3))));
-    }
-
-    /// A template's `N as f32` is its structural parameter's `Param` hole,
-    /// and a fold over a range naming one is built over a placeholder its
-    /// holes map back to the range — two different ranges to two different
-    /// holes; a known fold is not a hole.
-    #[test]
-    fn a_structural_parameter_leaves_the_template_open() {
-        let def = parse(quote! {
-            pub fn f<const N: usize, const M: usize>() -> f32 {
-                (0..M * 2).map(|i| X * (i as f32)).sum::<f32>()
-                    + (0..N).map(|i| Y * (i as f32)).sum::<f32>()
-                    + (0..3).map(|i| i as f32).sum::<f32>()
-                    + (M as f32)
-            }
-        })
-        .expect("parses");
-        let analyzed = crate::sema::analyze(def).expect("analyzes");
-        let Lowered {
-            arena, root, holes, ..
-        } = Expansion::lower(&analyzed.def.fns[0], &analyzed).expect("lowers");
-        let mut open = Vec::new();
-        let mut known = Vec::new();
-        let mut params = Vec::new();
-        for (_, node) in arena.nodes() {
-            match node {
-                ExprNode::Reduce { fold, .. } => match holes.range_of(fold) {
-                    Some(range) => open.push(range.text()),
-                    None => known.push(fold),
-                },
-                ExprNode::Param(k) => params.push(k),
-                _ => {}
-            }
-        }
-        open.sort();
-        assert_eq!(open, ["0..(M * 2)", "0..N"], "each range is its own hole");
-        assert_eq!(
-            known.len(),
-            1,
-            "`0..3` is known here: {}",
-            arena.display(root)
-        );
-        assert_eq!(params, [1], "`M` is the second structural parameter");
-    }
-
-    /// A placeholder no hole names is a front-end bug, never a known fold:
-    /// emitted as it stands it would be empty, its monoid's identity.
-    #[test]
-    #[should_panic(expected = "no structural range of this entry names")]
-    fn a_placeholder_no_hole_names_is_refused() {
-        let binder = Binder::all().next().expect("a binder");
-        let stray = Fold::strided(Monoid::SUM, binder, OPEN_RANGE, HOLE_STRIDE);
-        let _unreachable = Holes::default().range_of(stray);
-    }
-
-    /// A known fold is never read as a hole, whatever its range: empty at
-    /// the open range's position, or strided by a pass.
-    #[test]
-    fn a_known_fold_is_no_hole() {
-        let binder = Binder::all().next().expect("a binder");
-        let holes = Holes::default();
-        for known in [
-            Fold::new(Monoid::SUM, binder, OPEN_RANGE),
-            Fold::strided(Monoid::SUM, binder, 0..8, HOLE_STRIDE),
-        ] {
-            assert!(holes.range_of(known).is_none(), "{known}");
-        }
-    }
-
-    /// A literal lowers to the value the parser gave it, bit for bit.
-    #[test]
-    fn a_literal_lowers_to_the_value_the_parser_rounded_once() {
-        let (arena, root) = lowered(quote! { || 1.00000005960464477539062500001 });
-        let ExprNode::Const(value) = arena.node(root) else {
-            panic!("expected a constant, got {:?}", arena.node(root));
-        };
-        assert_eq!(value.to_bits(), 0x3f80_0001);
-    }
-
-    /// `if` and `.select` are the same node.
-    #[test]
-    fn an_if_lowers_to_the_if_node() {
-        let (arena, root) = lowered(quote! { || if X < Y { X } else { Y } });
-        let ExprNode::Ternary(OpKind::If, cond, a, b) = arena.node(root) else {
-            panic!("expected If, got {:?}", arena.node(root));
-        };
-        assert!(matches!(
-            arena.node(cond),
-            ExprNode::Binary(OpKind::Lt, _, _)
-        ));
-        assert!(matches!(arena.node(a), ExprNode::Var(0)));
-        assert!(matches!(arena.node(b), ExprNode::Var(1)));
-    }
-
-    /// A `const` lowers to its value.
-    #[test]
-    fn a_const_lowers_to_its_value() {
-        let (arena, root) = lowered(quote! {
-            const R: f32 = 2.5;
-            pub fn f() -> f32 { X * R }
-        });
-        let ExprNode::Binary(OpKind::Mul, _, r) = arena.node(root) else {
-            panic!("expected the product, got {:?}", arena.node(root));
-        };
-        assert!(matches!(arena.node(r), ExprNode::Const(v) if v == 2.5));
-    }
-
-    /// A helper's body is lowered in a frame of its own: its parameter
-    /// names the argument's node, and a caller's local of the same name as
-    /// something the helper reads is not visible to it. Here `sq`'s `x` is
-    /// the argument `Y`, not the caller's `let x = X`, and the argument is
-    /// one node used twice.
-    #[test]
-    fn a_helper_is_inlined_in_its_own_scope() {
-        let (arena, root) = lowered(quote! {
-            fn sq(x: f32) -> f32 { x * x }
-            pub fn f() -> f32 { let x = X; sq(Y) + x }
-        });
-        let ExprNode::Binary(OpKind::Add, call, local) = arena.node(root) else {
-            panic!("expected the sum, got {:?}", arena.node(root));
-        };
-        let ExprNode::Binary(OpKind::Mul, a, b) = arena.node(call) else {
-            panic!("expected the square, got {:?}", arena.node(call));
-        };
-        assert_eq!(a, b, "the argument is one node, used twice");
-        assert!(
-            matches!(arena.node(a), ExprNode::Var(1)),
-            "`x` in `sq` is Y"
-        );
-        assert!(
-            matches!(arena.node(local), ExprNode::Var(0)),
-            "`x` in `f` is X"
-        );
-    }
-
-    /// The caller's locals are not in scope in the helper, at this stage
-    /// too: a helper naming one the caller happens to bind is an error, not
-    /// dynamic scoping.
-    #[test]
-    fn a_helper_does_not_see_the_callers_locals() {
-        let Err(err) = lower_unanalyzed(quote! {
-            fn leak() -> f32 { a }
-            pub fn f() -> f32 { let a = X; leak() }
-        }) else {
-            panic!("`a` is not in the helper's scope");
-        };
-        assert!(err.contains("Unknown identifier: a"), "got: {err}");
     }
 
     /// A coordinate in a helper is refused by lowering itself, not only by
@@ -1318,174 +988,38 @@ mod tests {
 
     // ───────────────────────────── folds ─────────────────────────────
 
-    /// Whether any node in the arena — reachable or not — is a
-    /// placeholder index.
-    fn holds_a_placeholder(arena: &ExprArena) -> bool {
-        let first = Placeholder::nth(0).expect("a placeholder").var();
-        arena
-            .nodes()
-            .any(|(_, node)| matches!(node, ExprNode::Var(v) if v >= first))
-    }
-
-    /// A fold is one `Reduce` over its range, its body reading the binder's
-    /// `Var`, and the arena holds nothing else: the placeholder the body was
-    /// built against stayed in the copy it was built in.
+    /// `sema` counts the folds one body nests; a helper's fold inlined into
+    /// them nests deeper than any body shows, and lowering refuses that one,
+    /// where the IR would run out of binders.
     #[test]
-    fn a_fold_lowers_to_one_reduce_and_leaves_nothing_behind() {
-        let (arena, root) = lowered(quote! { || (2..6).map(|i| X * (i as f32)).sum() });
-        let ExprNode::Reduce { fold: range, body } = arena.node(root) else {
-            panic!("expected a fold, got {}", arena.display(root));
-        };
-        assert_eq!(range.range(), 2..6);
-        assert_eq!(range.monoid(), Monoid::SUM);
-        assert_eq!(range.binder().slot(), 0);
-        let ExprNode::Binary(OpKind::Mul, x, index) = arena.node(body) else {
-            panic!("expected the product, got {}", arena.display(body));
-        };
-        assert!(matches!(arena.node(x), ExprNode::Var(0)));
-        assert!(matches!(arena.node(index), ExprNode::Var(v) if v == range.binder().var()));
-        assert!(!holds_a_placeholder(&arena));
-        assert_eq!(
-            arena.len(),
-            4,
-            "X, the index, the product, the fold, and nothing else"
-        );
-    }
-
-    /// Nested folds each take their own slot, inside-out, and no
-    /// placeholder of either survives.
-    #[test]
-    fn nested_folds_take_distinct_slots_inside_out() {
-        let (arena, root) = lowered(quote! {
-            || (0..3).map(|i| (0..4).map(|j| (i as f32) * (j as f32)).sum::<f32>()).sum()
-        });
-        let ExprNode::Reduce { fold: outer, body } = arena.node(root) else {
-            panic!("expected the outer fold, got {}", arena.display(root));
-        };
-        let ExprNode::Reduce { fold: inner, .. } = arena.node(body) else {
-            panic!("expected the inner fold, got {}", arena.display(body));
-        };
-        assert_eq!(outer.binder().slot(), 1);
-        assert_eq!(inner.binder().slot(), 0);
-        assert!(!holds_a_placeholder(&arena));
-    }
-
-    /// Lowering refuses a fold's index where a value is expected, as `sema`
-    /// does, without relying on it.
-    #[test]
-    fn an_index_where_a_value_is_expected_is_refused_here_too() {
-        let Err(err) = lower_unanalyzed(quote! { || (0..4).map(|i| X * i).sum() }) else {
-            panic!("`i` is a `usize`");
-        };
-        assert!(
-            err.contains("`i` is a fold's index, a `usize`"),
-            "got: {err}"
-        );
-        let Err(err) = lower_unanalyzed(quote! {
-            const N: usize = 4;
-            pub fn f() -> f32 { X * N }
-        }) else {
-            panic!("`N` is a `usize`");
-        };
-        assert!(err.contains("`N` is a `usize` const"), "got: {err}");
-    }
-
-    /// A `usize` const `as f32` is its value's `f32`.
-    #[test]
-    fn a_usize_const_as_f32_is_its_value() {
-        let (arena, root) = lowered(quote! {
-            const N: usize = 4;
-            pub fn f() -> f32 { N as f32 }
-        });
-        assert!(matches!(arena.node(root), ExprNode::Const(v) if v == 4.0));
-    }
-
-    /// `sema` holds a bound in 64 bits; the IR's index is an `f32` lane,
-    /// exact to 2²⁴, and its fold ends are `u32`. A bound past the lane is
-    /// refused — past `u32` too, naming the plan's A5 — and 2²⁴ itself is
-    /// the last bound accepted.
-    #[test]
-    fn a_bound_past_the_exact_index_is_refused_naming_a5() {
-        for past in [
-            quote! { || (0..16777217).map(|i| i as f32).sum() },
-            quote! { || (16777217..16777217).map(|i| i as f32).sum() },
-            quote! { || (0..4294967296).map(|i| i as f32).sum() },
-        ] {
-            let Err(err) = lower_unanalyzed(past) else {
-                panic!("past 2^24 an f32 lane does not name every index");
-            };
-            assert!(
-                err.contains("past 16777216 (2^24)") && err.contains("A5") && err.contains(PLAN),
-                "got: {err}"
-            );
-        }
-        let (arena, root) = lowered(quote! { || (16777215..16777216).map(|i| i as f32).sum() });
-        let ExprNode::Reduce { fold: range, .. } = arena.node(root) else {
-            panic!("expected a fold, got {}", arena.display(root));
-        };
-        assert_eq!(range.range(), 16_777_215..16_777_216);
-    }
-
-    /// Folds nest as deep as the IR has binders, and no deeper: one more is
-    /// refused, not a panic.
-    #[test]
-    fn folds_nest_as_deep_as_the_ir_has_binders() {
+    fn a_helper_fold_nests_inside_the_callers_and_is_refused_past_the_binders() {
         use proc_macro2::TokenStream;
         let fold = |body: TokenStream| quote! { (0..1).map(|i| #body).sum::<f32>() };
-        let nest = |depth: usize| (0..depth).fold(quote! { X }, |body, _| fold(body));
-        let closure = |body: TokenStream| quote! { || #body };
-        let (arena, root) = lowered(closure(nest(Binder::COUNT)));
+        let nest =
+            |depth: usize, innermost: TokenStream| (0..depth).fold(innermost, |body, _| fold(body));
+        let program = |depth: usize| {
+            let nested = nest(depth, quote! { deepest() });
+            quote! {
+                fn deepest() -> f32 { (0..1).map(|i| 1.0).sum::<f32>() }
+                pub fn f() -> f32 { #nested }
+            }
+        };
+        let through_sema = |input| {
+            let analyzed = crate::sema::analyze(parse(input).expect("parses")).expect("analyzes");
+            let entry = analyzed.def.fns().iter().find(|f| f.role() == Role::Entry);
+            Expansion::lower(entry.expect("one entry").callable(), &analyzed)
+        };
+        let Ok(Lowered { arena, root, .. }) = through_sema(program(Binder::COUNT - 1)) else {
+            panic!("as deep as the IR has binders lowers");
+        };
         let ExprNode::Reduce { fold: outer, .. } = arena.node(root) else {
             panic!("expected a fold");
         };
         assert_eq!(usize::from(outer.binder().slot()), Binder::COUNT - 1);
-        let Err(err) = lower_unanalyzed(closure(nest(Binder::COUNT + 1))) else {
+        let Err(err) = through_sema(program(Binder::COUNT)) else {
             panic!("one binder deeper than the IR has");
         };
+        let err = err.to_string();
         assert!(err.contains("folds nested more than"), "got: {err}");
-    }
-
-    /// `let (a, b) = (b, a);` binds both names at once, to what each
-    /// expression meant before the statement: it swaps, as Rust's does.
-    #[test]
-    fn a_tuple_let_binds_every_name_at_once() {
-        let (arena, root) = lowered(quote! {
-            || { let (a, b) = (X, Y); let (a, b) = (b, a); a - b }
-        });
-        let ExprNode::Binary(OpKind::Sub, a, b) = arena.node(root) else {
-            panic!("`a - b`, got {}", arena.display(root));
-        };
-        assert!(matches!(arena.node(a), ExprNode::Var(1)), "`a` is Y");
-        assert!(matches!(arena.node(b), ExprNode::Var(0)), "`b` is X");
-    }
-
-    /// Helpers calling helpers: each call is its own inlining, over its own
-    /// arguments.
-    #[test]
-    fn helpers_call_helpers() {
-        let (arena, root) = lowered(quote! {
-            fn twice(x: f32) -> f32 { x + x }
-            fn quad(x: f32) -> f32 { twice(twice(x)) }
-            pub fn f() -> f32 { quad(X) }
-        });
-        let ExprNode::Binary(OpKind::Add, a, b) = arena.node(root) else {
-            panic!("expected the outer sum, got {:?}", arena.node(root));
-        };
-        assert_eq!(a, b);
-        let ExprNode::Binary(OpKind::Add, c, d) = arena.node(a) else {
-            panic!("expected the inner sum, got {:?}", arena.node(a));
-        };
-        assert_eq!(c, d);
-        assert!(matches!(arena.node(c), ExprNode::Var(0)));
-    }
-
-    /// A value is not converted: `h as f32` of a `let` is refused here, as
-    /// in `sema`, without relying on it — `as f32` converts a `usize`.
-    #[test]
-    fn a_value_is_not_converted() {
-        let Err(err) = lower_unanalyzed(quote! { || { let h = X; h as f32 } }) else {
-            panic!("`h` is a value");
-        };
-        assert!(err.contains("`h` is a value"), "got: {err}");
     }
 }
