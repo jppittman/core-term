@@ -1034,6 +1034,69 @@ fn lf_scrolls_the_partial_scrolling_region_when_the_cursor_is_at_its_bottom_with
         Some((3, 2)),
     );
 }
+/// Sibling of `lf_scrolls_the_partial_scrolling_region_when_the_cursor_is_at_its_bottom_with_origin_mode_off`,
+/// with origin mode ON instead: LF at the scroll region's bottom row must
+/// still scroll only that region, leaving rows outside it untouched, and the
+/// cursor must stay at the region's logical bottom row (not move past it).
+#[test]
+fn lf_scrolls_the_partial_scrolling_region_when_the_cursor_is_at_its_bottom_with_origin_mode_on() {
+    let cols = 5;
+    let rows = 5;
+    let mut emu = create_test_emulator(cols, rows);
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
+    )));
+
+    // Rows 0 and 4 sit outside the region that's about to be set; address
+    // them directly before origin mode confines CUP to the region.
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(1, 1),
+    )));
+    emu.print_text("A");
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(5, 1),
+    )));
+    emu.print_text("E");
+
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
+    )));
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::Origin as u16),
+    )));
+
+    // Origin-relative addressing: row 1 is the region's top (physical row
+    // 1), row 3 is its bottom (physical row 3).
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(1, 1),
+    )));
+    emu.print_text("B");
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(2, 1),
+    )));
+    emu.print_text("C");
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(3, 1),
+    )));
+    emu.print_text("D");
+
+    let snapshot_before_lf = emu.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(
+        &snapshot_before_lf,
+        &["A    ", "B    ", "C    ", "D    ", "E    "],
+        Some((3, 1)),
+    );
+
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+
+    let snapshot_after_lf = emu.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(
+        &snapshot_after_lf,
+        &["A    ", "C    ", "D    ", "     ", "E    "],
+        Some((3, 1)),
+    );
+}
+
 #[test]
 fn it_should_respond_to_primary_device_attributes_query_with_csi_question_mark_6c() {
     let mut term = create_test_emulator(80, 24);
