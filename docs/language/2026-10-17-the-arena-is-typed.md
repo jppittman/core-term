@@ -30,7 +30,7 @@ unbuildable:
   This is the "reinterpret is free" escape hatch CLAUDE.md names as the moment
   to pay.
 - `kernel!`'s sema already has the types — `Type::{Scalar, Mask, Count,
-  Record}` (`pixelflow-compiler/src/sema.rs:85`) — and its doc says the
+  Record}` (`pixelflow-compiler/src/sema/analyze.rs`) — and its doc says the
   distinction "is enforced here because it cannot be enforced there". It can.
   The runtime tier (`Kernel::select`, `Kernel::at`, the glyph builders)
   constructs arenas with no sema in front of it, and gets no check at all.
@@ -158,7 +158,7 @@ at construction.
 - The `// bitcast result` and `// int lanes` comments in `expand_exp2`/
   `expand_log2`: the reinterpretations are `Bits`/`Float` nodes.
 - The derivative pass's seven bit-op arms.
-- `sema.rs`'s "cannot be enforced there" paragraph, and the duplicate
+- `sema/analyze.rs`'s "cannot be enforced there" paragraph, and the duplicate
   mask/scalar logic it carries that the arena now owns. Sema keeps `Count`
   and `Record`, which are the front end's and not lane types.
 - The convention paragraphs in CLAUDE.md ("Denote before you build" names this

@@ -1127,6 +1127,6 @@ reference.
 - **The front end:**
   - `ast/mod.rs:43-48`;
   - `lib.rs:68-70`;
-  - `sema.rs:46-58`;
-  - `sema.rs:33`;
+  - `sema/mod.rs:46-58`;
+  - `sema/mod.rs:33`;
   - `emit.rs:142-151`.

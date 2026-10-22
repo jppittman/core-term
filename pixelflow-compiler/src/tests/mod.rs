@@ -11,4 +11,6 @@
 //! (docs/compiler/2026-10-22-the-front-ends-stages-are-its-modules.md §1.5).
 
 mod ast;
+mod front_end;
 mod parser;
+mod sema;

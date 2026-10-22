@@ -39,9 +39,9 @@ optimizer)` over `front_end`, the one pipeline (`parser::parse`, `sema::analyze`
 at the construct (one exception: a block with no entry has no construct to
 span, and is refused at the invocation). Behind them: `src/parser/` (tokens to
 the vocabulary, `src/ast/`, whose `KernelDef` is a sum of the closure and items
-spellings; each has its contract in its `mod.rs`, its intent in its `intent.md`),
-`sema.rs` (types, consts, call graph, binding times; scopes are the vocabulary's
-`Scopes`), `lower.rs` (AST to a term at a
+spellings), `src/sema/` (types, consts, call graph, binding times; scopes are the
+vocabulary's `Scopes`) — each has its contract in its `mod.rs`, its intent in its
+`intent.md` — `lower.rs` (AST to a term at a
 `Site`), `emit.rs` (arena to `TokenStream`; the private `Staged` site for a
 kernel-taking entry). Only `pixelflow-graphics` uses it.
 
@@ -52,9 +52,10 @@ kernel-taking entry). Only `pixelflow-graphics` uses it.
 - `tests/derivative_under_warp.rs`, `tests/the_library_is_the_builders.rs`,
   `tests/fold_is_kernel_over.rs`, `tests/binding_times.rs`,
   `tests/rustc_is_the_oracle.rs`, `tests/optimized_agrees_with_raw.rs`,
-  `tests/bake_vs_scalar_truth.rs`; `sema.rs` `every_advertised_method_compiles`.
-- Unit tests: `emit.rs` `an_optimizer_is_offered_only_entries_it_can_read`; `sema.rs`
-  `recursion_is_refused`; `src/tests/parser.rs`, the parser's fifty-four through `parse`,
+  `tests/bake_vs_scalar_truth.rs`; `src/tests/front_end.rs` `every_advertised_method_compiles`.
+- Unit tests: `emit.rs` `an_optimizer_is_offered_only_entries_it_can_read`; `src/tests/sema.rs`,
+  sema's fifty-seven through `parse` then `analyze`, `recursion_is_refused` among them;
+  `src/tests/parser.rs`, the parser's fifty-four through `parse`,
   `a_collection_spelled_any_way_is_refused_naming_its_sections` among them; `src/tests/ast.rs`, the vocabulary's.
 
 ## Behind

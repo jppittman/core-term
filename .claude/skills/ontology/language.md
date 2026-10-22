@@ -71,7 +71,7 @@
   derivative, the binder's choice and rename (`close_over`), or a range's
   bound (`Fold::admits`) (B5). Production kernels move onto `kernel!` (C1,
   D-c).
-- **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser/`, `sema.rs`,
+- **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser/`, `sema/`,
   `lower.rs`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
   `kernel_raw!`, `macro_tier()` and `DwrtFree` are still in `lib.rs`, and
   `kernel!` is `expand(input, &mut macro_tier())`: it saturates at expansion
@@ -587,7 +587,7 @@
   a number on NEON or AVX2, so the domain question ("a mask is not a number")
   is the IR's to answer, not the backend's.
 - **Lives:** `OpKind::mask`, `OpKind::is_bitwise_domain`
-  (`pixelflow-ir/src/kind.rs`); sema's `bool` (`pixelflow-compiler/src/sema.rs`);
+  (`pixelflow-ir/src/kind.rs`); sema's `bool` (`pixelflow-compiler/src/sema/analyze.rs`);
   CLAUDE.md "Floating point at the edges"; the-language-is-kernel §1.3, D8,
   O2. Today `OpKind::mask` returns an `f32`, and `Bits`
   (`pixelflow-ir/src/kernel.rs`) types only the int conversion boundary: its

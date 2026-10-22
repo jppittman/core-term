@@ -10,7 +10,7 @@
 //!     ▼ Parser (parser/)
 //! AST (ast/)
 //!     │
-//!     ▼ Semantic Analysis (sema.rs)
+//!     ▼ Semantic Analysis (sema/)
 //! Analyzed AST
 //!     │
 //!     ▼ Arena lowering (lower.rs)

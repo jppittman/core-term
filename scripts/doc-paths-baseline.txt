@@ -40,8 +40,5 @@ docs/archive/plans/2026-09-06-uniform-slot-identity.md	pixelflow-graphics/src/an
 
 # 2026-10-22: docs/compiler/2026-10-22-the-front-ends-stages-are-its-modules.md PROPOSES these files (its §3 series creates them, CL 3-5);
 # each line is deleted by the CL that creates its file.
-docs/compiler/2026-10-22-the-front-ends-stages-are-its-modules.md	analyze.rs
-docs/compiler/2026-10-22-the-front-ends-stages-are-its-modules.md	consts.rs
 docs/compiler/2026-10-22-the-front-ends-stages-are-its-modules.md	site.rs
 docs/compiler/2026-10-22-the-front-ends-stages-are-its-modules.md	walk.rs
-docs/compiler/2026-10-22-the-front-ends-stages-are-its-modules.md	sema/body.rs
