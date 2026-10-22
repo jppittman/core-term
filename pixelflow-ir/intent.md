@@ -69,17 +69,12 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   `Real`/`Int`/`Mask` on nodes and `Lit::Int` are ruled (kernels-evaluate-kernels
   §2) and wait on T2–T3 of docs/language/2026-10-17-the-arena-is-typed.md.
 - `Var(u8)` means an axis or a binder by range; `Fold`'s ends are `u32`,
-  `Binder` a `u8`, against the 64-bit control-plane rule. A fold's bounds
-  still live in its header and are never unknown. Everything that reasons
-  about a range reads it as a `KnownRange` through `ExprArena::known_range`
-  (serializing and naming a fold read the header); the bounds become the
-  node's operands next
-  (`docs/language/2026-10-20-a-bound-is-a-value.md` A2b, A3).
+  `Binder` a `u8`, against the 64-bit control-plane rule. The ends, read as a
+  `KnownRange`, move into the node next (a-bound-is-a-value A2b).
 - `Buffer`, `BoundManifold`'s link tables and `passes::lattice` are in the
   tree and not concepts (DENOTATION §11).
 
 ## Decided in
 `docs/DENOTATION.md` §1–§3, `docs/language/2026-09-25-the-language-is-kernel.md`,
 `docs/archive/plans/2026-09-09-exprarena-on-dag.md`, `docs/archive/plans/2026-09-09-a-fold-is-a-node.md`,
-`docs/language/2026-09-09-composition-is-linking.md`,
-`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
+`docs/language/2026-09-09-composition-is-linking.md`, `docs/language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
