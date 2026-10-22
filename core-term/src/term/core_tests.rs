@@ -2083,6 +2083,39 @@ fn it_should_switch_to_alternate_screen_buffer_and_back_on_csi_1049() {
     ); // Cursor pos restored
 }
 
+/// CSI ?1047 (AltScreenBufferClear) is the sibling of ?1049 without the
+/// cursor save/restore: it still clears on entry, but on exit it resets the
+/// cursor to (0,0) rather than restoring the saved position.
+#[test]
+fn it_should_switch_to_alternate_screen_buffer_and_back_on_csi_1047() {
+    let mut term = create_test_emulator(5, 2);
+    setup_ed_el_screen(&mut term, 5, 2); // L0: ABCAB, L1: BCDBC, Cursor (0,2)
+    let original_snapshot = term.get_render_snapshot().expect("Snapshot was None");
+    let original_cursor_pos = original_snapshot
+        .cursor_state
+        .as_ref()
+        .map(|cs| (cs.y, cs.x));
+    assert_eq!(original_cursor_pos, Some((1, 2)));
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferClear as u16),
+    )));
+
+    // Switched to alternate screen - verify it's cleared, same as ?1049.
+    let snapshot_asb = term.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(&snapshot_asb, &["     ", "     "], Some((0, 0)));
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetModePrivate(DecModeConstant::AltScreenBufferClear as u16),
+    )));
+
+    // Back on normal screen: content is restored (the primary screen was
+    // never touched), but unlike ?1049 the cursor is NOT restored to where
+    // it was before entering — it resets to (0,0).
+    let snapshot_nsb_restored = term.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(&snapshot_nsb_restored, &["ABCAB", "BCDBC"], Some((0, 0)));
+}
+
 // Auto Wrap Mode (DECAWM) (CSI ? 7 h/l)
 #[test]
 fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
