@@ -1,5 +1,11 @@
 //! The whole pipeline's contract, `front_end` (`lib.rs`): what every stage
-//! together accepts and refuses, under both macros' optimizers.
+//! together accepts and refuses, under both macros' optimizers — and
+//! emission's (`emit/mod.rs`), whose one output is the tokens `front_end`
+//! returns.
+
+use crate::{Identity, Optimize, front_end};
+use pixelflow_ir::arena::{ExprArena, ExprId};
+use quote::quote;
 
 /// Every method name the front end advertises must survive both macros.
 ///
@@ -114,4 +120,93 @@ mod every_advertised_method_compiles {
             "a recognized name must not be sent to the typo search: {err}"
         );
     }
+}
+
+/// The expansion of `input`, unoptimized, as text.
+fn expansion(input: proc_macro2::TokenStream) -> String {
+    front_end(input, &mut Identity)
+        .expect("expands")
+        .to_string()
+}
+
+/// A record is a host `#[repr(C)]` struct, and no path the expansion
+/// names is `::std`: a `no_std` crate expands any block. One block
+/// exercises every emission path (a record, a `pub const`, a helper, a
+/// fold over `N`, an entry taking a kernel).
+#[test]
+fn a_record_is_repr_c_and_the_expansion_names_no_std_path() {
+    let code = expansion(quote! {
+        pub struct Bounds { pub x0: f32, pub x1: f32 }
+        pub const TWO: f32 = 2.0;
+        fn sq(x: f32) -> f32 { x * x }
+        pub fn inside<const N: usize>(b: Bounds, r: f32) -> f32 {
+            sq(r) + (0..N).map(|i| X * (i as f32)).sum::<f32>() + b.x0
+        }
+        pub fn glyph(ink: impl Fn(f32, f32) -> f32, b: Bounds) -> f32 {
+            if (X > b.x0) & (X < b.x1) { ink(X + 0.5, Y) } else { 0.0 }
+        }
+    });
+    assert!(code.contains("# [repr (C)]"), "{code}");
+    // Spelled as `to_string` spaces a path: `"::std"` matches nothing.
+    // `items_block.rs`'s `#[no_implicit_prelude]` module still resolves
+    // `::std`, so this grep is the only check that a `no_std` crate can
+    // expand any block.
+    assert!(
+        !code.contains(":: std ::"),
+        "no `::std` path, so a `no_std` crate expands it: {code}"
+    );
+}
+
+/// A template's open fold takes its range from the instantiation, in a
+/// `const` block that refuses at the instantiation what `sema` refuses
+/// of a known range.
+#[test]
+fn a_template_refuses_at_instantiation_what_sema_refuses_of_a_known_range() {
+    let code = expansion(quote! {
+        pub fn mean<const N: usize>() -> f32 {
+            (0..N).map(|i| X * (i as f32)).sum::<f32>() / (N as f32)
+        }
+    });
+    assert!(
+        code.contains("runs backwards at this instantiation"),
+        "{code}"
+    );
+    assert!(code.contains("__hi <= 16777216"), "{code}");
+}
+
+/// An optimizer that counts the arenas it is offered, and declines each.
+struct Offered(usize);
+
+impl Optimize for Offered {
+    fn optimize(&mut self, _arena: &ExprArena, _root: ExprId) -> pixelflow_ir::Rewritten {
+        self.0 += 1;
+        pixelflow_ir::Rewritten::Declined
+    }
+}
+
+/// No optimizer sees a template, whose open folds hold placeholder ranges
+/// a rewrite would read as ranges, nor an entry that takes a kernel,
+/// whose program exists only once its host function is called: both are
+/// emitted as lowered. An entry with neither is offered.
+#[test]
+fn an_optimizer_is_offered_only_entries_it_can_read() {
+    let mut offered = Offered(0);
+    front_end(
+        quote! {
+            pub struct Bounds { pub x0: f32, pub x1: f32 }
+            pub fn counted<const N: usize>(r: f32) -> f32 {
+                r + (0..N).map(|i| (i as f32) * X).sum::<f32>()
+            }
+            pub fn glyph(ink: impl Fn(f32, f32) -> f32, b: Bounds) -> f32 {
+                if (X > b.x0) & (X < b.x1) { ink(X + 0.5, Y) } else { 0.0 }
+            }
+            pub fn sum2(a: impl Fn(f32, f32) -> f32, b: impl Fn(f32, f32) -> f32) -> f32 {
+                a(X, Y) + b(X, Y)
+            }
+            pub fn plain(r: f32) -> f32 { r + X }
+        },
+        &mut offered,
+    )
+    .expect("expands");
+    assert_eq!(offered.0, 1, "`plain` alone");
 }

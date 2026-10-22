@@ -19,7 +19,7 @@
 //!     ▼ `impl Optimize`  — `kernel!` saturates, `kernel_raw!` is `Identity`
 //! ExprArena
 //!     │
-//!     ▼ Emission (emit.rs)
+//!     ▼ Emission (emit/)
 //! Rust TokenStream that rebuilds a `Kernel` at load time
 //! ```
 //!

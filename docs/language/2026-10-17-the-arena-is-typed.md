@@ -152,7 +152,8 @@ at construction.
 - `OpKind::is_bitwise_domain`, its test, and the one caller
   (`algebra.rs:1043`).
 - `OpKind::mask(bool)` and every site that spells a mask as a float
-  (`algebra.rs:1299`, `compiler/emit.rs:509`, the folder's comparison arms).
+  (`algebra.rs:1299`, the `Const` arm of `node` in `compiler/emit/arena.rs`,
+  the folder's comparison arms).
 - `ENode::Const(u32)` keyed by bits; `Const(Lit)` keys by typed value, so a
   mask and a NaN are different classes.
 - The `// bitcast result` and `// int lanes` comments in `expand_exp2`/
