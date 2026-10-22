@@ -1834,6 +1834,34 @@ fn scroll_viewport_clamps_to_the_available_scrollback() {
     assert_eq!(term.viewport_offset(), available);
 }
 
+/// CSI 3J (ED, Ps=3) erases the scrollback — and, per its documented
+/// behavior, the visible screen too, the same as CSI 2J.
+#[test]
+fn csi_3j_clears_the_scrollback_and_the_visible_screen() {
+    let mut term = create_test_emulator(5, 3);
+    for _ in 0..6 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+    }
+    term.print_text("X");
+    assert!(term.scrollback_len() > 0, "precondition: scrollback has lines");
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::EraseInDisplay(3),
+    )));
+
+    assert_eq!(term.scrollback_len(), 0, "CSI 3J must clear the scrollback");
+    let snapshot = term.get_render_snapshot().expect("snapshot");
+    for row in 0..3 {
+        for col in 0..5 {
+            assert_eq!(
+                get_glyph_from_snapshot(&snapshot, row, col).map(|g| g.display_char()),
+                Some(' '),
+                "cell ({row},{col}) should be blank after CSI 3J"
+            );
+        }
+    }
+}
+
 #[test]
 fn scrolled_back_view_shows_scrollback_lines_in_chronological_order() {
     let mut term = create_test_emulator(10, 3);
