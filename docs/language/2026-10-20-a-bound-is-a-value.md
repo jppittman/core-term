@@ -485,8 +485,10 @@ shares files with A2–A4 but no hunk. #1427 rewrites the compiler's `ast`/`pars
 (made `pub(crate)`).
 
 Order: A0 goes now. A1 goes now, except its the-language-is-kernel `:179`/`:186` rows,
-which follow #1431, and its D-table rows, which follow #1323 (§5's "Hunk" column). A2–A4
-rebase onto #1431 once merged; if it is abandoned, A2 proceeds against main. #1432 is
+which follow #1431, and its D-table rows, which follow #1323 (§5's "Hunk" column). A2a goes
+against main with #1431 still open (2026-10-22), so #1431 rebases onto A2a, which leaves its
+adjacent hunks (the `fold.monoid().identity()` lines) alone. A2b–A4 rebase onto #1431 once
+merged; if it is abandoned, they proceed against main. #1432 is
 "whichever lands second rebases". A5–A7 go after #1323 and #1427, with a cut-over: when A4
 lands, A5 goes against main as it then stands, and any later #1427 commits rebase onto
 A5's deletion, which removes code #1427 only re-scopes.
@@ -508,13 +510,26 @@ A5's deletion, which removes code #1427 only re-scopes.
   the-language-is-kernel §1.3's `usize` row and its "how many instances the host composed"
   sentence (§5's `:179`/`:186`, `:192`/`:199` after A1), after #1431, and its D-table rows,
   after #1323.
-- **A2a. One reader of a fold's range.** `ExprArena::known_range(id)` and the e-graph's
-  `known_range(class)`, implemented over today's header, become the only readers of a
-  fold's range, and every consumer moves to them (`fold_rules.rs`, `arena.rs`,
-  `passes/lattice.rs`, `emit/mod.rs`, `passes.rs`, compiler `lower.rs`, `kind.rs`,
-  `emit.rs`, `graph.rs`, `extract.rs`, `term.rs`, `term_arena.rs`, `expr.rs`, `witness.rs`,
-  `insert.rs`, `nnue/mod.rs`, `runtime.rs`, `jit_cache.rs`, `store.rs`, the pipeline
-  corpora, about 48 files). No byte or key changes. Gate: byte_probe empty, keys unchanged.
+- **A2a. One reader of a fold's range.** A `KnownRange` value (`fold.rs`: `lo`, `hi`,
+  `stride`) owns `len`, `is_empty`, `peel`, `peel_back`, `halve` and `admits`, and `Fold`
+  loses them. One reader per representation that will hold bounds hands it out:
+  `ExprArena::known_range(id)`; `ENode::known_range()`, per node and not per class, since
+  after `HalveFold` one class holds two `Reduce` nodes with different ranges and §3.2 prices
+  the node; and `ScheduledOp::Reduce`'s copy, made in `arena_to_schedule` where the id is in
+  hand (§3.3's shape with `Known` only). Each returns `Option`, `Some` for every fold until
+  A3. A site writes its unknown-range answer where today's code already gives it (a rule
+  declines, an emptiness test is false), and expects `Some` elsewhere. Every reader that
+  reasons about a range moves to them, inventoried 2026-10-22: IR `variance.rs`,
+  `passes/lattice.rs` (`collapse_shape` returns the ids it now drops), `passes.rs` tests;
+  search `cost.rs`, `extract.rs`, `fold_rules.rs`, `node.rs` (`ENode::fold` goes);
+  codegen `program/lower.rs`, `program/mod.rs`, `emit/select.rs`; compiler `lower.rs`
+  (`Holes::range_of`; its private `known_range(lo, hi)` is renamed) and `emit.rs`; the
+  pipeline's `glyph_phase_split.rs`. `fold_cost` and `below` change signature, not price
+  (§3.2). What serializes or names a fold rather than reasoning about one keeps reading the
+  header until A2b moves `lo`/`hi` out of `Fold`: the derived `Hash`/`Eq`/`Ord`, `Display`,
+  and `to_bits`/`from_bits` (`key.rs`, the macro's tokens, the graphics test dumps, the
+  pipeline corpora and bins). No byte or key changes. Gate: byte_probe empty, keys
+  unchanged, and no range read on a `Fold` outside `fold.rs` and the three readers.
 - **A2b. Bounds are values, constants only.** §3.1–§3.3's representation: `Bound` in the
   arena node, the e-graph node and the schedule; constructors take literal ranges, a
   `Value` bound panics by name. The diff stays inside the constructors, the walkers that
