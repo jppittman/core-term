@@ -463,9 +463,9 @@
   `Scope::Fold` (`pixelflow-codegen/src/program/mod.rs`);
   `pixelflow-search/src/egraph/fold_rules.rs`. Decided in a-fold-is-a-node
   §2, §5, §6; a-surviving-reduce-is-a-loop; collapse-is-a-fold; one-pipeline
-  decisions. Today CLAUDE.md's "The language is a DAG: no iteration binder.
-  A fixed-count iteration is unrolled at construction" is stale
-  (one-pipeline Appendix B).
+  decisions. CLAUDE.md said "no iteration binder" (stale, one-pipeline
+  Appendix B) until a-bound-is-a-value's A1; it now names the fold as the one
+  binder and forbids a bound that is a function of a coordinate.
 
 ### Monoid (SEQ)
 
