@@ -1097,6 +1097,43 @@ fn lf_scrolls_the_partial_scrolling_region_when_the_cursor_is_at_its_bottom_with
     );
 }
 
+/// Companion to the scroll-at-bottom test above: under origin mode, LF
+/// issued above the scroll region's logical bottom must just move the
+/// cursor down a row within the region, with no scroll and no content
+/// change anywhere.
+#[test]
+fn lf_moves_down_within_the_region_without_scrolling_with_origin_mode_on_and_not_at_its_bottom() {
+    let cols = 5;
+    let rows = 5;
+    let mut emu = create_test_emulator(cols, rows);
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
+    )));
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
+    )));
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::Origin as u16),
+    )));
+
+    // Origin-relative row 2: the region's middle (physical row 2), one row
+    // short of its logical bottom (physical row 3).
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(2, 1),
+    )));
+    let before = emu.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(&before, &["     ", "     ", "     ", "     ", "     "], Some((2, 0)));
+
+    emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+
+    let after = emu.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(
+        &after,
+        &["     ", "     ", "     ", "     ", "     "],
+        Some((3, 0)),
+    );
+}
+
 #[test]
 fn it_should_respond_to_primary_device_attributes_query_with_csi_question_mark_6c() {
     let mut term = create_test_emulator(80, 24);
