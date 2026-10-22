@@ -2116,6 +2116,33 @@ fn it_should_switch_to_alternate_screen_buffer_and_back_on_csi_1047() {
     assert_screen_state(&snapshot_nsb_restored, &["ABCAB", "BCDBC"], Some((0, 0)));
 }
 
+/// The alt screen buffer persists across an exit/re-entry cycle (it's a
+/// separate grid from the primary one), so entering via ?1047 twice, with
+/// content written on the first visit, is the only way to observe whether
+/// ?1047 actually clears on entry rather than preserving.
+#[test]
+fn it_should_clear_stale_alt_screen_content_on_re_entry_via_csi_1047() {
+    let mut term = create_test_emulator(5, 2);
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferClear as u16),
+    )));
+    term.print_text("Z");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetModePrivate(DecModeConstant::AltScreenBufferClear as u16),
+    )));
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferClear as u16),
+    )));
+    let snapshot = term.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(
+        &snapshot,
+        &["     ", "     "],
+        Some((0, 0)),
+    );
+}
+
 // Auto Wrap Mode (DECAWM) (CSI ? 7 h/l)
 #[test]
 fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
@@ -2172,6 +2199,30 @@ fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
         &term.get_render_snapshot().expect("Snapshot was None"),
         &["4 6", "7  "],
         Some((1, 1)),
+    );
+}
+
+/// Re-enabling DECAWM must only pend a wrap when the cursor is already past
+/// the line's width — not unconditionally, just because autowrap turned on.
+#[test]
+fn it_should_not_wrap_immediately_when_decawm_is_re_enabled_mid_line() {
+    let mut term = create_test_emulator(3, 2);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetModePrivate(DecModeConstant::AutoWrapMode as u16),
+    )));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(1, 2),
+    ))); // (0,1): mid-line, nowhere near the 3-column width.
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::AutoWrapMode as u16),
+    )));
+    term.print_text("X");
+
+    assert_screen_state(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        &[" X ", "   "],
+        Some((0, 2)),
     );
 }
 
