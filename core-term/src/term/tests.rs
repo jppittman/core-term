@@ -1615,6 +1615,34 @@ fn cursor_only_movement_marks_its_rows_dirty() {
     );
 }
 
+/// Reverse index (ESC M) when the cursor is below the scroll top just moves
+/// it up a row, with no scroll — the same "cursor-only" shape as
+/// `cursor_only_movement_marks_its_rows_dirty`'s CUU/CUD case, but through
+/// `reverse_index` rather than a CSI cursor-movement command.
+#[test]
+fn reverse_index_without_scrolling_dirties_both_its_rows() {
+    let mut term = create_test_emulator(4, 3);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(2, 1),
+    )));
+    let _ = term.get_render_snapshot().expect("snapshot");
+    let clean = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        !clean.lines.iter().any(|l| l.is_dirty),
+        "precondition: an idle terminal snapshots clean"
+    );
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Esc(
+        crate::ansi::commands::EscCommand::ReverseIndex,
+    )));
+    let moved = term.get_render_snapshot().expect("snapshot");
+    assert_eq!(
+        moved.lines.iter().filter(|l| l.is_dirty).count(),
+        2,
+        "the cursor left row 1 and entered row 0: both must redraw"
+    );
+}
+
 // White-box test of `get_render_snapshot`'s documented per-line dirty
 // contract, not a claim any consumer reads per-row state — no production
 // code checks `is_dirty` per row today, only whole-snapshot (`any()`).
