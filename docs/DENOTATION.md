@@ -58,8 +58,10 @@ T ::= S | D → T                      a kernel is a value of arrow type
   generics, which would forbid runtime-sized frames.
 
 **Totality is the root axiom.** The language is strongly normalizing: no
-`fix`, no `while`, no recursion, no `mut`, no data-dependent trip count or
-extent. Every program's cost is a closed-form function of static extents,
+`fix`, no `while`, no recursion, no `mut`, and no trip count or extent that is
+a function of a coordinate or of a lattice binder. Every one is a constant
+today; [a bound is a value](language/2026-10-20-a-bound-is-a-value.md) makes a
+fold's bounds values placed by their variance. Every program's cost is a closed-form function of static extents,
 computable without running it. "Estimatable by the cost model", "a valid
 shader" and "`bake` terminates" are one property. Total is not cheap:
 totality gives a number; the budget decides whether the number is
@@ -170,7 +172,7 @@ d(⊕_i f) = ⊕_i d(f)            for ⊕ = Σ only (linearity)
   `min(|Σ_p σ_p·A_p|, 1)` over a set of monotone arcs, each piece's area
   `A_p` in closed form, every term zero outside its piece's box. When the
   binder returns it returns with the fold's laws: every range constant, no
-  indefinite integral, no data-dependent bound, no accumulation from one
+  indefinite integral, no bound that is a function of a coordinate, no accumulation from one
   pixel into the next, and `at` never touching a bound index.
 - **A matrix is a discrete kernel, and a linear operator is a kernel of
   kernels.** `M : Lattice(n, m) → Real`. An operator on kernels with kernel
@@ -245,7 +247,9 @@ Kernel ──compile(extent)──▶ Manifold ──collapse──▶ DiscreteM
 frame (a frame is a contramap, §2), not a runtime argument, not a home for
 uniforms, not a union of ranges. An axis that never varies is a `Uniform`,
 not an axis of extent 1. Its extent is part of the program and of the
-compile key, so a resize is a recompile. A sub-lattice is an index range,
+compile key, so a resize is a recompile. That stays so under [a bound is a
+value](language/2026-10-20-a-bound-is-a-value.md), which leaves the lattice's own
+folds constant (its §4: deferred, not argued). A sub-lattice is an index range,
 the one thing that lives on the domain side.
 
 **Collapse is tabulation, and the table is the function.**

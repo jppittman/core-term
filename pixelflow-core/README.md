@@ -61,9 +61,11 @@ The `Kernel` surface:
   related operations);
 - `Bits`, the integer/bitwise half, entered by `trunc_to_int`.
 
-Bounded reductions have static extents. General unbounded recursion is intentionally outside
-the language: **the language is a DAG.** A fixed-count iteration is unrolled at construction;
-a trip count that must change is a recompile through the cache that already keys on shape.
+Bounded reductions have constant extents today, and no bound may be a function of a coordinate
+or of a lattice binder. General unbounded recursion is intentionally outside the language: **the
+language is a DAG**, and the fold is its one binder. A trip count that must change is a recompile
+through the cache that already keys on shape; the plan that makes bounds values placed by their
+variance is [a bound is a value](../docs/language/2026-10-20-a-bound-is-a-value.md).
 
 ## Lattices and materialization
 
