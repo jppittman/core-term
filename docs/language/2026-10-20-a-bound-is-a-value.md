@@ -210,15 +210,22 @@ Every row is one cause: the binding time of a count is attached to its syntax.
 
 | Symptom | Measured | Traced to |
 |---|---|---|
-| ASCII needs **29 programs**, one per piece count, holding **528** `one_piece` copies (Σ n) | the-language-is-kernel `:1186-1188` | `FontPrograms` (`pixelflow-graphics/src/fonts/loop_blinn/program.rs`) has no fold; a count cannot be a uniform, so the count is the structure |
-| `⌨` (347 pieces) is **27,029 defs**, a **75 KiB** frame past NEON's 64 KiB reach (#1414) | `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md:710-720`, `5574374a` | the same: 347 terms by construction |
-| production pads counts to powers of two (`bucketed_trip_count`, `padding_row`): **95 → 6 programs** at tile 16, 7 at tile 32 | BACKLOG H1 | the trip count is in `Fold::to_bits`, so in the JIT key (`pixelflow-ir/src/key.rs:445-450`) |
-| each bucket **saturates separately** | `pixelflow-search/src/runtime.rs`, `CACHE` keyed on canonical bytes | the same key |
+| ASCII needs **29 programs**, one per piece count, holding **528** `one_piece` copies (Σ n) | quoted from the-language-is-kernel `:1186-1188`; not re-measured ([A0](../results/2026-10-20-production-glyph-baseline.md) §4.4) | `FontPrograms` (`pixelflow-graphics/src/fonts/loop_blinn/program.rs`) has no fold; a count cannot be a uniform, so the count is the structure |
+| `⌨` (347 segments, 262 pieces) is **27,029 defs**, a **75 KiB** frame past NEON's 64 KiB reach (#1414), as a `FontPrograms` program; production's `Glyph::bake` keeps the fold, at 310 defs and a 1.4 KiB frame | quoted from `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md:710-720`, `5574374a`, not re-measured; production's figures are A0 §3.2 | the same: one term per piece, by construction |
+| production pads counts to powers of two (`bucketed_trip_count`, `padding_row`): **95 → 7 programs** at tile 16 and at tile 32, six buckets (2 to 64) and the blank; a new tile extent mints all seven again | A0 §3.1, §3.5 (BACKLOG H1's 6 and 7 are not reproduced) | the trip count is in `Fold::to_bits`, so in the JIT key (`pixelflow-ir/src/key.rs:445-450`) |
+| each bucket **saturates separately** | A0 §3.1: 7 saturations, 6 stopped by the class cap; `pixelflow-search/src/runtime.rs`, `CACHE` keyed on canonical bytes | the same key |
 | a run's program depends on every character's row offset | `loop_blinn.rs:423`, `start..start + count` | data spelled as a constant |
 | `n = 0` is a program of its own, `blank()` | `program.rs:138` | an empty count cannot reach a fold |
 | `kernel!` refuses `(0..4).map(\|i\| (0..i)…)` | `sema.rs:2725-2741` | the bound grammar evaluates to a `u64` at expansion |
 | a structural range is `0..0` strided by `HOLE_STRIDE + k`, and its entries are never optimized | `pixelflow-compiler/src/lower.rs:283-364`, `emit.rs:133-156` | a per-instantiation value has no home but the node's bits |
 | the arena plan's compile numbers are on `FontPrograms`, not production's `Glyph::bake` | `docs/archive/plans/2026-10-15-the-egraph-is-an-arena.md` | the per-count design became the workload |
+
+On production the cost is modest. A0 measures a cold ASCII warm at about 0.1 s, half of it
+the host building kernels (which ruling 5 keeps), and about 50 ms compiling the seven
+programs; the bake is under 1%. The seconds-long warms and the 27,029-def program were a
+September tree and `FontPrograms`. So the case for this plan is the language (rulings 1, 3
+and 6) and `FontPrograms`' deletion. On production's frame time, B2 saves at most the
+~50 ms per font and tile, and six of the seven emits per zoom.
 
 The 2026-09-10 plan deferred exactly this (§5): "the key must stop carrying the range,
 and the loop must compare against a loaded value rather than an immediate". JP left room
@@ -490,7 +497,12 @@ A5's deletion, which removes code #1427 only re-scopes.
   16 and 32, and `⌨`, through `Glyph::bake` (`pixelflow-pipeline/examples/glyph_compile_report.rs`,
   `glyph_phase_split.rs`, `frame_budget.rs`) with `--features saturation-telemetry`:
   programs, saturations, defs, bytes, compile and bake time, both x86 tiers, in a dated
-  `docs/results/` note. Every later number is against it.
+  `docs/results/` note. Every later number is against it. **Done:**
+  [`2026-10-20-production-glyph-baseline.md`](../results/2026-10-20-production-glyph-baseline.md).
+  7 programs and 7 saturations per font and tile extent, at tiles 16 and 32; 201-202 defs per
+  loop program; 16.9 KB of code over the seven; compile 45-56 ms, bake 0.4-1.0 ms; a new tile
+  extent adds 7 programs and 0 saturations. `⌨` (DejaVu; Noto has none) is 262 pieces, 310
+  defs, a 1.4 KiB frame.
 - **A1. Docs.** §5's rows marked A1, under the order above; the docs/README.md entry and
   the BACKLOG plan-table row. Gate: `scripts/check-doc-paths.sh`.
 - **A2a. One reader of a fold's range.** `ExprArena::known_range(id)` and the e-graph's
