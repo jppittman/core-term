@@ -2143,6 +2143,27 @@ fn it_should_clear_stale_alt_screen_content_on_re_entry_via_csi_1047() {
     );
 }
 
+/// Same persistence trick as the ?1047 version above, for ?1049: it must
+/// also clear on entry, not just save/restore the cursor around it.
+#[test]
+fn it_should_clear_stale_alt_screen_content_on_re_entry_via_csi_1049() {
+    let mut term = create_test_emulator(5, 2);
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16),
+    )));
+    term.print_text("Z");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::ResetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16),
+    )));
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferSaveRestore as u16),
+    )));
+    let snapshot = term.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(&snapshot, &["     ", "     "], Some((0, 0)));
+}
+
 // Auto Wrap Mode (DECAWM) (CSI ? 7 h/l)
 #[test]
 fn it_should_enable_and_disable_autowrap_mode_on_decawm() {
