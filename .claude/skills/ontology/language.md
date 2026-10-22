@@ -416,12 +416,13 @@
 
 ### Fold (Reduce)
 
-- **Is:** `⟦Reduce{fold, body}⟧ = ⊕_{k ∈ range} ⟦body⟧[binder := k]`, `range` its `KnownRange`,
+- **Is:** `⟦Reduce{fold, lo, hi, body}⟧ = ⊕_{k ∈ range} ⟦body⟧[binder := k]`, `range` its `KnownRange`,
   meaning ⊕ over a set under a monoid. "A reduction … means the same thing
   computed as one term peeled off a shorter reduction, as a split into two,
   or as a fully unrolled chain." It is the one node that binds. Its monoid,
-  binder and range are its identity, and its body is its only child. It is
-  spelled `(a..b).map(|i| e).sum()`, `.product()`, `.any`, `.all`, or
+  binder and range are its identity, and its body is its only child until a
+  bound is a value (a-bound-is-a-value A3). It is spelled
+  `(a..b).map(|i| e).sum()`, `.product()`, `.any`, `.all`, or
   `.fold(±INF, min/max)`. "A fold is written once and stays a fold in every
   open value. Whether it runs as a loop or as copies is decided inside P, by
   extraction." A fold that survives is a loop.
@@ -457,8 +458,9 @@
     walkers matched a case to read a property", and a new variant was
     silently skipped.
 - **Lives:** `ExprNode::Reduce` (`pixelflow-ir/src/arena.rs`),
-  `pixelflow_ir::fold::Fold { monoid, binder, lo, hi, stride }`
-  (`pixelflow-ir/src/fold.rs`), `ENode::Reduce`
+  `pixelflow_ir::fold::Fold { monoid, binder, stride }` with `Bound` and
+  `FoldHeader` (`pixelflow-ir/src/fold.rs`; the bounds are
+  `ExprNode::Reduce`'s `lo` and `hi`), `ENode::Reduce`
   (`pixelflow-search/src/egraph/node.rs`), `ScheduledOp::Reduce`,
   `Scope::Fold` (`pixelflow-codegen/src/program/mod.rs`);
   `pixelflow-search/src/egraph/fold_rules.rs`. Decided in a-fold-is-a-node
@@ -486,7 +488,7 @@
   arm, and `Write` has no affine address, so fold rules cannot rewrite the
   lattice's folds (L3, Q6).
 - **Lives:** `pixelflow-ir/src/fold.rs` (`Monoid`, `Monoid::SEQ`,
-  `Fold::to_bits`/`from_bits`); `OpKind::Seq` (`pixelflow-ir/src/kind.rs`).
+  `FoldHeader::to_bits`/`from_bits`); `OpKind::Seq` (`pixelflow-ir/src/kind.rs`).
   Decided in a-fold-is-a-node §3–§4 and a-surviving-reduce-is-a-loop 2a″.
   Today `Fold::combine_op()` is a public "narrow door" the emitter's
   `Reduce` arm calls (`backend.alu(…, fold.combine_op(), …)` in
@@ -513,12 +515,14 @@
   (`KnownRange::admits`). The allocator ranks carries by static trip counts.
   `bucketed_trip_count`'s power-of-two padding existed only because of
   this, and goes (G3).
-- **Lives:** `Fold { lo, hi, stride }`, `Fold::EXACT_BOUND`, `KnownRange`
-  and `KnownRange::admits` (`pixelflow-ir/src/fold.rs`); a range is read
-  through `ExprArena::known_range`, `ENode::known_range` or
-  `ScheduledOp::Reduce`'s copy. Decided in a-fold-is-a-node §3,
-  a-surviving-reduce-is-a-loop §1 and §5, and the-language-is-kernel §1.5.
-  Today the ends are `u32`, against the 64-bit rule, and
+- **Lives:** `Fold { monoid, binder, stride }`, `Bound`, `FoldHeader`,
+  `Fold::EXACT_BOUND`, `KnownRange` and `KnownRange::admits`
+  (`pixelflow-ir/src/fold.rs`); the bounds are the node's
+  (`ExprNode::Reduce`'s `lo` and `hi`), and a range is read through
+  `ExprArena::known_range`, `ENode::known_range` or `ScheduledOp::Reduce`'s
+  bounds, all by `KnownRange::of`. Decided in a-fold-is-a-node §3,
+  a-surviving-reduce-is-a-loop §1 and §5, the-language-is-kernel §1.5 and
+  a-bound-is-a-value §3.1. Today every bound is a literal, and
   `bucketed_trip_count` still pads in
   `pixelflow-graphics/src/fonts/loop_blinn.rs`.
 
@@ -544,7 +548,7 @@
   turns on a tie (see Tie-break). `pack(L)` is the same chunking law run as
   a pass (L2, open: "one chunking law, three implementations").
 - **Lives:** `pixelflow-search/src/egraph/fold_rules.rs` (`HalveFold`,
-  `PeelFold`, `EmptyFold`, `FactorFold`); `Fold::{peel, peel_back, halve}`
+  `PeelFold`, `EmptyFold`, `FactorFold`); `KnownRange::{peel, peel_back, halve}`
   (`pixelflow-ir/src/fold.rs`); `pixelflow-codegen/tests/halve_fold_jit.rs`.
   Decided in one-pipeline decisions (2026-09-25),
   a-surviving-reduce-is-a-loop 2a″ and E1b.

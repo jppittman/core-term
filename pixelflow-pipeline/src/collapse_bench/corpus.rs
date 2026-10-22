@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, BufferId, BufferIdentity, ExprArena, ExprId, ExprNode};
-use pixelflow_ir::fold::Fold;
+use pixelflow_ir::fold::FoldHeader;
 
 /// One kernel and the lattice it is baked at.
 pub struct CollapseKernel {
@@ -265,10 +265,17 @@ pub fn encode(kernel: &CollapseKernel) -> String {
                 }
                 writeln!(out)
             }
-            // The fold as opaque bits — it is metadata, not children, so it
-            // travels as one field rather than as three serialized nodes.
-            ExprNode::Reduce { fold, body } => {
-                writeln!(out, "R {} {}", fold.to_bits(), d(&dense, body))
+            // The fold's header as opaque bits — it is metadata, not children,
+            // so it travels as one field rather than as three serialized
+            // nodes. A value bound has no field to travel in: `to_bits`
+            // refuses it by name.
+            ExprNode::Reduce { body, .. } => {
+                writeln!(
+                    out,
+                    "R {} {}",
+                    arena.fold_header(id).to_bits(),
+                    d(&dense, body)
+                )
             }
             ExprNode::Param(i) => panic!(
                 "{}: corpus kernels must be bakeable, but this one holds Param({i}) — a \
@@ -491,9 +498,11 @@ fn decode(path: &Path) -> CollapseKernel {
                 let bits: u128 = bits
                     .parse()
                     .unwrap_or_else(|e| panic!("{}: bad fold bits {bits:?}: {e}", path.display()));
-                let fold = Fold::from_bits(bits)
+                let header = FoldHeader::from_bits(bits)
                     .unwrap_or_else(|| panic!("{}: {bits} names no fold", path.display()));
-                arena.push_reduce(fold, id(body))
+                // `from_bits` names literal bounds only, so no child follows.
+                let (lo, hi) = header.attach(core::iter::empty());
+                arena.push_reduce(header.fold(), lo, hi, id(body))
             }
             other => panic!("{}: unparseable line {other:?}", path.display()),
         };

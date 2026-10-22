@@ -490,11 +490,17 @@ fn hash_cons(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
             ExprNode::Write { .. } => {
                 panic!("hash_cons: a Write in a corpus arena — corpus arenas are pre-legalize")
             }
-            ExprNode::Reduce { fold, body } => {
+            ExprNode::Reduce { body, .. } => {
                 let body = ExprId(m(body, &map));
+                let header = arena.fold_header(id);
+                // The key is the header's bits, which refuse a value bound by
+                // name: past this line both bounds are literals, with no
+                // child to map.
+                let bits = header.to_bits();
+                let (lo, hi) = header.attach(core::iter::empty());
                 (
-                    Key::Reduce(fold.to_bits(), body.0),
-                    Box::new(move |a: &mut ExprArena| a.push_reduce(fold, body)),
+                    Key::Reduce(bits, body.0),
+                    Box::new(move |a: &mut ExprArena| a.push_reduce(header.fold(), lo, hi, body)),
                 )
             }
             ExprNode::Unary(k, c) => {

@@ -885,10 +885,15 @@ impl BwdGenerator {
                 // corpus outlives the process — same refusal `corpus.rs`
                 // makes when it serializes one.
                 Shape::Ref(k) => panic!("junkify: Ref({k:?}) in a corpus expression"),
-                Shape::Reduce { fold, body } => self.arena.embed(Shape::Reduce {
-                    fold,
-                    body: remap[body.0 as usize],
-                }),
+                Shape::Reduce { fold, lo, hi, body } => {
+                    let remapped = |r: ExprId| remap[r.0 as usize];
+                    self.arena.embed(Shape::Reduce {
+                        fold,
+                        lo: lo.map(remapped),
+                        hi: hi.map(remapped),
+                        body: remapped(body),
+                    })
+                }
                 // A corpus expression is pre-legalize by construction.
                 Shape::Write { .. } => panic!("junkify: a Write in a corpus expression"),
                 Shape::Op(op, children) => match children {

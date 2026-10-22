@@ -7,7 +7,7 @@
 //! name every variable the never-evaluated body reads, and a reader such as
 //! `y + ·` would inherit them.
 
-use pixelflow_ir::fold::{Binder, Fold, Monoid};
+use pixelflow_ir::fold::{Binder, Bound, Fold, Monoid};
 use pixelflow_ir::variance::{Variance, compute_arena_variance};
 use pixelflow_ir::{ExprArena, OpKind};
 
@@ -21,8 +21,9 @@ fn a_fold_over_nothing_varies_with_nothing() {
     let y = arena.push_var(1);
     let index = arena.push_var(i.var());
     let body = arena.push_binary(OpKind::Mul, index, x);
-    let none = arena.push_reduce(Fold::new(Monoid::PRODUCT, i, 0..0), body);
-    let some = arena.push_reduce(Fold::new(Monoid::PRODUCT, i, 0..3), body);
+    let fold = Fold::new(Monoid::PRODUCT, i);
+    let none = arena.push_reduce(fold, Bound::Lit(0), Bound::Lit(0), body);
+    let some = arena.push_reduce(fold, Bound::Lit(0), Bound::Lit(3), body);
     let read = arena.push_binary(OpKind::Add, y, none);
 
     let variance = compute_arena_variance(&arena);

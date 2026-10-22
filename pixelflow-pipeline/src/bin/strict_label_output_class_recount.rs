@@ -166,8 +166,12 @@ fn render_chosen(eg: &EGraph, choices: &[Option<usize>], class: EClassId) -> Str
                 .collect();
             format!("{op:?}({})", kids.join(", "))
         }
-        ENode::Reduce { fold, body } => {
-            format!("Reduce[{fold}]({})", render_chosen(eg, choices, *body))
+        ENode::Reduce { header, children } => {
+            let kids: Vec<String> = children
+                .iter()
+                .map(|&k| render_chosen(eg, choices, k))
+                .collect();
+            format!("Reduce[{header}]({})", kids.join(", "))
         }
         ENode::Shift {
             direction,

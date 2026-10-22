@@ -27,7 +27,7 @@ use crate::expr::{
     Environment, ExprBuilderExt, ExprData, copy_subgraph, from_arena, splice, substitute_vars,
     to_arena,
 };
-use crate::fold::{Binder, Chain, Fold, Monoid, Placeholder};
+use crate::fold::{Binder, Bound, Chain, Fold, FoldHeader, Monoid, Placeholder};
 use crate::kind::OpKind;
 use crate::library::{self, Terms};
 use crate::lit::Lit;
@@ -756,7 +756,11 @@ impl Kernel {
         let body = body(&index);
         let (arena, root) = body.parts();
         let closed = arena.close_over(root, scope.placeholder, |binder| {
-            Fold::new(monoid, binder, range)
+            FoldHeader::new(
+                Fold::new(monoid, binder),
+                Bound::Lit(u64::from(range.start)),
+                Bound::Lit(u64::from(range.end)),
+            )
         });
         let (arena, root) = closed.unwrap_or_else(|IndexSpaceFull| {
             panic!(
@@ -1240,7 +1244,7 @@ impl Bits {
 mod tests {
     use super::*;
     use crate::arena::ExprNode;
-    use crate::fold::Fold;
+    use crate::fold::{Bound, Fold, FoldHeader};
 
     /// The count is still checked at runtime; the OPERAND no longer needs
     /// checking, because `Kernel::x().shl(32)` does not compile at all now —
@@ -1251,14 +1255,17 @@ mod tests {
         let _refused = Kernel::x().trunc_to_int().shl(32);
     }
 
-    /// The builder refuses a fold past 2²⁴ as `kernel!` does: both build
-    /// through `Fold`, which holds the one bound. Before, `kernel!`
-    /// refused and this summed the wrong terms without a word
+    /// The builder refuses a fold past 2²⁴ as `kernel!` does: both answer to
+    /// `KnownRange::admits`, the one statement of the contract. The builder
+    /// meets it in `FoldHeader::new`, whose `KnownRange::new` panics with the
+    /// message pinned here; `kernel!` asks `admits` while lowering a literal
+    /// range, and refuses in its own words before any header is built. Before,
+    /// `kernel!` refused and this summed the wrong terms without a word
     /// (docs/BACKLOG.md, C8).
     #[test]
     #[should_panic(expected = "ends at most at 16777216 (2^24)")]
     fn a_fold_past_the_exact_bound_is_refused_by_the_builder_too() {
-        let past = Fold::EXACT_BOUND + 1;
+        let past = u32::try_from(Fold::EXACT_BOUND + 1).expect("2^24 + 1 fits u32");
         let _refused = Kernel::over(Monoid::SUM, 16_777_100..past, |i| i.clone());
     }
 
@@ -1283,12 +1290,62 @@ mod tests {
                 ExprNode::Binary(OpKind::Mul, ExprId(2), ExprId(0)),
                 ExprNode::Binary(OpKind::Add, ExprId(3), ExprId(1)),
                 ExprNode::Reduce {
-                    fold: Fold::new(Monoid::SUM, binder, 0..4),
+                    fold: Fold::new(Monoid::SUM, binder),
+                    lo: Bound::Lit(0),
+                    hi: Bound::Lit(4),
                     body: ExprId(4),
                 },
             ],
             "{}",
             arena.display(root)
+        );
+    }
+
+    /// A literal equal to a fold's bound, built after the fold, is a node of
+    /// its own after the fold: a known bound is the fold's data, so nothing
+    /// the fold holds is there for the literal to intern to (plan L1,
+    /// docs/language/2026-10-20-a-bound-is-a-value.md). `combine` copies the
+    /// fold's kernel and then splices the divisor, so the divisor is the
+    /// later node.
+    #[test]
+    fn a_literal_equal_to_a_bound_lands_after_its_fold() {
+        let mean = Kernel::sum_over(4, |i| Kernel::x().mul(i)).div(&Kernel::constant(4.0));
+        let (arena, root) = mean.parts();
+        let mut reached = alloc::vec![false; arena.len()];
+        let mut stack = alloc::vec![root];
+        while let Some(id) = stack.pop() {
+            if !core::mem::replace(&mut reached[id.0 as usize], true) {
+                stack.extend(arena.children(id));
+            }
+        }
+        let live = |id: &ExprId| reached[id.0 as usize];
+        let fold = arena
+            .nodes()
+            .filter(|(id, _)| live(id))
+            .find_map(|(id, node)| matches!(node, ExprNode::Reduce { .. }).then_some(id))
+            .expect("a live fold");
+        let fours: Vec<ExprId> = arena
+            .nodes()
+            .filter(|(id, _)| live(id))
+            .filter_map(|(id, node)| {
+                matches!(node, ExprNode::Const(Lit::Real(v)) if v == 4.0).then_some(id)
+            })
+            .collect();
+        assert_eq!(
+            fours.len(),
+            1,
+            "one 4.0, the divisor: {}",
+            arena.display(root)
+        );
+        assert!(
+            fours[0] > fold,
+            "the divisor follows the fold: {}",
+            arena.display(root)
+        );
+        assert_eq!(
+            arena.children(fold).count(),
+            1,
+            "the fold's one child is its body"
         );
     }
 
@@ -1505,7 +1562,9 @@ mod tests {
         let y = arena.push_var(Axis::Y.var());
         let body = arena.apply(&argument, [index, y]);
         let fold = arena
-            .close_fold(open, body, |binder| Fold::new(Monoid::SUM, binder, 0..3))
+            .close_fold(open, body, |binder| {
+                FoldHeader::new(Fold::new(Monoid::SUM, binder), Bound::Lit(0), Bound::Lit(3))
+            })
             .expect("a binder is free");
         assert_eq!(arena.uniforms(), k.uniforms());
         assert!(matches!(arena.node(fold), ExprNode::Reduce { .. }));

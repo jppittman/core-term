@@ -66,7 +66,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::{Binder, Fold, KnownRange, Lit, Monoid, OpKind, ShiftCount};
+use pixelflow_ir::{Binder, Bound, Fold, KnownRange, Lit, Monoid, OpKind, ShiftCount};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -98,6 +98,8 @@ pub enum HeadNode {
     },
     Reduce {
         fold: Fold,
+        lo: Bound<HeadRef>,
+        hi: Bound<HeadRef>,
         body: HeadRef,
     },
     /// A shift, its count carried as the parameter it is.
@@ -151,9 +153,16 @@ impl PlanBuilder {
         self.push(HeadNode::Op { op, children })
     }
 
-    /// A fold over `body`.
-    fn reduce(&mut self, fold: Fold, body: HeadRef) -> HeadRef {
-        self.push(HeadNode::Reduce { fold, body })
+    /// A fold over `body`, from `lo` to `hi`. Four arguments because they
+    /// are the node's four fields, as `ENode::reduce`'s are.
+    fn reduce(
+        &mut self,
+        fold: Fold,
+        lo: Bound<HeadRef>,
+        hi: Bound<HeadRef>,
+        body: HeadRef,
+    ) -> HeadRef {
+        self.push(HeadNode::Reduce { fold, lo, hi, body })
     }
 
     /// The finished plan, rooted at `root`.
@@ -379,9 +388,7 @@ impl Rewrite for PeelFold {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Reduce { fold, body } = node else {
-            return None;
-        };
+        let (fold, _, _, body) = node.as_reduce()?;
         // A range that is not known cannot be peeled: decline.
         let range = node.known_range()?;
         // `HalveFold`'s epilogue only (see this rule's doc): while the fold
@@ -398,13 +405,14 @@ impl Rewrite for PeelFold {
         let mut plan = PlanBuilder::default();
         let head = plan.substitute(
             egraph,
-            *body,
+            body,
             Substitution {
                 binder: fold.binder(),
                 leaf: |plan: &mut PlanBuilder, _class| plan.constant(last as f32),
             },
         )?;
-        let rest = plan.reduce(fold.with_range(rest), HeadRef::Class(*body));
+        let (rest_fold, lo, hi) = fold.over(rest);
+        let rest = plan.reduce(rest_fold, lo, hi, HeadRef::Class(body));
         // `rest` first: the peel takes the *last* index, so the accumulator
         // is on the left and the chain leans left.
         let root = plan.op(combiner, alloc::vec![rest, head]);
@@ -422,9 +430,7 @@ impl Rewrite for HalveFold {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Reduce { fold, body } = node else {
-            return None;
-        };
+        let (fold, _, _, body) = node.as_reduce()?;
         // A range that is not known cannot be halved: decline.
         let range = node.known_range()?;
         let halved = range.halve()?;
@@ -440,7 +446,7 @@ impl Rewrite for HalveFold {
         // body of a `Reduce`, not a value that has left one.
         let shifted = plan.substitute(
             egraph,
-            *body,
+            body,
             Substitution {
                 binder: fold.binder(),
                 leaf: |plan: &mut PlanBuilder, class| {
@@ -451,8 +457,9 @@ impl Rewrite for HalveFold {
         )?;
         // `body` first: `b ⊕ b[binder := binder+s]`, the unshifted (original
         // left-to-right order) half on the left.
-        let doubled = plan.op(combiner, alloc::vec![HeadRef::Class(*body), shifted]);
-        let root = plan.reduce(fold.with_range(halved), doubled);
+        let doubled = plan.op(combiner, alloc::vec![HeadRef::Class(body), shifted]);
+        let (halved_fold, lo, hi) = fold.over(halved);
+        let root = plan.reduce(halved_fold, lo, hi, doubled);
         Some(RewriteAction::Plan(plan.finish(root)))
     }
 }
@@ -467,12 +474,12 @@ impl Rewrite for EmptyFold {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Reduce { fold, .. } = node else {
+        let ENode::Reduce { header, .. } = node else {
             return None;
         };
         node.known_range()
             .is_some_and(KnownRange::is_empty)
-            .then(|| RewriteAction::Create(ENode::Const(fold.monoid().identity())))
+            .then(|| RewriteAction::Create(ENode::Const(header.fold().monoid().identity())))
     }
 }
 
@@ -486,9 +493,7 @@ impl Rewrite for FactorFold {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Reduce { fold, body } = node else {
-            return None;
-        };
+        let (fold, lo, hi, body) = node.as_reduce()?;
         // Only a range known to be non-empty: an empty fold is `EmptyFold`'s,
         // and one that is not known is not known to have a term to factor from.
         if node.known_range().is_none_or(KnownRange::is_empty) {
@@ -497,10 +502,17 @@ impl Rewrite for FactorFold {
         let distributor = distributor(fold.monoid())?;
         let binder = fold.binder();
         let [factor, rest] = egraph
-            .nodes(*body)
+            .nodes(body)
             .find_map(|spelling| factored(egraph, spelling, distributor, binder))?;
         let mut plan = PlanBuilder::default();
-        let folded = plan.reduce(*fold, HeadRef::Class(rest));
+        // The factored fold keeps the node's own bounds, each as the class it
+        // is when it is a value.
+        let folded = plan.reduce(
+            fold,
+            lo.map(HeadRef::Class),
+            hi.map(HeadRef::Class),
+            HeadRef::Class(rest),
+        );
         let root = plan.op(distributor, alloc::vec![HeadRef::Class(factor), folded]);
         Some(RewriteAction::Plan(plan.finish(root)))
     }
@@ -612,10 +624,18 @@ fn rebuild(node: &ENode, kids: &[Done]) -> Option<HeadNode> {
         // the class before descending. "`lowest_free_binder` never reissues
         // a live slot" is not what makes that safe — it is false across a
         // `Ref`, which `Kernel::over` does not see through.
-        ENode::Reduce { fold, .. } => Some(HeadNode::Reduce {
-            fold: *fold,
-            body: kids.first()?.at,
-        }),
+        ENode::Reduce { header, .. } => {
+            // `substitute` plans every child of the node, so `kids` is the
+            // body and then each value bound.
+            let (body, values) = kids.split_first()?;
+            let (lo, hi) = header.attach(values.iter().map(|k| k.at));
+            Some(HeadNode::Reduce {
+                fold: header.fold(),
+                lo,
+                hi,
+                body: body.at,
+            })
+        }
         ENode::Op { op, .. } => Some(HeadNode::Op {
             op: *op,
             children: kids.iter().map(|k| k.at).collect(),
@@ -651,6 +671,12 @@ mod tests {
         matches!(node, ENode::Reduce { .. }).then(|| node.known_range().expect(KNOWN_RANGE))
     }
 
+    /// The body class of a fold node.
+    fn body_of(node: &ENode) -> EClassId {
+        let (_, _, _, body) = node.as_reduce().expect("a fold");
+        body
+    }
+
     /// **A peel moves the range, not the body.** `Σ_{[0,3)} X` has a body
     /// that ignores the binder, so the peeled head must be *X's own e-class*
     /// — no copy — and the tail must name the same body class the original
@@ -660,12 +686,17 @@ mod tests {
     fn a_peel_shares_the_body_it_folds() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
-        let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..3), x);
+        let root = a.push_reduce(
+            Fold::new(Monoid::SUM, binder(0)),
+            Bound::Lit(0),
+            Bound::Lit(3),
+            x,
+        );
 
         let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let body_class = match eg.nodes(class).next() {
-            Some(ENode::Reduce { body, .. }) => eg.find(*body),
+            Some(node @ ENode::Reduce { .. }) => eg.find(body_of(node)),
             other => panic!("expected a fold, got {other:?}"),
         };
 
@@ -694,7 +725,7 @@ mod tests {
                 assert_eq!(rest.range(), 0..2, "the rest is the shorter range");
                 assert_eq!(
                     eg.find(match eg.nodes(rest_class).next() {
-                        Some(ENode::Reduce { body, .. }) => *body,
+                        Some(node @ ENode::Reduce { .. }) => body_of(node),
                         other => panic!("expected a fold, got {other:?}"),
                     }),
                     body_class,
@@ -718,40 +749,31 @@ mod tests {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
 
-        let even = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..8), x);
+        let even = a.push_reduce(
+            Fold::new(Monoid::SUM, binder(0)),
+            Bound::Lit(0),
+            Bound::Lit(8),
+            x,
+        );
         let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, even, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        let ENode::Reduce { fold, body } = eg.nodes(class).next().cloned().expect("a fold") else {
-            panic!("expected a fold");
-        };
+        let node = eg.nodes(class).next().cloned().expect("a fold");
         assert!(
-            PeelFold
-                .apply(&eg, class, &ENode::Reduce { fold, body })
-                .is_none(),
+            PeelFold.apply(&eg, class, &node).is_none(),
             "8 is even — HalveFold's job, not PeelFold's"
         );
 
-        let odd = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..7), x);
+        let odd = a.push_reduce(
+            Fold::new(Monoid::SUM, binder(0)),
+            Bound::Lit(0),
+            Bound::Lit(7),
+            x,
+        );
         let mut eg2 = Saturation::over(RuleSet::new(fold_rules()));
         let class2 = insert(&a, odd, &mut eg2, Vocabulary::Runtime).expect("a fold inserts");
-        let ENode::Reduce {
-            fold: fold2,
-            body: body2,
-        } = eg2.nodes(class2).next().cloned().expect("a fold")
-        else {
-            panic!("expected a fold");
-        };
+        let node2 = eg2.nodes(class2).next().cloned().expect("a fold");
         assert!(
-            PeelFold
-                .apply(
-                    &eg2,
-                    class2,
-                    &ENode::Reduce {
-                        fold: fold2,
-                        body: body2
-                    }
-                )
-                .is_some(),
+            PeelFold.apply(&eg2, class2, &node2).is_some(),
             "7 is odd — KnownRange::halve declines, so PeelFold is the epilogue"
         );
     }
@@ -764,12 +786,17 @@ mod tests {
     fn halve_doubles_the_body_sharing_it_when_the_binder_is_unused() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
-        let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..8), x);
+        let root = a.push_reduce(
+            Fold::new(Monoid::SUM, binder(0)),
+            Bound::Lit(0),
+            Bound::Lit(8),
+            x,
+        );
 
         let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let body_class = match eg.nodes(class).next() {
-            Some(ENode::Reduce { body, .. }) => eg.find(*body),
+            Some(node @ ENode::Reduce { .. }) => eg.find(body_of(node)),
             other => panic!("expected a fold, got {other:?}"),
         };
 
@@ -785,9 +812,9 @@ mod tests {
         let (doubled_range, new_body_class) = eg
             .nodes(class)
             .find_map(|n| match n {
-                ENode::Reduce { body, .. } => reduce_range(n)
+                ENode::Reduce { .. } => reduce_range(n)
                     .filter(|range| range.stride() > 1)
-                    .map(|range| (range, eg.find(*body))),
+                    .map(|range| (range, eg.find(body_of(n)))),
                 _ => None,
             })
             .expect("the class must now also hold the halved fold");
@@ -831,7 +858,12 @@ mod tests {
                 let count = a.push_const(COUNT as f32);
                 let sum = a.push_binary(OpKind::Add, x, i);
                 let shifted = a.push_binary(direction.op(), sum, count);
-                let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), range.clone()), shifted);
+                let root = a.push_reduce(
+                    Fold::new(Monoid::SUM, binder(0)),
+                    Bound::Lit(range.start),
+                    Bound::Lit(range.end),
+                    shifted,
+                );
 
                 let mut eg = Saturation::over(RuleSet::new(fold_rules()));
                 let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
@@ -933,21 +965,21 @@ mod tests {
         eg.add(ENode::apply(OpKind::Sin, &[phase]))
     }
 
-    /// A fold over slot 0.
-    fn over(monoid: Monoid, range: core::ops::Range<u32>) -> Fold {
-        Fold::new(monoid, binder(0), range)
+    /// A fold over slot 0, and the range it runs over.
+    fn over(monoid: Monoid, range: core::ops::Range<u64>) -> (Fold, core::ops::Range<u64>) {
+        (Fold::new(monoid, binder(0)), range)
     }
 
     /// `fold` over `body(i)`, with `rules` installed.
     fn folded(
         rules: Vec<Box<dyn Rewrite>>,
-        fold: Fold,
+        (fold, range): (Fold, core::ops::Range<u64>),
         body: impl FnOnce(&mut EGraph, EClassId) -> EClassId,
     ) -> Factorable {
         let mut eg = Saturation::over(RuleSet::new(rules));
         let i = eg.add(ENode::Var(fold.binder().var()));
         let body = body(&mut eg, i);
-        let node = ENode::Reduce { fold, body };
+        let node = ENode::reduce(fold, Bound::Lit(range.start), Bound::Lit(range.end), body);
         let class = eg.add(node);
         Factorable { eg, class, node }
     }
@@ -964,6 +996,8 @@ mod tests {
         distributor: OpKind,
         factor: EClassId,
         fold: Fold,
+        lo: Bound<EClassId>,
+        hi: Bound<EClassId>,
         rest: EClassId,
     }
 
@@ -984,13 +1018,15 @@ mod tests {
         let [factor, folded] = children.as_slice() else {
             panic!("a binary distributor: {plan:?}")
         };
-        let HeadNode::Reduce { fold, body } = planned(*folded) else {
+        let HeadNode::Reduce { fold, lo, hi, body } = planned(*folded) else {
             panic!("the distributor's right operand is the fold: {plan:?}")
         };
         Factoring {
             distributor: op,
             factor: class(*factor),
             fold,
+            lo: lo.map(class),
+            hi: hi.map(class),
             rest: class(body),
             plan,
         }
@@ -1015,8 +1051,10 @@ mod tests {
     fn holds(eg: &EGraph, class: EClassId, factoring: &Factoring) -> bool {
         let folds_rest = |c: EClassId| {
             eg.nodes(c).any(|n| {
-                matches!(n, ENode::Reduce { fold, body }
-                    if *fold == factoring.fold && eg.find(*body) == eg.find(factoring.rest))
+                n.as_reduce().is_some_and(|(fold, lo, hi, body)| {
+                    (fold, lo, hi) == (factoring.fold, factoring.lo, factoring.hi)
+                        && eg.find(body) == eg.find(factoring.rest)
+                })
             })
         };
         eg.nodes(class).any(|n| match n {
@@ -1047,10 +1085,12 @@ mod tests {
 
         let fired = factoring(&f).expect("Y is invariant");
         assert_eq!(fired.distributor, OpKind::Mul);
-        let ENode::Reduce { fold, .. } = &f.node else {
-            panic!("the fold's own node is a Reduce");
-        };
-        assert_eq!(fired.fold, *fold, "the fold is unchanged");
+        let (fold, lo, hi, _) = f.node.as_reduce().expect("the fold's own node is a Reduce");
+        assert_eq!(
+            (fired.fold, fired.lo, fired.hi),
+            (fold, lo, hi),
+            "the fold is unchanged: its algebra, binder and bounds"
+        );
         let growth = f.eg.predicted_growth(
             &RewriteAction::Plan(fired.plan.clone()),
             &mut Default::default(),
@@ -1198,9 +1238,7 @@ mod tests {
         f.eg.union(zeroish.expect("built"), zero);
         f.eg.rebuild();
 
-        let ENode::Reduce { body, .. } = f.node else {
-            panic!("a fold")
-        };
+        let body = body_of(&f.node);
         match PeelFold.apply(&f.eg, f.class, &f.node) {
             Some(RewriteAction::Plan(plan)) => {
                 // Two nodes and nothing copied: the fold over the rest of the
@@ -1227,14 +1265,11 @@ mod tests {
     #[test]
     fn a_peel_stops_at_a_fold_that_rebinds_its_slot() {
         let mut shadowing = None;
-        let inner = Fold::new(Monoid::MAX, binder(0), 0..5);
+        let inner = Fold::new(Monoid::MAX, binder(0));
         let f = folded(fold_rules(), over(Monoid::SUM, 0..3), |eg, i| {
             let x = eg.add(ENode::Var(0));
             let ix = eg.add(ENode::apply(OpKind::Mul, &[i, x]));
-            let max = eg.add(ENode::Reduce {
-                fold: inner,
-                body: ix,
-            });
+            let max = eg.add(ENode::reduce(inner, Bound::Lit(0), Bound::Lit(5), ix));
             shadowing = Some(max);
             eg.add(ENode::apply(OpKind::Add, &[max, i]))
         });
@@ -1367,7 +1402,12 @@ mod production_shape_tests {
         let read = a.push_gather(buf, i, zero);
         let x = a.push_var(0);
         let body = a.push_binary(OpKind::Mul, read, x);
-        let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..40), body);
+        let root = a.push_reduce(
+            Fold::new(Monoid::SUM, binder(0)),
+            Bound::Lit(0),
+            Bound::Lit(40),
+            body,
+        );
 
         let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
@@ -1440,7 +1480,12 @@ mod production_shape_tests {
         let read = a.push_gather(buf, i, zero);
         let x = a.push_var(0);
         let body = a.push_binary(OpKind::Mul, read, x);
-        let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..40), body);
+        let root = a.push_reduce(
+            Fold::new(Monoid::SUM, binder(0)),
+            Bound::Lit(0),
+            Bound::Lit(40),
+            body,
+        );
 
         let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");

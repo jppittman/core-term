@@ -164,8 +164,13 @@ fn dump_arena(arena: &ExprArena, root: ExprId, name: &str, path: &std::path::Pat
             ExprNode::Ternary(k, a, b, c) => {
                 writeln!(out, "T {k:?} {} {} {}", d(&dense, a), d(&dense, b), d(&dense, c))
             }
-            ExprNode::Reduce { fold, body } => {
-                writeln!(out, "R {} {}", fold.to_bits(), d(&dense, body))
+            ExprNode::Reduce { body, .. } => {
+                writeln!(
+                    out,
+                    "R {} {}",
+                    arena.fold_header(id).to_bits(),
+                    d(&dense, body)
+                )
             }
             other @ (ExprNode::Param(_)
             | ExprNode::Nary(..)

@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 
 use pixelflow_ir::arena::UniformId;
-use pixelflow_ir::fold::{Binder, KNOWN_RANGE, KnownRange};
+use pixelflow_ir::fold::{Binder, Bound, KNOWN_RANGE, KnownRange, VALUE_BOUND};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::variance::{Variance, compute_arena_variance};
 use pixelflow_ir::{Lit, ShiftCount};
@@ -43,6 +43,12 @@ fn mark_reachable(
             }
         }
     }
+}
+
+/// A bound the schedule can carry: a literal. A value bound is refused by name
+/// until A4 places its operand.
+fn known(bound: Bound<pixelflow_ir::arena::ExprId>) -> Bound<ValueId> {
+    Bound::Lit(bound.lit().unwrap_or_else(|| panic!("{VALUE_BOUND}")))
 }
 
 /// Whether `id` is a fold over nothing: its monoid's identity, whatever its
@@ -308,7 +314,7 @@ pub(crate) fn arena_to_schedule(
             }
             // The lane fold, executed by lanes: its body is the store, and
             // the store is this def, with the fold's trip count as its width.
-            ExprNode::Reduce { fold, body } if matches!(arena.node(body), ExprNode::Write { lane, .. } if lane == fold.binder()) =>
+            ExprNode::Reduce { fold, body, .. } if matches!(arena.node(body), ExprNode::Write { lane, .. } if lane == fold.binder()) =>
             {
                 let ExprNode::Write {
                     row, col, value, ..
@@ -320,7 +326,8 @@ pub(crate) fn arena_to_schedule(
                     row,
                     col,
                     lane: fold.binder(),
-                    lanes: arena.known_range(expr_id).expect(KNOWN_RANGE).len(),
+                    lanes: u32::try_from(arena.known_range(expr_id).expect(KNOWN_RANGE).len())
+                        .expect("a lane fold's trip count is a lane count"),
                     value: map_child(value),
                 }
             }
@@ -330,11 +337,13 @@ pub(crate) fn arena_to_schedule(
             // value's `ValueId` in *this* numbering. `scopes::extract_folds` reads
             // it back out into the fold's own `ScopeFold`; nothing after
             // that resolves it as an operand (see `ScheduledOp::Reduce`).
-            ExprNode::Reduce { fold, body } => ScheduledOp::Reduce {
+            ExprNode::Reduce { fold, lo, hi, body } => ScheduledOp::Reduce {
                 fold,
-                // Codegen refuses a value bound here, where the schedule takes
-                // the range; until bounds are values there is none to refuse.
-                range: arena.known_range(expr_id).expect(KNOWN_RANGE),
+                // Codegen takes no value bound until A4 places its operand
+                // (docs/language/2026-10-20-a-bound-is-a-value.md §3.3); none
+                // can be built until A3.
+                lo: known(lo),
+                hi: known(hi),
                 body: map_child(body),
             },
             ExprNode::Write { .. } => unreachable!("a Write node is skipped above"),

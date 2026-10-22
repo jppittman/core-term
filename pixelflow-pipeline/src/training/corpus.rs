@@ -66,7 +66,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use pixelflow_ir::fold::Fold;
+use pixelflow_ir::fold::FoldHeader;
 use pixelflow_ir::kind::OpCode;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, Lit, OpKind};
 
@@ -272,7 +272,9 @@ pub fn reachable_subtree(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId)
                     ExprNode::Ternary(op, a, b, c) => {
                         out_arena.push_ternary(op, map(a), map(b), map(c))
                     }
-                    ExprNode::Reduce { fold, body } => out_arena.push_reduce(fold, map(body)),
+                    ExprNode::Reduce { fold, lo, hi, body } => {
+                        out_arena.push_reduce(fold, lo.map(map), hi.map(map), map(body))
+                    }
                     ExprNode::Nary(op, _) => {
                         let mapped_children: Vec<ExprId> = arena.children(id).map(map).collect();
                         out_arena.push_nary(op, &mapped_children)
@@ -398,10 +400,16 @@ fn write_node(w: &mut impl Write, arena: &ExprArena, id: ExprId) -> io::Result<(
             w.write_all(&[TAG_BUFFER])?;
             w.write_all(&b.0.to_le_bytes())?;
         }
-        // The fold as opaque bits: metadata, not children.
-        ExprNode::Reduce { fold, body } => {
+        // The fold's header as opaque bits: metadata, not children.
+        ExprNode::Reduce { lo, hi, body, .. } => {
+            if lo.value().is_some() || hi.value().is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a value bound has no corpus encoding before A3's format version",
+                ));
+            }
             w.write_all(&[TAG_REDUCE])?;
-            w.write_all(&fold.to_bits().to_le_bytes())?;
+            w.write_all(&arena.fold_header(id).to_bits().to_le_bytes())?;
             w.write_all(&body.0.to_le_bytes())?;
         }
         ExprNode::Uniform(u) => {
@@ -594,14 +602,16 @@ fn read_node_into(
         }
         TAG_REDUCE => {
             let bits = r.read_u128()?;
-            let fold = Fold::from_bits(bits).ok_or_else(|| {
+            let header = FoldHeader::from_bits(bits).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("corpus fold bits {bits} name no fold"),
                 )
             })?;
             let body = resolve_child(id_map, r.read_u32()?)?;
-            Ok(arena.push_reduce(fold, body))
+            // `from_bits` names literal bounds only, so no child follows.
+            let (lo, hi) = header.attach(core::iter::empty());
+            Ok(arena.push_reduce(header.fold(), lo, hi, body))
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -744,6 +754,23 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(arena.len(), 1, "the malformed record entered nothing");
     }
+    /// A record whose end field is all ones is the field a value bound would
+    /// need and this format does not have: it names no fold, rather than
+    /// reading as a bound.
+    #[test]
+    fn a_fold_record_with_an_all_ones_end_names_no_fold() {
+        let all_ones_hi = 0x0000_0000_0001_0201_0000_0003_ffff_ffff_u128;
+        let mut bytes = vec![TAG_REDUCE];
+        bytes.extend_from_slice(&all_ones_hi.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let err = read_node_into(&mut Cursor::new(&bytes), &mut arena, &[x])
+            .expect_err("an all-ones end is no literal bound");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(arena.len(), 1, "the malformed record entered nothing");
+    }
+
     #[test]
     fn round_trip_empty() {
         let tmp = unique_tmp("empty");

@@ -377,7 +377,7 @@ fn emit_const(item: &ConstItem, value: ConstValue) -> TokenStream {
 /// refuses ([`KnownRange::admits`](pixelflow_ir::KnownRange::admits)): one that runs backwards, and one past
 /// [`Fold::EXACT_BOUND`], the last bound a fold's index names exactly.
 /// The bound is the IR's, imported; what the `const` block adds is that the
-/// refusal is rustc's rather than `Fold::new`'s panic.
+/// refusal is rustc's rather than `FoldHeader::new`'s panic.
 ///
 /// The refusal is rustc's at monomorphization, which `cargo build` reaches
 /// and `cargo check` (so clippy) does not: a bad instantiation checks clean
@@ -385,7 +385,7 @@ fn emit_const(item: &ConstItem, value: ConstValue) -> TokenStream {
 /// a run-time panic.
 fn instantiated_range(range: &crate::sema::StructuralRange) -> TokenStream {
     let (lo, hi) = (&range.lo, &range.hi);
-    let bound = proc_macro2::Literal::u32_unsuffixed(Fold::EXACT_BOUND);
+    let bound = proc_macro2::Literal::u64_unsuffixed(Fold::EXACT_BOUND);
     let backwards = format!(
         "kernel!: the range `{}` runs backwards at this instantiation",
         range.text()
@@ -404,7 +404,7 @@ fn instantiated_range(range: &crate::sema::StructuralRange) -> TokenStream {
             let __hi: usize = #hi;
             ::core::assert!(__lo <= __hi, #backwards);
             ::core::assert!(__hi <= #bound, #past);
-            (__lo as u32)..(__hi as u32)
+            (__lo as u64)..(__hi as u64)
         }
     }
 }
@@ -574,35 +574,44 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
             let children: Vec<Ident> = arena.children(id).map(node_var).collect();
             quote! { __arena.push_nary(#op_code, &[#(#children),*]) }
         }
-        // A fold's metadata is a `Fold`, whose fields are private
-        // precisely so no caller can assemble one that means nothing —
-        // so it travels the way the two cache keys carry it, as bits
-        // with a total inverse on the far side.
-        ExprNode::Reduce { fold, body } => {
-            let bits = fold.to_bits();
+        // A fold's header — its fold and how its bounds are held — is a
+        // `FoldHeader`, whose fields are private precisely so no caller can
+        // assemble one that means nothing — so it travels the way the two
+        // cache keys carry it, as bits with a total inverse on the far side.
+        ExprNode::Reduce { body, .. } => {
+            let header = arena.fold_header(id);
+            let bits = header.to_bits();
             let body = node_var(body);
             let decoded = quote! {
-                ::pixelflow_core::__macro::ir::fold::Fold::from_bits(#bits)
+                ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
                     .expect("kernel! emitted a well-formed fold")
             };
             // An open fold keeps its monoid and binder, which are
             // structure, and takes its range from this instantiation.
             let header_range = arena.known_range(id).expect(KNOWN_RANGE);
-            let emitted = match context.holes.range_of(header_range) {
-                None => decoded,
+            match context.holes.range_of(header_range) {
+                None => quote! {{
+                    let __header = #decoded;
+                    let (__lo, __hi) = __header.attach(::core::iter::empty());
+                    __arena.push_reduce(__header.fold(), __lo, __hi, #body)
+                }},
                 Some(range) => {
                     let range = instantiated_range(range);
                     quote! {{
-                        let __placeholder = #decoded;
-                        ::pixelflow_core::__macro::ir::fold::Fold::new(
-                            __placeholder.monoid(),
-                            __placeholder.binder(),
-                            #range,
+                        let __placeholder = #decoded.fold();
+                        let __range = #range;
+                        __arena.push_reduce(
+                            ::pixelflow_core::__macro::ir::fold::Fold::new(
+                                __placeholder.monoid(),
+                                __placeholder.binder(),
+                            ),
+                            ::pixelflow_core::__macro::ir::fold::Bound::Lit(__range.start),
+                            ::pixelflow_core::__macro::ir::fold::Bound::Lit(__range.end),
+                            #body,
                         )
                     }}
                 }
-            };
-            quote! { __arena.push_reduce(#emitted, #body) }
+            }
         }
         // A store is post-legalize vocabulary: the passes that wrap a
         // kernel in the lattice's folds build one, after extraction,
@@ -647,7 +656,7 @@ pub struct Staged {
     /// How many variables have been named: every one is fresh.
     named: u64,
     /// The folds open, innermost last: the variable holding each, and the
-    /// closure that makes its `Fold` once its binder is chosen.
+    /// closure that makes its `FoldHeader` once its binder is chosen.
     open: Vec<(Ident, TokenStream)>,
 }
 
@@ -686,12 +695,17 @@ impl Staged {
     }
 
     /// The closure an open fold closes into: its monoid, carried as a
-    /// fold's bits (as [`node`] carries a `Fold`), its binder the one
+    /// header's bits (as [`node`] carries a `FoldHeader`), its binder the one
     /// `close_fold` chooses, and its range — known, or this
     /// instantiation's ([`instantiated_range`]).
     fn fold_at(monoid: Monoid, range: FoldRange) -> TokenStream {
         let first = Binder::from_slot(0).expect("the IR has a binder");
-        let bits = pixelflow_ir::Fold::new(monoid, first, 0..0).to_bits();
+        let bits = pixelflow_ir::FoldHeader::new(
+            pixelflow_ir::Fold::new(monoid, first),
+            pixelflow_ir::Bound::Lit(0),
+            pixelflow_ir::Bound::Lit(0),
+        )
+        .to_bits();
         let range = match range {
             FoldRange::Known(range) => {
                 let (lo, hi) = (range.start, range.end);
@@ -700,13 +714,20 @@ impl Staged {
             FoldRange::Structural(range) => instantiated_range(&range),
         };
         quote! {
-            |__binder| ::pixelflow_core::__macro::ir::fold::Fold::new(
-                ::pixelflow_core::__macro::ir::fold::Fold::from_bits(#bits)
-                    .expect("kernel! emitted a well-formed fold")
-                    .monoid(),
-                __binder,
-                #range,
-            )
+            |__binder| {
+                let __range = #range;
+                ::pixelflow_core::__macro::ir::fold::FoldHeader::new(
+                    ::pixelflow_core::__macro::ir::fold::Fold::new(
+                        ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
+                            .expect("kernel! emitted a well-formed fold")
+                            .fold()
+                            .monoid(),
+                        __binder,
+                    ),
+                    ::pixelflow_core::__macro::ir::fold::Bound::Lit(__range.start),
+                    ::pixelflow_core::__macro::ir::fold::Bound::Lit(__range.end),
+                )
+            }
         }
     }
 }

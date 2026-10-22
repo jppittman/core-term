@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::dag::{Builder, Id, Memo, Node};
-use crate::fold::{Binder, Fold, KnownRange, Placeholder};
+use crate::fold::{Binder, Bound, Fold, FoldHeader, KnownRange, Placeholder};
 use crate::key::KernelKey;
 use crate::kind::OpKind;
 use crate::lit::Lit;
@@ -52,6 +52,20 @@ use crate::lit::Lit;
 /// compare by — `-0.0` and `0.0` are different constants, and a NaN payload
 /// is equal to itself — and a mask by its truth, so a true mask and the NaN
 /// that shares its lane are two nodes.
+///
+/// A `Reduce`'s edges are its body, then each value bound in `lo`, `hi` order;
+/// its [`FoldHeader`] says how many.
+///
+/// A `Reduce` stores its [`FoldHeader`], which is what sizes this enum: 32
+/// bytes, where it was 16 while a fold's ends were `u32`s inside it. The
+/// header holds the control plane's 64-bit counts, packed (see its doc); a
+/// `Fold` beside two `Bound<()>`s would be 48. Measured, not budgeted, and
+/// pinned by `what_a_node_costs_is_measured_not_budgeted`.
+///
+/// What the growth cost a whole compile was measured with the e-graph's
+/// `ENode` grown alongside (24 to 48 bytes; the method is in its doc): peak
+/// RSS +17% on the cold compile of the 29 programs ASCII needs and +10% on the
+/// n=40 program, and +5.2% instructions on the 29.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 enum NodeData {
     Var(u8),
@@ -64,7 +78,7 @@ enum NodeData {
     Binary(OpKind),
     Ternary(OpKind),
     Nary(OpKind),
-    Reduce(Fold),
+    Reduce(FoldHeader),
     /// `Write`'s three binders. The value is the node's one DAG edge, as
     /// for [`Reduce`](Self::Reduce) — see [`ExprNode::Write`]'s doc.
     Write(Binder, Binder, Binder),
@@ -369,7 +383,8 @@ pub struct NaryChildren {
 
 /// A single expression node stored in the arena.
 ///
-/// Layout is kept tight: the static assertion below guarantees <= 16 bytes.
+/// Its width is held by the tripwire below, which guards against an accident
+/// and is not a budget.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprNode {
     /// A bound variable: a lattice coordinate ([`COORD_AXES`] of them, X and
@@ -411,7 +426,8 @@ pub enum ExprNode {
     /// [`NaryChildren`] — and comes back through [`ExprArena::children`].
     Nary(OpKind, NaryChildren),
     /// A fold: `⊕_{k} body[fold.binder() := k]` over its range's visited
-    /// indices (`lo`, `lo+stride`, …, [`KnownRange::len`] of them) — see [`Fold`].
+    /// indices (`lo`, `lo+stride`, …, [`KnownRange::len`] of them) — see [`Fold`]
+    /// — its bounds `lo` and `hi`, literal or child (see [`Bound`]).
     ///
     /// The only node that *binds* — the binder is not free in the result — and
     /// the only one whose metadata is part of its identity rather than a
@@ -420,6 +436,8 @@ pub enum ExprNode {
     /// see [`crate::fold`] for why an e-graph could not hold that shape.
     Reduce {
         fold: Fold,
+        lo: Bound<ExprId>,
+        hi: Bound<ExprId>,
         body: ExprId,
     },
     /// A store: the one effect in the language, and the body of the folds a
@@ -439,7 +457,7 @@ pub enum ExprNode {
     /// by the legalize passes that wrap a kernel in the lattice
     /// ([`ExprArena::push_write`] is `pub(crate)`); the e-graph declines one
     /// and `kernel!` cannot name one.
-    /// One child, the value, as `Reduce` has its body.
+    /// One child, the value, as `Reduce` has its body (its first).
     Write {
         row: Binder,
         col: Binder,
@@ -460,12 +478,19 @@ pub enum ExprNode {
 // `KernelKey` happened to need, recorded as though it were a requirement.
 // That is how `Fold` came to carry `u16` ends "so the two fit the node in the
 // 16 bytes `ExprNode` is capped at", making a self-imposed width into a cap
-// on how many terms a reduction may have. A number nothing depends on should
-// never propagate into the language's semantics, so this one is now loose
-// enough that adding a node is not a conversation about bytes.
+// on how many terms a reduction may have. It was then 32. It is 64 since a
+// fold's bounds became the node's (docs/language/2026-10-20-a-bound-is-a-value.md,
+// A2b): a `Reduce` holds a `Fold` and two `Bound<ExprId>`s at the control
+// plane's 64 bits, the widest variant. Narrowing those to stay under the old
+// number would have been the `u16` mistake again (CLAUDE.md, "The control
+// plane is 64-bit"). This is a view, rebuilt per `ExprArena::node` call; what
+// an arena stores per node is `NodeData`, whose width is measured in its own
+// doc. A number nothing depends on should never propagate into the language's
+// semantics, so this one stays loose enough that adding a node is not a
+// conversation about bytes.
 const _: () = assert!(
-    core::mem::size_of::<ExprNode>() <= 32,
-    "ExprNode must fit in 32 bytes"
+    core::mem::size_of::<ExprNode>() <= 64,
+    "ExprNode must fit in 64 bytes"
 );
 
 // ───────────────────────────────────── ExprChildren ──────────────────────────
@@ -758,7 +783,7 @@ impl ExprArena {
             let id = ExprId(index as u32);
             free[index] = match self.node(id) {
                 ExprNode::Var(i) if i >= REDUCE_BINDER_BASE => bit(i),
-                ExprNode::Reduce { fold, body } => {
+                ExprNode::Reduce { fold, body, .. } => {
                     let bound = bit(fold.binder().var());
                     let [low, high] = free[body.0 as usize];
                     [low & !bound[0], high & !bound[1]]
@@ -906,15 +931,36 @@ impl ExprArena {
         self.push_ternary(OpKind::Gather, buf, x, y)
     }
 
-    /// Push the fold `fold` performs over `body` — a `⊕` over a range.
+    /// Push the fold `fold` performs over `body`, from `lo` to `hi` — a `⊕`
+    /// over a range. A literal bound is the node's data; a value bound is a
+    /// child after the body (`lo`'s, then `hi`'s).
     ///
-    /// Two arguments, because [`Fold`] is the metadata: which algebra, which
-    /// index, which range. Every one of those was an assertion here — a
-    /// combiner that is a monoid, a var index inside the binder space, a trip
-    /// count that fits — and each is now a thing the type will not build.
-    /// A survivor reaches codegen as a loop.
-    pub fn push_reduce(&mut self, fold: Fold, body: ExprId) -> ExprId {
-        self.intern(NodeData::Reduce(fold), &[body])
+    /// [`Fold`] is the metadata: which algebra, which index, which step.
+    /// Every one of those was an assertion here — a combiner that is a
+    /// monoid, a var index inside the binder space — and each is now a thing
+    /// the type will not build. The bounds are the node's own, four arguments
+    /// because they are the node's fields, as [`ExprArena::push_ternary`]'s
+    /// are. A survivor reaches codegen as a loop.
+    ///
+    /// # Panics
+    ///
+    /// As [`FoldHeader::new`]: a literal range it refuses, and — until A3 —
+    /// any value bound, with [`VALUE_BOUND`](crate::fold::VALUE_BOUND).
+    pub fn push_reduce(
+        &mut self,
+        fold: Fold,
+        lo: Bound<ExprId>,
+        hi: Bound<ExprId>,
+        body: ExprId,
+    ) -> ExprId {
+        let header = FoldHeader::new(fold, lo.erased(), hi.erased());
+        let mut children = [body; 3];
+        let mut len = 1;
+        for value in [lo.value(), hi.value()].into_iter().flatten() {
+            children[len] = value;
+            len += 1;
+        }
+        self.intern(NodeData::Reduce(header), &children[..len])
     }
 
     /// A store of `value` at the lattice position the three binders name —
@@ -1078,10 +1124,18 @@ impl ExprArena {
                     .expect("a Nary node's range is recorded when it is first interned");
                 ExprNode::Nary(op, range)
             }
-            NodeData::Reduce(fold) => {
+            NodeData::Reduce(header) => {
                 let mut kids = dag_children(n);
-                let body = kids.next().expect("a Reduce node has one DAG child");
-                ExprNode::Reduce { fold, body }
+                let body = kids
+                    .next()
+                    .expect("a Reduce node has its body as its first DAG child");
+                let (lo, hi) = header.attach(kids);
+                ExprNode::Reduce {
+                    fold: header.fold(),
+                    lo,
+                    hi,
+                    body,
+                }
             }
             NodeData::Write(row, col, lane) => {
                 let mut kids = dag_children(n);
@@ -1097,13 +1151,13 @@ impl ExprArena {
     }
 
     /// The range of the `Reduce` at `id`, when it is known: every bound is a
-    /// constant today, so this is `Some` for every fold.
+    /// literal today, so this is `Some` for every fold.
     ///
     /// The arena's reader of a fold's range, beside the e-graph node's and the
-    /// schedule's: a caller that reasons about how many terms a fold has, or
-    /// whether it has any, reads it here and not off the [`Fold`] header, so
-    /// that the representation can move the bounds out of the header without
-    /// every caller changing.
+    /// schedule's, which share one definition ([`KnownRange::of`]): a caller
+    /// that reasons about how many terms a fold has, or whether it has any,
+    /// reads it here, so that a bound becoming a value changes the readers and
+    /// not their callers.
     ///
     /// # Panics
     ///
@@ -1112,10 +1166,26 @@ impl ExprArena {
     /// which node it holds.
     #[must_use]
     pub fn known_range(&self, id: ExprId) -> Option<KnownRange> {
-        let NodeData::Reduce(fold) = *self.builder.dag().get(id.0) else {
+        let NodeData::Reduce(header) = *self.builder.dag().get(id.0) else {
             panic!("known_range: {id:?} is not a Reduce — only a fold has a range");
         };
-        fold.known_range()
+        header.known_range()
+    }
+
+    /// The header of the `Reduce` at `id`: its fold and how its bounds are
+    /// held. What a serializer writes ([`FoldHeader::to_bits`]) and a display
+    /// prints, beside the node's children.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is out of bounds or is not a `Reduce`: only a fold has a
+    /// header.
+    #[must_use]
+    pub fn fold_header(&self, id: ExprId) -> FoldHeader {
+        let NodeData::Reduce(header) = *self.builder.dag().get(id.0) else {
+            panic!("fold_header: {id:?} is not a Reduce — only a fold has a header");
+        };
+        header
     }
 
     /// Get the [`OpKind`] of the node at `id`.
@@ -1193,12 +1263,23 @@ impl ExprArena {
                 let l = range.len as usize;
                 ExprChildren::Nary(&self.nary_children[s..s + l])
             }
-            // One child, not four: the combiner, the binder and the extent
-            // are no longer expressions, so nothing that walks children can
-            // reach them, fold them, or cost them.
-            NodeData::Reduce(_) => {
+            // The body, then each value bound: the combiner, the binder and a
+            // known bound are no longer expressions, so nothing that walks
+            // children can reach them, fold them, or cost them. The header
+            // counts the edges, and `attach` refuses a node whose edges
+            // disagree with it.
+            NodeData::Reduce(header) => {
                 let mut kids = dag_children(n);
-                ExprChildren::One(kids.next().expect("a Reduce node has one DAG child"))
+                let body = kids
+                    .next()
+                    .expect("a Reduce node has its body as its first DAG child");
+                match header.attach(kids) {
+                    (Bound::Lit(_), Bound::Lit(_)) => ExprChildren::One(body),
+                    (Bound::Value(value), Bound::Lit(_)) | (Bound::Lit(_), Bound::Value(value)) => {
+                        ExprChildren::Two(body, value)
+                    }
+                    (Bound::Value(lo), Bound::Value(hi)) => ExprChildren::Three(body, lo, hi),
+                }
             }
             // One child, the value stored. The binders are the node's own
             // metadata, as a `Reduce`'s fold is: an index, not an operand.
@@ -1251,7 +1332,11 @@ impl ExprArena {
                         }
                     }
                 }
-                ExprNode::Reduce { body, .. } => stack.push((*body, d + 1)),
+                ExprNode::Reduce { .. } => {
+                    for child in self.children(id) {
+                        stack.push((child, d + 1));
+                    }
+                }
                 ExprNode::Write { value, .. } => stack.push((*value, d + 1)),
             }
         }
@@ -1289,7 +1374,7 @@ impl ExprArena {
                         stack.push(*child);
                     }
                 }
-                ExprNode::Reduce { body, .. } => stack.push(*body),
+                ExprNode::Reduce { .. } => stack.extend(self.children(id)),
                 ExprNode::Write { value, .. } => stack.push(*value),
             }
         }
@@ -1341,7 +1426,7 @@ impl ExprArena {
                         stack.push(*child);
                     }
                 }
-                ExprNode::Reduce { body, .. } => stack.push(*body),
+                ExprNode::Reduce { .. } => stack.extend(self.children(id)),
                 ExprNode::Write { value, .. } => stack.push(*value),
             }
         }
@@ -1385,7 +1470,7 @@ impl ExprArena {
                         stack.push(*child);
                     }
                 }
-                ExprNode::Reduce { body, .. } => stack.push(*body),
+                ExprNode::Reduce { .. } => stack.extend(self.children(id)),
                 ExprNode::Write { value, .. } => stack.push(*value),
             }
         }
@@ -1511,9 +1596,9 @@ impl ExprArena {
                                 .collect();
                             self.push_nary(op, &mapped)
                         }
-                        ExprNode::Reduce { fold, body } => {
-                            let body = m(body);
-                            self.push_reduce(fold, body)
+                        ExprNode::Reduce { fold, lo, hi, body } => {
+                            let (lo, hi, body) = (lo.map(m), hi.map(m), m(body));
+                            self.push_reduce(fold, lo, hi, body)
                         }
                         ExprNode::Write {
                             row,
@@ -1535,7 +1620,7 @@ impl ExprArena {
 
     /// This arena's `body`, built against `placeholder`, closed into a fold:
     /// `Reduce(fold_at(b), body[placeholder := Var(b)])`, as an arena of its
-    /// own.
+    /// own — `fold_at(b)` a [`FoldHeader`]: the fold over `b` and its bounds.
     ///
     /// `b` is the lowest [`Binder`] no fold reachable from `body` binds. So
     /// binders are chosen inside-out: a fold sees every inner fold's slot
@@ -1567,17 +1652,22 @@ impl ExprArena {
         &self,
         body: ExprId,
         placeholder: Placeholder,
-        fold_at: impl FnOnce(Binder) -> Fold,
+        fold_at: impl FnOnce(Binder) -> FoldHeader,
     ) -> Result<(ExprArena, ExprId), IndexSpaceFull> {
         let binder = self.lowest_free_binder(body).ok_or(IndexSpaceFull)?;
-        let fold = fold_at(binder);
+        let header = fold_at(binder);
+        // The fold's bounds are not in `body`'s arena: until A3 carries a value
+        // bound's root here (docs/language/2026-10-20-a-bound-is-a-value.md
+        // §3.1, "close_over takes the Value bounds as extra roots"), every
+        // bound is a literal.
+        assert_eq!(header.arity(), 1, "{}", crate::fold::VALUE_BOUND);
 
         use crate::expr::{ExprBuilderExt, from_arena, substitute_vars, to_arena};
         let (open, tables) = from_arena(self, body);
         let mut closed = Builder::new();
         let index = closed.push_var(binder.var());
         let body = substitute_vars(&mut closed, open.entry(), &[(placeholder.var(), index)]);
-        let root = closed.push_reduce(fold, body);
+        let root = closed.push_reduce(header, &[body]);
         let closed = closed.finish(&[root]);
         Ok(to_arena(closed.entry(), &tables))
     }
@@ -1627,7 +1717,7 @@ impl ExprArena {
         &mut self,
         open: OpenFold,
         body: ExprId,
-        fold_at: impl FnOnce(Binder) -> Fold,
+        fold_at: impl FnOnce(Binder) -> FoldHeader,
     ) -> Result<ExprId, IndexSpaceFull> {
         let OpenFold {
             enclosing,
@@ -1746,9 +1836,9 @@ impl ExprArena {
                             let mapped: Vec<ExprId> = child_ids.into_iter().map(m).collect();
                             self.push_nary(op, &mapped)
                         }
-                        ExprNode::Reduce { fold, body } => {
-                            let body = m(body);
-                            self.push_reduce(fold, body)
+                        ExprNode::Reduce { fold, lo, hi, body } => {
+                            let (lo, hi, body) = (lo.map(m), hi.map(m), m(body));
+                            self.push_reduce(fold, lo, hi, body)
                         }
                         ExprNode::Write {
                             row,
@@ -1902,9 +1992,9 @@ impl ExprArena {
                         self.nary_children[s..s + l].iter().map(|c| m(*c)).collect();
                     out.push_nary(*op, &mapped)
                 }
-                ExprNode::Reduce { fold, body } => {
-                    let body = m(*body);
-                    out.push_reduce(*fold, body)
+                ExprNode::Reduce { fold, lo, hi, body } => {
+                    let (lo, hi, body) = (lo.map(m), hi.map(m), m(*body));
+                    out.push_reduce(*fold, lo, hi, body)
                 }
                 ExprNode::Write {
                     row,
@@ -1981,10 +2071,14 @@ impl ExprArena {
                         f.write_str(op.name())?;
                         f.write_str("(")?;
                     }
-                    ExprNode::Reduce { fold, body } => {
+                    ExprNode::Reduce { lo, hi, body, .. } => {
                         stack.push(Task::WriteStr(")"));
+                        for value in [hi.value(), lo.value()].into_iter().flatten() {
+                            stack.push(Task::Visit(value));
+                            stack.push(Task::WriteStr(", "));
+                        }
                         stack.push(Task::Visit(*body));
-                        write!(f, "{}[{fold}](", OpKind::Reduce.name())?;
+                        write!(f, "{}[{}](", OpKind::Reduce.name(), self.fold_header(id))?;
                     }
                     ExprNode::Write {
                         row,
@@ -2096,17 +2190,33 @@ impl ExprArena {
                 (
                     ExprNode::Reduce {
                         fold: s_fold,
+                        lo: s_lo,
+                        hi: s_hi,
                         body: s_body,
                     },
                     ExprNode::Reduce {
                         fold: o_fold,
+                        lo: o_lo,
+                        hi: o_hi,
                         body: o_body,
                     },
                 ) => {
-                    if s_fold != o_fold {
+                    // A known bound compares by its value; a child bound
+                    // compares as a child, so only the shape is checked here.
+                    if s_fold != o_fold
+                        || s_lo.erased() != o_lo.erased()
+                        || s_hi.erased() != o_hi.erased()
+                    {
                         return false;
                     }
                     stack.push((*s_body, *o_body));
+                    for (s_value, o_value) in
+                        [(s_lo.value(), o_lo.value()), (s_hi.value(), o_hi.value())]
+                    {
+                        if let (Some(s_value), Some(o_value)) = (s_value, o_value) {
+                            stack.push((s_value, o_value));
+                        }
+                    }
                 }
                 (ExprNode::Nary(s_op, s_range), ExprNode::Nary(o_op, o_range)) => {
                     if s_op != o_op || s_range.len != o_range.len {
@@ -2199,16 +2309,21 @@ mod tests {
         let mut a = ExprArena::new();
         let x = a.push_var(Axis::X.var());
         let slot0 = Binder::from_slot(0).expect("slot 0");
-        let inner = a.push_reduce(Fold::new(Monoid::SUM, slot0, 0..3), x);
+        let inner = a.push_reduce(
+            Fold::new(Monoid::SUM, slot0),
+            Bound::Lit(0),
+            Bound::Lit(3),
+            x,
+        );
         let p = a.push_var(placeholder.var());
         let body = a.push_binary(OpKind::Mul, inner, p);
 
         let (closed, root) = a
             .close_over(body, placeholder, |binder| {
-                Fold::new(Monoid::SUM, binder, 0..4)
+                FoldHeader::new(Fold::new(Monoid::SUM, binder), Bound::Lit(0), Bound::Lit(4))
             })
             .expect("a free binder");
-        let ExprNode::Reduce { fold, body } = closed.node(root) else {
+        let ExprNode::Reduce { fold, body, .. } = closed.node(root) else {
             panic!("a fold, got {}", closed.display(root));
         };
         assert_eq!(fold.binder().slot(), 1, "slot 0 is bound inside");
@@ -2232,7 +2347,7 @@ mod tests {
         a.declare_uniform(unread);
         let (closed, _) = a
             .close_over(body, placeholder, |binder| {
-                Fold::new(Monoid::MAX, binder, 0..2)
+                FoldHeader::new(Fold::new(Monoid::MAX, binder), Bound::Lit(0), Bound::Lit(2))
             })
             .expect("a free binder");
         assert_eq!(closed.uniforms(), [unread]);
@@ -2244,10 +2359,15 @@ mod tests {
     fn close_over_refuses_a_body_that_binds_every_binder() {
         let (mut a, mut body, placeholder) = open_body(0);
         for binder in Binder::all() {
-            body = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..1), body);
+            body = a.push_reduce(
+                Fold::new(Monoid::SUM, binder),
+                Bound::Lit(0),
+                Bound::Lit(1),
+                body,
+            );
         }
         let unclosed = a.close_over(body, placeholder, |binder| {
-            Fold::new(Monoid::SUM, binder, 0..1)
+            FoldHeader::new(Fold::new(Monoid::SUM, binder), Bound::Lit(0), Bound::Lit(1))
         });
         assert_eq!(unclosed.err(), Some(IndexSpaceFull));
     }
@@ -2426,8 +2546,8 @@ mod tests {
         let mut arena = ExprArena::new();
         let body = arena.push_var(REDUCE_BINDER_BASE);
         let binder = Binder::from_var(REDUCE_BINDER_BASE).expect("the first binder");
-        let fold = Fold::new(Monoid::SUM, binder, 0..4);
-        let red = arena.push_reduce(fold, body);
+        let fold = Fold::new(Monoid::SUM, binder);
+        let red = arena.push_reduce(fold, Bound::Lit(0), Bound::Lit(4), body);
 
         assert_eq!(arena.kind(red), OpKind::Reduce);
         // One child — the body. The combiner, the binder and the extent are
@@ -2435,6 +2555,89 @@ mod tests {
         let children: Vec<ExprId> = arena.children(red).collect();
         assert_eq!(children, alloc::vec![body]);
         assert!(matches!(arena.node(red), ExprNode::Reduce { fold: f, .. } if f == fold));
+    }
+
+    /// A known bound is the node's data and not a node: a literal pushed after
+    /// the fold, equal to its bound, is a fresh node after it, since there is
+    /// nothing the fold holds for it to intern to (docs/language/2026-10-20-a-bound-is-a-value.md,
+    /// L1). The fold's one child is its body, and the node reads back what it
+    /// was pushed with.
+    #[test]
+    fn a_literal_bound_is_the_nodes_data() {
+        let mut arena = ExprArena::new();
+        let body = arena.push_var(REDUCE_BINDER_BASE);
+        let binder = Binder::from_var(REDUCE_BINDER_BASE).expect("the first binder");
+        let fold = Fold::new(Monoid::SUM, binder);
+        let red = arena.push_reduce(fold, Bound::Lit(0), Bound::Lit(7), body);
+        let seven = arena.push_const(7.0);
+        assert_eq!(seven.0, red.0 + 1, "the literal follows the fold");
+
+        assert_eq!(arena.children(red).collect::<Vec<_>>(), [body]);
+        assert_eq!(
+            arena.node(red),
+            ExprNode::Reduce {
+                fold,
+                lo: Bound::Lit(0),
+                hi: Bound::Lit(7),
+                body
+            }
+        );
+        assert_eq!(
+            arena.fold_header(red),
+            FoldHeader::new(fold, Bound::Lit(0), Bound::Lit(7))
+        );
+        assert_eq!(arena.known_range(red).expect("known").range(), 0..7);
+    }
+
+    /// A bound that is a value is refused by name until A3: the header is the
+    /// one place a fold meets its bounds, and `push_reduce` goes through it.
+    #[test]
+    #[should_panic(expected = "a fold bound that is a value")]
+    fn push_reduce_refuses_a_value_bound_by_name() {
+        let mut arena = ExprArena::new();
+        let binder = Binder::from_slot(0).expect("slot 0");
+        let x = arena.push_var(0);
+        let _refused = arena.push_reduce(
+            Fold::new(Monoid::SUM, binder),
+            Bound::Lit(0),
+            Bound::Value(x),
+            x,
+        );
+    }
+
+    /// A fold prints its header, then its body, as it always has.
+    #[test]
+    fn a_fold_displays_its_header_then_its_body() {
+        let mut arena = ExprArena::new();
+        let binder = Binder::from_slot(0).expect("slot 0");
+        let body = arena.push_var(binder.var());
+        let fold = arena.push_reduce(
+            Fold::strided(Monoid::MAX, binder, 2),
+            Bound::Lit(0),
+            Bound::Lit(8),
+            body,
+        );
+        assert_eq!(
+            format!("{}", arena.display(fold)),
+            "reduce[max_4[0..8) step 2](Var(4))"
+        );
+    }
+
+    /// Two folds that differ only in a bound are different terms. The bounds
+    /// left `Fold`, which `subtree_eq` compared whole, so they are compared
+    /// here by name.
+    #[test]
+    fn subtree_eq_compares_a_folds_bounds() {
+        let mut arena = ExprArena::new();
+        let binder = Binder::from_slot(0).expect("slot 0");
+        let body = arena.push_var(binder.var());
+        let fold = Fold::new(Monoid::SUM, binder);
+        let to_four = arena.push_reduce(fold, Bound::Lit(0), Bound::Lit(4), body);
+        let to_five = arena.push_reduce(fold, Bound::Lit(0), Bound::Lit(5), body);
+        let from_one = arena.push_reduce(fold, Bound::Lit(1), Bound::Lit(4), body);
+        assert!(arena.subtree_eq(to_four, &arena, to_four));
+        assert!(!arena.subtree_eq(to_four, &arena, to_five), "hi differs");
+        assert!(!arena.subtree_eq(to_four, &arena, from_one), "lo differs");
     }
 
     /// A store names its binders and holds its value: one child, three
@@ -2521,9 +2724,23 @@ mod tests {
     #[test]
     fn size_of_expr_node() {
         assert!(
-            core::mem::size_of::<ExprNode>() <= 32,
-            "ExprNode is {} bytes, expected <= 32",
+            core::mem::size_of::<ExprNode>() <= 64,
+            "ExprNode is {} bytes, expected <= 64",
             core::mem::size_of::<ExprNode>()
+        );
+    }
+
+    /// What an arena stores per node, pinned as a byte count: measured, not
+    /// budgeted. `NodeData` is a `FoldHeader` packed into the widest variant
+    /// of its own. A change that still fits the stored width fails here with
+    /// a number. `ExprNode`, the view, is held by the tripwire above and by
+    /// nothing tighter.
+    #[test]
+    fn what_a_node_costs_is_measured_not_budgeted() {
+        assert_eq!(
+            core::mem::size_of::<NodeData>(),
+            32,
+            "NodeData: the FoldHeader's 32 bytes and no more; the tag fits its niches"
         );
     }
 
@@ -2553,7 +2770,12 @@ mod tests {
         let i = a.push_var(binder.var());
         assert_eq!(a.free_index(i), Some(binder.var()));
         let body = a.push_binary(OpKind::Mul, x, i);
-        let fold = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..4), body);
+        let fold = a.push_reduce(
+            Fold::new(Monoid::SUM, binder),
+            Bound::Lit(0),
+            Bound::Lit(4),
+            body,
+        );
         assert_eq!(a.free_index(fold), None, "bound under its fold");
 
         // The same binder read beside the fold, outside it, is free: a
@@ -2588,10 +2810,15 @@ mod tests {
         let index = open.index();
         let body = a.push_binary(OpKind::Mul, x, index);
         let fold = a
-            .close_fold(open, body, |b| Fold::new(Monoid::SUM, b, 0..4))
+            .close_fold(open, body, |b| {
+                FoldHeader::new(Fold::new(Monoid::SUM, b), Bound::Lit(0), Bound::Lit(4))
+            })
             .expect("one fold binds one binder");
 
-        let ExprNode::Reduce { fold: range, body } = a.node(fold) else {
+        let ExprNode::Reduce {
+            fold: range, body, ..
+        } = a.node(fold)
+        else {
             panic!("a fold, got {}", a.display(fold));
         };
         assert_eq!(range.binder().slot(), 0);

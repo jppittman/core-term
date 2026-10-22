@@ -34,7 +34,7 @@ pub(crate) fn program_digest(arena: &ExprArena, root: ExprId) -> u64 {
             | ExprNode::Binary(op, ..)
             | ExprNode::Ternary(op, ..)
             | ExprNode::Nary(op, _) => (6, Some(op), 0),
-            ExprNode::Reduce { fold, .. } => (7, None, fold.to_bits()),
+            ExprNode::Reduce { .. } => (7, None, arena.fold_header(id).to_bits()),
             ExprNode::Write { row, col, lane, .. } => (
                 8,
                 None,

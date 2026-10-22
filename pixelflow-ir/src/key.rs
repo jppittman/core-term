@@ -47,15 +47,14 @@ use crate::lit::Lit;
 /// kernel that was interned. Two samplers over two different 4×3 tables have
 /// identical shape bytes and are not the same kernel.
 ///
-/// **Why 64 bits and not 128.** An identity has to be nameable *inside* an
-/// arena — `ExprNode::Ref(KernelKey)` — and `ExprNode` is held to 16 bytes by
-/// a static assertion in [`arena`](crate::arena), because every node of every
-/// kernel pays for that width. A 128-bit payload plus a discriminant is 24,
-/// which is a 50% memory increase on every arena in the process to buy
-/// collision resistance that is not needed: the store keyed on this compares
-/// the *full* canonical bytes on every lookup and panics on a mismatch, so a
-/// collision is a loud programming-error-class event, never a kernel silently
-/// resolving to the wrong body.
+/// **Why 64 bits and not 128.** Collision resistance past 64 bits is not
+/// needed: the store keyed on this compares the *full* canonical bytes on
+/// every lookup and panics on a mismatch, so a collision is a loud
+/// programming-error-class event, never a kernel silently resolving to the
+/// wrong body. (This was once argued from `ExprNode`'s width as well, a
+/// 16-byte static assertion in [`arena`](crate::arena); that assertion is a
+/// tripwire and not a requirement, and the choice stands on the collision
+/// argument alone.)
 ///
 /// The digest is computed here rather than through `core::hash` so that it is
 /// a fixed function of the bytes: `DefaultHasher`'s algorithm is explicitly
@@ -445,15 +444,21 @@ impl<'a> Walk<'a> {
                 self.scratch.push(9);
                 self.scratch.extend_from_slice(&key_of.bits().to_le_bytes());
             }
-            // The fold is metadata, so it is *in the tag bytes* rather than
-            // encoded as three child nodes. Two folds over the same body
-            // under different algebras, binders or ranges are different
-            // kernels, and this is where that is said.
-            ExprNode::Reduce { fold, body } => {
+            // The fold's header is metadata, so it is *in the tag bytes*
+            // rather than encoded as three child nodes; a bound that is a
+            // value is a child, keyed after the body. Two folds over the same
+            // body under different algebras, binders or ranges are different
+            // kernels, and this is where that is said. A known bound is header
+            // data at its `to_bits` field, so a fold over literals keys as it
+            // always has.
+            ExprNode::Reduce { lo, hi, body, .. } => {
                 self.scratch.push(10);
                 self.scratch
-                    .extend_from_slice(&fold.to_bits().to_le_bytes());
+                    .extend_from_slice(&self.arena.fold_header(id).to_bits().to_le_bytes());
                 self.push_child(body);
+                for value in [lo.value(), hi.value()].into_iter().flatten() {
+                    self.push_child(value);
+                }
             }
             // The value is a real child; the three binders are metadata in
             // the tag bytes, as a fold's is: a store of the same value
@@ -698,7 +703,7 @@ mod tests {
     /// tell two programs apart on their own.
     #[test]
     fn two_different_programs_are_two_keys() {
-        use crate::fold::{Binder, Fold, Monoid};
+        use crate::fold::{Binder, Bound, Fold, Monoid};
 
         let x_minus_y = {
             let mut a = ExprArena::new();
@@ -735,20 +740,47 @@ mod tests {
         );
 
         let slot = |s: u8| Binder::from_slot(s).expect("a binder slot");
-        let folded = |fold: Fold| {
+        let folded = |fold: Fold, hi: u64| {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let body = a.push_binary(OpKind::Mul, x, x);
-            let r = a.push_reduce(fold, body);
+            let r = a.push_reduce(fold, Bound::Lit(0), Bound::Lit(hi), body);
             KernelKey::of(&a, r)
         };
-        let over_three = folded(Fold::new(Monoid::SUM, slot(0), 0..3));
-        let over_four = folded(Fold::new(Monoid::SUM, slot(0), 0..4));
-        let under_another_binder = folded(Fold::new(Monoid::SUM, slot(1), 0..3));
+        let over_three = folded(Fold::new(Monoid::SUM, slot(0)), 3);
+        let over_four = folded(Fold::new(Monoid::SUM, slot(0)), 4);
+        let under_another_binder = folded(Fold::new(Monoid::SUM, slot(1)), 3);
         assert_ne!(over_three, over_four, "a fold's range is part of its key");
         assert_ne!(
             over_three, under_another_binder,
             "a fold's binder is part of its key"
+        );
+    }
+
+    /// A fold's record is its tag, its header's bits and its body — the
+    /// bytes a fold has always keyed as, now that its bounds are the node's:
+    /// `[10] ++ to_bits().to_le_bytes()` for a fold over literals, the layout
+    /// assembled by hand rather than read back from `to_bits`.
+    #[test]
+    fn a_folds_key_record_is_tag_ten_then_its_bits() {
+        use crate::fold::{Binder, Bound, Fold, Monoid};
+
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let body = a.push_binary(OpKind::Mul, x, x);
+        let slot1 = Binder::from_slot(1).expect("a binder slot");
+        let r = a.push_reduce(
+            Fold::new(Monoid::SUM, slot1),
+            Bound::Lit(3),
+            Bound::Lit(11),
+            body,
+        );
+        let mut record = vec![10u8];
+        record.extend_from_slice(&0x0000_0000_0001_0201_0000_0003_0000_000bu128.to_le_bytes());
+        let key = canonical(&a, r).key;
+        assert!(
+            key.windows(record.len()).any(|window| window == record),
+            "no tag-ten record in {key:?}"
         );
     }
 

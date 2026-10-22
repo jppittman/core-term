@@ -130,7 +130,7 @@ row). What a fold with a bound outside the domain denotes depends on its sort:
 
 After T6 an `Int`-sorted fold has no NaN either and falls under decision 8.
 
-A count the host writes is refused where it is written, by `Fold::admits` turned into a
+A count the host writes is refused where it is written, by `KnownRange::admits` turned into a
 predicate on one count value: at `kernel!`'s `Args` write for a per-call count, in
 whichever spelling decision 2 picks (A6), and at bind for a discrete-kernel argument's
 extent (B1). `2²⁴ + 1` can be refused only there: no `f32` names it, and a uniform
@@ -212,7 +212,7 @@ Every row is one cause: the binding time of a count is attached to its syntax.
 |---|---|---|
 | ASCII needs **29 programs**, one per piece count, holding **528** `one_piece` copies (Σ n) | quoted from the-language-is-kernel `:1186-1188`; not re-measured ([A0](../results/2026-10-20-production-glyph-baseline.md) §4.4) | `FontPrograms` (`pixelflow-graphics/src/fonts/loop_blinn/program.rs`) has no fold; a count cannot be a uniform, so the count is the structure |
 | `⌨` (347 segments, 262 pieces) is **27,029 defs**, a **75 KiB** frame past NEON's 64 KiB reach (#1414), as a `FontPrograms` program; production's `Glyph::bake` keeps the fold, at 310 defs and a 1.4 KiB frame | quoted from `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md:710-720`, `5574374a`, not re-measured; production's figures are A0 §3.2 | the same: one term per piece, by construction |
-| production pads counts to powers of two (`bucketed_trip_count`, `padding_row`): **95 → 7 programs** at tile 16 and at tile 32, six buckets (2 to 64) and the blank; a new tile extent mints all seven again | A0 §3.1, §3.5 (BACKLOG H1's 6 and 7 are not reproduced) | the trip count is in `Fold::to_bits`, so in the JIT key (`pixelflow-ir/src/key.rs:445-450`) |
+| production pads counts to powers of two (`bucketed_trip_count`, `padding_row`): **95 → 7 programs** at tile 16 and at tile 32, six buckets (2 to 64) and the blank; a new tile extent mints all seven again | A0 §3.1, §3.5 (BACKLOG H1's 6 and 7 are not reproduced) | the trip count is in the fold's `to_bits` (`FoldHeader::to_bits` since A2b), so in the JIT key (`pixelflow-ir/src/key.rs:445-450`) |
 | each bucket **saturates separately** | A0 §3.1: 7 saturations, 6 stopped by the class cap; `pixelflow-search/src/runtime.rs`, `CACHE` keyed on canonical bytes | the same key |
 | a run's program depends on every character's row offset | `loop_blinn.rs:423`, `start..start + count` | data spelled as a constant |
 | `n = 0` is a program of its own, `blank()` | `program.rs:138` | an empty count cannot reach a fold |
@@ -298,7 +298,8 @@ its edge.
   unknown (L6).
 - `PeelFold`/`HalveFold` fire only on a known range; Peel plans `hi − s` as a new `Lit`.
   `EmptyFold` (`fold_rules.rs:319`) fires only on a known empty range (L6). `FactorFold`
-  declines unless known non-empty (decision 5). `substitute`/`rebuild` (`fold_rules.rs`)
+  declines a known empty range only; under a value bound it factors, accepting the
+  infinite-`c` edge at a runtime `n = 0` (decision 5). `substitute`/`rebuild` (`fold_rules.rs`)
   follow L7; `rebuild`'s comment (`fold_rules.rs:600-606`) is rewritten, since its premise
   ("its class's variance excludes it") now rests on L3 and L4 adds the bounds' bits.
   `ENode::variance` follows L4 in the same CL as the IR's; `insert` and `add` refuse L3 as
@@ -317,7 +318,8 @@ its edge.
 ### 3.3 Codegen, placement, regalloc (`pixelflow-codegen`)
 
 - `ScheduledOp::Reduce { fold, lo: Bound, hi: Bound, body }`, `Bound::{Known(u64),
-  Value(ValueId)}`, copied from the arena node in `arena_to_schedule`. There is no bound
+  Value(ValueId)}` (one generic `Bound<R>`, so `Known` is spelled `Lit`; A2b), copied from
+  the arena node in `arena_to_schedule`. There is no bound
   `Const` to read or to keep out of the schedule.
 - **L1's mechanism.** `Known` keeps `self.constant(..)`, a pool constant, at today's points
   (`lo` at `select.rs:273`, `end` at `:311`) and today's `trips = parent_trips * len`
@@ -540,11 +542,24 @@ A5's deletion, which removes code #1427 only re-scopes.
   after its fold (the mean `Σ_{i<n} f / n`), so the parent has it. Gate: byte_probe empty in
   both columns on every row, the mean row included; canonical keys and `KernelKey` digests
   unchanged. Anything that moves is argued in the PR, with the sibling-fold rows
-  (`pixelflow-codegen/tests/support/sibling_rows.rs`) as byte-level arbiter.
+  (`pixelflow-codegen/tests/support/sibling_rows.rs`) as byte-level arbiter. **Done:**
+  byte_probe empty in both columns on every row under `PIXELFLOW_ISA=avx512` and `=avx2`, the
+  mean rows included, and the 29 font programs' keys and digests unchanged. The
+  bounds are `u64` and the stored header is packed (`FoldHeader` 32 bytes, three counts and
+  four bytes, against 48 unpacked), so the nodes grew by what a `Reduce` holds and no more:
+  `NodeData` and `ExprData` 16 to 32 and `ENode` 24 to 48, each pinned by a `size_of` test; `ExprNode` (a view) 24 to 56, held by a tripwire raised from 32 to 64 and by nothing
+  tighter. The growth was measured the
+  way `EClassId`'s was (`node.rs`: native release build, interleaved parent/head pairs, one
+  process each, `ru_maxrss`): peak RSS median 89.3 to 104.8 MB (+17%) on the cold compile of
+  the 29 programs ASCII needs (8 pairs) and 16.2 to 17.8 MB (+10%) on the n=40 program (10
+  pairs); callgrind instructions on the 29 programs +5.2% (saturation +7.8%, extraction
+  +3.4%). That is the size of growth that kept `EClassId` at `u32` (+18%, +8%). JP, 2026-10-22: land
+  A2b wide, and measure the stored header narrowed to `u32` ends and stride (16 bytes) in a
+  follow-up CL, with the decision taken on both numbers.
 - **A3. Value bounds in the IR and e-graph.** `over_values` (`pub(crate)`), the
   `push_reduce` refusals (`BoundVaries`, `BoundSort`, `BoundOutOfDomain`),
   `BoundArithmetic` at `over_values`, L4 in both variance functions, L7, `KnownBound` (L8), the rules
-  gated on known ranges, `FactorFold`'s decline, `ESTIMATED_TRIPS` in `fold_cost` and
+  gated on known ranges, `FactorFold` factoring under a value bound (decision 5), `ESTIMATED_TRIPS` in `fold_cost` and
   `below`, and `below`'s bound operands. Codegen refuses a `Value` bound by name. Gate:
   byte_probe empty; pins for L2 (`over_values(5, 3)` is the identity, `Kernel::over(_, 5..3, _)`
   still refused), L3 (X, Y, own binder and an X-varying `Ref` refused; enclosing binder
@@ -622,20 +637,21 @@ still in the key (§3.5). Ruling 6 lands with B2; decision 4's interim is refuse
    `pieces.map(|p| piece_term(p, X, Y)).sum()`: in-domain by construction, no index in the
    surface, no spelling for B3's window. S2, `(0..pieces.len()).map(|i| piece_term(pieces(i), X, Y)).sum()`:
    your wording, but `0..pieces.len() + 5` is writable and needs a lift for the outside.
-2. **How `kernel!` spells a per-call count** (A6). Ruling 1 already admits a
+2. **Decided (JP, 2026-10-22): an `n: usize` entry parameter.** How `kernel!` spells a per-call count (A6). Ruling 1 already admits a
    `Variance::CONST` bound, so a per-call count is legal; what is open is its surface, for
    example a `n: usize` entry parameter. It replaces `<const N>`, which A5 deletes either way.
-3. **Item 2: taken by this plan (B1), or waited for** from the typed-arena series.
+3. **Item 2: taken by this plan (B1), or waited for** from the typed-arena series. (#1431, T1,
+   and #1432, T2, landed 2026-10-22 on JP's word; item 2 itself is still open.)
 4. **Refused: a production interim before item 2** (a table at a fixed capacity, padded
    with data). A capacity is a count in `BufferDecl` and the key (`key.rs:415-424`), which
    is the JIT-compile-time count ruling 6 rules out and the "static max" the totality doc
    held (`:196-200`) that this plan reverses. Ruling 6 lands with B2.
-5. **`FactorFold` when non-emptiness is unknown:** decline (loses `c·Σf` for a per-call
+5. **Decided (JP, 2026-10-22): accept the edge.** `FactorFold` when non-emptiness is unknown: decline (loses `c·Σf` for a per-call
    `n`), or accept the infinite-`c`/`−∞` edge its doc declines (`fold_rules.rs:346-349`),
    under "edge-case IEEE conformance is not on offer".
 6. **The pieces' codomain.** Ten channels as one `L × Fin 10 → Real` table (today's shape,
    in the grammar), or a record codomain, which needs an extension to `T ::= S | D → T`.
-7. **Public API.** Deleting `FontPrograms`, `GlyphRows` and `blank`, changing
+7. **Decided (JP, 2026-10-22): approved, all of it.** Public API. Deleting `FontPrograms`, `GlyphRows` and `blank`, changing
    `loop_blinn::run` and `Glyph::bake`, and adding `Kernel::over_values` (public from A4):
    this plan reads ruling 6 as permission for the first two; CLAUDE.md asks for it to be said.
 8. **A mask-sorted fold out of domain.** `ANY` and `ALL` (and `Int` folds after T6) have no

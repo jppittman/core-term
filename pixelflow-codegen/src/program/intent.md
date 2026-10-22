@@ -17,9 +17,9 @@ for (§4); that is the input of `select` (§10).
 - Which nodes define a value: a `Bits`/`Float` reinterpretation defines none
   and takes no `ValueId` — lowering maps it to its operand, so no backend
   meets it and it is zero instructions on every target (`lower.rs`).
-- A fold's range in the schedule: `ScheduledOp::Reduce` carries the
-  `KnownRange` `arena_to_schedule` reads off the arena node, and selection
-  reads that copy, never the `Fold` header.
+- A fold's bounds in the schedule: `ScheduledOp::Reduce` carries the arena
+  node's `lo` and `hi` (literal until A4: lowering refuses a value bound),
+  and selection reads the range from them with `KnownRange::of`.
 
 ## Never
 - No register, byte, allocator, ISA tier or driver is named: `program/` does

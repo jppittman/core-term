@@ -50,8 +50,8 @@ optimizer)`. Behind them: `parser.rs` (tokens to `ast.rs`),
   saturates any entry with no structural or kernel-typed parameter and no
   `Dwrt`; the plan optimizes nothing at expansion unless the instance is
   declared, and deletes all three (the-language-is-kernel §1.8, D2, D14).
-- A fold's ends are `u32` (`literal_range`) and a structural count read as a
-  value rides `Param(u8)`, at most 256, against the 64-bit control plane (A5, D2).
+- A structural count read as a value rides `Param(u8)`, at most 256, against
+  the 64-bit control plane (A5, D2).
 
 ## Decided in
 `docs/archive/plans/2026-09-08-macro-tier-is-arena-native.md`,

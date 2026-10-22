@@ -1164,8 +1164,15 @@ mod tests {
                 // A fold survives the runtime tier now — it is representable
                 // in the e-graph and legalized after extraction — so the dump
                 // has a line for it rather than a panic.
-                ExprNode::Reduce { fold, body } => {
-                    writeln!(out, "R {} {}", fold.to_bits(), d(&dense, body))
+                // The header's bits carry no child: a value bound has none
+                // to write, and `to_bits` refuses it by name.
+                ExprNode::Reduce { body, .. } => {
+                    writeln!(
+                        out,
+                        "R {} {}",
+                        arena.fold_header(id).to_bits(),
+                        d(&dense, body)
+                    )
                 }
                 other @ (ExprNode::Param(_)
                 | ExprNode::Nary(..)

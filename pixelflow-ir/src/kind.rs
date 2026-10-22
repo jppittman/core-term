@@ -201,10 +201,11 @@ op_table! {
 
     // --- Reduction (lattice fold) ---
     /// Fold a body over a bounded domain: the kind of an
-    /// `ExprNode::Reduce { fold, body }`, whose one child is `body`. The
-    /// monoid it folds under, the binder `body` reads through its `Var`, and
-    /// the range that binder runs over are a [`Fold`](crate::fold::Fold) in
-    /// the node, not children — see `fold.rs` for the `Const`-child encoding
+    /// `ExprNode::Reduce { fold, lo, hi, body }`, whose children are `body`,
+    /// then each bound that is a value. The monoid it folds under, the binder
+    /// `body` reads through its `Var`, and the step are a
+    /// [`Fold`](crate::fold::Fold) in the node, and a known bound is the node's
+    /// data too, not children — see `fold.rs` for the `Const`-child encoding
     /// it replaced. Legal through codegen, which emits a surviving fold as a
     /// loop (`passes::legalize` leaves every one standing).
     Reduce = 49,
@@ -473,9 +474,11 @@ impl OpKind {
 
             Self::MulAdd | Self::If | Self::Gather => 3,
 
-            // The body. The algebra, the binder and the range are the node's
-            // own metadata ([`Fold`](crate::Fold)) rather than three `Const`
-            // children, so nothing that walks operands can reach them.
+            // The body. The algebra, the binder and a known bound are the
+            // node's own metadata ([`FoldHeader`](crate::FoldHeader)) rather
+            // than `Const` children, so nothing that walks operands can reach
+            // them. A bound that is a value is a further edge, counted by the
+            // node's header (`FoldHeader::arity`), not by the op.
             Self::Reduce => 1,
         }
     }
