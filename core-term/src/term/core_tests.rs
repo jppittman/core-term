@@ -2136,11 +2136,7 @@ fn it_should_clear_stale_alt_screen_content_on_re_entry_via_csi_1047() {
         CsiCommand::SetModePrivate(DecModeConstant::AltScreenBufferClear as u16),
     )));
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
-    assert_screen_state(
-        &snapshot,
-        &["     ", "     "],
-        Some((0, 0)),
-    );
+    assert_screen_state(&snapshot, &["     ", "     "], Some((0, 0)));
 }
 
 /// Same persistence trick as the ?1047 version above, for ?1049: it must

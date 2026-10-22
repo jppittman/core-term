@@ -1122,7 +1122,11 @@ fn lf_moves_down_within_the_region_without_scrolling_with_origin_mode_on_and_not
         CsiCommand::CursorPosition(2, 1),
     )));
     let before = emu.get_render_snapshot().expect("Snapshot was None");
-    assert_screen_state(&before, &["     ", "     ", "     ", "     ", "     "], Some((2, 0)));
+    assert_screen_state(
+        &before,
+        &["     ", "     ", "     ", "     ", "     "],
+        Some((2, 0)),
+    );
 
     emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
 
@@ -1843,7 +1847,10 @@ fn csi_3j_clears_the_scrollback_and_the_visible_screen() {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
     }
     term.print_text("X");
-    assert!(term.scrollback_len() > 0, "precondition: scrollback has lines");
+    assert!(
+        term.scrollback_len() > 0,
+        "precondition: scrollback has lines"
+    );
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::EraseInDisplay(3),
