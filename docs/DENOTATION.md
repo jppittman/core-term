@@ -447,10 +447,11 @@ Decided in: `archive/plans/2026-09-02-optimizer-api.md`,
 1. **Base sorts on arena nodes.** `Real`/`Int`/`Mask` on every node: `Lt`
    returns `Mask`, `If` demands one, `BitAnd` is `Mask × Mask` or
    `Int × Int`, `floor`/`TruncToInt` are the only bridges `Real → Int`, and
-   rules are sort-preserving. `OpKind::is_bitwise_domain()`, the folder's
-   non-finite exemption and `OpKind::mask(bool)` are the runtime recovery of
-   what the sort makes unbuildable, and the mask that leaks through a `bool`
-   entry's `&Kernel` is the open bug the sort closes.
+   rules are sort-preserving. A constant already has its sort (`Lit::Real`,
+   `Lit::Mask`); `OpKind::is_bitwise_domain()` and the folder's non-finite
+   exemption are the runtime recovery of what the sort on nodes makes
+   unbuildable, and the mask that leaks through a `bool` entry's `&Kernel` is
+   the open bug the sort closes.
 2. **Arrow sorts on binders.** `Var`, `Uniform` and a kernel-typed parameter
    are binders of types `Real`, `Real` and `L → Real`; a `Ref` is
    application of an arrow. BACKLOG N1–N3 in these words.

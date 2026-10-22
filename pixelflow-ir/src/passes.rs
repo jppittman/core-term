@@ -56,6 +56,7 @@
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;
+use crate::lit::Lit;
 use crate::variance::Variance;
 use alloc::borrow::Cow;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -220,7 +221,7 @@ fn copy_node(
 ) -> ExprId {
     match node {
         ExprNode::Var(i) => arena.push_var(*i),
-        ExprNode::Const(v) => arena.push_const(*v),
+        ExprNode::Const(v) => arena.push_lit(*v),
         ExprNode::Param(i) => arena.push_param(*i),
         // Same arena, so the buffer and uniform tables (and ids) stay valid.
         ExprNode::Buffer(b) => arena.push_buffer(*b),
@@ -513,8 +514,8 @@ pub fn lower_dwrt(arena: &mut ExprArena, root: ExprId) -> Result<ExprId, &'stati
     try_rebuild_arena(arena, root, |arena, node, m| match node {
         ExprNode::Binary(OpKind::Dwrt, expr, var) => {
             let var_idx = match arena.node(m(*var)) {
-                ExprNode::Const(v) => v as u8,
-                _ => return Err("lower_dwrt: Dwrt's variable operand must be a Const"),
+                ExprNode::Const(Lit::Real(v)) => v as u8,
+                _ => return Err("lower_dwrt: Dwrt's variable operand must be a real Const"),
             };
             differentiate(arena, m(*expr), var_idx).map(Some)
         }
@@ -964,11 +965,11 @@ fn sqrt_one_minus_sq(arena: &mut ExprArena, u: ExprId) -> ExprId {
 }
 
 fn is_const_zero(arena: &ExprArena, id: ExprId) -> bool {
-    matches!(arena.node(id), ExprNode::Const(v) if v == 0.0)
+    matches!(arena.node(id), ExprNode::Const(Lit::Real(v)) if v == 0.0)
 }
 
 fn is_const_one(arena: &ExprArena, id: ExprId) -> bool {
-    matches!(arena.node(id), ExprNode::Const(v) if v == 1.0)
+    matches!(arena.node(id), ExprNode::Const(Lit::Real(v)) if v == 1.0)
 }
 
 // Peephole constructors for derivative arithmetic. Most leaf derivatives are
@@ -1725,7 +1726,7 @@ mod dwrt_tests {
         let (lowered, lroot) =
             lower_dwrt_owned(&a, root).expect("a binder-indexed read is a constant");
         assert!(
-            matches!(lowered.node(lroot), ExprNode::Const(v) if v == 0.0),
+            matches!(lowered.node(lroot), ExprNode::Const(Lit::Real(v)) if v == 0.0),
             "expected Const(0.0), got {:?}",
             lowered.node(lroot)
         );
@@ -1739,7 +1740,7 @@ mod dwrt_tests {
         let (lowered, lroot) =
             lower_dwrt_owned(&a, root).expect("a binder-indexed read is a constant");
         assert!(
-            matches!(lowered.node(lroot), ExprNode::Const(v) if v == 0.0),
+            matches!(lowered.node(lroot), ExprNode::Const(Lit::Real(v)) if v == 0.0),
             "expected Const(0.0), got {:?}",
             lowered.node(lroot)
         );
@@ -1761,7 +1762,7 @@ mod dwrt_tests {
         let (lowered, lroot) =
             lower_dwrt_owned(&a, root).expect("an X-indexed read is constant in Y");
         assert!(
-            matches!(lowered.node(lroot), ExprNode::Const(v) if v == 0.0),
+            matches!(lowered.node(lroot), ExprNode::Const(Lit::Real(v)) if v == 0.0),
             "expected Const(0.0), got {:?}",
             lowered.node(lroot)
         );
@@ -2072,7 +2073,7 @@ mod ref_expansion_tests {
             panic!("expected X + 7, got {}", linked.display(a));
         };
         assert_eq!(linked.node(x), ExprNode::Var(0));
-        assert_eq!(linked.node(c), ExprNode::Const(7.0));
+        assert_eq!(linked.node(c), ExprNode::Const(Lit::Real(7.0)));
     }
 
     /// `lower_dwrt` on its own refuses a reference rather than inventing a

@@ -33,6 +33,7 @@ use alloc::vec::Vec;
 
 use crate::arena::{BufferDecl, ExprArena, ExprId, ExprNode, UniformDecl, UniformIdentity};
 use crate::dag::Memo;
+use crate::lit::Lit;
 
 /// The identity of a kernel: a 64-bit digest of its whole [`Canonical`] form
 /// — the shape bytes **and** the link.
@@ -374,9 +375,15 @@ impl<'a> Walk<'a> {
                 self.scratch.push(0);
                 self.scratch.push(i);
             }
-            ExprNode::Const(v) => {
+            ExprNode::Const(Lit::Real(v)) => {
                 self.scratch.push(1);
                 self.scratch.extend_from_slice(&v.to_bits().to_le_bytes());
+            }
+            // Its own tag, not tag 1 with the mask's lane: a true mask and
+            // the NaN that shares its bits are two kernels.
+            ExprNode::Const(Lit::Mask(b)) => {
+                self.scratch.push(13);
+                self.scratch.push(u8::from(b));
             }
             ExprNode::Param(i) => {
                 self.scratch.push(2);

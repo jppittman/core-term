@@ -427,7 +427,7 @@ fn node_label(egraph: &EGraph, class: EClassId, idx: usize) -> String {
     };
     match node {
         ENode::Var(i) => format!("Var({i})"),
-        ENode::Const(bits) => format!("Const({})", f32::from_bits(*bits)),
+        ENode::Const(lit) => format!("Const({lit})"),
         ENode::Buffer(_) => "Buffer".into(),
         ENode::Uniform(_) => "Uniform".into(),
         ENode::Param(i) => format!("Param({i})"),

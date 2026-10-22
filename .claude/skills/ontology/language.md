@@ -562,9 +562,11 @@
   the AA ramp (2026-07-28). That reason expired with DwrtFree; the cause was
   optimizing an open term at all (one-pipeline §2).
 - **Follows:**
-  - `OpKind::mask(bool)` is the only constructor.
-  - `is_bitwise_domain()` marks the ops whose results are patterns, and the
-    folder's refuse-non-finite guard exempts them.
+  - `Lit::Mask(bool)` is the only constant spelling; a mask is never a float,
+    and the e-graph keys it apart from the NaN that shares its lane.
+  - `is_bitwise_domain()` marks the ops whose results are patterns in a real
+    lane (the integer domain), and the folder's refuse-non-finite guard
+    exempts them.
   - `If` ends in one select on `m`, a bitwise blend; its guards read `any(m)`
     and `!all(m)` (kernels-evaluate-kernels §1).
   - Through a commuted `Min`/`Max`, a NaN mask became the gather index
@@ -588,13 +590,13 @@
   a conversion, and it needs no IR type. The machine cannot tell a mask from
   a number on NEON or AVX2, so the domain question ("a mask is not a number")
   is the IR's to answer, not the backend's.
-- **Lives:** `OpKind::mask`, `OpKind::is_bitwise_domain`
+- **Lives:** `Lit::Mask` (`pixelflow-ir/src/lit.rs`), `OpKind::is_bitwise_domain`
   (`pixelflow-ir/src/kind.rs`); sema's `bool` (`pixelflow-compiler/src/sema.rs`);
   CLAUDE.md "Floating point at the edges"; the-language-is-kernel §1.3, D8,
-  O2. Today `OpKind::mask` returns an `f32`, and `Bits`
-  (`pixelflow-ir/src/kernel.rs`) types only the int conversion boundary: its
-  own doc says "Comparison masks are also bit patterns and still travel as
-  `Kernel`". Both contradict "not a number". At the machine, AVX-512 treats every mask
+  O2. A constant mask is typed; a computed one still travels as a `Kernel`
+  lane, and `Bits` (`pixelflow-ir/src/kernel.rs`) types only the int
+  conversion boundary: its own doc says "Comparison masks are also bit
+  patterns and still travel as `Kernel`", which contradicts "not a number". At the machine, AVX-512 treats every mask
   as a vector: each compare is `vcmpps` into `k1` then `vpmovm2d` (an
   AVX-512DQ instruction) into a zmm, each guard `vptestmd` back into `k1` then
   `kortestw`, and `k1` is the only mask register the allocator knows
@@ -672,15 +674,16 @@
     f32-truths … the algebraic rewrites compute R-truths … their
     conjunction puts two UNEQUAL constants in one e-class."
 - **Follows:**
-  - ConstantFold routes results by `is_bitwise_domain`.
+  - ConstantFold folds a comparison to `Lit::Mask`; `is_bitwise_domain`
+    exempts the real-lane bit patterns from its non-finite refusal.
   - The union valve: Num/Num unions exactly, Bits/Bits by bits, Num/Bits
     always refused.
   - Exact dyadic folding declines rather than rounds, so the contradiction
     above cannot be constructed.
   - Crossing domains needs an explicit op (`TruncToInt`/`IntToFloat`).
   - In codegen a constant is a value (see Constant pool).
-- **Lives:** `ExprNode::Const(f32)` and the private `NodeData::Const(u32)`
-  (`pixelflow-ir/src/arena.rs`), `ENode::Const(u32)`
+- **Lives:** `Lit` (`pixelflow-ir/src/lit.rs`), `ExprNode::Const(Lit)` and the
+  private `NodeData::Const(Lit)` (`pixelflow-ir/src/arena.rs`), `ENode::Const(Lit)`
   (`pixelflow-search/src/egraph/node.rs`), `pixelflow_ir::dyadic::Dyadic`
   (`pixelflow-ir/src/dyadic.rs`); decided in
   `docs/archive/plans/2026-08-08-egraph-constant-domain-spike.md` §4 and §6. Today

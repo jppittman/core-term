@@ -37,6 +37,11 @@ pub use fold::{Binder, Fold, KnownRange, Monoid, Placeholder};
 pub mod kind;
 pub mod library;
 
+/// A constant is a typed literal: a number or a mask, never a lane whose
+/// bits mean one or the other by convention.
+pub mod lit;
+pub use lit::Lit;
+
 pub mod variance;
 
 pub use variance::{LatticeShape, Variance};

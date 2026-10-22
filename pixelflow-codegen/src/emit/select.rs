@@ -12,7 +12,8 @@ use super::{Edges, Entry, Function, IsaBackend, LaneOp, Pointer, Store, Target, 
 use crate::error::CompileError;
 use crate::pass::Pass;
 use crate::program::{
-    BinaryOp, CompareOp, Def, Flow, IfArm, Item, ScheduledOp, Scope, ScopedSchedule, ValueId, legal,
+    BinaryOp, CompareOp, Def, Flow, IfArm, Item, ScheduledOp, Scope, ScopedSchedule, ValueId,
+    lane_pattern, legal,
 };
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -272,7 +273,7 @@ impl<B: IsaBackend> Selector<'_, B> {
 
         let lo = self.constant(bounds.start as f32)?;
         let seeds: Vec<B::Lane> = if accumulates {
-            alloc::vec![lo, self.constant(fold.monoid().identity())?]
+            alloc::vec![lo, self.constant(lane_pattern(fold.monoid().identity()))?]
         } else {
             alloc::vec![lo]
         };

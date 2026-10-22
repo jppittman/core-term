@@ -222,7 +222,7 @@ pub fn encode(kernel: &CollapseKernel) -> String {
             ExprNode::Uniform(u) => {
                 writeln!(out, "A {}", arena.uniform_decl(u).default.to_bits())
             }
-            ExprNode::Const(v) => writeln!(out, "C {}", v.to_bits()),
+            ExprNode::Const(v) => writeln!(out, "C {}", v.bits()),
             // A declared buffer slot. `id.0` is the *arena's* slot index, not
             // a [`BufferIdentity`] — identities are minted and mean nothing
             // across a decode, but the slot index is what lets several

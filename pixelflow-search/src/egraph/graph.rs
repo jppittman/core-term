@@ -9,7 +9,7 @@ use super::rewrite::{RewriteAction, RootShapes};
 use alloc::collections::BTreeMap;
 use columns::{Birth, Columns, Kept, SaturationColumns, Slot};
 use pixelflow_ir::kind::OpKind;
-use pixelflow_ir::{KernelKey, Variance};
+use pixelflow_ir::{KernelKey, Lit, Variance};
 
 mod columns;
 mod runner;
@@ -43,9 +43,9 @@ pub struct EGraph {
     worklist: Vec<Slot>,
     /// Unions REFUSED because they would assert two numerically unequal
     /// constants equal — a proved falsehood the graph declines to absorb.
-    /// Distinct (bits, bits) pairs, kept for reporting and tests; see
+    /// Distinct pairs of literals, kept for reporting and tests; see
     /// [`EGraph::union`].
-    refused_const_unions: Vec<(u32, u32)>,
+    refused_const_unions: Vec<(Lit, Lit)>,
     /// Global monotonic counter, bumped once per class-content mutation
     /// (`add`'s memo miss, `union`'s merge) — never reset, never bumped by
     /// anything that only re-canonicalizes existing content (rewriting a
@@ -374,7 +374,7 @@ impl EGraph {
             &mut self.saturation,
             Birth {
                 node,
-                const_fact: node.as_f32().map(f32::to_bits),
+                const_fact: node.literal(),
                 variance,
                 shape: node.shape(),
                 stamp: self.mutation_counter,
@@ -388,11 +388,11 @@ impl EGraph {
         id
     }
 
-    /// Refused constant unions: `(bits, bits)` pairs the graph declined to
+    /// Refused constant unions: the pairs of literals the graph declined to
     /// assert equal. Non-empty means some kernel hit the folding-vs-algebra
     /// collision — see the refusal block in [`EGraph::union`].
     #[must_use]
-    pub fn refused_const_unions(&self) -> &[(u32, u32)] {
+    pub fn refused_const_unions(&self) -> &[(Lit, Lit)] {
         &self.refused_const_unions
     }
 
@@ -432,12 +432,13 @@ impl EGraph {
         // algebra at f32-observable scales, so collisions become
         // vanishingly rare and this valve becomes a pure detector.)
         //
-        // `ca == cb` (not bit equality) deliberately admits ±0.0 — signed
-        // zero selection is already platform-unspecified, so an optimizer
-        // choosing a sign is within contract, same license as commuting
-        // Min/Max over NaN. Bit equality additionally admits identical NaN
-        // patterns, which `==` would wrongly reject: an all-ones comparison
-        // mask reads as NaN and must be unionable with itself.
+        // Two literals are the same constant when `Lit` says so — a real by
+        // its bits, so a NaN payload is unionable with itself, a mask by its
+        // truth — and also when two reals are `==`: that admits ±0.0, and
+        // signed zero selection is already platform-unspecified, so an
+        // optimizer choosing a sign is within contract, same license as
+        // commuting Min/Max over NaN. A mask and a real are never the same
+        // constant, whatever lane they share.
         // Read the class-level fact, NOT the members: `rebuild` detaches a
         // class's members before performing congruence unions, so a
         // member-scanning guard is blind exactly when congruence closure runs.
@@ -445,10 +446,10 @@ impl EGraph {
             self.graph.columns.const_fact[a],
             self.graph.columns.const_fact[b],
         );
-        if let (Some(ba), Some(bb)) = (fa, fb) {
-            let (ca, cb) = (f32::from_bits(ba), f32::from_bits(bb));
-            if ca != cb && ba != bb {
-                let pair = (ba, bb);
+        if let (Some(la), Some(lb)) = (fa, fb) {
+            let same_real = matches!((la, lb), (Lit::Real(x), Lit::Real(y)) if x == y);
+            if la != lb && !same_real {
+                let pair = (la, lb);
                 if !self.refused_const_unions.contains(&pair) {
                     // Journal ALWAYS; print only on request. This fires
                     // during ordinary kernel compilation — two computation
@@ -458,12 +459,12 @@ impl EGraph {
                     if std::env::var_os("PIXELFLOW_REPORT_CONST_REFUSALS").is_some() {
                         std::eprintln!(
                             "pixelflow e-graph: refusing a union that would assert \
-                             {ca} = {cb} (bits {:#010x} vs {:#010x}) — the rule set \
+                             {la} = {lb} (lanes {:#010x} vs {:#010x}) — the rule set \
                              derived contradictory constants (f32 folding vs \
                              algebra at an ill-conditioned input); keeping the \
                              classes separate costs only missed CSE",
-                            pair.0,
-                            pair.1
+                            la.bits(),
+                            lb.bits()
                         );
                     }
                     self.refused_const_unions.push(pair);
@@ -818,7 +819,12 @@ impl EGraph {
     }
 
     pub fn contains_const(&self, id: EClassId, val: f32) -> bool {
-        self.nodes(id).any(|n| n.is_const(val))
+        self.contains_lit(id, Lit::Real(val))
+    }
+
+    /// Whether `id` holds the literal `lit`, as [`ENode::is_lit`] reads it.
+    pub fn contains_lit(&self, id: EClassId, lit: Lit) -> bool {
+        self.nodes(id).any(|n| n.is_lit(lit))
     }
 
     /// Whether `canonical`'s forward neighborhood — itself, its direct
@@ -1470,13 +1476,13 @@ fn reverse_angle_addition_shape<S: NodeSink>(
 fn half_angle_product_shape<S: NodeSink>(sink: &mut S, x: EClassId) -> EClassId {
     let two_x_id = sink.make(ENode::apply(OpKind::Add, &[x, x]));
     let sin_2x_id = sink.make(ENode::apply(OpKind::Sin, &[two_x_id]));
-    let two_id = sink.make(ENode::Const(2.0_f32.to_bits()));
+    let two_id = sink.make(ENode::constant(2.0));
     sink.make(ENode::apply(OpKind::Div, &[sin_2x_id, two_id]))
 }
 
 /// `Doubling`: `a + a -> 2 * a`.
 fn doubling_shape<S: NodeSink>(sink: &mut S, a: EClassId) -> EClassId {
-    let two_id = sink.make(ENode::Const(2.0_f32.to_bits()));
+    let two_id = sink.make(ENode::constant(2.0));
     sink.make(ENode::apply(OpKind::Mul, &[two_id, a]))
 }
 
@@ -1552,7 +1558,7 @@ fn instantiate_template<S: NodeSink>(
             );
             bindings[mv]
         }
-        ExprData::Const(bits) => sink.make(ENode::constant(f32::from_bits(bits))),
+        ExprData::Const(lit) => sink.make(ENode::Const(lit)),
         ExprData::Param(p) => {
             panic!("instantiate_template: Param({p}) in a rewrite RHS template")
         }
@@ -1609,7 +1615,7 @@ fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> ECla
     };
     for entry in &plan.nodes {
         let id = match entry {
-            HeadNode::Const(bits) => sink.make(ENode::Const(*bits)),
+            HeadNode::Const(lit) => sink.make(ENode::Const(*lit)),
             HeadNode::Op { op, children } => {
                 let operands: Vec<EClassId> =
                     children.iter().map(|c| resolve(*c, &planned)).collect();
@@ -2164,7 +2170,7 @@ mod tests {
 
         assert_eq!(
             eg.refused_const_unions(),
-            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..],
+            &[(Lit::Real(2.0), Lit::Real(1.0))][..],
             "item 1 asked to merge 2 into 1 and was refused"
         );
         assert_ne!(eg.find(one), eg.find(two));
@@ -2250,7 +2256,7 @@ mod tests {
 
         assert_eq!(
             eg.refused_const_unions(),
-            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..]
+            &[(Lit::Real(2.0), Lit::Real(1.0))][..]
         );
         assert_eq!(eg.find(neg_b), neg_b, "class 4 survives its founder");
         assert_eq!(
@@ -2304,7 +2310,7 @@ mod tests {
 
         assert_eq!(
             eg.refused_const_unions(),
-            &[(2.0f32.to_bits(), 1.0f32.to_bits())][..]
+            &[(Lit::Real(2.0), Lit::Real(1.0))][..]
         );
         assert_eq!(eg.tags(x).collect::<Vec<_>>(), [ENodeId(3), ENodeId(6)]);
         assert_eq!(members(&eg, x), [ENode::Var(5), ENode::constant(2.0)]);
@@ -3280,7 +3286,7 @@ mod tests {
     fn a_merged_away_class_is_not_a_candidate() {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
-        let c = eg.add(ENode::Const(1.0f32.to_bits()));
+        let c = eg.add(ENode::constant(1.0));
         let survivor = eg.union(x, c);
         eg.rebuild();
         assert_eq!(survivor, x);
