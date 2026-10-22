@@ -309,6 +309,7 @@ fn referent_variance(_key: crate::key::KernelKey) -> Variance {
 #[must_use]
 pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
     use crate::arena::{ExprId, ExprNode};
+    use crate::fold::KnownRange;
 
     let n = arena.len();
     let mut result = Vec::with_capacity(n);
@@ -346,10 +347,14 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
                 .union(result[b.0 as usize])
                 .union(result[c.0 as usize]),
             // A fold over nothing is its monoid's identity, whatever its body
-            // reads (`Fold::is_empty`): a constant. Read off the body instead,
-            // every reader would inherit the body's variables, which lowering
-            // never schedules (it schedules the identity in the fold's place).
-            ExprNode::Reduce { fold, .. } if fold.is_empty() => Variance::CONST,
+            // reads (`KnownRange::is_empty`): a constant. Read off the body
+            // instead, every reader would inherit the body's variables, which
+            // lowering never schedules (it schedules the identity in the
+            // fold's place). A range that is not known is not known to be
+            // empty, and falls to the binder arm.
+            ExprNode::Reduce { .. } if arena.known_range(id).is_some_and(KnownRange::is_empty) => {
+                Variance::CONST
+            }
             // A binder is the only node that shrinks the set: it binds its
             // index, so the index is not free in the result. There is no
             // "malformed binder" case to be conservative about any more —

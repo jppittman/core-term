@@ -9,6 +9,7 @@
 
 use core::ops::{Index, IndexMut};
 
+use crate::lit::Lit;
 use crate::shift::ShiftCount;
 
 /// The op table: the single place an operation is declared.
@@ -262,25 +263,23 @@ op_table! {
 
 impl OpKind {
     /// Monoid identity for an op usable as a reduction combiner
-    /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
-    /// combiner.
+    /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞, `BitOr`→false, `BitAnd`→true).
+    /// `None` if `self` is not a valid combiner.
     #[must_use]
-    pub(crate) const fn monoid_identity(self) -> Option<f32> {
+    pub(crate) const fn monoid_identity(self) -> Option<Lit> {
         match self {
-            Self::Add => Some(0.0),
-            Self::Mul => Some(1.0),
-            Self::Min => Some(f32::INFINITY),
-            Self::Max => Some(f32::NEG_INFINITY),
+            Self::Add => Some(Lit::Real(0.0)),
+            Self::Mul => Some(Lit::Real(1.0)),
+            Self::Min => Some(Lit::Real(f32::INFINITY)),
+            Self::Max => Some(Lit::Real(f32::NEG_INFINITY)),
             // Mask monoids — the existential and universal quantifiers over a
-            // bounded domain. Masks are bitwise in both evaluation tiers, so
-            // the identities are the all-clear and all-set bit patterns
-            // (`BitAnd`'s is a NaN by float reading; it is never read as a
-            // number, only ANDed).
-            Self::BitOr => Some(0.0),
-            Self::BitAnd => Some(f32::from_bits(u32::MAX)),
-            // The unit monoid's identity is nothing. As the `f32` a fold's
+            // bounded domain. Their identities are masks, which every backend
+            // tabulates as the all-clear and all-set lanes.
+            Self::BitOr => Some(Lit::Mask(false)),
+            Self::BitAnd => Some(Lit::Mask(true)),
+            // The unit monoid's identity is nothing. As the lane a fold's
             // accumulator is seeded with, that is a zero no combine reads.
-            Self::Seq => Some(0.0),
+            Self::Seq => Some(Lit::Real(0.0)),
             _ => None,
         }
     }
@@ -827,36 +826,37 @@ impl OpKind {
 
     /// Evaluate a unary operation on a constant argument.
     ///
-    /// Returns `None` for non-unary operations or operations that can't be
-    /// evaluated at compile time.
+    /// Returns `None` for non-unary operations, operations that can't be
+    /// evaluated at compile time, and an argument of the wrong type: every
+    /// unary op takes a real.
     #[must_use]
-    pub fn eval_unary(self, x: f32) -> Option<f32> {
-        match self {
-            Self::Neg => Some(-x),
-            Self::Sqrt => Some(libm::sqrtf(x)),
-            Self::Rsqrt => Some(1.0 / libm::sqrtf(x)),
-            Self::Abs => Some(x.abs()),
-            Self::Recip => Some(1.0 / x),
-            Self::Floor => Some(libm::floorf(x)),
-            Self::Ceil => Some(libm::ceilf(x)),
+    pub fn eval_unary(self, x: Lit) -> Option<Lit> {
+        let Lit::Real(x) = x else { return None };
+        let real = match self {
+            Self::Neg => -x,
+            Self::Sqrt => libm::sqrtf(x),
+            Self::Rsqrt => 1.0 / libm::sqrtf(x),
+            Self::Abs => x.abs(),
+            Self::Recip => 1.0 / x,
+            Self::Floor => libm::floorf(x),
+            Self::Ceil => libm::ceilf(x),
             // x86's answer (`vroundps` imm 0x00 is nearest-even). aarch64
-            // `FRINTA` is ties-away and the combinator tier is
-            // `(x + 0.5).floor()`, so at a tie this is one of three behaviors
+            // `FRINTA` is ties-away, so at a tie this is one of two behaviors
             // and no promise — see `fold_is_platform_specific`.
-            Self::Round => Some(libm::rintf(x)),
+            Self::Round => libm::rintf(x),
             // Integer-domain primitives. A lane holds an f32 bit pattern; these
             // reinterpret it as i32, exactly as the hardware instructions do
             // (`cvttps2dq` / `cvtdq2ps`). They exist so exp/log can lower to
-            // arithmetic, and the interpreter needs them for the same reason —
-            // it evaluates that lowering.
-            Self::TruncToInt => Some(f32::from_bits((x as i32) as u32)),
-            Self::IntToFloat => Some((x.to_bits() as i32) as f32),
+            // arithmetic. The integer they produce still rides in a real
+            // lane by convention: `Lit` has no integer yet (T3 of
+            // docs/language/2026-10-17-the-arena-is-typed.md).
+            Self::TruncToInt => f32::from_bits((x as i32) as u32),
+            Self::IntToFloat => (x.to_bits() as i32) as f32,
             // The reinterpretations are refused, not computed: the bits do
             // not change, so there is nothing to compute, but the *type*
-            // does, and a folder that writes one `f32` back has no way to
-            // say so. Folding them is T3's, once a constant carries a `Lit`
-            // (docs/language/2026-10-17-the-arena-is-typed.md).
-            Self::Bits | Self::Float => None,
+            // does, and `Lit` has no integer to write back. Folding them is
+            // T3's (docs/language/2026-10-17-the-arena-is-typed.md).
+            Self::Bits | Self::Float => return None,
 
             // Transcendentals have no arm on purpose. `f32::sin` and friends
             // are std-only (absent from `core`) and would be a *second*
@@ -865,44 +865,23 @@ impl OpKind {
             // then only the primitives above are ever evaluated. Same
             // discipline as `Dwrt`, which is also lowered rather than
             // interpreted.
-            _ => None,
-        }
-    }
-
-    /// A comparison lane: all bits set for true, all clear for false.
-    ///
-    /// This is not a stylistic choice about how to spell a boolean — it is the
-    /// only representation the consumers accept. `If`'s lane-varying path is a *bitwise* blend
-    /// on every backend (`vandps`/`vandnps`/`vorps` on AVX2, one
-    /// `vpternlogd 0xCA` on AVX-512, `BSL` on aarch64), and `BitAnd`/`BitOr`
-    /// are literal bitwise ops, so a mask lane's job is to be a per-bit
-    /// stencil. `1.0` is not one: `0xFFFFFFFF & 0x3f800000` is `0x3f800000`,
-    /// and blending `7.0` against `9.0` through that pattern gives `4.5` — a
-    /// value neither branch ever held.
-    ///
-    /// Every tier that *executes* a comparison already writes all-ones —
-    /// `cmpps`, `FCMEQ`, and the combinator tier's SIMD compares alike. Folding
-    /// in the same representation is what makes a folded comparison and an
-    /// executed one interchangeable as operands.
-    #[must_use]
-    pub const fn mask(condition: bool) -> f32 {
-        if condition {
-            f32::from_bits(u32::MAX)
-        } else {
-            0.0
-        }
+            _ => return None,
+        };
+        Some(Lit::Real(real))
     }
 
     /// Whether this op's result is a lane **bit pattern** rather than a number.
     ///
-    /// Comparisons produce masks ([`Self::mask`] — all-ones, which reads as
-    /// NaN); the integer-domain primitives reinterpret lanes as `i32` and are
-    /// how exp/log lower to arithmetic; `If`/`BitAnd`/`BitOr` pass patterns
-    /// through; [`Self::Bits`] *is* the reading of a lane as a pattern, and
-    /// [`Self::Float`] is the reading back as a number, so it is not here.
-    /// For all of them a non-finite float reading is the intended output
-    /// rather than an overflow, which is what separates them from
-    /// `1e38 * 1e38` — the case a folder is right to refuse.
+    /// A comparison's result is a mask, which the folder spells as
+    /// [`Lit::Mask`] and never as a float; the integer-domain primitives
+    /// reinterpret lanes as `i32` and are how exp/log lower to arithmetic;
+    /// `If`/`BitAnd`/`BitOr` pass patterns through; [`Self::Bits`] *is* the
+    /// reading of a lane as a pattern, and [`Self::Float`] is the reading
+    /// back as a number, so it is not here. For the ones whose result still
+    /// rides in a real lane, a non-finite float reading is the intended
+    /// output rather than an overflow, which is what separates them from
+    /// `1e38 * 1e38` — the case a folder is right to refuse. The predicate
+    /// lasts exactly until every result has its own type.
     #[must_use]
     pub const fn is_bitwise_domain(self) -> bool {
         matches!(
@@ -927,22 +906,48 @@ impl OpKind {
 
     /// Evaluate a binary operation on constant arguments.
     ///
-    /// Returns `None` for non-binary operations.
+    /// Returns `None` for non-binary operations and for arguments of the
+    /// wrong type: `BitAnd`/`BitOr` take two masks or two reals (the latter
+    /// the exp/log lowering's bit trick, on reals by convention until the
+    /// reinterpretation is an op), every other binary op two reals. A
+    /// comparison's answer is a [`Lit::Mask`].
     #[must_use]
-    pub fn eval_binary(self, x: f32, y: f32) -> Option<f32> {
-        match self {
-            Self::Add => Some(x + y),
-            Self::Sub => Some(x - y),
-            Self::Mul => Some(x * y),
-            Self::Div => Some(x / y),
+    pub fn eval_binary(self, x: Lit, y: Lit) -> Option<Lit> {
+        if let (Lit::Mask(a), Lit::Mask(b)) = (x, y) {
+            return match self {
+                Self::BitAnd => Some(Lit::Mask(a && b)),
+                Self::BitOr => Some(Lit::Mask(a || b)),
+                _ => None,
+            };
+        }
+        let (Lit::Real(x), Lit::Real(y)) = (x, y) else {
+            return None;
+        };
+        let real = match self {
+            Self::Add => x + y,
+            Self::Sub => x - y,
+            Self::Mul => x * y,
+            Self::Div => x / y,
             // `minps`/`maxps` semantics on x86: `(a OP b) ? a : b`, so a NaN in
             // EITHER operand yields the second. aarch64 `FMIN`/`FMAX` propagate
             // the NaN instead — see `fold_is_platform_specific`. This arm
             // is x86's answer and is not a promise for other targets.
-            Self::Min => Some(if x < y { x } else { y }),
-            Self::Max => Some(if x > y { x } else { y }),
-            Self::Lt => Some(Self::mask(x < y)),
-            Self::Le => Some(Self::mask(x <= y)),
+            Self::Min => {
+                if x < y {
+                    x
+                } else {
+                    y
+                }
+            }
+            Self::Max => {
+                if x > y {
+                    x
+                } else {
+                    y
+                }
+            }
+            Self::Lt => return Some(Lit::Mask(x < y)),
+            Self::Le => return Some(Lit::Mask(x <= y)),
             // Gt/Ge are x86's UNORDERED predicates (imm8 6 = NLE_US, 5 =
             // NLT_US), so unlike Lt/Le they are TRUE when either operand is
             // NaN. ARM's FCMGT/FCMGE are ordered and give FALSE — see
@@ -950,42 +955,42 @@ impl OpKind {
             // Spelled as the ordered comparison plus the unordered case rather
             // than as `!(x <= y)`: same answer, but it says which part is the
             // NaN behavior instead of hiding it inside a negation.
-            Self::Gt => Some(Self::mask(x > y || x.is_nan() || y.is_nan())),
-            Self::Ge => Some(Self::mask(x >= y || x.is_nan() || y.is_nan())),
+            Self::Gt => return Some(Lit::Mask(x > y || x.is_nan() || y.is_nan())),
+            Self::Ge => return Some(Lit::Mask(x >= y || x.is_nan() || y.is_nan())),
             // Exact, as every emitter compares. The old `(x-y).abs() < EPSILON`
             // made the folder disagree with the JIT for ordinary finite values:
             // 0.5 and its next representable neighbour differ by less than
             // EPSILON, so folding said "equal" where the hardware says "not".
             // NaN is false here and in `cmpps`/`FCMEQ` alike.
-            Self::Eq => Some(Self::mask(x == y)),
+            Self::Eq => return Some(Lit::Mask(x == y)),
             // Exact, and true for NaN — matching `NEQ_UQ` and an inverted
             // `FCMEQ`. Same epsilon bug as `Eq` above.
-            Self::Ne => Some(Self::mask(x != y)),
+            Self::Ne => return Some(Lit::Mask(x != y)),
             // Integer-domain binaries on lane bit patterns. The shift count is
             // the RHS `Const`'s numeric value (the schedule reads it through
             // `ShiftCount::from_literal`), and both shifts are logical —
             // `vpslld` / `vpsrld`, zero-filling.
-            Self::IAdd => Some(f32::from_bits(
-                (x.to_bits() as i32).wrapping_add(y.to_bits() as i32) as u32,
-            )),
-            Self::Shl => Some(f32::from_bits(
-                x.to_bits() << (y as u32 & (ShiftCount::WORD_BITS - 1)),
-            )),
-            Self::Shr => Some(f32::from_bits(
-                x.to_bits() >> (y as u32 & (ShiftCount::WORD_BITS - 1)),
-            )),
-            // Bitwise on lane bit patterns, matching the SIMD backends. On
-            // canonical masks (1.0/0.0 here, all-ones/zero in the JIT) this
-            // is logical AND/OR in both representations.
-            Self::BitAnd => Some(f32::from_bits(x.to_bits() & y.to_bits())),
-            Self::BitOr => Some(f32::from_bits(x.to_bits() | y.to_bits())),
-            _ => None,
-        }
+            Self::IAdd => {
+                f32::from_bits((x.to_bits() as i32).wrapping_add(y.to_bits() as i32) as u32)
+            }
+            Self::Shl => f32::from_bits(x.to_bits() << (y as u32 & (ShiftCount::WORD_BITS - 1))),
+            Self::Shr => f32::from_bits(x.to_bits() >> (y as u32 & (ShiftCount::WORD_BITS - 1))),
+            // Bitwise on two reals' lanes, matching the SIMD backends: the
+            // exp/log lowering's `BitAnd(x, mant_mask)`. Two masks were
+            // answered above.
+            Self::BitAnd => f32::from_bits(x.to_bits() & y.to_bits()),
+            Self::BitOr => f32::from_bits(x.to_bits() | y.to_bits()),
+            _ => return None,
+        };
+        Some(Lit::Real(real))
     }
 
     /// Evaluate a ternary operation on constant arguments.
+    ///
+    /// `If` takes a mask and selects whichever arm it names, of any type;
+    /// `MulAdd` takes three reals. Anything else is `None`.
     #[must_use]
-    pub fn eval_ternary(self, x: f32, y: f32, z: f32) -> Option<f32> {
+    pub fn eval_ternary(self, x: Lit, y: Lit, z: Lit) -> Option<Lit> {
         match self {
             // One rounding, always. `MulAdd` denotes `x*y + z`, and every
             // target spells it as one instruction (`vfmadd`, `FMLA`), so it
@@ -993,14 +998,20 @@ impl OpKind {
             // because the latter is whatever the compiler that built THIS
             // crate chose to contract it into: under `-fp-contract=fast` a
             // fold's answer must not depend on the folder's build profile.
-            Self::MulAdd => Some(libm::fmaf(x, y, z)),
-            // The bitwise blend every backend emits for a lane-varying mask — `vandps`/`vandnps`/`vorps`
-            // on AVX2, one `vpternlogd 0xCA` on AVX-512, `BSL` on
-            // aarch64. Spelling it `if x != 0.0` would be right only for a
-            // canonical [`Self::mask`] and silently wrong for anything else.
-            Self::If => Some(f32::from_bits(
-                (x.to_bits() & y.to_bits()) | (!x.to_bits() & z.to_bits()),
-            )),
+            Self::MulAdd => {
+                let (Lit::Real(x), Lit::Real(y), Lit::Real(z)) = (x, y, z) else {
+                    return None;
+                };
+                Some(Lit::Real(libm::fmaf(x, y, z)))
+            }
+            // What the bitwise blend every backend emits (`vandps`/`vandnps`/
+            // `vorps` on AVX2, one `vpternlogd 0xCA` on AVX-512, `BSL` on
+            // aarch64) computes for a mask: the arm it names, whole. A
+            // condition that is not a mask has no answer here.
+            Self::If => {
+                let Lit::Mask(m) = x else { return None };
+                Some(if m { y } else { z })
+            }
             _ => None,
         }
     }
@@ -1586,47 +1597,9 @@ mod from_method_call {
 }
 
 #[cfg(test)]
-mod eval_unary_libm_arms {
-    use super::OpKind;
-
-    #[test]
-    fn ceil_rounds_toward_positive_infinity() {
-        assert_eq!(OpKind::Ceil.eval_unary(1.2), Some(2.0));
-        assert_eq!(OpKind::Ceil.eval_unary(-1.2), Some(-1.0));
-    }
-
-    #[test]
-    fn round_ties_to_even_matching_x86s_vroundps() {
-        assert_eq!(OpKind::Round.eval_unary(2.5), Some(2.0));
-        assert_eq!(OpKind::Round.eval_unary(3.5), Some(4.0));
-        assert_eq!(OpKind::Round.eval_unary(1.2), Some(1.0));
-    }
-
-    #[test]
-    fn int_to_float_reinterprets_bits_rather_than_converting_the_value() {
-        // 1.0f32's bit pattern read as i32 is nowhere near 1.0.
-        let one_bits = 1.0f32.to_bits() as i32;
-        assert_eq!(
-            OpKind::IntToFloat.eval_unary(1.0),
-            Some(one_bits as f32),
-            "IntToFloat must reinterpret x's bits as i32, not convert x's value"
-        );
-    }
-
-    #[test]
-    fn recip_is_exact_reciprocal_not_an_estimate() {
-        assert_eq!(OpKind::Recip.eval_unary(4.0), Some(0.25));
-    }
-}
-
-/// Independently-authored oracles for the algebraic-property predicates,
-/// exhaustive over `OpKind::all()`. Each predicate is a total function over a
-/// closed enum, so — unlike a spot check — a single exhaustive sweep is
-/// enough to catch both "flipped the wrong op" and "always returns the same
-/// answer" mistakes.
-#[cfg(test)]
 mod algebraic_properties {
     use super::OpKind;
+    use crate::lit::Lit;
 
     const COMMUTATIVE: &[OpKind] = &[
         OpKind::Add,
@@ -1757,7 +1730,7 @@ mod algebraic_properties {
 
     /// A reinterpretation is unary, costs nothing, has no method spelling,
     /// and is never folded: the bits are the same, the type is not, and
-    /// until a constant carries a type there is nothing to write back.
+    /// `Lit` has no integer to write back until T3.
     #[test]
     fn bits_and_float_are_free_unspellable_and_unfolded() {
         for op in [OpKind::Bits, OpKind::Float] {
@@ -1765,7 +1738,11 @@ mod algebraic_properties {
             assert_eq!(op.default_cost(), 0, "{op:?} is the same register");
             assert_eq!(OpKind::from_method_call(op.name(), 0), None, "{op:?}");
             for x in [0.0, -0.0, 1.0, f32::from_bits(127), f32::NAN] {
-                assert_eq!(op.eval_unary(x), None, "{op:?}({x:?}) must not fold");
+                assert_eq!(
+                    op.eval_unary(Lit::Real(x)),
+                    None,
+                    "{op:?}({x:?}) must not fold"
+                );
             }
         }
         assert!(OpKind::Bits.is_bitwise_domain(), "its result is a pattern");
@@ -1902,24 +1879,84 @@ mod from_name {
 }
 
 #[cfg(test)]
-mod eval_binary_arms {
+mod eval_unary_libm_arms {
     use super::OpKind;
+    use crate::lit::Lit;
 
-    /// Compares by bit pattern, not `==` — a true mask is the all-ones NaN
-    /// pattern, and NaN never equals itself under `f32::eq`.
-    fn assert_mask(got: Option<f32>, want: bool) {
+    fn real(v: f32) -> Lit {
+        Lit::Real(v)
+    }
+
+    #[test]
+    fn ceil_rounds_toward_positive_infinity() {
+        assert_eq!(OpKind::Ceil.eval_unary(real(1.2)), Some(real(2.0)));
+        assert_eq!(OpKind::Ceil.eval_unary(real(-1.2)), Some(real(-1.0)));
+    }
+
+    #[test]
+    fn round_ties_to_even_matching_x86s_vroundps() {
+        assert_eq!(OpKind::Round.eval_unary(real(2.5)), Some(real(2.0)));
+        assert_eq!(OpKind::Round.eval_unary(real(3.5)), Some(real(4.0)));
+        assert_eq!(OpKind::Round.eval_unary(real(1.2)), Some(real(1.0)));
+    }
+
+    #[test]
+    fn int_to_float_reinterprets_bits_rather_than_converting_the_value() {
+        // 1.0f32's bit pattern read as i32 is nowhere near 1.0.
+        let one_bits = 1.0f32.to_bits() as i32;
         assert_eq!(
-            got.expect("op is binary").to_bits(),
-            OpKind::mask(want).to_bits()
+            OpKind::IntToFloat.eval_unary(real(1.0)),
+            Some(real(one_bits as f32)),
+            "IntToFloat must reinterpret x's bits as i32, not convert x's value"
         );
     }
 
     #[test]
+    fn recip_is_the_exact_reciprocal() {
+        assert_eq!(OpKind::Recip.eval_unary(real(4.0)), Some(real(0.25)));
+    }
+
+    /// Every unary op is a function of a real; a mask has no negation, no
+    /// square root and no floor.
+    #[test]
+    fn decline_a_mask_argument() {
+        assert_eq!(OpKind::Neg.eval_unary(Lit::Mask(true)), None);
+        assert_eq!(OpKind::Floor.eval_unary(Lit::Mask(false)), None);
+    }
+}
+
+#[cfg(test)]
+mod eval_binary_arms {
+    use super::OpKind;
+    use crate::lit::Lit;
+
+    fn real(v: f32) -> Lit {
+        Lit::Real(v)
+    }
+
+    /// A folded comparison is a mask, never a float.
+    fn assert_mask(got: Option<Lit>, want: bool) {
+        assert_eq!(got, Some(Lit::Mask(want)));
+    }
+
+    #[test]
     fn compute_ordinary_arithmetic_for_add_sub_mul_div() {
-        assert_eq!(OpKind::Add.eval_binary(2.0, 3.0), Some(5.0));
-        assert_eq!(OpKind::Sub.eval_binary(5.0, 3.0), Some(2.0));
-        assert_eq!(OpKind::Mul.eval_binary(2.0, 3.0), Some(6.0));
-        assert_eq!(OpKind::Div.eval_binary(6.0, 3.0), Some(2.0));
+        assert_eq!(
+            OpKind::Add.eval_binary(real(2.0), real(3.0)),
+            Some(real(5.0))
+        );
+        assert_eq!(
+            OpKind::Sub.eval_binary(real(5.0), real(3.0)),
+            Some(real(2.0))
+        );
+        assert_eq!(
+            OpKind::Mul.eval_binary(real(2.0), real(3.0)),
+            Some(real(6.0))
+        );
+        assert_eq!(
+            OpKind::Div.eval_binary(real(6.0), real(3.0)),
+            Some(real(2.0))
+        );
     }
 
     #[test]
@@ -1929,124 +1966,182 @@ mod eval_binary_arms {
         // `-0.0` are the tie that can actually prove this: they compare
         // equal under `<`/`>` but carry different bit patterns, so unlike a
         // same-value tie (e.g. `1.0, 1.0`) the result reveals which operand
-        // was returned instead of leaving it ambiguous.
+        // was returned instead of leaving it ambiguous. `Lit` compares a real
+        // by its bits, so the assertion sees the sign.
         assert_eq!(
-            OpKind::Min.eval_binary(0.0, -0.0).unwrap().to_bits(),
-            (-0.0f32).to_bits(),
+            OpKind::Min.eval_binary(real(0.0), real(-0.0)),
+            Some(real(-0.0))
         );
         assert_eq!(
-            OpKind::Min.eval_binary(-0.0, 0.0).unwrap().to_bits(),
-            0.0f32.to_bits(),
+            OpKind::Min.eval_binary(real(-0.0), real(0.0)),
+            Some(real(0.0))
         );
         assert_eq!(
-            OpKind::Max.eval_binary(0.0, -0.0).unwrap().to_bits(),
-            (-0.0f32).to_bits(),
+            OpKind::Max.eval_binary(real(0.0), real(-0.0)),
+            Some(real(-0.0))
         );
         assert_eq!(
-            OpKind::Max.eval_binary(-0.0, 0.0).unwrap().to_bits(),
-            0.0f32.to_bits(),
+            OpKind::Max.eval_binary(real(-0.0), real(0.0)),
+            Some(real(0.0))
         );
-        assert_eq!(OpKind::Min.eval_binary(1.0, 2.0), Some(1.0));
-        assert_eq!(OpKind::Min.eval_binary(2.0, 1.0), Some(1.0));
-        assert_eq!(OpKind::Max.eval_binary(1.0, 2.0), Some(2.0));
-        assert_eq!(OpKind::Max.eval_binary(2.0, 1.0), Some(2.0));
+        assert_eq!(
+            OpKind::Min.eval_binary(real(1.0), real(2.0)),
+            Some(real(1.0))
+        );
+        assert_eq!(
+            OpKind::Min.eval_binary(real(2.0), real(1.0)),
+            Some(real(1.0))
+        );
+        assert_eq!(
+            OpKind::Max.eval_binary(real(1.0), real(2.0)),
+            Some(real(2.0))
+        );
+        assert_eq!(
+            OpKind::Max.eval_binary(real(2.0), real(1.0)),
+            Some(real(2.0))
+        );
     }
 
     #[test]
     fn agree_on_strict_and_equal_operands_for_lt_and_le() {
-        assert_mask(OpKind::Lt.eval_binary(1.0, 2.0), true);
-        assert_mask(OpKind::Lt.eval_binary(2.0, 2.0), false);
-        assert_mask(OpKind::Le.eval_binary(2.0, 2.0), true);
-        assert_mask(OpKind::Le.eval_binary(3.0, 2.0), false);
+        assert_mask(OpKind::Lt.eval_binary(real(1.0), real(2.0)), true);
+        assert_mask(OpKind::Lt.eval_binary(real(2.0), real(2.0)), false);
+        assert_mask(OpKind::Le.eval_binary(real(2.0), real(2.0)), true);
+        assert_mask(OpKind::Le.eval_binary(real(3.0), real(2.0)), false);
     }
 
     #[test]
     fn treat_gt_and_ge_as_unordered_true_for_a_nan_operand() {
         // x86's imm8 6/5 (NLE_US/NLT_US): NaN in EITHER operand is TRUE.
-        assert_mask(OpKind::Gt.eval_binary(f32::NAN, 1.0), true);
-        assert_mask(OpKind::Gt.eval_binary(1.0, f32::NAN), true);
-        assert_mask(OpKind::Gt.eval_binary(2.0, 1.0), true);
-        assert_mask(OpKind::Gt.eval_binary(1.0, 2.0), false);
-        assert_mask(OpKind::Gt.eval_binary(1.0, 1.0), false);
-        assert_mask(OpKind::Ge.eval_binary(f32::NAN, 1.0), true);
-        assert_mask(OpKind::Ge.eval_binary(1.0, f32::NAN), true);
-        assert_mask(OpKind::Ge.eval_binary(1.0, 1.0), true);
-        assert_mask(OpKind::Ge.eval_binary(1.0, 2.0), false);
+        assert_mask(OpKind::Gt.eval_binary(real(f32::NAN), real(1.0)), true);
+        assert_mask(OpKind::Gt.eval_binary(real(1.0), real(f32::NAN)), true);
+        assert_mask(OpKind::Gt.eval_binary(real(2.0), real(1.0)), true);
+        assert_mask(OpKind::Gt.eval_binary(real(1.0), real(2.0)), false);
+        assert_mask(OpKind::Gt.eval_binary(real(1.0), real(1.0)), false);
+        assert_mask(OpKind::Ge.eval_binary(real(f32::NAN), real(1.0)), true);
+        assert_mask(OpKind::Ge.eval_binary(real(1.0), real(f32::NAN)), true);
+        assert_mask(OpKind::Ge.eval_binary(real(1.0), real(1.0)), true);
+        assert_mask(OpKind::Ge.eval_binary(real(1.0), real(2.0)), false);
     }
 
     #[test]
     fn treat_eq_and_ne_as_exact_and_disagree_only_on_nan() {
-        assert_mask(OpKind::Eq.eval_binary(1.0, 1.0), true);
-        assert_mask(OpKind::Eq.eval_binary(1.0, 2.0), false);
-        assert_mask(OpKind::Eq.eval_binary(f32::NAN, f32::NAN), false);
-        assert_mask(OpKind::Ne.eval_binary(1.0, 2.0), true);
-        assert_mask(OpKind::Ne.eval_binary(1.0, 1.0), false);
-        assert_mask(OpKind::Ne.eval_binary(f32::NAN, f32::NAN), true);
+        assert_mask(OpKind::Eq.eval_binary(real(1.0), real(1.0)), true);
+        assert_mask(OpKind::Eq.eval_binary(real(1.0), real(2.0)), false);
+        assert_mask(
+            OpKind::Eq.eval_binary(real(f32::NAN), real(f32::NAN)),
+            false,
+        );
+        assert_mask(OpKind::Ne.eval_binary(real(1.0), real(2.0)), true);
+        assert_mask(OpKind::Ne.eval_binary(real(1.0), real(1.0)), false);
+        assert_mask(OpKind::Ne.eval_binary(real(f32::NAN), real(f32::NAN)), true);
     }
 
     #[test]
     fn wrap_the_bit_pattern_as_a_two_s_complement_integer_for_iadd() {
         let got = OpKind::IAdd
-            .eval_binary(f32::from_bits(i32::MAX as u32), f32::from_bits(1))
+            .eval_binary(
+                real(f32::from_bits(i32::MAX as u32)),
+                real(f32::from_bits(1)),
+            )
             .unwrap();
-        assert_eq!(got.to_bits(), i32::MIN as u32);
+        assert_eq!(got.bits(), i32::MIN as u32);
     }
 
     #[test]
     fn mask_the_count_to_five_bits_before_shifting() {
         // count=33 masks to 1 (33 & 31 == 1) — same as an explicit shift of 1.
-        let one_bit = f32::from_bits(1);
-        assert_eq!(OpKind::Shl.eval_binary(one_bit, 33.0).unwrap().to_bits(), 2);
-
-        let hi_bit = f32::from_bits(1u32 << 31);
+        let one_bit = real(f32::from_bits(1));
         assert_eq!(
-            OpKind::Shr.eval_binary(hi_bit, 33.0).unwrap().to_bits(),
+            OpKind::Shl.eval_binary(one_bit, real(33.0)).unwrap().bits(),
+            2
+        );
+
+        let hi_bit = real(f32::from_bits(1u32 << 31));
+        assert_eq!(
+            OpKind::Shr.eval_binary(hi_bit, real(33.0)).unwrap().bits(),
             1u32 << 30
         );
     }
 
     #[test]
-    fn operate_on_raw_bit_patterns_for_bitand_and_bitor() {
-        let a = f32::from_bits(0b1010);
-        let b = f32::from_bits(0b0110);
-        assert_eq!(OpKind::BitAnd.eval_binary(a, b).unwrap().to_bits(), 0b0010);
-        assert_eq!(OpKind::BitOr.eval_binary(a, b).unwrap().to_bits(), 0b1110);
+    fn operate_on_raw_bit_patterns_for_bitand_and_bitor_of_two_reals() {
+        let a = real(f32::from_bits(0b1010));
+        let b = real(f32::from_bits(0b0110));
+        assert_eq!(
+            OpKind::BitAnd.eval_binary(a, b),
+            Some(real(f32::from_bits(0b0010)))
+        );
+        assert_eq!(
+            OpKind::BitOr.eval_binary(a, b),
+            Some(real(f32::from_bits(0b1110)))
+        );
+    }
+
+    /// Two masks conjoin and disjoin as truths; a mask against a real has no
+    /// meaning and is declined rather than blended.
+    #[test]
+    fn conjoin_and_disjoin_two_masks_and_decline_a_mask_against_a_real() {
+        let (t, f) = (Lit::Mask(true), Lit::Mask(false));
+        assert_eq!(OpKind::BitAnd.eval_binary(t, f), Some(f));
+        assert_eq!(OpKind::BitAnd.eval_binary(t, t), Some(t));
+        assert_eq!(OpKind::BitOr.eval_binary(t, f), Some(t));
+        assert_eq!(OpKind::BitOr.eval_binary(f, f), Some(f));
+        assert_eq!(OpKind::BitAnd.eval_binary(t, real(1.0)), None);
+        assert_eq!(OpKind::Add.eval_binary(t, t), None);
+        assert_eq!(OpKind::Lt.eval_binary(real(1.0), f), None);
     }
 
     #[test]
     fn return_none_from_eval_binary_for_a_unary_op() {
-        assert_eq!(OpKind::Neg.eval_binary(1.0, 2.0), None);
+        assert_eq!(OpKind::Neg.eval_binary(real(1.0), real(2.0)), None);
     }
 }
 
 #[cfg(test)]
 mod eval_ternary_arms {
     use super::OpKind;
+    use crate::lit::Lit;
 
-    #[test]
-    fn compute_x_times_y_plus_z_for_mul_add() {
-        assert_eq!(OpKind::MulAdd.eval_ternary(2.0, 3.0, 4.0), Some(10.0));
+    fn real(v: f32) -> Lit {
+        Lit::Real(v)
     }
 
     #[test]
-    fn blend_y_and_z_bitwise_by_the_x_mask_for_if() {
-        let true_mask = OpKind::mask(true);
-        let false_mask = OpKind::mask(false);
-        let y = 7.0f32;
-        let z = 9.0f32;
+    fn compute_x_times_y_plus_z_for_mul_add() {
         assert_eq!(
-            OpKind::If.eval_ternary(true_mask, y, z).unwrap().to_bits(),
-            y.to_bits()
+            OpKind::MulAdd.eval_ternary(real(2.0), real(3.0), real(4.0)),
+            Some(real(10.0))
         );
         assert_eq!(
-            OpKind::If.eval_ternary(false_mask, y, z).unwrap().to_bits(),
-            z.to_bits()
+            OpKind::MulAdd.eval_ternary(Lit::Mask(true), real(3.0), real(4.0)),
+            None
+        );
+    }
+
+    /// `If` names an arm, whole: what the backends' bitwise blend computes
+    /// for a mask. The arms may be of either type, and a condition that is
+    /// not a mask has no answer.
+    #[test]
+    fn select_the_named_arm_by_the_mask_for_if() {
+        let (t, f) = (Lit::Mask(true), Lit::Mask(false));
+        let (y, z) = (real(7.0), real(9.0));
+        assert_eq!(OpKind::If.eval_ternary(t, y, z), Some(y));
+        assert_eq!(OpKind::If.eval_ternary(f, y, z), Some(z));
+        assert_eq!(OpKind::If.eval_ternary(t, f, t), Some(f));
+        assert_eq!(OpKind::If.eval_ternary(real(1.0), y, z), None);
+        assert_eq!(
+            OpKind::If.eval_ternary(real(f32::from_bits(u32::MAX)), y, z),
+            None
         );
     }
 
     #[test]
     fn return_none_from_eval_ternary_for_a_binary_op() {
-        assert_eq!(OpKind::Add.eval_ternary(1.0, 2.0, 3.0), None);
+        assert_eq!(
+            OpKind::Add.eval_ternary(real(1.0), real(2.0), real(3.0)),
+            None
+        );
     }
 }
 
@@ -2054,6 +2149,7 @@ mod eval_ternary_arms {
 mod fold_is_platform_specific {
     use super::OpKind;
     use crate::ShiftCount;
+    use crate::lit::Lit;
 
     #[test]
     fn decline_to_fold_min_and_max_on_nan_or_a_signed_zero_mismatch() {
@@ -2149,8 +2245,8 @@ mod fold_is_platform_specific {
         );
         assert!(!OpKind::MulAdd.fold_is_platform_specific(&[a, b, c]));
         assert_eq!(
-            OpKind::MulAdd.eval_ternary(a, b, c).map(f32::to_bits),
-            Some(libm::fmaf(a, b, c).to_bits())
+            OpKind::MulAdd.eval_ternary(Lit::Real(a), Lit::Real(b), Lit::Real(c)),
+            Some(Lit::Real(libm::fmaf(a, b, c)))
         );
     }
 

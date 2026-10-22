@@ -7,7 +7,7 @@
 //! Naming the boundary is what makes them assertable.
 
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprNode, UniformDecl, UniformIdentity};
-use pixelflow_ir::{Children, ExprArena, Ir, Kernel, KernelStore, OpKind, Shape};
+use pixelflow_ir::{Children, ExprArena, Ir, Kernel, KernelStore, Lit, OpKind, Shape};
 use pixelflow_search::egraph::{Declined, EGraph, Vocabulary, insert, inserted_class_count};
 use pixelflow_search::runtime::optimize_runtime_arena;
 
@@ -338,7 +338,7 @@ fn projection_reports_arity() {
     // Leaves project as leaves, carrying their payload.
     assert!(matches!(arena.project(x), Shape::Var(0)));
     let c = arena.push_const(1.5);
-    assert!(matches!(arena.project(c), Shape::Const(v) if v == 1.5));
+    assert!(matches!(arena.project(c), Shape::Const(Lit::Real(v)) if v == 1.5));
     let _ = Children::<pixelflow_ir::ExprId>::Zero;
 }
 

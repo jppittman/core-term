@@ -45,6 +45,13 @@
   reason."* The language has no integral: §1.5's `integral`, `area` and
   `monotone_root` rows, B4's integral half, B6 and D19 are withdrawn, and a
   glyph writes each piece's area in closed form (§1.7).
+- **Reversed in part by `docs/language/2026-10-20-a-bound-is-a-value.md` (2026-10-20, plan
+  of record).** A fold's bounds become values placed by their variance, never a function of
+  a coordinate, and a font at a tile extent becomes one program for every glyph and piece
+  count. That reverses the 2026-10-09 ruling of one program per piece count (§1.7, §1.6's
+  worked example), a count's structural binding time (§1.4), §1.5's constant ranges, and
+  the rule quoted at the top that ranges are constant. Until that plan's steps land (its
+  §6; one program per font is B2), those sections describe what the tree does.
 - **Created**: 2026-09-25
 - **Verified against**: `8b7b75a`, in two rounds.
   - A four-way inventory of every use of the `Kernel` builder, a
@@ -92,6 +99,12 @@
 > Good enough is easy."* And: *"We shouldn't have tables at all."* And: *"You
 > might rename select if…"* And, on a draft that wrote the control points in
 > as constants: *"No, make the coordinates of the control points uniforms."*
+
+**Reversed 2026-10-20.** The relaxation this quote left room for is ruled taken, and the
+atlas sentence is reversed ([a bound is a value](2026-10-20-a-bound-is-a-value.md), rulings
+1, 3 and 6): a count is to have any variance but a coordinate's (its A4), and a font at a
+tile extent is to be one program (its B2). Until then the quote's rule, constant ranges, is
+what the tree does.
 
 ---
 
@@ -175,7 +188,7 @@ sugar for a block with one entry.
 | type | meaning | IR |
 |---|---|---|
 | `f32` | a value | an `f32` lane |
-| `bool` | a mask; comparisons produce it; `&` and `\|` combine it | an all-ones or all-zero lane, `OpKind::mask(bool)` |
+| `bool` | a mask; comparisons produce it; `&` and `\|` combine it | an all-ones or all-zero lane; a constant one is `Lit::Mask(bool)` |
 | `usize` | a fold binder or a structural count | `Var(REDUCE_BINDER_BASE + slot)`; converted by an explicit `i as f32` |
 | records | named `f32` fields | flattened at lowering |
 | `impl Fn(f32, f32) -> f32` | a kernel-typed parameter: a kernel the host passes at run time, applied `k(x, y)` (Phase D-a, done) | none of its own: each application splices the argument's term, `k[X := x, Y := y]` (`ExprArena::apply`) |
@@ -195,6 +208,11 @@ a mask. F: probe p16 gives 5. After this plan it is a type error.
 | structural | `const N: usize`, a zoom level's tile extent; the font's shape, meaning which glyphs and how many pieces each (I) | at instantiation, or by what the host composes; each value is its own program | yes |
 | uniform | a piece's ten coordinates and a glyph's box, written once per font and zoom; a cell's glyph id, origin, `fg` and `bg`, per call (since 2026-10-09 a draw writes the glyph's block, and the host chooses the program by the glyph's piece count, not by an id uniform, §1.7) | through the program's block: an entry's `Args` record, or for the composed font, O3 | no |
 | kernel-typed | `k: impl Fn(f32, f32) -> f32` | at runtime; composed, then `P` | the composed program's |
+
+**Reversed 2026-10-20 for counts** ([a bound is a value](2026-10-20-a-bound-is-a-value.md)):
+a count stops being structural. `const N: usize` is deleted (its A5), and a glyph's piece
+count becomes a per-call value (B2). The tile extent stays structural and in the key (its
+§7). Until then the table is what the tree does.
 
 - **A kernel-typed argument is admitted when the host function is called**
   (F, D-a). The host function takes it as a `&Kernel`, and builds its
@@ -252,6 +270,10 @@ a mask. F: probe p16 gives 5. After this plan it is a type error.
 |---|---|---|
 | `(a..b).map(\|i\| e).sum()`, `.product()`, `.any(\|i\| m)`, `.all(\|i\| m)`, `.fold(f32::INFINITY, f32::min)`, `.fold(f32::NEG_INFINITY, f32::max)` | ⊕ over `i ∈ [a, b)`; the identity if empty | `Reduce(Fold{monoid, binder, a..b}, e)` |
 
+**Amended 2026-10-20** ([a bound is a value](2026-10-20-a-bound-is-a-value.md) §1): `a` and
+`b` become values placed by their variance, any variance but a coordinate's. Today both are
+constants.
+
 **There are no integrals.** JP, 2026-09-29: *"just do b. delete all the
 integral stuff. other languages don't try this. probably for good
 reason."* The table had three more rows, landed by B4 (`4b7ea263`):
@@ -305,6 +327,10 @@ So the language has none:
     exactly zero outside its band (F, `fonts/loop_blinn.rs`'s
     `piece_term`: "The cut to the rows is an identity"), so that cut
     changes no bit.
+  - **Reversed 2026-10-20** ([a bound is a value](2026-10-20-a-bound-is-a-value.md) B2):
+    at B2 a glyph becomes a call, one program serves every piece count at a tile extent, and
+    nothing chooses a program by piece count. Until then the worked example above is what the
+    tree does.
   - **Superseded (2026-10-09; §1.7's record):** the worked example as it
     stood here, a cell's glyph id one uniform and the font its glyphs under
     a balanced tree of `if id < k`, so that choosing a glyph took about
@@ -329,6 +355,10 @@ So the language has none:
   bug (A6).
 
 ### 1.7 A font at a zoom level is one program per piece count
+
+> **Reversed 2026-10-20** by [a bound is a value](2026-10-20-a-bound-is-a-value.md): at its B2
+> a font at a tile extent becomes one program, not one per piece count, and `FontPrograms`
+> goes at its B4. Until then this section is what the tree does; it records what C1 built.
 
 ```rust
 kernel! {

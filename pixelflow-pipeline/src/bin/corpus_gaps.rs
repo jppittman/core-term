@@ -32,7 +32,7 @@ use pixelflow_ir::arena::{
     BufferDecl, BufferId, BufferIdentity, ExprNode, UniformDecl, UniformIdentity,
 };
 use pixelflow_ir::variance::LatticeShape;
-use pixelflow_ir::{ExprArena, ExprId, OpKind};
+use pixelflow_ir::{ExprArena, ExprId, Lit, OpKind};
 use pixelflow_pipeline::collapse_bench::{self, lanes};
 use pixelflow_pipeline::shader_bench::{NAMED_KERNEL_NAMES, SHADERTOY_KERNEL_NAMES, named_kernel};
 use pixelflow_pipeline::training::{bezier_family, sh_family};
@@ -455,7 +455,7 @@ fn hash_cons(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
     #[derive(Hash, PartialEq, Eq)]
     enum Key {
         Var(u8),
-        Const(u32),
+        Const(Lit),
         Param(u8),
         Buffer(u16),
         Uniform(u64),
@@ -479,7 +479,7 @@ fn hash_cons(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
         };
         let (key, build): (Key, Build) = match arena.node(id) {
             ExprNode::Var(i) => (Key::Var(i), Box::new(move |a| a.push_var(i))),
-            ExprNode::Const(v) => (Key::Const(v.to_bits()), Box::new(move |a| a.push_const(v))),
+            ExprNode::Const(v) => (Key::Const(v), Box::new(move |a| a.push_lit(v))),
             ExprNode::Param(i) => (Key::Param(i), Box::new(move |a| a.push_param(i))),
             ExprNode::Buffer(b) => (Key::Buffer(b.0), Box::new(move |a| a.push_buffer(b))),
             ExprNode::Uniform(u) => (Key::Uniform(u.0), Box::new(move |a| a.push_uniform(u))),

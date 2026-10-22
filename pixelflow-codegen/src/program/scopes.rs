@@ -210,7 +210,12 @@ fn extract_folds_bound_by(
     let mut claimed = alloc::vec![false; n];
 
     for def in schedule.iter().rev() {
-        let ScheduledOp::Reduce(fold, body_vid) = def.op else {
+        let ScheduledOp::Reduce {
+            fold,
+            body: body_vid,
+            ..
+        } = def.op
+        else {
             continue;
         };
         if claimed[def.value.0 as usize] || placeholder[def.value.0 as usize] {
@@ -242,7 +247,7 @@ fn extract_folds_bound_by(
         let mut mark = alloc::vec![false; n];
         let mut placeholder_here = alloc::vec![false; n];
         let op_of = |v: ValueId| position[v.0 as usize].map(|p| &schedule[p].op);
-        let is_fold = |v: ValueId| matches!(op_of(v), Some(ScheduledOp::Reduce(..)));
+        let is_fold = |v: ValueId| matches!(op_of(v), Some(ScheduledOp::Reduce { .. }));
         let mut stack = Vec::new();
         mark[body_vid.0 as usize] = true;
         // The root too: a body that *is* another fold's result reads that
@@ -260,7 +265,7 @@ fn extract_folds_bound_by(
                 )
             });
             let op = &schedule[at].op;
-            if matches!(op, ScheduledOp::Reduce(..)) {
+            if matches!(op, ScheduledOp::Reduce { .. }) {
                 claimed[v.0 as usize] = true;
             }
             for operand in structural_children(op) {

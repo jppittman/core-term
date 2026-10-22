@@ -125,7 +125,7 @@ pub fn insert<I: Ir>(
                 }
                 let class = match term.project(r) {
                     Shape::Var(i) => egraph.add(ENode::Var(i)),
-                    Shape::Const(v) => egraph.add(ENode::constant(v)),
+                    Shape::Const(v) => egraph.add(ENode::Const(v)),
                     Shape::Param(i) => match vocab {
                         Vocabulary::Templates => egraph.add(ENode::Param(i)),
                         Vocabulary::Runtime => return Err(Declined::Param(i)),

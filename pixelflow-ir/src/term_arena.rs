@@ -57,7 +57,7 @@ impl Ir for ExprArena {
     fn embed(&mut self, shape: Shape<'_, ExprId>) -> ExprId {
         match shape {
             Shape::Var(i) => self.push_var(i),
-            Shape::Const(v) => self.push_const(v),
+            Shape::Const(v) => self.push_lit(v),
             Shape::Param(i) => self.push_param(i),
             Shape::Buffer(decl) => {
                 let slot = self.buffer_slot_for(decl);

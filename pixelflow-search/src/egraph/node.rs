@@ -3,8 +3,8 @@
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use pixelflow_ir::arena::{BufferDecl, UniformDecl};
-use pixelflow_ir::fold::Fold;
-use pixelflow_ir::{KernelKey, OpKind, ShiftCount, Variance};
+use pixelflow_ir::fold::{Fold, KnownRange};
+use pixelflow_ir::{KernelKey, Lit, OpKind, ShiftCount, Variance};
 
 use super::shift::ShiftDirection;
 
@@ -166,8 +166,10 @@ impl DerefMut for Operands {
 pub enum ENode {
     /// Variable with index (0=X, 1=Y, 2=Z, 3=W, etc.)
     Var(u8),
-    /// Constant value (stored as f32 bits)
-    Const(u32),
+    /// A literal, keyed by its typed value: a real by its bits, a mask by
+    /// its truth. A true mask and the NaN that shares its lane are two
+    /// e-classes, so a rule that fires on the one cannot fire on the other.
+    Const(Lit),
     /// Bound-memory leaf: a buffer declaration, read through a `Gather` node.
     ///
     /// Carries the full [`BufferDecl`] rather than an arena-local `BufferId`
@@ -260,22 +262,38 @@ pub enum ENode {
 }
 
 impl ENode {
-    /// Create a constant node.
+    /// A real constant.
     pub fn constant(val: f32) -> Self {
-        ENode::Const(val.to_bits())
+        ENode::Const(Lit::Real(val))
     }
 
-    /// Get the constant value if this is a Const node.
-    pub fn as_f32(&self) -> Option<f32> {
+    /// The literal, if this is a `Const` node.
+    pub fn literal(&self) -> Option<Lit> {
         match self {
-            ENode::Const(bits) => Some(f32::from_bits(*bits)),
+            ENode::Const(lit) => Some(*lit),
             _ => None,
         }
     }
 
-    /// Check if this node is a specific constant value.
+    /// The real, if this is a real constant.
+    pub fn as_f32(&self) -> Option<f32> {
+        self.literal().and_then(Lit::real)
+    }
+
+    /// Whether this node is the real constant `val`, as `f32::eq` sees it:
+    /// `0.0` matches `-0.0`, NaN matches nothing. The sense a rule pattern's
+    /// literal has always had.
     pub fn is_const(&self, val: f32) -> bool {
         self.as_f32() == Some(val)
+    }
+
+    /// Whether this node is the literal `lit`: a real as [`Self::is_const`]
+    /// reads it, a mask by its truth.
+    pub fn is_lit(&self, lit: Lit) -> bool {
+        match lit {
+            Lit::Real(val) => self.is_const(val),
+            Lit::Mask(_) => self.literal() == Some(lit),
+        }
     }
 
     /// `op` applied to `operands`, one class per operand.
@@ -323,11 +341,22 @@ impl ENode {
         }
     }
 
-    /// The fold this node performs, if it is one.
-    pub fn fold(&self) -> Option<Fold> {
+    /// The range of the fold this node performs, when it is known: every bound
+    /// is a constant today, so this is `Some` for every fold.
+    ///
+    /// The e-graph's reader of a fold's range, beside the arena's and the
+    /// schedule's. **Per node, not per class:** after `HalveFold` one class
+    /// holds two `Reduce` nodes over different ranges (the original and its
+    /// strided form), so a class has no range of its own — a rule or a price
+    /// reads the node it is looking at.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this is not a [`ENode::Reduce`]: only a fold has a range.
+    pub fn known_range(&self) -> Option<KnownRange> {
         match self {
-            ENode::Reduce { fold, .. } => Some(*fold),
-            _ => None,
+            ENode::Reduce { fold, .. } => fold.known_range(),
+            other => panic!("known_range: {other:?} is not a Reduce — only a fold has a range"),
         }
     }
 

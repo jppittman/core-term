@@ -69,7 +69,7 @@
     then deleted (d8c39481, 5df0ece2).
 - **Follows:** lowering holds no copy of fract, hypot, clamp, the
   derivative, the binder's choice and rename (`close_over`), or a range's
-  bound (`Fold::admits`) (B5). Production kernels move onto `kernel!` (C1,
+  bound (`KnownRange::admits`) (B5). Production kernels move onto `kernel!` (C1,
   D-c).
 - **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser.rs`, `sema.rs`,
   `lower.rs`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
@@ -416,7 +416,7 @@
 
 ### Fold (Reduce)
 
-- **Is:** `⟦Reduce{fold, body}⟧ = ⊕_{k ∈ fold.range()} ⟦body⟧[binder := k]`,
+- **Is:** `⟦Reduce{fold, body}⟧ = ⊕_{k ∈ range} ⟦body⟧[binder := k]`, `range` its `KnownRange`,
   meaning ⊕ over a set under a monoid. "A reduction … means the same thing
   computed as one term peeled off a shorter reduction, as a split into two,
   or as a fully unrolled chain." It is the one node that binds. Its monoid,
@@ -463,9 +463,9 @@
   `Scope::Fold` (`pixelflow-codegen/src/program/mod.rs`);
   `pixelflow-search/src/egraph/fold_rules.rs`. Decided in a-fold-is-a-node
   §2, §5, §6; a-surviving-reduce-is-a-loop; collapse-is-a-fold; one-pipeline
-  decisions. Today CLAUDE.md's "The language is a DAG: no iteration binder.
-  A fixed-count iteration is unrolled at construction" is stale
-  (one-pipeline Appendix B).
+  decisions. CLAUDE.md said "no iteration binder" (stale, one-pipeline
+  Appendix B) until a-bound-is-a-value's A1; it now names the fold as the one
+  binder and forbids a bound that is a function of a coordinate.
 
 ### Monoid (SEQ)
 
@@ -510,11 +510,13 @@
   (a-glyph-is-a-formula §4.2).
 - **Follows:** the trip count is in the kernel's key, so 34 pieces and 11
   pieces are two compiles. Constructors refuse a range past 2²⁴
-  (`Fold::admits`). The allocator ranks carries by static trip counts.
+  (`KnownRange::admits`). The allocator ranks carries by static trip counts.
   `bucketed_trip_count`'s power-of-two padding existed only because of
   this, and goes (G3).
-- **Lives:** `Fold { lo, hi, stride }`, `Fold::admits`, `Fold::EXACT_BOUND`
-  (`pixelflow-ir/src/fold.rs`). Decided in a-fold-is-a-node §3,
+- **Lives:** `Fold { lo, hi, stride }`, `Fold::EXACT_BOUND`, `KnownRange`
+  and `KnownRange::admits` (`pixelflow-ir/src/fold.rs`); a range is read
+  through `ExprArena::known_range`, `ENode::known_range` or
+  `ScheduledOp::Reduce`'s copy. Decided in a-fold-is-a-node §3,
   a-surviving-reduce-is-a-loop §1 and §5, and the-language-is-kernel §1.5.
   Today the ends are `u32`, against the 64-bit rule, and
   `bucketed_trip_count` still pads in
@@ -560,9 +562,11 @@
   the AA ramp (2026-07-28). That reason expired with DwrtFree; the cause was
   optimizing an open term at all (one-pipeline §2).
 - **Follows:**
-  - `OpKind::mask(bool)` is the only constructor.
-  - `is_bitwise_domain()` marks the ops whose results are patterns, and the
-    folder's refuse-non-finite guard exempts them.
+  - `Lit::Mask(bool)` is the only constant spelling; a mask is never a float,
+    and the e-graph keys it apart from the NaN that shares its lane.
+  - `is_bitwise_domain()` marks the ops whose results are patterns in a real
+    lane (the integer domain), and the folder's refuse-non-finite guard
+    exempts them.
   - `If` ends in one select on `m`, a bitwise blend; its guards read `any(m)`
     and `!all(m)` (kernels-evaluate-kernels §1).
   - Through a commuted `Min`/`Max`, a NaN mask became the gather index
@@ -586,13 +590,13 @@
   a conversion, and it needs no IR type. The machine cannot tell a mask from
   a number on NEON or AVX2, so the domain question ("a mask is not a number")
   is the IR's to answer, not the backend's.
-- **Lives:** `OpKind::mask`, `OpKind::is_bitwise_domain`
+- **Lives:** `Lit::Mask` (`pixelflow-ir/src/lit.rs`), `OpKind::is_bitwise_domain`
   (`pixelflow-ir/src/kind.rs`); sema's `bool` (`pixelflow-compiler/src/sema.rs`);
   CLAUDE.md "Floating point at the edges"; the-language-is-kernel §1.3, D8,
-  O2. Today `OpKind::mask` returns an `f32`, and `Bits`
-  (`pixelflow-ir/src/kernel.rs`) types only the int conversion boundary: its
-  own doc says "Comparison masks are also bit patterns and still travel as
-  `Kernel`". Both contradict "not a number". At the machine, AVX-512 treats every mask
+  O2. A constant mask is typed; a computed one still travels as a `Kernel`
+  lane, and `Bits` (`pixelflow-ir/src/kernel.rs`) types only the int
+  conversion boundary: its own doc says "Comparison masks are also bit
+  patterns and still travel as `Kernel`", which contradicts "not a number". At the machine, AVX-512 treats every mask
   as a vector: each compare is `vcmpps` into `k1` then `vpmovm2d` (an
   AVX-512DQ instruction) into a zmm, each guard `vptestmd` back into `k1` then
   `kortestw`, and `k1` is the only mask register the allocator knows
@@ -670,15 +674,16 @@
     f32-truths … the algebraic rewrites compute R-truths … their
     conjunction puts two UNEQUAL constants in one e-class."
 - **Follows:**
-  - ConstantFold routes results by `is_bitwise_domain`.
+  - ConstantFold folds a comparison to `Lit::Mask`; `is_bitwise_domain`
+    exempts the real-lane bit patterns from its non-finite refusal.
   - The union valve: Num/Num unions exactly, Bits/Bits by bits, Num/Bits
     always refused.
   - Exact dyadic folding declines rather than rounds, so the contradiction
     above cannot be constructed.
   - Crossing domains needs an explicit op (`TruncToInt`/`IntToFloat`).
   - In codegen a constant is a value (see Constant pool).
-- **Lives:** `ExprNode::Const(f32)` and the private `NodeData::Const(u32)`
-  (`pixelflow-ir/src/arena.rs`), `ENode::Const(u32)`
+- **Lives:** `Lit` (`pixelflow-ir/src/lit.rs`), `ExprNode::Const(Lit)` and the
+  private `NodeData::Const(Lit)` (`pixelflow-ir/src/arena.rs`), `ENode::Const(Lit)`
   (`pixelflow-search/src/egraph/node.rs`), `pixelflow_ir::dyadic::Dyadic`
   (`pixelflow-ir/src/dyadic.rs`); decided in
   `docs/archive/plans/2026-08-08-egraph-constant-domain-spike.md` §4 and §6. Today

@@ -30,6 +30,7 @@ use crate::arena::{BufferDecl, UniformDecl};
 use crate::fold::{Binder, Fold};
 use crate::key::KernelKey;
 use crate::kind::OpKind;
+use crate::lit::Lit;
 
 /// The children of one node, borrowed where they are contiguous.
 ///
@@ -98,8 +99,8 @@ impl<R: Copy> Children<'_, R> {
 pub enum Shape<'a, R> {
     /// Coordinate or bound variable by index.
     Var(u8),
-    /// Literal.
-    Const(f32),
+    /// Literal: a number or a mask.
+    Const(Lit),
     /// Macro-parameter slot. Valid only before kernel compilation; an e-graph
     /// insert declines one rather than inventing a value for it.
     Param(u8),

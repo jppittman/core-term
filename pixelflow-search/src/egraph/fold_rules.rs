@@ -16,7 +16,7 @@
 //!
 //! **Peeling is O(n) applications to unroll a length-n fold; halving is
 //! O(log n).** Each `HalveFold` firing doubles the body and halves the trip
-//! count, and [`Fold::halve`](pixelflow_ir::Fold::halve) declines
+//! count, and [`KnownRange::halve`](pixelflow_ir::KnownRange::halve) declines
 //! on an odd count — `PeelFold` is that remainder's epilogue, run once per
 //! odd level the recursion hits (`log n` of them at most), not a fallback
 //! that reverts to unrolling one term at a time. No lowering pass unrolls a
@@ -66,7 +66,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::{Binder, Fold, Monoid, OpKind, ShiftCount};
+use pixelflow_ir::{Binder, Fold, KnownRange, Lit, Monoid, OpKind, ShiftCount};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -90,8 +90,8 @@ pub enum HeadRef {
 /// op the graph holds (`Gather`, the masks), not only those a template may name.
 #[derive(Clone, Debug)]
 pub enum HeadNode {
-    /// A literal, by bit pattern.
-    Const(u32),
+    /// A literal.
+    Const(Lit),
     Op {
         op: OpKind,
         children: Vec<HeadRef>,
@@ -143,7 +143,7 @@ impl PlanBuilder {
 
     /// A literal.
     fn constant(&mut self, value: f32) -> HeadRef {
-        self.push(HeadNode::Const(value.to_bits()))
+        self.push(HeadNode::Const(Lit::Real(value)))
     }
 
     /// An operation over earlier entries or existing classes.
@@ -287,7 +287,7 @@ fn representative(egraph: &EGraph, class: EClassId) -> Option<&ENode> {
 ///
 /// [`HalveFold`]'s epilogue for an odd trip count, at whatever level of the
 /// halving recursion it arises — declines outright on a fold
-/// [`Fold::halve`](pixelflow_ir::Fold::halve) can still shrink
+/// [`KnownRange::halve`](pixelflow_ir::KnownRange::halve) can still shrink
 /// (see its `apply`). Saturation has no notion of "the cheaper rule tries
 /// first": every matching rule fires every round, so without that guard
 /// this rule would peel a fold one term per
@@ -382,13 +382,15 @@ impl Rewrite for PeelFold {
         let ENode::Reduce { fold, body } = node else {
             return None;
         };
+        // A range that is not known cannot be peeled: decline.
+        let range = node.known_range()?;
         // `HalveFold`'s epilogue only (see this rule's doc): while the fold
         // can still be halved, this rule declines so the two do not
         // independently unroll the same fold in parallel.
-        if fold.halve().is_some() {
+        if range.halve().is_some() {
             return None;
         }
-        let (rest, last) = fold.peel_back()?;
+        let (rest, last) = range.peel_back()?;
         // The fold must have a combiner before any work is done: declining
         // early costs one lookup, declining late costs a walk of the whole
         // body.
@@ -402,7 +404,7 @@ impl Rewrite for PeelFold {
                 leaf: |plan: &mut PlanBuilder, _class| plan.constant(last as f32),
             },
         )?;
-        let rest = plan.reduce(rest, HeadRef::Class(*body));
+        let rest = plan.reduce(fold.with_range(rest), HeadRef::Class(*body));
         // `rest` first: the peel takes the *last* index, so the accumulator
         // is on the left and the chain leans left.
         let root = plan.op(combiner, alloc::vec![rest, head]);
@@ -423,12 +425,14 @@ impl Rewrite for HalveFold {
         let ENode::Reduce { fold, body } = node else {
             return None;
         };
-        let halved = fold.halve()?;
+        // A range that is not known cannot be halved: decline.
+        let range = node.known_range()?;
+        let halved = range.halve()?;
         // Same ordering `PeelFold` uses, for the same reason: the combiner
         // must be nameable before any work is done, and building the shifted
         // half is a walk of the whole body — the expensive part.
         let combiner = combiner_op(fold.monoid())?;
-        let stride = fold.stride();
+        let stride = range.stride();
         let mut plan = PlanBuilder::default();
         // Every leaf occurrence of the binder is rebuilt as `binder +
         // stride`, an *expression*, not a literal: unlike a peel, the binder
@@ -448,7 +452,7 @@ impl Rewrite for HalveFold {
         // `body` first: `b ⊕ b[binder := binder+s]`, the unshifted (original
         // left-to-right order) half on the left.
         let doubled = plan.op(combiner, alloc::vec![HeadRef::Class(*body), shifted]);
-        let root = plan.reduce(halved, doubled);
+        let root = plan.reduce(fold.with_range(halved), doubled);
         Some(RewriteAction::Plan(plan.finish(root)))
     }
 }
@@ -466,8 +470,9 @@ impl Rewrite for EmptyFold {
         let ENode::Reduce { fold, .. } = node else {
             return None;
         };
-        fold.is_empty()
-            .then(|| RewriteAction::Create(ENode::constant(fold.monoid().identity())))
+        node.known_range()
+            .is_some_and(KnownRange::is_empty)
+            .then(|| RewriteAction::Create(ENode::Const(fold.monoid().identity())))
     }
 }
 
@@ -484,7 +489,9 @@ impl Rewrite for FactorFold {
         let ENode::Reduce { fold, body } = node else {
             return None;
         };
-        if fold.is_empty() {
+        // Only a range known to be non-empty: an empty fold is `EmptyFold`'s,
+        // and one that is not known is not known to have a term to factor from.
+        if node.known_range().is_none_or(KnownRange::is_empty) {
             return None;
         }
         let distributor = distributor(fold.monoid())?;
@@ -548,7 +555,7 @@ fn distributor(monoid: Monoid) -> Option<OpKind> {
 
 /// The fold rules: [`HalveFold`] for the bulk of a trip count, [`PeelFold`]
 /// as its odd-remainder epilogue (and a fold
-/// [`Fold::halve`](pixelflow_ir::Fold::halve) declines on
+/// [`KnownRange::halve`](pixelflow_ir::KnownRange::halve) declines on
 /// outright), [`EmptyFold`] to close out, and [`FactorFold`] to move an
 /// invariant factor out of the body. Inert for a kernel with no folds in it.
 #[must_use]
@@ -632,10 +639,16 @@ mod tests {
     use crate::egraph::saturate::SaturationConfig;
     use crate::egraph::{RuleSet, Saturation};
     use crate::egraph::{Vocabulary, insert};
+    use pixelflow_ir::fold::KNOWN_RANGE;
     use pixelflow_ir::{ExprArena, OpKind};
 
     fn binder(slot: u8) -> Binder {
         Binder::from_slot(slot).expect("a live binder")
+    }
+
+    /// The range of `node`, when it is a fold.
+    fn reduce_range(node: &ENode) -> Option<KnownRange> {
+        matches!(node, ENode::Reduce { .. }).then(|| node.known_range().expect(KNOWN_RANGE))
     }
 
     /// **A peel moves the range, not the body.** `Σ_{[0,3)} X` has a body
@@ -676,7 +689,7 @@ mod tests {
              body never reads is the identity, and hash-consing says so"
         );
         let rest_class = eg.find(sum[0]);
-        match eg.nodes(rest_class).find_map(ENode::fold) {
+        match eg.nodes(rest_class).find_map(reduce_range) {
             Some(rest) => {
                 assert_eq!(rest.range(), 0..2, "the rest is the shorter range");
                 assert_eq!(
@@ -697,7 +710,7 @@ mod tests {
     /// would independently unroll an even fold one term per application in
     /// parallel with `HalveFold`'s halving, right back to the `n`
     /// applications `HalveFold` exists to avoid (see `PeelFold`'s doc). A
-    /// fold `Fold::halve` still shrinks must get *no* `PeelFold` action; one
+    /// fold `KnownRange::halve` still shrinks must get *no* `PeelFold` action; one
     /// it declines outright on (odd, or the one-term base case) must still
     /// get its usual peel.
     #[test]
@@ -739,7 +752,7 @@ mod tests {
                     }
                 )
                 .is_some(),
-            "7 is odd — Fold::halve declines, so PeelFold is the epilogue"
+            "7 is odd — KnownRange::halve declines, so PeelFold is the epilogue"
         );
     }
 
@@ -767,18 +780,20 @@ mod tests {
 
         // `class` now holds *two* `Reduce` nodes — the original (stride 1)
         // and the one `HalveFold` just built — so the doubled one has to be
-        // picked out by its stride rather than by `find_map(ENode::fold)`,
-        // which would just return whichever comes first.
-        let (doubled_fold, new_body_class) = eg
+        // picked out by its stride rather than by the first `Reduce` it
+        // finds, which would just return whichever comes first.
+        let (doubled_range, new_body_class) = eg
             .nodes(class)
             .find_map(|n| match n {
-                ENode::Reduce { fold, body } if fold.stride() > 1 => Some((*fold, eg.find(*body))),
+                ENode::Reduce { body, .. } => reduce_range(n)
+                    .filter(|range| range.stride() > 1)
+                    .map(|range| (range, eg.find(*body))),
                 _ => None,
             })
             .expect("the class must now also hold the halved fold");
-        assert_eq!(doubled_fold.stride(), 2, "one halving doubles the stride");
+        assert_eq!(doubled_range.stride(), 2, "one halving doubles the stride");
         assert_eq!(
-            doubled_fold.range(),
+            doubled_range.range(),
             0..8,
             "halve moves the stride, not the bound"
         );
@@ -1032,7 +1047,10 @@ mod tests {
 
         let fired = factoring(&f).expect("Y is invariant");
         assert_eq!(fired.distributor, OpKind::Mul);
-        assert_eq!(Some(fired.fold), f.node.fold(), "the fold is unchanged");
+        let ENode::Reduce { fold, .. } = &f.node else {
+            panic!("the fold's own node is a Reduce");
+        };
+        assert_eq!(fired.fold, *fold, "the fold is unchanged");
         let growth = f.eg.predicted_growth(
             &RewriteAction::Plan(fired.plan.clone()),
             &mut Default::default(),
@@ -1106,13 +1124,15 @@ mod tests {
     /// is NaN at an infinite `Y`; `EmptyFold` closes it instead.
     #[test]
     fn factor_fold_declines_an_empty_fold() {
-        let empty = over(Monoid::SUM, 3..3);
-        assert!(empty.is_empty(), "precondition");
-        let f = folded(factor_only(), empty, |eg, i| {
+        let f = folded(factor_only(), over(Monoid::SUM, 3..3), |eg, i| {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
             eg.add(ENode::apply(OpKind::Mul, &[y, w]))
         });
+        assert!(
+            f.node.known_range().expect(KNOWN_RANGE).is_empty(),
+            "precondition"
+        );
         assert_eq!(operands(&f), None);
     }
 

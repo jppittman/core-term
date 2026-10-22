@@ -48,8 +48,9 @@
 //! [`Kernel`]: pixelflow_core::Kernel
 
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
+use pixelflow_ir::fold::KNOWN_RANGE;
 use pixelflow_ir::optimize::Optimize;
-use pixelflow_ir::{Fold, OpKind};
+use pixelflow_ir::{Fold, Lit, OpKind};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
@@ -373,7 +374,7 @@ fn emit_const(item: &ConstItem, value: ConstValue) -> TokenStream {
 /// An open fold's range, evaluated when the host function is instantiated:
 /// in a `const` block, so rustc checks each operation of the bounds as it
 /// checks any `const`, and refuses — per instantiation — the ranges the IR
-/// refuses ([`Fold::admits`]): one that runs backwards, and one past
+/// refuses ([`KnownRange::admits`](pixelflow_ir::KnownRange::admits)): one that runs backwards, and one past
 /// [`Fold::EXACT_BOUND`], the last bound a fold's index names exactly.
 /// The bound is the IR's, imported; what the `const` block adds is that the
 /// refusal is rustc's rather than `Fold::new`'s panic.
@@ -505,14 +506,17 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
         ExprNode::Var(i) => quote! { __arena.push_var(#i) },
         // By bit pattern, not as a decimal literal: `quote`'s `f32`
         // impl goes through `Literal::f32_suffixed`, which asserts
-        // `is_finite()` — and non-finite constants are ordinary here. A
-        // true comparison mask is all-ones (`OpKind::mask`), which is
-        // `BitAnd`'s monoid identity and therefore `all_over`'s seed, and
-        // the folder now produces those. Bits also roundtrip exactly, with
-        // no decimal-formatting question to get wrong.
-        ExprNode::Const(v) => {
+        // `is_finite()` — and non-finite constants are ordinary here. Bits
+        // also roundtrip exactly, with no decimal-formatting question to get
+        // wrong.
+        ExprNode::Const(Lit::Real(v)) => {
             let bits = v.to_bits();
             quote! { __arena.push_const(f32::from_bits(#bits)) }
+        }
+        // A mask is its own literal: a folded comparison, or `BitAnd`'s
+        // monoid identity and therefore `all_over`'s seed.
+        ExprNode::Const(Lit::Mask(m)) => {
+            quote! { __arena.push_lit(::pixelflow_core::__macro::ir::Lit::Mask(#m)) }
         }
         // A template's hole: the structural parameter, as its `f32`, as
         // Rust's `as` rounds it — which is `N as f32` in the body.
@@ -583,7 +587,8 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
             };
             // An open fold keeps its monoid and binder, which are
             // structure, and takes its range from this instantiation.
-            let emitted = match context.holes.range_of(fold) {
+            let header_range = arena.known_range(id).expect(KNOWN_RANGE);
+            let emitted = match context.holes.range_of(header_range) {
                 None => decoded,
                 Some(range) => {
                     let range = instantiated_range(range);

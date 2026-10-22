@@ -12,7 +12,8 @@ use super::provenance::ENodeId;
 use alloc::collections::BinaryHeap;
 use alloc::vec::Vec;
 use core::cmp::Reverse;
-use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, OpKind, Shape, Variance};
+use pixelflow_ir::fold::KNOWN_RANGE;
+use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, Lit, OpKind, Shape, Variance};
 
 /// A witnessed choice map: an e-graph, a root e-class, and a well-founded
 /// choice function from every e-class reachable from `root` to the node
@@ -944,7 +945,7 @@ impl Selection {
             );
             let shape = match self.node(egraph, position) {
                 ENode::Var(var) => Shape::Var(*var),
-                ENode::Const(bits) => Shape::Const(f32::from_bits(*bits)),
+                ENode::Const(lit) => Shape::Const(*lit),
                 // One slot per distinct identity, and the assertion that a
                 // repeat identity agrees on extents, both live in
                 // `ExprArena`'s `embed`: declaring a buffer is what the
@@ -964,7 +965,7 @@ impl Selection {
                 ENode::Shift {
                     direction, count, ..
                 } => {
-                    operand_ids.push(arena.embed(Shape::Const(count.literal())));
+                    operand_ids.push(arena.embed(Shape::Const(Lit::Real(count.literal()))));
                     Shape::Op(direction.op(), Children::Many(&operand_ids))
                 }
                 ENode::Reduce { fold, .. } => Shape::Reduce {
@@ -1675,9 +1676,10 @@ fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize 
 /// the settlement is no longer exact at an `If` — see [`Settling`].
 fn below(node: &ENode, mut operand: impl Iterator<Item = usize>) -> usize {
     match node {
-        ENode::Reduce { fold, .. } => {
+        ENode::Reduce { .. } => {
             let body = operand.next().expect("a fold has a body");
-            usize::try_from((body as u64).saturating_mul(u64::from(fold.len())))
+            let range = node.known_range().expect(KNOWN_RANGE);
+            usize::try_from((body as u64).saturating_mul(u64::from(range.len())))
                 .unwrap_or(usize::MAX)
         }
         ENode::Op { op: OpKind::If, .. } => {
@@ -2526,7 +2528,7 @@ mod tests {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let z = egraph.add(ENode::Var(2));
-        let two = egraph.add(ENode::Const(2.0f32.to_bits()));
+        let two = egraph.add(ENode::constant(2.0));
 
         let fused = egraph.add(ENode::apply(OpKind::MulAdd, &[two, z, x]));
         let z_plus_z = egraph.add(ENode::apply(OpKind::Add, &[z, z]));

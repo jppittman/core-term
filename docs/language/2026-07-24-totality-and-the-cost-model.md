@@ -105,8 +105,11 @@ ground and monomorphic.
 
 ## One discipline, four faces
 
-Totality is the single rule — *every domain and every iteration count is a
-static natural number* — showing up in four places:
+Totality is the single rule — *every domain and every iteration count is fixed
+before the lattice is traversed, and none is a function of a coordinate* — showing
+up in four places. Today each one is a static natural number, as the table says;
+[a bound is a value](2026-10-20-a-bound-is-a-value.md) makes a fold's count a
+value known per call.
 
 | Face | The static nat |
 |---|---|

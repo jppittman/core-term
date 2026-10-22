@@ -84,10 +84,11 @@ use syn::{Ident, Type};
 
 /// The type of a name or an expression in a kernel body.
 ///
-/// Two value types, and the IR has one lane for both: a `bool` is an
-/// all-ones or all-zero mask (`OpKind::mask`). The distinction is enforced
-/// here because it cannot be enforced there — a mask read as a number is a
-/// NaN, and a number used as a mask blends bit patterns.
+/// Two value types, and the IR has one lane for both: a `bool` is a mask,
+/// which a constant spells as `Lit::Mask` and every backend tabulates as an
+/// all-ones or all-zero lane. The distinction is enforced here because the
+/// arena's nodes do not yet carry it — a mask read as a number is a NaN, and
+/// a number used as a mask blends bit patterns.
 ///
 /// The third, `usize`, is a count and not a value. A fold's index is one,
 /// and so are a `usize` const and an entry's structural parameter. A name of

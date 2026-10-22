@@ -68,7 +68,7 @@ use std::path::Path;
 
 use pixelflow_ir::fold::Fold;
 use pixelflow_ir::kind::OpCode;
-use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
+use pixelflow_ir::{ExprArena, ExprId, ExprNode, Lit, OpKind};
 
 use crate::schema::{SchemaIdentity, fnv1a64_const, identity_mismatch};
 
@@ -245,7 +245,7 @@ pub fn reachable_subtree(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId)
                 };
                 let new_id = match arena.node(id) {
                     ExprNode::Var(i) => out_arena.push_var(i),
-                    ExprNode::Const(v) => out_arena.push_const(v),
+                    ExprNode::Const(v) => out_arena.push_lit(v),
                     ExprNode::Param(i) => out_arena.push_param(i),
                     ExprNode::Buffer(b) => panic!(
                         "reachable_subtree: expression references Buffer({}), whose declaration \
@@ -347,9 +347,17 @@ fn write_node(w: &mut impl Write, arena: &ExprArena, id: ExprId) -> io::Result<(
         ExprNode::Var(i) => {
             w.write_all(&[TAG_VAR, i])?;
         }
-        ExprNode::Const(v) => {
+        ExprNode::Const(Lit::Real(v)) => {
             w.write_all(&[TAG_CONST])?;
             w.write_all(&v.to_le_bytes())?;
+        }
+        // The format has one constant tag, a real's. A mask would come back
+        // as the NaN sharing its lane: refuse rather than write it.
+        ExprNode::Const(Lit::Mask(m)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the corpus format holds real constants only; found a mask literal ({m})"),
+            ));
         }
         ExprNode::Param(i) => {
             w.write_all(&[TAG_PARAM, i])?;
@@ -792,7 +800,7 @@ mod tests {
         assert_eq!(loaded[0].0, "sqrt_pi");
         // Check the const value round-trips
         match loaded[0].1.node(ExprId(0)) {
-            ExprNode::Const(v) => assert!(
+            ExprNode::Const(Lit::Real(v)) => assert!(
                 (v - std::f32::consts::PI).abs() < 1e-6,
                 "const mismatch: {v}"
             ),

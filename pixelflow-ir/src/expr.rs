@@ -12,22 +12,23 @@ use crate::dag::{Builder, Dag, Id, Node, SideTable};
 use crate::fold::Fold;
 use crate::key::KernelKey;
 use crate::kind::OpKind;
+use crate::lit::Lit;
 
 /// Pure expression node payload.
 ///
 /// Contains only operator or terminal identity; carries no child references,
 /// edge indices, or slab offsets. All edge topology is owned by [`Dag<ExprData>`].
 ///
-/// Constants are stored as IEEE 754 32-bit patterns (`u32`) for bit-exact
-/// comparison and to implement `dag::Key` — bitwise `Eq`/`Ord`/`Hash`,
-/// needed for interning — which an `f32`'s `NaN` would refuse.
+/// A constant is a [`Lit`], whose `Eq`/`Ord`/`Hash` are by typed value (a
+/// real bit-exactly, a mask by its truth) — what `dag::Key` needs for
+/// interning, and what an `f32`'s `NaN` would refuse.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum ExprData {
     /// Bound variable: coordinate (0 for X, 1 for Y), reduction binder (from
     /// 4, one per slot of the binder space), or rewrite rule metavariable.
     Var(u8),
-    /// 32-bit floating point literal stored as raw IEEE 754 bits.
-    Const(u32),
+    /// A literal: a number or a mask.
+    Const(Lit),
     /// Macro parameter placeholder (0..). Valid only before kernel compilation.
     Param(u8),
     /// Memory buffer reference.
@@ -66,7 +67,7 @@ impl ExprData {
     #[inline]
     #[must_use]
     pub const fn constant(v: f32) -> Self {
-        Self::Const(v.to_bits())
+        Self::Const(Lit::Real(v))
     }
 
     /// Read the constant value if this is a `Const` node.
@@ -74,7 +75,7 @@ impl ExprData {
     #[must_use]
     pub const fn as_f32(self) -> Option<f32> {
         match self {
-            Self::Const(b) => Some(f32::from_bits(b)),
+            Self::Const(Lit::Real(v)) => Some(v),
             _ => None,
         }
     }
@@ -104,6 +105,7 @@ impl ExprData {
 pub(crate) trait ExprBuilderExt {
     fn push_var(&mut self, var: u8) -> Id;
     fn push_const(&mut self, val: f32) -> Id;
+    fn push_lit(&mut self, lit: Lit) -> Id;
     fn push_param(&mut self, param: u8) -> Id;
     fn push_buffer(&mut self, buf: BufferId) -> Id;
     fn push_uniform(&mut self, uni: UniformId) -> Id;
@@ -123,7 +125,12 @@ impl ExprBuilderExt for Builder<ExprData> {
 
     #[inline]
     fn push_const(&mut self, val: f32) -> Id {
-        self.push_unique(ExprData::constant(val), &[])
+        self.push_lit(Lit::Real(val))
+    }
+
+    #[inline]
+    fn push_lit(&mut self, lit: Lit) -> Id {
+        self.push_unique(ExprData::Const(lit), &[])
     }
 
     #[inline]
@@ -303,7 +310,7 @@ pub fn from_arena_roots(
                     .collect();
                 let new_id = match arena.node(id) {
                     ExprNode::Var(i) => b.push_var(i),
-                    ExprNode::Const(v) => b.push_const(v),
+                    ExprNode::Const(v) => b.push_lit(v),
                     ExprNode::Param(i) => b.push_param(i),
                     ExprNode::Buffer(buf) => b.push_buffer(buf),
                     ExprNode::Uniform(uni) => b.push_uniform(uni),
@@ -369,7 +376,7 @@ pub fn to_arena_roots(
             .collect();
         let id = match *node {
             ExprData::Var(i) => arena.push_var(i),
-            ExprData::Const(b) => arena.push_const(f32::from_bits(b)),
+            ExprData::Const(lit) => arena.push_lit(lit),
             ExprData::Param(i) => arena.push_param(i),
             ExprData::Buffer(b) => arena.push_buffer(b),
             ExprData::Uniform(u) => arena.push_uniform(u),
@@ -527,10 +534,7 @@ impl<'a> Node<'a, ExprData> {
     #[must_use]
     pub fn has_degenerate(self) -> bool {
         self.descendants().any(|x| match *x {
-            ExprData::Const(b) => {
-                let v = f32::from_bits(b);
-                v.is_nan() || v.is_infinite()
-            }
+            ExprData::Const(Lit::Real(v)) => v.is_nan() || v.is_infinite(),
             _ => false,
         })
     }

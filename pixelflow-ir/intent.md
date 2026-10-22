@@ -10,10 +10,11 @@ except for the process-global store a `Ref` names into.
 - The representation of a term: `ExprArena` over `Dag`, interning, the
   dense `ExprId`, the identity tables, and what reachability means. Nothing
   else may depend on how a node is stored.
-- The meaning of a fold (`Fold`: monoid, binder, range), of a mask
-  (`OpKind::mask`, `is_bitwise_domain`), of a reinterpretation (`Bits`,
-  `Float`: the same bits read as the other sort, a node that compiles to
-  nothing), of a constant's bit pattern, and of a name (`KernelKey`, `Ref`).
+- The meaning of a fold (`Fold`: monoid, binder, range), of a constant
+  (`Lit`: a real by its bits or a mask by its truth, never a lane whose bits
+  mean one or the other by convention), of a reinterpretation (`Bits`/`Float`:
+  the same bits read as the other sort, compiling to nothing), of the bitwise
+  domain (`is_bitwise_domain`), and of a name (`KernelKey`, `Ref`).
 - Composition: `Kernel::at` as substitution into `Var` leaves, `by_ref` and
   the linker. Composition substitutes and links; it never evaluates or
   optimizes.
@@ -37,7 +38,7 @@ except for the process-global store a `Ref` names into.
 
 ## Contract
 `src/lib.rs` re-exports the surface: `Kernel`, `Uniform`, `Bits`, `OpKind`,
-`Fold`/`Monoid`/`Binder`, `KernelKey`, `KernelStore`, `Variance`/`LatticeShape`,
+`Fold`/`KnownRange`/`Monoid`/`Binder`, `KernelKey`, `KernelStore`, `Variance`/`LatticeShape`,
 `ExprArena`/`ExprId`/`ExprNode`, `Dag`/`Node`/`Rooted`, `Ir`/`Shape`/`Children`,
 `Optimize`/`Identity`/`Then`, `passes`, `dyadic`, `library`. Only compiler
 crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
@@ -54,22 +55,26 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   real, integer and mask), `mask-is-not-a-number`, `control-plane-64-bit`.
 - The `ExprNode` size assertion is a tripwire against an accident, not a
   width to design against (CLAUDE.md).
+- `pixelflow-ir/src/lit.rs`'s tests, and `pixelflow-search/tests/fold_exactness.rs`
+  (`a_mask_and_the_nan_sharing_its_lane_are_two_classes`): a true mask and
+  the NaN that shares its lane are two literals, two arena nodes and two
+  e-classes.
 
 ## Behind
 - `ExprId(pub u32)` is public and forgeable, and `ExprArena`/`ExprNode` are
   re-exported, so the arena is visible to consumers; `pixelflow-graphics`
   uses `pixelflow_ir` directly in `fonts/loop_blinn.rs` (`ExprArena`) and
   `render/packed.rs` (exprarena-on-dag Stage D, not started; D16).
-- One `f32` lane is a real, an integer and a mask by convention; the types
-  `Real`/`Int`/`Mask` are ruled (kernels-evaluate-kernels §2) and the arena
-  does not carry them yet (docs/language/2026-10-17-the-arena-is-typed.md).
+- A constant is typed (`Lit`), but a node is not: a lane is a real or an integer
+  by convention, a computed mask a lane like any other. Node sorts and `Lit::Int`
+  are ruled (kernels-evaluate-kernels §2) and wait on the arena-is-typed T3.
 - `Var(u8)` means an axis or a binder by range; `Fold`'s ends are `u32`,
-  `Binder` a `u8`, against the 64-bit control-plane rule.
+  `Binder` a `u8`, against the 64-bit control-plane rule. The ends, read as a
+  `KnownRange`, move into the node next (a-bound-is-a-value A2b).
 - `Buffer`, `BoundManifold`'s link tables and `passes::lattice` are in the
   tree and not concepts (DENOTATION §11).
 
 ## Decided in
 `docs/DENOTATION.md` §1–§3, `docs/language/2026-09-25-the-language-is-kernel.md`,
 `docs/archive/plans/2026-09-09-exprarena-on-dag.md`, `docs/archive/plans/2026-09-09-a-fold-is-a-node.md`,
-`docs/language/2026-09-09-composition-is-linking.md`,
-`docs/language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.
+`docs/language/2026-09-09-composition-is-linking.md`, `docs/language/2026-10-15-kernels-evaluate-kernels.md` §2–§3.

@@ -19,9 +19,18 @@ pub(crate) use scopes::Nest;
 
 use alloc::vec::Vec;
 
-use pixelflow_ir::fold::{Binder, Fold};
+use pixelflow_ir::Lit;
+use pixelflow_ir::fold::{Binder, Fold, KnownRange};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::variance::Variance;
+
+/// The lane a literal tabulates to, as the `f32` a [`ScheduledOp::Const`]
+/// carries: a real is itself, a true mask is the all-ones lane and a false
+/// mask is zero. The backends key a constant by its bits, so the `f32` here
+/// is the data plane's 32-bit pattern and nothing is read as a number.
+pub(crate) fn lane_pattern(lit: Lit) -> f32 {
+    f32::from_bits(lit.bits())
+}
 
 /// A value in the program (SSA-style).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -124,15 +133,23 @@ pub(crate) enum ScheduledOp {
     /// remainder is. Reads no register — the schedule's order *is* the
     /// sequencing — and defines no value.
     Seq(ValueId, ValueId),
-    /// A surviving bounded fold: `⊕` over `fold`'s visited indices, whose
-    /// body is the value named by the second field — in *this schedule's*
-    /// numbering (`lower::arena_to_schedule` maps it like any other child).
-    /// `scopes::extract_folds` carves the body's closure out into its own
-    /// [`ScopeFold`]; the field is then the root of that scope's schedule, the
-    /// value each trip accumulates, which selection reads when it opens the
-    /// loop for the [`Scope::Fold`] this def opens. It is never an operand of
-    /// the scope this def sits in.
-    Reduce(Fold, ValueId),
+    /// A surviving bounded fold: `⊕` over the indices of `range`, under
+    /// `fold`'s algebra and binder, whose body is the value named by `body` —
+    /// in *this schedule's* numbering (`lower::arena_to_schedule` maps it like
+    /// any other child). `scopes::extract_folds` carves the body's closure out
+    /// into its own [`ScopeFold`]; `body` is then the root of that scope's
+    /// schedule, the value each trip accumulates, which selection reads when
+    /// it opens the loop for the [`Scope::Fold`] this def opens. It is never
+    /// an operand of the scope this def sits in.
+    ///
+    /// `range` is the schedule's copy of the fold's range, made where the
+    /// arena node is in hand (`lower::arena_to_schedule`), and the one
+    /// selection reads: nothing after lowering reads it off `fold`.
+    Reduce {
+        fold: Fold,
+        range: KnownRange,
+        body: ValueId,
+    },
 }
 
 /// The ops a backend selects, as types: [`ScheduledOp`] carries these and not
@@ -377,7 +394,7 @@ pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use
         | ScheduledOp::Const(_)
         | ScheduledOp::Context(_)
         | ScheduledOp::Uniform(..)
-        | ScheduledOp::Reduce(..)
+        | ScheduledOp::Reduce { .. }
         | ScheduledOp::Seq(..) => (None, None, None),
         // A gather's base is a pointer, read through `pointer_operand`; the
         // index is its one vector operand.
@@ -417,7 +434,7 @@ pub(crate) fn all_operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> +
 /// registers an instruction reads ([`operands`]).
 fn structural_children(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
     let extra = match sop {
-        ScheduledOp::Reduce(_, body) => [Some(*body), None],
+        ScheduledOp::Reduce { body, .. } => [Some(*body), None],
         ScheduledOp::Seq(a, b) => [Some(*a), Some(*b)],
         _ => [None, None],
     };

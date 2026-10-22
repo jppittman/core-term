@@ -372,7 +372,7 @@ pub fn induce<I: Ir>(
         }
         let node = match term.project(r) {
             Shape::Var(i) => ENode::Var(i),
-            Shape::Const(v) => ENode::constant(v),
+            Shape::Const(v) => ENode::Const(v),
             Shape::Param(i) => ENode::Param(i),
             Shape::Buffer(d) => ENode::Buffer(d),
             Shape::Uniform(d) => ENode::Uniform(d),

@@ -56,6 +56,7 @@
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;
+use crate::lit::Lit;
 use crate::variance::Variance;
 use alloc::borrow::Cow;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -220,7 +221,7 @@ fn copy_node(
 ) -> ExprId {
     match node {
         ExprNode::Var(i) => arena.push_var(*i),
-        ExprNode::Const(v) => arena.push_const(*v),
+        ExprNode::Const(v) => arena.push_lit(*v),
         ExprNode::Param(i) => arena.push_param(*i),
         // Same arena, so the buffer and uniform tables (and ids) stay valid.
         ExprNode::Buffer(b) => arena.push_buffer(*b),
@@ -513,8 +514,8 @@ pub fn lower_dwrt(arena: &mut ExprArena, root: ExprId) -> Result<ExprId, &'stati
     try_rebuild_arena(arena, root, |arena, node, m| match node {
         ExprNode::Binary(OpKind::Dwrt, expr, var) => {
             let var_idx = match arena.node(m(*var)) {
-                ExprNode::Const(v) => v as u8,
-                _ => return Err("lower_dwrt: Dwrt's variable operand must be a Const"),
+                ExprNode::Const(Lit::Real(v)) => v as u8,
+                _ => return Err("lower_dwrt: Dwrt's variable operand must be a real Const"),
             };
             differentiate(arena, m(*expr), var_idx).map(Some)
         }
@@ -968,11 +969,11 @@ fn sqrt_one_minus_sq(arena: &mut ExprArena, u: ExprId) -> ExprId {
 }
 
 fn is_const_zero(arena: &ExprArena, id: ExprId) -> bool {
-    matches!(arena.node(id), ExprNode::Const(v) if v == 0.0)
+    matches!(arena.node(id), ExprNode::Const(Lit::Real(v)) if v == 0.0)
 }
 
 fn is_const_one(arena: &ExprArena, id: ExprId) -> bool {
-    matches!(arena.node(id), ExprNode::Const(v) if v == 1.0)
+    matches!(arena.node(id), ExprNode::Const(Lit::Real(v)) if v == 1.0)
 }
 
 // Peephole constructors for derivative arithmetic. Most leaf derivatives are
@@ -1513,7 +1514,7 @@ fn horner_step(arena: &mut ExprArena, acc: ExprId, x: ExprId, add: ExprId) -> Ex
 #[cfg(test)]
 mod dwrt_tests {
     use super::*;
-    use crate::fold::{Binder, Fold, Monoid};
+    use crate::fold::{Binder, Fold, KNOWN_RANGE, Monoid};
 
     /// The first reduction binder — `Var(4)`, which these folds bind.
     fn binder() -> Binder {
@@ -1576,10 +1577,10 @@ mod dwrt_tests {
         let mut a = ExprArena::new();
         let body = a.push_var(4);
         let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
-        let ExprNode::Reduce { fold, .. } = a.node(red) else {
+        let ExprNode::Reduce { .. } = a.node(red) else {
             panic!("expected a range fold");
         };
-        assert_eq!(fold.len(), 4);
+        assert_eq!(a.known_range(red).expect(KNOWN_RANGE).len(), 4);
         // The trip count is not reachable from the node's children, so no
         // rewrite can substitute anything for it.
         assert_eq!(a.children(red).count(), 1);
@@ -1724,7 +1725,7 @@ mod dwrt_tests {
         let (lowered, lroot) =
             lower_dwrt_owned(&a, root).expect("a binder-indexed read is a constant");
         assert!(
-            matches!(lowered.node(lroot), ExprNode::Const(v) if v == 0.0),
+            matches!(lowered.node(lroot), ExprNode::Const(Lit::Real(v)) if v == 0.0),
             "expected Const(0.0), got {:?}",
             lowered.node(lroot)
         );
@@ -1738,7 +1739,7 @@ mod dwrt_tests {
         let (lowered, lroot) =
             lower_dwrt_owned(&a, root).expect("a binder-indexed read is a constant");
         assert!(
-            matches!(lowered.node(lroot), ExprNode::Const(v) if v == 0.0),
+            matches!(lowered.node(lroot), ExprNode::Const(Lit::Real(v)) if v == 0.0),
             "expected Const(0.0), got {:?}",
             lowered.node(lroot)
         );
@@ -1760,7 +1761,7 @@ mod dwrt_tests {
         let (lowered, lroot) =
             lower_dwrt_owned(&a, root).expect("an X-indexed read is constant in Y");
         assert!(
-            matches!(lowered.node(lroot), ExprNode::Const(v) if v == 0.0),
+            matches!(lowered.node(lroot), ExprNode::Const(Lit::Real(v)) if v == 0.0),
             "expected Const(0.0), got {:?}",
             lowered.node(lroot)
         );
@@ -1902,7 +1903,7 @@ impl Optimize for LowerDwrt {
 #[cfg(test)]
 mod nested_reduce_tests {
     use super::*;
-    use crate::fold::{Binder, Fold, Monoid};
+    use crate::fold::{Binder, Fold, KNOWN_RANGE, Monoid};
 
     /// Every `Reduce` reachable from `root`.
     fn reachable_reduces(arena: &ExprArena, root: ExprId) -> usize {
@@ -1968,10 +1969,19 @@ mod nested_reduce_tests {
             panic!("root must be the lattice's row fold");
         };
         assert_eq!(fold.monoid(), Monoid::SEQ);
-        assert_eq!(fold.range(), 0..1);
+        assert_eq!(
+            legalized.known_range(new_root).expect(KNOWN_RANGE).range(),
+            0..1
+        );
+        // A fold's range is read through the arena, which panics on any other
+        // node: keep the shape check first.
+        let ranges_over = |id: ExprId, range: core::ops::Range<u32>| {
+            matches!(legalized.node(id), ExprNode::Reduce { .. })
+                && legalized.known_range(id).expect(KNOWN_RANGE).range() == range
+        };
         let outer = (0..legalized.len())
             .map(|k| ExprId(k as u32))
-            .find(|id| matches!(legalized.node(*id), ExprNode::Reduce { fold, .. } if fold.range() == (0..2)))
+            .find(|id| ranges_over(*id, 0..2))
             .expect("the outer kernel fold survives");
         let ExprNode::Reduce { body, .. } = legalized.node(outer) else {
             unreachable!()
@@ -1980,7 +1990,7 @@ mod nested_reduce_tests {
             panic!("the outer body must still be `inner + j`");
         };
         assert!(
-            matches!(legalized.node(lhs), ExprNode::Reduce { fold, .. } if fold.range() == (0..3)),
+            ranges_over(lhs, 0..3),
             "the inner Reduce must be the outer body's own operand, not unrolled into it"
         );
     }
@@ -2062,7 +2072,7 @@ mod ref_expansion_tests {
             panic!("expected X + 7, got {}", linked.display(a));
         };
         assert_eq!(linked.node(x), ExprNode::Var(0));
-        assert_eq!(linked.node(c), ExprNode::Const(7.0));
+        assert_eq!(linked.node(c), ExprNode::Const(Lit::Real(7.0)));
     }
 
     /// `lower_dwrt` on its own refuses a reference rather than inventing a
