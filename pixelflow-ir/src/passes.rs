@@ -1575,10 +1575,13 @@ mod dwrt_tests {
     /// A uniform is a value, never an extent — and that used to need a test,
     /// because the extent was a `Const` child and an arena could be
     /// hand-built (or *rewritten*) into holding a `Uniform` there, at which
-    /// point the unroll would have read a slot index as a trip count. The
-    /// extent is a field of [`Fold`] now, so there is no slot to put a
-    /// uniform in and no panic left to pin. The property below — the other
-    /// side of the same rule — is the half that was always about semantics.
+    /// point the unroll would have read a slot index as a trip count. A known
+    /// extent is a `Bound::Lit` in the `Reduce` node's `lo` and `hi`, header
+    /// data and never an `ExprId`, so there is no child to put a uniform in
+    /// and no panic left to pin. A `Bound::Value` is a child, and
+    /// `push_reduce` refuses it by name until A3. The property below — the
+    /// other side of the same rule — is the half that was always about
+    /// semantics.
     #[test]
     fn an_extent_is_not_an_expression() {
         let mut a = ExprArena::new();
@@ -1594,7 +1597,8 @@ mod dwrt_tests {
         };
         assert_eq!(a.known_range(red).expect(KNOWN_RANGE).len(), 4);
         // The trip count is not reachable from the node's children, so no
-        // rewrite can substitute anything for it.
+        // rewrite can substitute anything for it. This pin moves with A3: a
+        // value bound is a child after the body.
         assert_eq!(a.children(red).count(), 1);
     }
 

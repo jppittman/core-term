@@ -1803,7 +1803,7 @@ impl StructuralRange {
 /// range is refused rather than read as the empty fold it would be in Rust:
 /// an empty range is written `a..a`, and `b..a` is almost always a slip
 /// (clippy's `reversed_empty_ranges` is deny-by-default for the same
-/// reason), and the IR's own `Fold` refuses one.
+/// reason), and the IR's own `KnownRange::new` refuses one.
 pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Result<Bounds> {
     let mut scope = scope;
     let lo = scope.eval_usize(&range.lo)?;

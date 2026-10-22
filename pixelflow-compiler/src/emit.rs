@@ -656,7 +656,7 @@ pub struct Staged {
     /// How many variables have been named: every one is fresh.
     named: u64,
     /// The folds open, innermost last: the variable holding each, and the
-    /// closure that makes its `Fold` once its binder is chosen.
+    /// closure that makes its `FoldHeader` once its binder is chosen.
     open: Vec<(Ident, TokenStream)>,
 }
 

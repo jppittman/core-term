@@ -1255,9 +1255,12 @@ mod tests {
         let _refused = Kernel::x().trunc_to_int().shl(32);
     }
 
-    /// The builder refuses a fold past 2²⁴ as `kernel!` does: both build
-    /// through `Fold`, which holds the one bound. Before, `kernel!`
-    /// refused and this summed the wrong terms without a word
+    /// The builder refuses a fold past 2²⁴ as `kernel!` does: both answer to
+    /// `KnownRange::admits`, the one statement of the contract. The builder
+    /// meets it in `FoldHeader::new`, whose `KnownRange::new` panics with the
+    /// message pinned here; `kernel!` asks `admits` while lowering a literal
+    /// range, and refuses in its own words before any header is built. Before,
+    /// `kernel!` refused and this summed the wrong terms without a word
     /// (docs/BACKLOG.md, C8).
     #[test]
     #[should_panic(expected = "ends at most at 16777216 (2^24)")]

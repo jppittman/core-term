@@ -475,10 +475,10 @@ impl OpKind {
             Self::MulAdd | Self::If | Self::Gather => 3,
 
             // The body. The algebra, the binder and a known bound are the
-            // node's own metadata ([`Fold`](crate::Fold)) rather than `Const`
-            // children, so nothing that walks operands can reach them. A
-            // bound that is a value is a further edge, counted by the node's
-            // header (`FoldHeader::arity`), not by the op.
+            // node's own metadata ([`FoldHeader`](crate::FoldHeader)) rather
+            // than `Const` children, so nothing that walks operands can reach
+            // them. A bound that is a value is a further edge, counted by the
+            // node's header (`FoldHeader::arity`), not by the op.
             Self::Reduce => 1,
         }
     }

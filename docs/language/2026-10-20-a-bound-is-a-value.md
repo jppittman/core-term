@@ -130,7 +130,7 @@ row). What a fold with a bound outside the domain denotes depends on its sort:
 
 After T6 an `Int`-sorted fold has no NaN either and falls under decision 8.
 
-A count the host writes is refused where it is written, by `Fold::admits` turned into a
+A count the host writes is refused where it is written, by `KnownRange::admits` turned into a
 predicate on one count value: at `kernel!`'s `Args` write for a per-call count, in
 whichever spelling decision 2 picks (A6), and at bind for a discrete-kernel argument's
 extent (B1). `2²⁴ + 1` can be refused only there: no `f32` names it, and a uniform
@@ -212,7 +212,7 @@ Every row is one cause: the binding time of a count is attached to its syntax.
 |---|---|---|
 | ASCII needs **29 programs**, one per piece count, holding **528** `one_piece` copies (Σ n) | quoted from the-language-is-kernel `:1186-1188`; not re-measured ([A0](../results/2026-10-20-production-glyph-baseline.md) §4.4) | `FontPrograms` (`pixelflow-graphics/src/fonts/loop_blinn/program.rs`) has no fold; a count cannot be a uniform, so the count is the structure |
 | `⌨` (347 segments, 262 pieces) is **27,029 defs**, a **75 KiB** frame past NEON's 64 KiB reach (#1414), as a `FontPrograms` program; production's `Glyph::bake` keeps the fold, at 310 defs and a 1.4 KiB frame | quoted from `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md:710-720`, `5574374a`, not re-measured; production's figures are A0 §3.2 | the same: one term per piece, by construction |
-| production pads counts to powers of two (`bucketed_trip_count`, `padding_row`): **95 → 7 programs** at tile 16 and at tile 32, six buckets (2 to 64) and the blank; a new tile extent mints all seven again | A0 §3.1, §3.5 (BACKLOG H1's 6 and 7 are not reproduced) | the trip count is in `Fold::to_bits`, so in the JIT key (`pixelflow-ir/src/key.rs:445-450`) |
+| production pads counts to powers of two (`bucketed_trip_count`, `padding_row`): **95 → 7 programs** at tile 16 and at tile 32, six buckets (2 to 64) and the blank; a new tile extent mints all seven again | A0 §3.1, §3.5 (BACKLOG H1's 6 and 7 are not reproduced) | the trip count is in the fold's `to_bits` (`FoldHeader::to_bits` since A2b), so in the JIT key (`pixelflow-ir/src/key.rs:445-450`) |
 | each bucket **saturates separately** | A0 §3.1: 7 saturations, 6 stopped by the class cap; `pixelflow-search/src/runtime.rs`, `CACHE` keyed on canonical bytes | the same key |
 | a run's program depends on every character's row offset | `loop_blinn.rs:423`, `start..start + count` | data spelled as a constant |
 | `n = 0` is a program of its own, `blank()` | `program.rs:138` | an empty count cannot reach a fold |
@@ -547,15 +547,15 @@ A5's deletion, which removes code #1427 only re-scopes.
   mean rows included, and the 29 font programs' keys and digests unchanged. The
   bounds are `u64` and the stored header is packed (`FoldHeader` 32 bytes, three counts and
   four bytes, against 48 unpacked), so the nodes grew by what a `Reduce` holds and no more:
-  `NodeData` and `ExprData` 16 to 32 and `ENode` 24 to 48, each pinned by `size_of` beside its
-  type; `ExprNode` (a view) 24 to 56, held by a tripwire raised from 32 to 64 and by nothing
+  `NodeData` and `ExprData` 16 to 32 and `ENode` 24 to 48, each pinned by a `size_of` test; `ExprNode` (a view) 24 to 56, held by a tripwire raised from 32 to 64 and by nothing
   tighter. The growth was measured the
   way `EClassId`'s was (`node.rs`: native release build, interleaved parent/head pairs, one
   process each, `ru_maxrss`): peak RSS median 89.3 to 104.8 MB (+17%) on the cold compile of
   the 29 programs ASCII needs (8 pairs) and 16.2 to 17.8 MB (+10%) on the n=40 program (10
   pairs); callgrind instructions on the 29 programs +5.2% (saturation +7.8%, extraction
-  +3.4%). That is the size of growth that kept `EClassId` at `u32` (+18%, +8%), so narrowing
-  the stored header is the open question the numbers pose, and is not A2b's.
+  +3.4%). That is the size of growth that kept `EClassId` at `u32` (+18%, +8%). JP, 2026-10-22: land
+  A2b wide, and measure the stored header narrowed to `u32` ends and stride (16 bytes) in a
+  follow-up CL, with the decision taken on both numbers.
 - **A3. Value bounds in the IR and e-graph.** `over_values` (`pub(crate)`), the
   `push_reduce` refusals (`BoundVaries`, `BoundSort`, `BoundOutOfDomain`),
   `BoundArithmetic` at `over_values`, L4 in both variance functions, L7, `KnownBound` (L8), the rules

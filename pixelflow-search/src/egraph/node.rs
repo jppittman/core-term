@@ -281,8 +281,8 @@ pub enum ENode {
         /// The class being shifted.
         operand: EClassId,
     },
-    /// A bounded fold: `⊕_{k} body[fold.binder() := k]`, `k` ranging over
-    /// `fold`'s own visited indices (see `Fold`'s doc, in `pixelflow-ir`).
+    /// A bounded fold: `⊕_{k} body[binder := k]`, `k` ranging over the visited
+    /// indices of the header's range (see `FoldHeader`'s doc, in `pixelflow-ir`).
     ///
     /// The one node in the graph that *binds*, and the reason it can be in
     /// the graph at all: its algebra, binder and range live in the node's

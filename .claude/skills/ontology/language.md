@@ -416,12 +416,13 @@
 
 ### Fold (Reduce)
 
-- **Is:** `⟦Reduce{fold, body}⟧ = ⊕_{k ∈ range} ⟦body⟧[binder := k]`, `range` its `KnownRange`,
+- **Is:** `⟦Reduce{fold, lo, hi, body}⟧ = ⊕_{k ∈ range} ⟦body⟧[binder := k]`, `range` its `KnownRange`,
   meaning ⊕ over a set under a monoid. "A reduction … means the same thing
   computed as one term peeled off a shorter reduction, as a split into two,
   or as a fully unrolled chain." It is the one node that binds. Its monoid,
-  binder and range are its identity, and its body is its only child. It is
-  spelled `(a..b).map(|i| e).sum()`, `.product()`, `.any`, `.all`, or
+  binder and range are its identity, and its body is its only child until a
+  bound is a value (a-bound-is-a-value A3). It is spelled
+  `(a..b).map(|i| e).sum()`, `.product()`, `.any`, `.all`, or
   `.fold(±INF, min/max)`. "A fold is written once and stays a fold in every
   open value. Whether it runs as a loop or as copies is decided inside P, by
   extraction." A fold that survives is a loop.
@@ -547,7 +548,7 @@
   turns on a tie (see Tie-break). `pack(L)` is the same chunking law run as
   a pass (L2, open: "one chunking law, three implementations").
 - **Lives:** `pixelflow-search/src/egraph/fold_rules.rs` (`HalveFold`,
-  `PeelFold`, `EmptyFold`, `FactorFold`); `Fold::{peel, peel_back, halve}`
+  `PeelFold`, `EmptyFold`, `FactorFold`); `KnownRange::{peel, peel_back, halve}`
   (`pixelflow-ir/src/fold.rs`); `pixelflow-codegen/tests/halve_fold_jit.rs`.
   Decided in one-pipeline decisions (2026-09-25),
   a-surviving-reduce-is-a-loop 2a″ and E1b.
