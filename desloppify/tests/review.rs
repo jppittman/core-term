@@ -44,6 +44,7 @@ struct Asked {
     kind: Kind,
     preamble: String,
     prompt: String,
+    schema: serde_json::Value,
 }
 
 fn kind(schema: Option<&serde_json::Value>) -> Kind {
@@ -86,6 +87,7 @@ impl Ask for Scripted {
             kind: kind(question.schema),
             preamble: question.system.to_owned(),
             prompt: question.prompt.to_owned(),
+            schema: question.schema.cloned().unwrap_or_default(),
         };
         self.asked.lock().unwrap().push(asked.clone());
         Ok(Answer {
@@ -226,6 +228,11 @@ async fn run<A: Ask, D: Decide>(
     let files: Vec<_> = files.iter().map(|f| tree.path(f)).collect();
     let calls = plan(tree.rules(), &files).unwrap();
     session.clone().review(calls).await.unwrap()
+}
+
+/// Positions as report.json writes them.
+fn written<T: serde::Serialize>(positions: &T) -> serde_json::Value {
+    serde_json::to_value(positions).unwrap()
 }
 
 fn decided(report: &Report, rule: &str, outcome: &str) -> u64 {
@@ -633,6 +640,13 @@ async fn a_model_decision_is_held_to_the_rules_outcomes_and_shown_the_numbered_c
     ] {
         assert!(preamble.contains(outcome), "{preamble}");
     }
+    assert!(preamble.contains(
+        "Outcomes:\n- `clean`: Nothing is wrong.\n- `wrong`: Something is wrong.\n- `unsure`: The code shown is not enough to decide.\n"
+    ));
+    assert_eq!(
+        asked[0].schema["properties"]["outcome"]["enum"],
+        serde_json::json!(["clean", "wrong", "unsure"])
+    );
     assert!(asked[0].prompt.contains("a.rs"));
     assert!(asked[0].prompt.contains("    2 | fn b() {}\n"));
 }
@@ -986,7 +1000,7 @@ async fn converging_symptoms_are_named_by_small_models_and_described_without_the
         "An assembler turns labelled items into bytes."
     );
     // The module's first three findings are the report's.
-    assert_eq!(t.explains, [0, 1, 2]);
+    assert_eq!(written(&t.explains), serde_json::json!([0, 1, 2]));
     assert_eq!(usage.calls, 2);
 
     let asked = namer.ask.asked();
@@ -1006,6 +1020,11 @@ async fn converging_symptoms_are_named_by_small_models_and_described_without_the
         );
     }
     assert!(!asked[0].prompt.contains("body()"), "bodies are elided");
+    let first = format!(
+        "S1. {}:1 [first/wrong] one\n",
+        tree.path("m/a.rs").display()
+    );
+    assert!(asked[0].prompt.contains(&first), "{}", asked[0].prompt);
     assert_eq!(asked[1].prompt, "an assembler, in a JIT");
 }
 
@@ -1119,10 +1138,10 @@ async fn the_synthesis_sees_the_things_and_their_outlines_and_its_numbers_become
         Scripted::new(|_| {
             Ok(r##"{
                 "diagnoses": [
-                    {"thing": 1, "diagnosis": "a label is a key", "falls_out": "names go", "explains": [1, 2, 99]},
+                    {"thing": 1, "diagnosis": "a label is a key", "falls_out": "names go", "explains": [1, 2]},
                     {"thing": 2, "diagnosis": "temps are predicted", "falls_out": "f", "explains": [3]}
                 ],
-                "roots": [{"root": "selection is a phase", "falls_out": "predictions go", "explains": [1, 2, 9]}],
+                "roots": [{"root": "selection is a phase", "falls_out": "predictions go", "explains": [1, 2]}],
                 "review": "# Review\n"
             }"##
             .into())
@@ -1131,11 +1150,17 @@ async fn the_synthesis_sees_the_things_and_their_outlines_and_its_numbers_become
     );
     let synthesis = lead.synthesize(&report).await.unwrap().unwrap();
     let d = &synthesis.diagnoses;
-    assert_eq!((d[0].thing, d[1].thing), (0, 1));
+    assert_eq!(
+        written(&(d[0].thing, d[1].thing)),
+        serde_json::json!([0, 1])
+    );
     assert_eq!(d[0].diagnosis, "a label is a key");
-    // A number past what it indexes names nothing.
-    assert_eq!(d[0].explains, [0, 1]);
-    assert_eq!(synthesis.roots[0].explains, [0, 1]);
+    assert_eq!(written(&d[0].explains), serde_json::json!([0, 1]));
+    assert_eq!(written(&d[1].explains), serde_json::json!([2]));
+    assert_eq!(
+        written(&synthesis.roots[0].explains),
+        serde_json::json!([0, 1])
+    );
 
     let brief = &lead.ask.asked()[0].prompt;
     assert!(brief.contains("### T1 — an assembler, c — "), "{brief}");
@@ -1429,4 +1454,152 @@ async fn a_plan_is_reviewed_under_the_rules_it_was_planned_with() {
     assert_eq!(session.ask.asked().len(), 1);
     let asked: Vec<_> = report.rules().map(|rule| rule.id.as_str()).collect();
     assert_eq!(asked, ["everything"], "a rule that asked nothing is absent");
+}
+
+/// The synthesis, answered with `reply`, of two things named in `m`: eight
+/// findings, two things, and the reply's own diagnoses, so no two lists share
+/// a length.
+async fn synthesis_error(name: &str, reply: fn(&Asked) -> Result<String>) -> String {
+    let (_tree, report) = identified(name).await;
+    let lead = Session::new(Scripted::new(reply), decide::none());
+    format!("{:#}", lead.synthesize(&report).await.unwrap_err())
+}
+
+#[tokio::test]
+async fn a_finding_number_that_names_nothing_is_an_error_not_a_shorter_list() {
+    let error = synthesis_error("past-findings", |_| {
+        Ok(r#"{"diagnoses": [{"thing": 1, "diagnosis": "d", "falls_out": "f", "explains": [1, 99]}], "roots": [], "review": "r"}"#.into())
+    })
+    .await;
+    assert!(error.contains("F99"), "{error}");
+}
+
+#[tokio::test]
+async fn a_zero_names_nothing_in_any_list() {
+    let error = synthesis_error("zero-finding", |_| {
+        Ok(r#"{"diagnoses": [{"thing": 1, "diagnosis": "d", "falls_out": "f", "explains": [0]}], "roots": [], "review": "r"}"#.into())
+    })
+    .await;
+    assert!(error.contains("F0"), "{error}");
+    let error = synthesis_error("zero-thing", |_| {
+        Ok(r#"{"diagnoses": [{"thing": 0, "diagnosis": "d", "falls_out": "f", "explains": []}], "roots": [], "review": "r"}"#.into())
+    })
+    .await;
+    assert!(error.contains("T0"), "{error}");
+    let error = synthesis_error("zero-diagnosis", |_| {
+        Ok(r#"{"diagnoses": [{"thing": 1, "diagnosis": "d", "falls_out": "f", "explains": []}], "roots": [{"root": "r", "falls_out": "f", "explains": [0]}], "review": "r"}"#.into())
+    })
+    .await;
+    assert!(error.contains("D0"), "{error}");
+}
+
+#[tokio::test]
+async fn a_root_numbers_the_replys_own_diagnoses_and_one_past_them_is_an_error() {
+    let error = synthesis_error("past-diagnoses", |_| {
+        Ok(r#"{"diagnoses": [{"thing": 1, "diagnosis": "d", "falls_out": "f", "explains": []}], "roots": [{"root": "r", "falls_out": "f", "explains": [1, 2]}], "review": "r"}"#.into())
+    })
+    .await;
+    assert!(error.contains("D2"), "{error}");
+}
+
+#[tokio::test]
+async fn a_symptom_number_that_names_nothing_fails_its_module_whole() {
+    let (tree, session) = converging("past-symptoms");
+    let mut report = run(&tree, &["m/mod.rs", "m/a.rs"], &session).await;
+
+    let namer = Session::new(
+        Scripted::new(|asked| {
+            Ok(match asked.kind {
+                Kind::Identify => r#"{"things": [
+                    {"thing": "an assembler", "context": "c", "symptoms": [1, 2]},
+                    {"thing": "a parser", "context": "c", "symptoms": [3, 9]}
+                ]}"#
+                .into(),
+                other => bail!("asked {other:?}"),
+            })
+        }),
+        decide::none(),
+    );
+    let usage = namer.identify(&mut report).await.unwrap();
+    assert!(report.things().is_empty());
+    assert_eq!(report.failures.len(), 1);
+    let failure = format!("{:#}", report.failures[0]);
+    assert!(
+        failure.contains("S9") && failure.contains("naming"),
+        "{failure}"
+    );
+    assert_eq!(
+        usage.calls, 1,
+        "the reply was paid for and nothing was described"
+    );
+}
+
+#[tokio::test]
+async fn a_zero_symptom_number_names_nothing() {
+    let (tree, session) = converging("zero-symptom");
+    let mut report = run(&tree, &["m/mod.rs", "m/a.rs"], &session).await;
+
+    let namer = Session::new(
+        Scripted::new(|asked| {
+            Ok(match asked.kind {
+                Kind::Identify => {
+                    r#"{"things": [{"thing": "a parser", "context": "c", "symptoms": [0, 1, 2]}]}"#
+                        .into()
+                }
+                other => bail!("asked {other:?}"),
+            })
+        }),
+        decide::none(),
+    );
+    namer.identify(&mut report).await.unwrap();
+    assert!(report.things().is_empty());
+    let failure = format!("{:#}", report.failures[0]);
+    assert!(failure.contains("S0"), "{failure}");
+}
+
+#[tokio::test]
+async fn a_things_symptoms_come_back_in_report_order_each_once() {
+    let (tree, session) = converging("report-order");
+    let mut report = run(&tree, &["m/mod.rs", "m/a.rs"], &session).await;
+
+    let namer = Session::new(
+        Scripted::new(|asked| {
+            Ok(match asked.kind {
+                Kind::Identify => {
+                    r#"{"things": [{"thing": "a parser", "context": "c", "symptoms": [3, 1, 3, 2]}]}"#
+                        .into()
+                }
+                Kind::Describe => r#"{"description": "described"}"#.into(),
+                other => bail!("asked {other:?}"),
+            })
+        }),
+        decide::none(),
+    );
+    namer.identify(&mut report).await.unwrap();
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(
+        written(&report.things()[0].explains),
+        serde_json::json!([0, 1, 2])
+    );
+}
+
+#[tokio::test]
+async fn the_same_symptom_named_twice_counts_once() {
+    let (tree, session) = converging("twice");
+    let mut report = run(&tree, &["m/mod.rs", "m/a.rs"], &session).await;
+
+    let namer = Session::new(
+        Scripted::new(|asked| {
+            Ok(match asked.kind {
+                Kind::Identify => {
+                    r#"{"things": [{"thing": "a parser", "context": "c", "symptoms": [2, 2]}]}"#
+                        .into()
+                }
+                other => bail!("asked {other:?}"),
+            })
+        }),
+        decide::none(),
+    );
+    namer.identify(&mut report).await.unwrap();
+    assert!(report.things().is_empty() && report.failures.is_empty());
 }

@@ -20,6 +20,7 @@
 
 mod identify;
 mod module;
+mod numbering;
 mod plan;
 mod reply;
 mod run;
@@ -30,6 +31,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Result, ensure};
+use serde::Serialize;
 
 use crate::agent::{Ask, Usage};
 use crate::decide::Decide;
@@ -59,6 +61,24 @@ pub(crate) struct Source {
     /// Numbered, as a snippet is.
     pub(crate) text: String,
 }
+
+/// A position in [`Report::findings`]: how a [`Thing`] or [`Diagnosis`]
+/// names a finding. Only code in `review` can make one, from a number a
+/// reply echoed that names an item of the list it counts; it is written
+/// to `report.json` as that position, from 0.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(transparent)]
+pub struct FindingIx(usize);
+
+/// A position in [`Report::things`]: how a [`Diagnosis`] names its thing.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(transparent)]
+pub struct ThingIx(usize);
+
+/// A position in [`Synthesis::diagnoses`]: how a [`Root`] names a diagnosis.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(transparent)]
+pub struct DiagnosisIx(usize);
 
 /// Every call a review of `files` under `rules` makes, in file order. Rules
 /// that apply to a file and see the same unit and context share its calls;
@@ -151,7 +171,10 @@ impl<A: Ask, D> Session<A, D> {
     /// Every module, and every thing in one, is asked at once; the things
     /// keep module order, then the namer's. Every reply is held to a schema.
     /// A failed call is a failure in `report` and stops only its own module
-    /// or thing. Asking again replaces the things and adds the failures again.
+    /// or thing. So does a symptom number that names nothing in its module's
+    /// list: the whole naming fails (its tokens are counted), not a shorter
+    /// list of symptoms. Asking again replaces the things and adds the
+    /// failures again.
     ///
     /// # Errors
     ///
@@ -169,14 +192,16 @@ impl<A: Ask, D> Session<A, D> {
     /// one — and writes the review: roots, then diagnoses, then the findings
     /// by file, duplicates merged, trivial or mistaken ones dropped and
     /// counted, recurring patterns called out. The reply is held to a
-    /// schema; a number past what it indexes names nothing.
+    /// schema, and a number in it that names nothing is an error, not a
+    /// shorter list.
     ///
     /// `Ok(None)`, with no call made, when `report` has no findings.
     ///
     /// # Errors
     ///
-    /// The call failed, its reply does not match the schema, a diagnosis
-    /// names a thing that does not exist, or a module's files cannot be read.
+    /// The call failed, its reply does not match the schema, a number in it
+    /// names nothing in the list it counts, or a module's files cannot be
+    /// read. The call's tokens are then in no usage the caller can read.
     pub async fn synthesize(&self, report: &Report) -> Result<Option<Synthesis>> {
         synthesize::synthesize(&self.ask, report).await
     }
@@ -233,6 +258,17 @@ impl Report {
         &self.findings
     }
 
+    /// The finding at `ix`, which a [`Thing`] or [`Diagnosis`] of this report
+    /// holds.
+    ///
+    /// # Panics
+    ///
+    /// `ix` came from another report and is past this one's findings.
+    #[must_use]
+    pub fn finding(&self, ix: FindingIx) -> &Finding {
+        &self.findings[ix.0]
+    }
+
     /// What the findings are about, once [`Session::identify`] has been
     /// asked.
     #[must_use]
@@ -260,22 +296,22 @@ pub struct Thing {
     /// The thing described from first principles, by a call that never saw
     /// the code.
     pub description: String,
-    /// The findings that concern it, as indexes into [`Report::findings`].
-    pub explains: Vec<usize>,
+    /// The findings that concern it.
+    pub explains: Vec<FindingIx>,
 }
 
 /// The model of a thing the code is missing or has wrong.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Diagnosis {
-    /// The thing, as an index into [`Report::things`].
-    pub thing: usize,
+    /// The thing.
+    pub thing: ThingIx,
     /// The model, stated as what the thing is: "a label is an operand".
     pub diagnosis: String,
     /// The code with the thing's shape: what becomes a type, what is
     /// deleted, what falls out.
     pub falls_out: String,
-    /// The findings it explains, as indexes into [`Report::findings`].
-    pub explains: Vec<usize>,
+    /// The findings it explains.
+    pub explains: Vec<FindingIx>,
 }
 
 /// The model beneath several diagnoses, in one module or across several.
@@ -287,8 +323,8 @@ pub struct Root {
     /// With that model in place: what stops being special, what is deleted,
     /// and what follows from that, to closure.
     pub falls_out: String,
-    /// The diagnoses it explains, as indexes into [`Synthesis::diagnoses`].
-    pub explains: Vec<usize>,
+    /// The diagnoses it explains.
+    pub explains: Vec<DiagnosisIx>,
 }
 
 /// The frontier call's judgment of a review.

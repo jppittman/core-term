@@ -10,8 +10,9 @@ use futures::future::join_all;
 use serde::Deserialize;
 
 use super::module;
+use super::numbering::Numbering;
 use super::reply::{Step, ask};
-use super::{Finding, Report, Thing};
+use super::{FindingIx, Report, Thing};
 use crate::agent::{Ask, Usage};
 use crate::model::ModelLevel;
 
@@ -76,20 +77,22 @@ struct Identified {
     usage: Usage,
 }
 
-/// One module's symptoms: the findings in it, as indexes into the report.
+/// One module's symptoms: the findings in it.
 struct Cluster {
     component: PathBuf,
-    symptoms: Vec<usize>,
+    /// In report order; the namer numbers them `S1`... by position here.
+    symptoms: Vec<FindingIx>,
+}
+
+impl Cluster {
+    fn numbering(&self) -> Numbering {
+        Numbering::symptoms(self.symptoms.len())
+    }
 }
 
 pub(super) async fn identify<A: Ask>(agent: &A, report: &mut Report) -> Result<Usage> {
-    let clusters = clusters(&report.findings);
-    let named = join_all(
-        clusters
-            .iter()
-            .map(|cluster| named(agent, cluster, &report.findings)),
-    )
-    .await;
+    let clusters = clusters(report);
+    let named = join_all(clusters.iter().map(|cluster| named(agent, cluster, report))).await;
     let mut identified = Identified::default();
     for named in named {
         let named = named?;
@@ -103,14 +106,17 @@ pub(super) async fn identify<A: Ask>(agent: &A, report: &mut Report) -> Result<U
 }
 
 /// The things one cluster's symptoms are about, each described.
-async fn named<A: Ask>(agent: &A, cluster: &Cluster, findings: &[Finding]) -> Result<Identified> {
-    let symptoms = cluster.symptoms.iter().map(|&i| findings[i].path.as_path());
+async fn named<A: Ask>(agent: &A, cluster: &Cluster, report: &Report) -> Result<Identified> {
+    let symptoms = cluster
+        .symptoms
+        .iter()
+        .map(|&i| report.finding(i).path.as_path());
     let (shape, _) = module::shape(&cluster.component, symptoms, MAX_SHAPE_LINES)?;
     let mut usage = Usage::default();
     let prompt = format!(
         "Module: {}\n\nSymptoms:\n{}\nThe module's outline:\n\n{shape}",
         cluster.component.display(),
-        numbered(&cluster.symptoms, findings)
+        symptom_lines(cluster, report)
     );
     let schema = identify_schema();
     let step = Step {
@@ -120,11 +126,18 @@ async fn named<A: Ask>(agent: &A, cluster: &Cluster, findings: &[Finding]) -> Re
     };
     let parsed = ask(agent, &step, &prompt).await.and_then(|answer| {
         usage += answer.usage;
-        serde_json::from_str::<Things>(&answer.text)
-            .with_context(|| format!("reply is not a list of things: {}", answer.text))
+        let Things { things } = serde_json::from_str(&answer.text)
+            .with_context(|| format!("reply is not a list of things: {}", answer.text))?;
+        things
+            .into_iter()
+            .map(|thing| {
+                let explains = thing.explains(cluster)?;
+                Ok(explains.map(|explains| (thing, explains)))
+            })
+            .collect::<Result<Vec<_>>>()
     });
-    let named = match parsed {
-        Ok(named) => named,
+    let kept: Vec<(Named, Vec<FindingIx>)> = match parsed {
+        Ok(kept) => kept.into_iter().flatten().collect(),
         Err(error) => {
             let error = error.context(format!("naming {}", cluster.component.display()));
             return Ok(Identified {
@@ -134,14 +147,6 @@ async fn named<A: Ask>(agent: &A, cluster: &Cluster, findings: &[Finding]) -> Re
             });
         }
     };
-    let kept: Vec<(Named, Vec<usize>)> = named
-        .things
-        .into_iter()
-        .filter_map(|thing| {
-            let explains = thing.symptoms_in(cluster)?;
-            Some((thing, explains))
-        })
-        .collect();
     let described = join_all(kept.iter().map(|(thing, _)| describe(agent, thing))).await;
 
     let mut identified = Identified {
@@ -198,20 +203,20 @@ async fn describe<A: Ask>(agent: &A, thing: &Named) -> Described {
 
 /// The modules whose findings converge: at least [`MIN_SYMPTOMS`] of them,
 /// from at least [`MIN_RULES`] rules.
-fn clusters(findings: &[Finding]) -> Vec<Cluster> {
-    let mut by_component: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
-    for (index, finding) in findings.iter().enumerate() {
+fn clusters(report: &Report) -> Vec<Cluster> {
+    let mut by_component: BTreeMap<PathBuf, Vec<FindingIx>> = BTreeMap::new();
+    for (ix, finding) in report.findings.iter().enumerate() {
         by_component
             .entry(module::containing(&finding.path))
             .or_default()
-            .push(index);
+            .push(FindingIx(ix));
     }
     by_component
         .into_iter()
         .filter(|(_, symptoms)| {
             let rules: BTreeSet<&str> = symptoms
                 .iter()
-                .map(|&i| findings[i].rule.as_str())
+                .map(|&i| report.finding(i).rule.as_str())
                 .collect();
             symptoms.len() >= MIN_SYMPTOMS && rules.len() >= MIN_RULES
         })
@@ -222,16 +227,18 @@ fn clusters(findings: &[Finding]) -> Vec<Cluster> {
         .collect()
 }
 
-/// The findings at `indexes`, numbered from `S1`.
-fn numbered(indexes: &[usize], findings: &[Finding]) -> String {
-    indexes
+/// The cluster's symptoms, one line each, numbered from `S1`.
+fn symptom_lines(cluster: &Cluster, report: &Report) -> String {
+    let symptoms = cluster.numbering();
+    cluster
+        .symptoms
         .iter()
         .enumerate()
         .map(|(n, &i)| {
-            let f = &findings[i];
+            let f = report.finding(i);
             format!(
-                "S{}. {}:{} [{}/{}] {}\n",
-                n + 1,
+                "{}. {}:{} [{}/{}] {}\n",
+                symptoms.label(n),
                 f.path.display(),
                 f.line,
                 f.rule,
@@ -252,22 +259,23 @@ struct Things {
 struct Named {
     thing: String,
     context: String,
-    /// Symptom numbers, from 1, within the cluster.
     symptoms: Vec<usize>,
 }
 
 impl Named {
-    /// The report indexes of this thing's symptoms, if enough of them are
-    /// real.
-    fn symptoms_in(&self, cluster: &Cluster) -> Option<Vec<usize>> {
-        let mut picked: Vec<usize> = self
-            .symptoms
-            .iter()
-            .filter_map(|n| cluster.symptoms.get(n.checked_sub(1)?).copied())
-            .collect();
-        picked.sort_unstable();
-        picked.dedup();
-        (picked.len() >= MIN_SYMPTOMS_PER_THING).then_some(picked)
+    /// The findings this thing's symptoms name, in report order, each once;
+    /// `None` if too few to be a thing.
+    ///
+    /// # Errors
+    ///
+    /// A number names no symptom of the cluster.
+    fn explains(&self, cluster: &Cluster) -> Result<Option<Vec<FindingIx>>> {
+        let mut picked = cluster
+            .numbering()
+            .resolve_all(&self.symptoms, |n| cluster.symptoms[n])?;
+        picked.sort_unstable_by_key(|finding| finding.0);
+        picked.dedup_by_key(|finding| finding.0);
+        Ok((picked.len() >= MIN_SYMPTOMS_PER_THING).then_some(picked))
     }
 }
 

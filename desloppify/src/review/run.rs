@@ -7,14 +7,14 @@ use futures::future::join_all;
 use tokio::task::JoinSet;
 
 use super::reply::{
-    Step, ask, decide_preamble, decision_schema, explain_preamble, findings_schema, labels,
+    Chosen, Step, ask, decide_preamble, decision_schema, explain_preamble, findings_schema, labels,
     parse_decision, parse_findings, prompt,
 };
 use super::{Call, Finding, Report, Session};
 use crate::agent::{Ask, Usage};
 use crate::decide::{Choice, Decide, Decisions};
 use crate::model::ModelLevel;
-use crate::rule::{Outcome, Rule, UNSURE, Verdict};
+use crate::rule::{Outcome, Rule, Verdict};
 
 /// What one rule made of one unit.
 struct Judged {
@@ -140,7 +140,8 @@ async fn judge<A: Ask, D: Decide>(
         .answers
         .get(&rule.id)
         .filter(|d| d.confidence >= session.min_confidence)
-        .and_then(|d| rule.decision.outcomes.iter().find(|o| o.name == d.label));
+        .and_then(|d| rule.decision.outcomes.iter().find(|o| o.name == d.label))
+        .map(Chosen::Outcome);
     let mut asking = Asking {
         model: &session.ask,
         rule,
@@ -148,19 +149,16 @@ async fn judge<A: Ask, D: Decide>(
         usage: Usage::default(),
     };
     let decided = match settled {
-        Some(outcome) => Ok(Some(outcome)),
+        Some(chosen) => Ok(chosen),
         None => asking.decide().await,
     };
     let (outcome, findings) = match decided {
         Err(error) => (Err(error.context(context())), Ok(Vec::new())),
-        Ok(Some(outcome)) if outcome.verdict == Verdict::Violation => (
+        Ok(Chosen::Outcome(outcome)) if outcome.verdict == Verdict::Violation => (
             Ok(outcome.name.clone()),
             asking.explain(outcome).await.with_context(context),
         ),
-        Ok(outcome) => {
-            let name = outcome.map_or(UNSURE, |o| o.name.as_str());
-            (Ok(name.to_owned()), Ok(Vec::new()))
-        }
+        Ok(chosen) => (Ok(chosen.name().to_owned()), Ok(Vec::new())),
     };
     Judged {
         rule: rule.clone(),
@@ -180,21 +178,21 @@ struct Asking<'a, A> {
 }
 
 impl<'a, A: Ask> Asking<'a, A> {
-    /// The outcome a model decides, asking at the rule's decide level and one
-    /// level higher on each `unsure`, up to its explain level; `None` if still
+    /// What a model decides, asking at the rule's decide level and one level
+    /// higher on each `unsure`, up to its explain level; `Unsure` if still
     /// unsure there.
-    async fn decide(&mut self) -> Result<Option<&'a Outcome>> {
+    async fn decide(&mut self) -> Result<Chosen<'a>> {
         let rule = self.rule;
         let (system, schema) = (decide_preamble(rule), decision_schema(rule));
         let mut level = rule.levels.decide;
         loop {
             let reply = self.ask(level, &system, &schema).await?;
-            if let Some(outcome) = parse_decision(rule, &reply)? {
-                return Ok(Some(outcome));
-            }
-            match level.above() {
-                Some(next) if next <= rule.levels.explain => level = next,
-                _ => return Ok(None),
+            match parse_decision(rule, &reply)? {
+                Chosen::Unsure => match level.above() {
+                    Some(next) if next <= rule.levels.explain => level = next,
+                    _ => return Ok(Chosen::Unsure),
+                },
+                settled => return Ok(settled),
             }
         }
     }
