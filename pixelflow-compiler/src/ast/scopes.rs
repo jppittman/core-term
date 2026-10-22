@@ -14,7 +14,7 @@
 //! parameter), and an inner `let` must not replace an outer one for the rest
 //! of the kernel.
 
-use crate::ast::Name;
+use super::Name;
 use std::collections::HashMap;
 
 /// Rust's lexical scoping over bindings of `V`.
@@ -68,33 +68,5 @@ impl<V> Scopes<V> {
             .rev()
             .find_map(|block| block.get(name))
             .or_else(|| self.function.get(name))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use proc_macro2::Span;
-    use syn::Ident;
-
-    fn name(text: &str) -> Name {
-        Name::of(&Ident::new(text, Span::call_site()))
-    }
-
-    #[test]
-    fn a_lookup_sees_the_innermost_binding_in_scope() {
-        let mut scopes = Scopes::default();
-        scopes.bind(name("a"), 0);
-        scopes.push_scope();
-        scopes.bind(name("a"), 1);
-        scopes.push_scope();
-        assert_eq!(scopes.lookup(&name("a")), Some(&1));
-        scopes.bind(name("a"), 2);
-        scopes.bind(name("a"), 3);
-        assert_eq!(scopes.lookup(&name("a")), Some(&3));
-        scopes.pop_scope();
-        assert_eq!(scopes.lookup(&name("a")), Some(&1));
-        scopes.pop_scope();
-        assert_eq!(scopes.lookup(&name("a")), Some(&0));
     }
 }

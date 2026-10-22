@@ -10,7 +10,7 @@
 //!    name, a record's fields are checked to be `f32`s, and a `const` is
 //!    evaluated at expansion ([`evaluate_consts`]).
 //! 2. **Symbol Resolution**: match identifiers to their definitions, with
-//!    Rust's lexical scoping ([`crate::symbol::Scopes`], which lowering
+//!    Rust's lexical scoping ([`crate::ast::Scopes`], which lowering
 //!    resolves through too).
 //! 3. **Types**: every expression is an `f32` or a `bool` ([`Ty`]). The IR
 //!    keeps its lanes — a `bool` is a mask lane — so the type lives here and
@@ -90,14 +90,12 @@
 //! The semantic phase produces an [`AnalyzedKernel`]: the AST, validated,
 //! and the value of every `const`.
 
-use crate::PLAN;
 use crate::ast::{
     Arity, BinaryExpr, BinaryOp, BlockExpr, CallExpr, Callable, CastExpr, ConstItem, Expr,
     FieldExpr, FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Method, MethodCallExpr,
-    Name, Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordId, Reduction, Role, Stmt,
-    UnaryOp, arity_mismatch, bare_name, same_name,
+    Name, PLAN, Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordId, Reduction, Role,
+    Scopes, Stmt, UnaryOp, arity_mismatch, bare_name, same_name,
 };
-use crate::symbol::Scopes;
 use pixelflow_ir::{Binder, Fold, OpKind};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;

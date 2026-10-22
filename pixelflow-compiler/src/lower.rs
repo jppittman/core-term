@@ -58,17 +58,15 @@
 //! — its [`Site::Argument`] is uninhabited — so no entry that takes one can
 //! be lowered there.
 
-use crate::PLAN;
 use crate::ast::{
     BinaryOp, BlockExpr, Callable, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt,
-    LibraryMethod, Method, MethodCallExpr, Name, ProjectExpr, Projection, RecordId, Reduction,
-    Role, Stmt, UnaryOp, same_name,
+    LibraryMethod, Method, MethodCallExpr, Name, PLAN, ProjectExpr, Projection, RecordId,
+    Reduction, Role, Scopes, Stmt, UnaryOp, same_name,
 };
 use crate::sema::{
     AnalyzedKernel, Bounds, ConstValue, Parameter, RangeScope, Scalar, StructuralRange,
     folds_nested_too_deep, range_bounds,
 };
-use crate::symbol::Scopes;
 use pixelflow_ir::arena::{Axis, ExprArena, ExprId, OpenFold, UniformDecl, UniformIdentity};
 use pixelflow_ir::library;
 use pixelflow_ir::{Binder, Fold, Monoid, OpKind};

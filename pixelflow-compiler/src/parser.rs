@@ -91,7 +91,7 @@
 //! KERNEL     -- a kernel-typed parameter in scope
 //! ```
 //!
-//! A `let` is scoped as Rust scopes it (`crate::symbol`), and so is a fold's
+//! A `let` is scoped as Rust scopes it ([`crate::ast::Scopes`]), and so is a fold's
 //! index: its body sees the enclosing bindings, an enclosing fold's index
 //! among them. Nothing shadows `X`, `Y`, a `const`, a structural parameter
 //! or a `fn`: a parameter, a `let` or an index of that name is refused. `X`
@@ -191,11 +191,10 @@
 //! This gives us Rust's expression parsing for free while maintaining our
 //! own semantic layer.
 
-use crate::PLAN;
 use crate::ast::{
     Arity, BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ClosureEntry, ConstItem, Expr,
     FieldExpr, FnItem, FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr,
-    Method, MethodCallExpr, Name, Param, ProjectExpr, Projection, RangeExpr, RecordField,
+    Method, MethodCallExpr, Name, PLAN, Param, ProjectExpr, Projection, RangeExpr, RecordField,
     RecordItem, Reduction, Stmt, UnaryExpr, UnaryOp, arity_mismatch, is_f32, is_usize, same_name,
 };
 use proc_macro2::{Span, TokenStream};
@@ -1646,11 +1645,19 @@ fn convert_range(range: syn::ExprRange, nesting: Nesting) -> syn::Result<RangeEx
 /// A binary operator, or the refusal that names it. `%` has no IR op, and a
 /// compound assignment assigns.
 fn binary_op(op: &syn::BinOp) -> syn::Result<BinaryOp> {
-    if let Some(op) = BinaryOp::from_syn(op) {
-        return Ok(op);
-    }
-    let spelling = quote::quote!(#op).to_string();
     let message = match op {
+        syn::BinOp::Add(_) => return Ok(BinaryOp::Add),
+        syn::BinOp::Sub(_) => return Ok(BinaryOp::Sub),
+        syn::BinOp::Mul(_) => return Ok(BinaryOp::Mul),
+        syn::BinOp::Div(_) => return Ok(BinaryOp::Div),
+        syn::BinOp::Lt(_) => return Ok(BinaryOp::Lt),
+        syn::BinOp::Le(_) => return Ok(BinaryOp::Le),
+        syn::BinOp::Gt(_) => return Ok(BinaryOp::Gt),
+        syn::BinOp::Ge(_) => return Ok(BinaryOp::Ge),
+        syn::BinOp::Eq(_) => return Ok(BinaryOp::Eq),
+        syn::BinOp::Ne(_) => return Ok(BinaryOp::Ne),
+        syn::BinOp::BitAnd(_) => return Ok(BinaryOp::BitAnd),
+        syn::BinOp::BitOr(_) => return Ok(BinaryOp::BitOr),
         syn::BinOp::AddAssign(_)
         | syn::BinOp::SubAssign(_)
         | syn::BinOp::MulAssign(_)
@@ -1661,21 +1668,23 @@ fn binary_op(op: &syn::BinOp) -> syn::Result<BinaryOp> {
         | syn::BinOp::BitOrAssign(_)
         | syn::BinOp::ShlAssign(_)
         | syn::BinOp::ShrAssign(_) => format!(
-            "`{spelling}` assigns, and a kernel body assigns nothing\n\
+            "`{}` assigns, and a kernel body assigns nothing\n\
              \n\
-             note: a kernel body binds a name once, with `let`; nothing is mutable"
+             note: a kernel body binds a name once, with `let`; nothing is mutable",
+            quote::quote!(#op)
         ),
         syn::BinOp::Rem(_) => "`%` has no IR op\n\
              \n\
              help: `a - (a / b).floor() * b` is the remainder with the floor's sign"
             .to_string(),
         _ => format!(
-            "unsupported binary operator `{spelling}`\n\
+            "unsupported binary operator `{}`\n\
              \n\
              note: the kernel! macro supports these binary operators:\n\
              note:   arithmetic: + - * /\n\
              note:   comparison: < <= > >= == != (a `bool`)\n\
-             note:   on `bool`s: & |"
+             note:   on `bool`s: & |",
+            quote::quote!(#op)
         ),
     };
     Err(syn::Error::new_spanned(op, message))
@@ -1683,10 +1692,8 @@ fn binary_op(op: &syn::BinOp) -> syn::Result<BinaryOp> {
 
 /// A unary operator, or the refusal that names it. `!` has no IR op.
 fn unary_op(op: &syn::UnOp) -> syn::Result<UnaryOp> {
-    if let Some(op) = UnaryOp::from_syn(op) {
-        return Ok(op);
-    }
     let message = match op {
+        syn::UnOp::Neg(_) => return Ok(UnaryOp::Neg),
         syn::UnOp::Not(_) => "`!` has no IR op yet\n\
              \n\
              help: write the comparison that means the negation, or swap the arms of the `if`"

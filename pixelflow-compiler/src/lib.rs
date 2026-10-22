@@ -8,7 +8,7 @@
 //! Source (macro input)
 //!     │
 //!     ▼ Parser (parser.rs)
-//! AST (ast.rs)
+//! AST (ast/)
 //!     │
 //!     ▼ Semantic Analysis (sema.rs)
 //! Analyzed AST
@@ -53,17 +53,14 @@ mod emit;
 mod lower;
 mod parser;
 mod sema;
-mod symbol;
+#[cfg(test)]
+mod tests;
 
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 use pixelflow_ir::optimize::{Identity, Optimize, Rewritten};
 use pixelflow_search::Saturate;
 use proc_macro::TokenStream;
-
-/// The plan that owns the constructs the front end refuses by phase: a
-/// refusal of one names the phase that brings it.
-pub(crate) const PLAN: &str = "docs/language/2026-09-25-the-language-is-kernel.md";
 
 /// The `kernel!` macro: the language, as a block of items or as a closure. An
 /// entry with no structural or kernel-typed parameter and no `Dwrt` is
