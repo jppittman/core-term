@@ -401,6 +401,33 @@ fn it_should_overwrite_first_half_of_wide_char_with_ascii() {
     );
 }
 
+/// Same as `it_should_overwrite_first_half_of_wide_char_with_ascii`, but with
+/// a non-ASCII narrow character so the print goes through `print_char`'s own
+/// stale-spacer-clearing logic rather than the identity-ASCII fast path's
+/// `Screen::write_ascii`, which clears it independently.
+#[test]
+fn it_should_overwrite_first_half_of_wide_char_with_a_non_ascii_narrow_char() {
+    let mut term = create_test_emulator(5, 1);
+    term.print_text("世");
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(1, 1),
+    )));
+    term.print_text("é");
+    let snapshot = term.get_render_snapshot().expect("Snapshot was None");
+
+    let glyph_e = get_glyph_from_snapshot(&snapshot, 0, 0).unwrap();
+    match glyph_e {
+        Glyph::Single(cell) => assert_eq!(cell.c, 'é'),
+        _ => panic!("Expected Single 'é' at (0,0)"),
+    }
+    let glyph_after_e = get_glyph_from_snapshot(&snapshot, 0, 1).unwrap();
+    assert!(
+        !matches!(glyph_after_e, Glyph::WideSpacer),
+        "Cell after 'é' should not be a wide_char_spacer, got {:?}",
+        glyph_after_e
+    );
+}
+
 #[test]
 fn it_should_overwrite_second_half_of_wide_char_with_ascii() {
     let mut term = create_test_emulator(5, 1);
