@@ -46,6 +46,7 @@
 //!   └── Paren(inner)                   // (a + b)
 //! ```
 
+use pixelflow_ir::arena::Axis;
 use pixelflow_ir::{OpKind, known_method_names};
 use proc_macro2::Span;
 use syn::ext::IdentExt;
@@ -184,7 +185,7 @@ impl<'a> Callable<'a> {
 /// (a second `fn r#f` beside `f`), or miss what the other bound. Every map
 /// keyed by a name, and every comparison of two, is by this, built only from
 /// an identifier ([`Name::of`]) or, for the two the language spells itself,
-/// from its text ([`Name::spelled`]).
+/// by [`Name::coordinates`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Name(Ident);
 
@@ -194,9 +195,30 @@ impl Name {
         Name(ident.unraw())
     }
 
+    /// The coordinate intrinsics, by spelling. A lattice has two axes; `Z`
+    /// and `W` are refused by name in sema, with the message that points at
+    /// uniforms.
+    const COORDINATES: [(&'static str, Axis); 2] = [("X", Axis::X), ("Y", Axis::Y)];
+
     /// A name the language spells itself, as plain text: `X` and `Y`.
-    pub(crate) fn spelled(text: &str) -> Self {
+    fn spelled(text: &str) -> Self {
         Name(Ident::new(text, Span::call_site()))
+    }
+
+    /// The axis this name is the coordinate of, if it is one.
+    pub(crate) fn coordinate(&self) -> Option<Axis> {
+        Self::COORDINATES
+            .into_iter()
+            .find(|&(spelling, _)| self == spelling)
+            .map(|(_, axis)| axis)
+    }
+
+    /// The two names the language spells itself, each with its axis: `X`
+    /// then `Y`.
+    pub(crate) fn coordinates() -> impl Iterator<Item = (Name, Axis)> {
+        Self::COORDINATES
+            .into_iter()
+            .map(|(spelling, axis)| (Name::spelled(spelling), axis))
     }
 }
 

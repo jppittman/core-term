@@ -41,6 +41,28 @@
 //!    path (an `if`'s arms are two), uses it after that on that path not at
 //!    all, and never inside a fold's body.
 //!
+//! ## Symbol Classes
+//!
+//! | Class      | Binding Time        | Arena Representation | Example |
+//! |------------|---------------------|----------------------|---------|
+//! | Intrinsic  | Collapse time       | `Var(0)`, `Var(1)`   | X, Y    |
+//! | Parameter  | Per call (uniform)  | `Uniform(slot)`, one per record field | cx, p |
+//! | Structural | Instantiation       | a count; `N as f32` is `Const(N)` | N |
+//! | Const      | Expansion time      | `Const(v)`, or a count | PI, N |
+//! | Local      | Expression scope    | A shared `ExprId`, or a record's fields | dx, q |
+//! | Index      | A fold's body       | The fold's binder `Var` | i    |
+//!
+//! A helper's parameters are a further thing at lowering — the argument's
+//! own node, or a record argument's fields, bound by name where the helper
+//! is inlined — but to `sema` they are parameters like any other: a name
+//! with a type.
+//!
+//! A kernel-typed parameter, `impl Fn(f32, f32) -> f32` (Phase D-a), is a
+//! `Parameter` of type [`Ty::Kernel`]. To `sema` it is a name that is
+//! applied, `k(x, y)`, or passed on; at lowering it is an argument admitted
+//! when the entry's host function is called, whose term each application
+//! splices in at its coordinates.
+//!
 //! ## Symbol Resolution Rules
 //!
 //! An identifier resolves to the innermost binding of its name in scope:
@@ -75,7 +97,7 @@ use crate::ast::{
     Name, Param, ProjectExpr, Projection, RangeExpr, RecordField, RecordId, Reduction, Role, Stmt,
     UnaryOp, arity_mismatch, bare_name, same_name,
 };
-use crate::symbol::{SymbolKind, SymbolTable};
+use crate::symbol::Scopes;
 use pixelflow_ir::{Binder, Fold, OpKind};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -403,7 +425,7 @@ impl<'a> Items<'a> {
     fn refuse_a_taken_name(&self, name: &Ident) -> syn::Result<()> {
         let text = name.to_string();
         let key = Name::of(name);
-        if SymbolTable::coordinate(&key).is_some() {
+        if key.coordinate().is_some() {
             return Err(syn::Error::new(
                 name.span(),
                 format!("`{text}` is the intrinsic coordinate; an item cannot be named after it"),
@@ -609,6 +631,42 @@ impl<'a> Items<'a> {
     }
 }
 
+/// The binding class of a symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolKind {
+    /// Intrinsic coordinate variable (X, Y).
+    /// Bound at collapse time, as a `Var` node.
+    Intrinsic,
+
+    /// A declared parameter (e.g., `r: f32`): an entry's is bound when its
+    /// host function runs, a helper's where the helper is inlined.
+    Parameter,
+
+    /// A `const` item, evaluated at expansion.
+    Const,
+
+    /// An entry's structural parameter (`const N: usize`): a count, fixed
+    /// when its host function is instantiated.
+    Structural,
+
+    /// Local variable introduced by `let`.
+    /// Scoped to the containing block.
+    Local,
+
+    /// A fold's index, the closure's parameter: a `usize`, scoped to the
+    /// fold's body.
+    Index,
+}
+
+/// A name's binding, as the body's analysis sees it.
+#[derive(Debug, Clone, Copy)]
+struct Symbol {
+    /// What kind of symbol this is.
+    kind: SymbolKind,
+    /// The symbol's type.
+    ty: Ty,
+}
+
 /// The analysis of one `fn` body: its symbols, and the block's items.
 struct FnAnalyzer<'a> {
     items: &'a Items<'a>,
@@ -621,7 +679,7 @@ struct FnAnalyzer<'a> {
     /// type, or nothing for the closure form, whose type is inferred.
     declared: Option<(&'a Ident, Ty)>,
     body: &'a Expr,
-    symbols: SymbolTable,
+    symbols: Scopes<Symbol>,
     /// How many folds' bodies the walk is inside: a fold's body is a Rust
     /// closure, and a closure `.map` calls again cannot move what it
     /// captured.
@@ -649,12 +707,27 @@ impl<'a> FnAnalyzer<'a> {
             role: f.role,
             declared: f.name.map(|name| (name, items.fns[&Name::of(name)].ret)),
             body: f.body,
-            symbols: SymbolTable::new(),
+            symbols: Scopes::default(),
             folds_open: 0,
             moved: HashMap::new(),
         };
+        for (name, _) in Name::coordinates() {
+            analyzer.symbols.bind(
+                name,
+                Symbol {
+                    kind: SymbolKind::Intrinsic,
+                    ty: Ty::F32,
+                },
+            );
+        }
         for (name, &ty) in &items.consts {
-            analyzer.symbols.register_const(name.clone(), ty);
+            analyzer.symbols.bind(
+                name.clone(),
+                Symbol {
+                    kind: SymbolKind::Const,
+                    ty,
+                },
+            );
         }
         for count in f.structural {
             analyzer.register_structural(count)?;
@@ -682,7 +755,7 @@ impl<'a> FnAnalyzer<'a> {
         }
     }
 
-    /// Register a parameter in the symbol table.
+    /// Bind a parameter in the function's scope.
     fn register_parameter(&mut self, param: &Param, ty: Ty) -> syn::Result<()> {
         let name = Name::of(&param.name);
         self.refuse_shadowing_an_item(&param.name, "parameter")?;
@@ -696,7 +769,13 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        self.symbols.register_parameter(name, ty);
+        self.symbols.bind(
+            name,
+            Symbol {
+                kind: SymbolKind::Parameter,
+                ty,
+            },
+        );
         Ok(())
     }
 
@@ -712,7 +791,13 @@ impl<'a> FnAnalyzer<'a> {
             ));
         }
         self.refuse_shadowing_an_item(count, "a structural parameter")?;
-        self.symbols.register_structural(name);
+        self.symbols.bind(
+            name,
+            Symbol {
+                kind: SymbolKind::Structural,
+                ty: Ty::Usize,
+            },
+        );
         Ok(())
     }
 
@@ -740,7 +825,11 @@ impl<'a> FnAnalyzer<'a> {
         // matched the coordinate names first still read the coordinate
         // (`{ let X = Y; X }`): refusing the binding keeps every `X` the
         // coordinate.
-        if self.symbols.is_intrinsic(&key) {
+        let is_intrinsic = self
+            .symbols
+            .lookup(&key)
+            .is_some_and(|s| s.kind == SymbolKind::Intrinsic);
+        if is_intrinsic {
             return Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -892,7 +981,14 @@ impl<'a> FnAnalyzer<'a> {
         self.refuse_shadowing_an_item(&fold.binder, "a fold's index")?;
         let (term, what) = term_type(fold.reduction);
         self.symbols.push_scope();
-        self.symbols.register_index(Name::of(&fold.binder));
+        // The fold's index is a `usize` in the scope its body is typed in.
+        self.symbols.bind(
+            Name::of(&fold.binder),
+            Symbol {
+                kind: SymbolKind::Index,
+                ty: Ty::Usize,
+            },
+        );
         self.folds_open += 1;
         let typed = self.expect(&fold.body, term, what);
         self.folds_open -= 1;
@@ -1367,7 +1463,13 @@ impl<'a> FnAnalyzer<'a> {
             found.push(self.let_type(let_stmt)?);
         }
         for (let_stmt, ty) in lets.iter().zip(found) {
-            self.symbols.register_local(Name::of(&let_stmt.name), ty);
+            self.symbols.bind(
+                Name::of(&let_stmt.name),
+                Symbol {
+                    kind: SymbolKind::Local,
+                    ty,
+                },
+            );
         }
         Ok(())
     }

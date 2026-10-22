@@ -11,7 +11,7 @@
 //! AST (ast.rs)
 //!     │
 //!     ▼ Semantic Analysis (sema.rs)
-//! Analyzed AST + Symbol Table
+//! Analyzed AST
 //!     │
 //!     ▼ Arena lowering (lower.rs)
 //! ExprArena

@@ -68,7 +68,7 @@ use crate::sema::{
     AnalyzedKernel, Bounds, ConstValue, Parameter, RangeScope, Scalar, StructuralRange,
     folds_nested_too_deep, range_bounds,
 };
-use crate::symbol::{Scopes, SymbolTable};
+use crate::symbol::Scopes;
 use pixelflow_ir::arena::{Axis, ExprArena, ExprId, OpenFold, UniformDecl, UniformIdentity};
 use pixelflow_ir::library;
 use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
@@ -853,7 +853,8 @@ impl<S: Site> Lowering<'_, S> {
             !self.frame.structural.iter().any(|n| Name::of(n) == *name),
             "sema refuses the structural parameter `{name}` read as a value"
         );
-        let axis = SymbolTable::coordinate(name)
+        let axis = name
+            .coordinate()
             .unwrap_or_else(|| unreachable!("sema refuses the unknown name `{name}`"));
         match self.frame.role {
             Role::Entry => Ok(self.site.coordinate(axis)),
