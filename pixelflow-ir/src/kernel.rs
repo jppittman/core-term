@@ -727,7 +727,7 @@ impl Kernel {
     ///
     /// # Panics
     ///
-    /// Panics unless [`Fold::admits`] `range`: if it runs backwards, or ends
+    /// Panics unless [`KnownRange::admits`](crate::fold::KnownRange::admits) `range`: if it runs backwards, or ends
     /// past 2²⁴, where an `f32` index stops naming every integer. Panics too
     /// when the body already binds every slot, i.e. one fold deeper than the
     /// index space.

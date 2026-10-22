@@ -69,7 +69,7 @@
     then deleted (d8c39481, 5df0ece2).
 - **Follows:** lowering holds no copy of fract, hypot, clamp, the
   derivative, the binder's choice and rename (`close_over`), or a range's
-  bound (`Fold::admits`) (B5). Production kernels move onto `kernel!` (C1,
+  bound (`KnownRange::admits`) (B5). Production kernels move onto `kernel!` (C1,
   D-c).
 - **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser.rs`, `sema.rs`,
   `lower.rs`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
@@ -416,7 +416,7 @@
 
 ### Fold (Reduce)
 
-- **Is:** `⟦Reduce{fold, body}⟧ = ⊕_{k ∈ fold.range()} ⟦body⟧[binder := k]`,
+- **Is:** `⟦Reduce{fold, body}⟧ = ⊕_{k ∈ range} ⟦body⟧[binder := k]`, `range` its `KnownRange`,
   meaning ⊕ over a set under a monoid. "A reduction … means the same thing
   computed as one term peeled off a shorter reduction, as a split into two,
   or as a fully unrolled chain." It is the one node that binds. Its monoid,
@@ -510,11 +510,13 @@
   (a-glyph-is-a-formula §4.2).
 - **Follows:** the trip count is in the kernel's key, so 34 pieces and 11
   pieces are two compiles. Constructors refuse a range past 2²⁴
-  (`Fold::admits`). The allocator ranks carries by static trip counts.
+  (`KnownRange::admits`). The allocator ranks carries by static trip counts.
   `bucketed_trip_count`'s power-of-two padding existed only because of
   this, and goes (G3).
-- **Lives:** `Fold { lo, hi, stride }`, `Fold::admits`, `Fold::EXACT_BOUND`
-  (`pixelflow-ir/src/fold.rs`). Decided in a-fold-is-a-node §3,
+- **Lives:** `Fold { lo, hi, stride }`, `Fold::EXACT_BOUND`, `KnownRange`
+  and `KnownRange::admits` (`pixelflow-ir/src/fold.rs`); a range is read
+  through `ExprArena::known_range`, `ENode::known_range` or
+  `ScheduledOp::Reduce`'s copy. Decided in a-fold-is-a-node §3,
   a-surviving-reduce-is-a-loop §1 and §5, and the-language-is-kernel §1.5.
   Today the ends are `u32`, against the 64-bit rule, and
   `bucketed_trip_count` still pads in

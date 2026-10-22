@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use pixelflow_ir::arena::{BufferDecl, UniformDecl};
-use pixelflow_ir::fold::Fold;
+use pixelflow_ir::fold::{Fold, KnownRange};
 use pixelflow_ir::{KernelKey, OpKind, ShiftCount, Variance};
 
 use super::shift::ShiftDirection;
@@ -323,11 +323,22 @@ impl ENode {
         }
     }
 
-    /// The fold this node performs, if it is one.
-    pub fn fold(&self) -> Option<Fold> {
+    /// The range of the fold this node performs, when it is known: every bound
+    /// is a constant today, so this is `Some` for every fold.
+    ///
+    /// The e-graph's reader of a fold's range, beside the arena's and the
+    /// schedule's. **Per node, not per class:** after `HalveFold` one class
+    /// holds two `Reduce` nodes over different ranges (the original and its
+    /// strided form), so a class has no range of its own — a rule or a price
+    /// reads the node it is looking at.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this is not a [`ENode::Reduce`]: only a fold has a range.
+    pub fn known_range(&self) -> Option<KnownRange> {
         match self {
-            ENode::Reduce { fold, .. } => Some(*fold),
-            _ => None,
+            ENode::Reduce { fold, .. } => fold.known_range(),
+            other => panic!("known_range: {other:?} is not a Reduce — only a fold has a range"),
         }
     }
 

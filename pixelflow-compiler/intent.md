@@ -17,7 +17,7 @@ that term to is an `Optimize` value, never a branch (§8).
 ## Never
 - No construct is defined here. Lowering calls `pixelflow_ir::library`
   (`fract`, `hypot`, `clamp`, the derivative), `ExprArena::close_over`,
-  `Fold::admits` and `ExprArena::apply`; a copy is a future divergence.
+  `KnownRange::admits` and `ExprArena::apply`; a copy is a future divergence.
 - No `Dwrt` is resolved at expansion: `macro_tier` declines an arena that
   carries one, so a warp reaches its operand and the chain rule holds.
 - No compilation or evaluation at expansion (`[dependencies]` holds no
@@ -50,7 +50,7 @@ optimizer)`. Behind them: `parser.rs` (tokens to `ast.rs`),
   saturates any entry with no structural or kernel-typed parameter and no
   `Dwrt`; the plan optimizes nothing at expansion unless the instance is
   declared, and deletes all three (the-language-is-kernel §1.8, D2, D14).
-- A fold's ends are `u32` (`known_range`) and a structural count read as a
+- A fold's ends are `u32` (`literal_range`) and a structural count read as a
   value rides `Param(u8)`, at most 256, against the 64-bit control plane (A5, D2).
 
 ## Decided in

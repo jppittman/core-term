@@ -48,6 +48,7 @@
 //! [`Kernel`]: pixelflow_core::Kernel
 
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
+use pixelflow_ir::fold::KNOWN_RANGE;
 use pixelflow_ir::optimize::Optimize;
 use pixelflow_ir::{Fold, OpKind};
 use proc_macro2::TokenStream;
@@ -373,7 +374,7 @@ fn emit_const(item: &ConstItem, value: ConstValue) -> TokenStream {
 /// An open fold's range, evaluated when the host function is instantiated:
 /// in a `const` block, so rustc checks each operation of the bounds as it
 /// checks any `const`, and refuses — per instantiation — the ranges the IR
-/// refuses ([`Fold::admits`]): one that runs backwards, and one past
+/// refuses ([`KnownRange::admits`](pixelflow_ir::KnownRange::admits)): one that runs backwards, and one past
 /// [`Fold::EXACT_BOUND`], the last bound a fold's index names exactly.
 /// The bound is the IR's, imported; what the `const` block adds is that the
 /// refusal is rustc's rather than `Fold::new`'s panic.
@@ -583,7 +584,8 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
             };
             // An open fold keeps its monoid and binder, which are
             // structure, and takes its range from this instantiation.
-            let emitted = match context.holes.range_of(fold) {
+            let header_range = arena.known_range(id).expect(KNOWN_RANGE);
+            let emitted = match context.holes.range_of(header_range) {
                 None => decoded,
                 Some(range) => {
                     let range = instantiated_range(range);
