@@ -17,6 +17,7 @@
 //! forgets a rule; the one large call is the only one that sees everything.
 
 mod identify;
+mod module;
 mod plan;
 mod reply;
 mod run;

@@ -1229,3 +1229,107 @@ async fn every_converging_module_is_named_at_once() {
         "in module order"
     );
 }
+
+#[tokio::test]
+async fn the_namer_sees_the_root_outline_first_then_the_files_with_the_most_symptoms() {
+    let tree = Tree::new(
+        "order",
+        &[("first", EVERYTHING), ("second", EVERYTHING)],
+        &[
+            ("m/mod.rs", "mod a;\nmod b;\npub fn distinctive_root() {}\n"),
+            ("m/a.rs", "fn distinctive_a() {}\n"),
+            ("m/b.rs", "fn distinctive_b() {}\n"),
+            ("m/c.rs", "fn distinctive_c() {}\n"),
+        ],
+    );
+    // One, three and two findings: most-first (b, c, a) differs from path order
+    // (a, b, c), from its reverse (c, b, a) and from fewest-first (a, c, b).
+    let reviewers = reviewers(
+        Scripted::new(|asked| {
+            Ok(match asked.kind {
+                Kind::Decide => WRONG.into(),
+                _ if asked.prompt.contains("b.rs") => findings_on_lines(3),
+                _ if asked.prompt.contains("c.rs") => findings_on_lines(2),
+                _ => findings_on_lines(1),
+            })
+        }),
+        decide::none(),
+    );
+    let report = run(&tree, &["m/a.rs", "m/b.rs", "m/c.rs"], &reviewers).await;
+
+    let namer = Scripted::new(naming);
+    identify(&namer, &report).await.unwrap();
+    let prompt = &namer.asked()[0].prompt;
+    let at = |code: &str| {
+        prompt
+            .find(code)
+            .unwrap_or_else(|| panic!("{code}: {prompt}"))
+    };
+    assert!(at("distinctive_root") < at("distinctive_b"), "{prompt}");
+    assert!(at("distinctive_b") < at("distinctive_c"), "{prompt}");
+    assert!(at("distinctive_c") < at("distinctive_a"), "{prompt}");
+}
+
+/// `count` findings, on lines 1 to `count`, each under the rule's violation.
+fn findings_on_lines(count: usize) -> String {
+    let each: Vec<String> = (1..=count)
+        .map(|line| format!(r#"{{"outcome": "wrong", "line": {line}, "message": "m{line}"}}"#))
+        .collect();
+    format!(r#"{{"findings": [{}]}}"#, each.join(", "))
+}
+
+#[tokio::test]
+async fn a_file_in_a_directory_without_a_root_clusters_with_the_enclosing_module() {
+    let tree = Tree::new(
+        "enclosing",
+        &[("first", EVERYTHING), ("second", EVERYTHING)],
+        &[
+            ("m/mod.rs", "mod sub;\n"),
+            ("m/sub/deep.rs", "fn deep() {}\n"),
+        ],
+    );
+    let reviewers = reviewers(Scripted::new(CONVERGING), decide::none());
+    let report = run(&tree, &["m/mod.rs", "m/sub/deep.rs"], &reviewers).await;
+
+    let namer = Scripted::new(naming);
+    let identified = identify(&namer, &report).await.unwrap();
+    let identifying: Vec<_> = namer
+        .asked()
+        .into_iter()
+        .filter(|a| a.kind == Kind::Identify)
+        .collect();
+    assert_eq!(identifying.len(), 1, "one module, not two");
+    assert!(
+        identifying[0]
+            .prompt
+            .starts_with(&format!("Module: {}\n", tree.path("m").display()))
+    );
+    assert!(identifying[0].prompt.contains("deep.rs"));
+    assert_eq!(identified.things[0].component, tree.path("m"));
+}
+
+#[tokio::test]
+async fn a_directory_without_a_root_file_shows_its_files_no_module_root() {
+    let tree = Tree::new(
+        "no-root",
+        &[(
+            "contract",
+            r#"{"unit": "file", "levels": {"decide": 1, "explain": 1}, "context": "module_root",
+                "question": "q", "fine": {"f": "f"}, "violations": {"v": "v"}}"#,
+        )],
+        &[
+            ("m/mod.rs", "mod sub;\n"),
+            ("m/sub/deep.rs", "fn deep() {}\n"),
+        ],
+    );
+    let reviewers = reviewers(Scripted::new(|_| Ok(UNSURE.into())), decide::none());
+    run(&tree, &["m/sub/deep.rs"], &reviewers).await;
+
+    let asked = reviewers.ask.asked();
+    assert_eq!(asked.len(), 1);
+    assert!(
+        !asked[0].prompt.contains("For context only"),
+        "{}",
+        asked[0].prompt
+    );
+}

@@ -3,18 +3,16 @@
 //! every module at once; the judgment is the synthesis's.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use futures::future::join_all;
 use serde::Deserialize;
 
-use super::plan::ROOT_FILES;
+use super::module;
 use super::{Finding, Identified, Report, Thing};
 use crate::agent::{Ask, Question, Usage};
-use crate::language::Language;
 use crate::model::ModelLevel;
-use crate::snippet::outline;
 
 /// A module's things are named once its findings come from at least this
 /// many rules: symptoms that converge from different angles.
@@ -111,7 +109,7 @@ pub(super) async fn identify<A: Ask>(agent: &A, report: &Report) -> Result<Ident
 /// The things one cluster's symptoms are about, each described.
 async fn named<A: Ask>(agent: &A, cluster: &Cluster, findings: &[Finding]) -> Result<Identified> {
     let symptoms = cluster.symptoms.iter().map(|&i| findings[i].path.as_path());
-    let (shape, _) = shape(&cluster.component, symptoms, MAX_SHAPE_LINES)?;
+    let (shape, _) = module::shape(&cluster.component, symptoms, MAX_SHAPE_LINES)?;
     let mut usage = Usage::default();
     let prompt = format!(
         "Module: {}\n\nSymptoms:\n{}\nThe module's outline:\n\n{shape}",
@@ -211,7 +209,7 @@ fn clusters(findings: &[Finding]) -> Vec<Cluster> {
     let mut by_component: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
     for (index, finding) in findings.iter().enumerate() {
         by_component
-            .entry(component(&finding.path))
+            .entry(module::containing(&finding.path))
             .or_default()
             .push(index);
     }
@@ -229,75 +227,6 @@ fn clusters(findings: &[Finding]) -> Vec<Cluster> {
             symptoms,
         })
         .collect()
-}
-
-/// The module `path` belongs to: the nearest directory, from its own, that
-/// holds a module root; a crate-wide finding's path is its crate already.
-fn component(path: &Path) -> PathBuf {
-    if path.is_dir() {
-        return path.to_path_buf();
-    }
-    path.ancestors()
-        .skip(1)
-        .find(|dir| ROOT_FILES.iter().any(|root| dir.join(root).is_file()))
-        .or_else(|| path.parent())
-        .map_or_else(PathBuf::new, Path::to_path_buf)
-}
-
-/// The outline of the module at `component`: its root first, then the files
-/// `symptoms` are in, most symptoms first, each under a `== path ==` header,
-/// to at most `budget` lines (the first file is shown whole). Returns the
-/// lines used.
-pub(super) fn shape<'p>(
-    component: &Path,
-    symptoms: impl Iterator<Item = &'p Path>,
-    budget: usize,
-) -> Result<(String, usize)> {
-    let mut by_file: BTreeMap<&Path, usize> = BTreeMap::new();
-    for path in symptoms {
-        *by_file.entry(path).or_default() += 1;
-    }
-    let mut files: Vec<(PathBuf, usize)> = ROOT_FILES
-        .iter()
-        .map(|root| component.join(root))
-        .filter(|root| root.is_file())
-        .map(|root| (root, usize::MAX))
-        .collect();
-    files.extend(
-        by_file
-            .into_iter()
-            .filter(|(path, _)| path.is_file())
-            .map(|(path, n)| (path.to_path_buf(), n)),
-    );
-    files.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    files.dedup_by(|a, b| a.0 == b.0);
-
-    let mut shape = String::new();
-    let mut lines = 0;
-    for (path, _) in files {
-        let Some(language) = Language::of(&path) else {
-            continue;
-        };
-        let source = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let outlined =
-            outline(language, &source).with_context(|| format!("parsing {}", path.display()))?;
-        let length = outlined.numbered.lines().count();
-        if lines + length > budget && lines > 0 {
-            shape.push_str(&format!(
-                "== {} == (omitted: over budget)\n",
-                path.display()
-            ));
-            continue;
-        }
-        lines += length;
-        shape.push_str(&format!(
-            "== {} ==\n{}\n",
-            path.display(),
-            outlined.numbered
-        ));
-    }
-    Ok((shape, lines))
 }
 
 /// The findings at `indexes`, numbered from `S1`.
