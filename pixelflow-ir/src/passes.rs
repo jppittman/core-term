@@ -1503,7 +1503,7 @@ fn horner_step(arena: &mut ExprArena, acc: ExprId, x: ExprId, add: ExprId) -> Ex
 #[cfg(test)]
 mod dwrt_tests {
     use super::*;
-    use crate::fold::{Binder, Fold, Monoid};
+    use crate::fold::{Binder, Fold, KNOWN_RANGE, Monoid};
 
     /// The first reduction binder — `Var(4)`, which these folds bind.
     fn binder() -> Binder {
@@ -1566,10 +1566,10 @@ mod dwrt_tests {
         let mut a = ExprArena::new();
         let body = a.push_var(4);
         let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
-        let ExprNode::Reduce { fold, .. } = a.node(red) else {
+        let ExprNode::Reduce { .. } = a.node(red) else {
             panic!("expected a range fold");
         };
-        assert_eq!(fold.len(), 4);
+        assert_eq!(a.known_range(red).expect(KNOWN_RANGE).len(), 4);
         // The trip count is not reachable from the node's children, so no
         // rewrite can substitute anything for it.
         assert_eq!(a.children(red).count(), 1);
@@ -1903,7 +1903,7 @@ impl Optimize for LowerDwrt {
 #[cfg(test)]
 mod nested_reduce_tests {
     use super::*;
-    use crate::fold::{Binder, Fold, Monoid};
+    use crate::fold::{Binder, Fold, KNOWN_RANGE, Monoid};
 
     /// Every `Reduce` reachable from `root`.
     fn reachable_reduces(arena: &ExprArena, root: ExprId) -> usize {
@@ -1969,10 +1969,19 @@ mod nested_reduce_tests {
             panic!("root must be the lattice's row fold");
         };
         assert_eq!(fold.monoid(), Monoid::SEQ);
-        assert_eq!(fold.range(), 0..1);
+        assert_eq!(
+            legalized.known_range(new_root).expect(KNOWN_RANGE).range(),
+            0..1
+        );
+        // A fold's range is read through the arena, which panics on any other
+        // node: keep the shape check first.
+        let ranges_over = |id: ExprId, range: core::ops::Range<u32>| {
+            matches!(legalized.node(id), ExprNode::Reduce { .. })
+                && legalized.known_range(id).expect(KNOWN_RANGE).range() == range
+        };
         let outer = (0..legalized.len())
             .map(|k| ExprId(k as u32))
-            .find(|id| matches!(legalized.node(*id), ExprNode::Reduce { fold, .. } if fold.range() == (0..2)))
+            .find(|id| ranges_over(*id, 0..2))
             .expect("the outer kernel fold survives");
         let ExprNode::Reduce { body, .. } = legalized.node(outer) else {
             unreachable!()
@@ -1981,7 +1990,7 @@ mod nested_reduce_tests {
             panic!("the outer body must still be `inner + j`");
         };
         assert!(
-            matches!(legalized.node(lhs), ExprNode::Reduce { fold, .. } if fold.range() == (0..3)),
+            ranges_over(lhs, 0..3),
             "the inner Reduce must be the outer body's own operand, not unrolled into it"
         );
     }

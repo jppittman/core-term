@@ -1,6 +1,6 @@
 //! A fold over nothing varies with nothing.
 //!
-//! `⊕_{i∈∅} body` is the monoid's identity (`Fold::is_empty`): a constant,
+//! `⊕_{i∈∅} body` is the monoid's identity (`KnownRange::is_empty`): a constant,
 //! whatever its body reads. By the variance law (if `b ∉ var(v)` then `⟦v⟧` is
 //! constant along `b`) the exact set for a constant is empty, so the fold adds
 //! nothing to its readers. Read off the body (`deps(body) \ {i}`), it would

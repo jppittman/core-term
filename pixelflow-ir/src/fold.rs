@@ -116,7 +116,7 @@ impl Monoid {
 ///
 /// The one shape a fold of *distinct* terms has. Not [`Kernel::over`]'s,
 /// which folds one body over an index, and not a halved fold's, which
-/// pairs its terms (`Fold::halve`): those are one body `N`
+/// pairs its terms (`KnownRange::halve`): those are one body `N`
 /// times. [`Kernel::fold`] builds through it.
 ///
 /// Generic over how a node is named, and handed each node to build as a
@@ -276,13 +276,21 @@ const _: () = assert!(Placeholder::COUNT >= Binder::COUNT);
 ///
 /// `⟦Reduce { fold, body }⟧ = ⊕_{k ∈ lo, lo+s, lo+2s, …, hi-s} ⟦body⟧[fold.binder() := k]`
 ///
-/// `s` is [`Fold::stride`]: 1 from [`Fold::new`], or whatever [`Fold::strided`]
-/// was given directly — `pack` strip-mining a lattice's column fold is the
-/// reason a second constructor exists at all. After construction, only
-/// [`Fold::halve`] ever changes it, by doubling. [`Fold::range`] still names
-/// the bounding `[lo, hi)`, which is why it is a poor stand-in for "every
-/// index visited" once the stride is not 1 — [`Fold::len`] is the count that
-/// stays exact.
+/// `s` is [`KnownRange::stride`]: 1 from [`Fold::new`], or whatever
+/// [`Fold::strided`] was given directly — `pack` strip-mining a lattice's
+/// column fold is the reason a second constructor exists at all. After
+/// construction, only [`KnownRange::halve`] ever changes it, by doubling.
+/// [`KnownRange::range`] still names the bounding `[lo, hi)`, which is why it
+/// is a poor stand-in for "every index visited" once the stride is not 1 —
+/// [`KnownRange::len`] is the count that stays exact.
+///
+/// **A range is read through the node that holds the fold** —
+/// [`ExprArena::known_range`](crate::arena::ExprArena::known_range), the
+/// e-graph node's, or the schedule's copy — which take it from this header
+/// with [`Fold::known_range`]. Nothing else that reasons about a range reads
+/// these fields (serializing and naming a fold do), so when the bounds leave
+/// the header and become operands, those readers change and their callers do
+/// not.
 ///
 /// [`Reduce`]: crate::arena::ExprNode::Reduce
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -291,7 +299,7 @@ pub struct Fold {
     binder: Binder,
     /// Half-open `[lo, hi)`, `lo <= hi` by construction.
     ///
-    /// `u32`, the width [`Fold::range`] speaks. These were `u16`, first
+    /// `u32`, the width [`KnownRange::range`] speaks. These were `u16`, first
     /// "so the two fit the node in the 16 bytes `ExprNode` is capped at" — a
     /// width nothing depended on, made into a cap on how many terms a
     /// reduction may have — and then because an unrolled fold could not
@@ -303,13 +311,13 @@ pub struct Fold {
     hi: u32,
     /// The step between visited indices. `1` for every [`Fold::new`],
     /// or whatever [`Fold::strided`] was constructed with. After that, only
-    /// [`Fold::halve`] ever doubles it, and only when `hi - lo` stays an
+    /// [`KnownRange::halve`] ever doubles it, and only when `hi - lo` stays an
     /// exact multiple of it — an invariant [`Fold::strided`] checks directly
     /// (it refuses a stride that does not divide the span), [`Fold::new`]
     /// gets for free by going through it with a stride of 1 (which divides
-    /// anything), and [`Fold::halve`] preserves (it only fires on an
+    /// anything), and [`KnownRange::halve`] preserves (it only fires on an
     /// even trip count, so the new stride still divides `hi - lo` exactly).
-    /// That invariant is what makes [`Fold::len`] integer division
+    /// That invariant is what makes [`KnownRange::len`] integer division
     /// rather than an approximation.
     stride: u32,
 }
@@ -329,29 +337,17 @@ impl Fold {
     /// constructor — `Kernel::over` as much as `kernel!`'s lowering — is
     /// refused alike.
     ///
-    /// The ends stay `u32`, the width [`Fold::range`] speaks: the lane
+    /// The ends stay `u32`, the width [`KnownRange::range`] speaks: the lane
     /// is the narrower of the two, and widening the ends (A5 of
     /// docs/language/2026-09-25-the-language-is-kernel.md) would not lift it.
     pub const EXACT_BOUND: u32 = 1 << f32::MANTISSA_DIGITS;
-
-    /// Whether `range` is a domain a fold may range over: forwards, and
-    /// ending at or before [`Fold::EXACT_BOUND`], so that every index
-    /// it names, and its end, is an exact `f32`.
-    ///
-    /// The one statement of the contract: the constructors panic where it
-    /// fails, [`Fold::from_bits`] refuses where it fails, and a front end
-    /// asks it to refuse a range with its own words before building one.
-    #[must_use]
-    pub fn admits(range: &Range<u32>) -> bool {
-        range.start <= range.end && range.end <= Self::EXACT_BOUND
-    }
 
     /// The fold of `monoid` over `range`, binding `binder`, visiting every
     /// index in it — [`Fold::strided`] with a stride of `1`.
     ///
     /// # Panics
     ///
-    /// Panics unless [`Fold::admits`] `range`.
+    /// Panics unless [`KnownRange::admits`] `range`.
     #[must_use]
     pub fn new(monoid: Monoid, binder: Binder, range: Range<u32>) -> Self {
         Self::strided(monoid, binder, range, 1)
@@ -364,9 +360,9 @@ impl Fold {
     ///
     /// # Panics
     ///
-    /// Panics unless [`Fold::admits`] `range`, or if `stride` is `0` or
+    /// Panics unless [`KnownRange::admits`] `range`, or if `stride` is `0` or
     /// does not divide `range.end - range.start` exactly — the invariant
-    /// [`Fold::len`] and [`Fold::from_bits`] both rely on.
+    /// [`KnownRange::len`] and [`Fold::from_bits`] both rely on.
     #[must_use]
     pub fn strided(monoid: Monoid, binder: Binder, range: Range<u32>, stride: u32) -> Self {
         assert!(
@@ -374,7 +370,7 @@ impl Fold {
             "a fold's range runs forwards: {range:?}"
         );
         assert!(
-            Self::admits(&range),
+            KnownRange::admits(&range),
             "a fold's range ends at most at {} (2^24): {range:?} — its index is an `f32` \
              lane, which names every integer only that far",
             Self::EXACT_BOUND
@@ -422,118 +418,45 @@ impl Fold {
         self.binder
     }
 
-    /// The half-open range every visited index lies within.
+    /// This fold's range, when it is known: every bound is a constant today, so
+    /// this is `Some` for every fold.
     ///
-    /// The *bound*, not the visited set: once [`Fold::halve`] has run,
-    /// the indices in `[lo, hi)` that are actually visited are `lo`,
-    /// `lo + stride`, `lo + 2·stride`, … — [`Fold::stride`] apart, not
-    /// consecutive. [`Fold::len`] is the count that stays exact either
-    /// way.
+    /// **Read a range through the node that holds it** —
+    /// [`ExprArena::known_range`](crate::arena::ExprArena::known_range), the
+    /// e-graph node's, or the schedule's copy — not through the header this
+    /// reads. This is what those three read, and it is the one place the
+    /// bounds are taken out of the header: when they become operands of the
+    /// node (A2b of docs/language/2026-10-20-a-bound-is-a-value.md) and then
+    /// values (A3) the header will not hold them, and the readers will be
+    /// the only code that changes. A caller holding a bare `Fold` with no node
+    /// behind it is a test building a fold by hand.
     #[must_use]
-    pub fn range(self) -> Range<u32> {
-        self.lo..self.hi
-    }
-
-    /// The step between one visited index and the next. `1` from
-    /// [`Fold::new`], or [`Fold::strided`]'s own argument;
-    /// [`Fold::halve`] is the only thing that doubles it afterward.
-    #[must_use]
-    pub fn stride(self) -> u32 {
-        self.stride
-    }
-
-    /// How many terms the fold combines — the *trip count*, which
-    /// [`Fold::halve`] halves without touching [`Fold::range`].
-    /// Distinct from the index span `hi - lo`: they coincide only at
-    /// `stride == 1`, and every caller here wants the trip count (how many
-    /// times the body is evaluated), never the span.
-    #[must_use]
-    pub fn len(self) -> u32 {
-        (self.hi - self.lo) / self.stride
-    }
-
-    /// Whether the domain is empty — in which case the fold *is* its monoid's
-    /// identity, whatever the body says.
-    #[must_use]
-    pub fn is_empty(self) -> bool {
-        self.lo == self.hi
-    }
-
-    /// The first index, and the fold over everything after it — or `None` when
-    /// the domain is empty.
-    ///
-    /// ```text
-    /// ⊕_{[lo,hi) step s} f  =  f(lo) ⊕ ⊕_{[lo+s,hi) step s} f
-    /// ```
-    ///
-    /// The decomposition, as one method. Only the range moves, so the tail
-    /// folds *the same body* — which is what lets an e-graph state this as a
-    /// rule (the tail shares the body's e-class) and what makes unrolling and
-    /// peeling one operation rather than two.
-    #[must_use]
-    pub fn peel(self) -> Option<(u32, Self)> {
-        (!self.is_empty()).then(|| {
-            let rest = Self {
-                lo: self.lo + self.stride,
-                ..self
-            };
-            (self.lo, rest)
+    pub fn known_range(self) -> Option<KnownRange> {
+        Some(KnownRange {
+            lo: self.lo,
+            hi: self.hi,
+            stride: self.stride,
         })
     }
 
-    /// Halve the trip count by doubling the stride: `[lo,hi) step s` becomes
-    /// `[lo,hi) step 2s`. `None` when there are fewer than two terms, or an
-    /// odd number of them — [`Fold::peel_back`] is the epilogue for the
-    /// latter (peel one off the back, then halve the even remainder), not a
-    /// second one.
+    /// This fold with `range` for its range: its monoid and binder, over the
+    /// range [`KnownRange::peel`], [`KnownRange::peel_back`] and
+    /// [`KnownRange::halve`] left behind — what a rewrite needs to rebuild the
+    /// fold it decomposed.
     ///
-    /// **Doubles the stride, does not split the range.** `[lo,hi) step s`
-    /// visits `lo, lo+s, lo+2s, …` in order; doubling the stride re-groups
-    /// that same sequence into adjacent pairs —
-    /// `(f(lo)⊕f(lo+s)) ⊕ (f(lo+2s)⊕f(lo+3s)) ⊕ …` — the original order,
-    /// only re-bracketed, so it needs associativity alone and holds for every
-    /// [`Monoid`] here. Halving the *range* into `[lo,mid)` and `[mid,hi)`
-    /// instead pairs `f(lo)⊕f(mid)`, `f(lo+1)⊕f(mid+1)`, … — it interleaves
-    /// the sequence rather than re-bracketing it, and needs commutativity on
-    /// top of associativity to still equal the original fold.
-    ///
-    /// Run to exhaustion (peeling the odd remainder as it arises) this
-    /// reaches the same fully-unrolled term [`Fold::peel_back`] does, in
-    /// `⌈log₂ n⌉` steps rather than `n`.
+    /// Total, with nothing to check: every [`KnownRange`] already has what
+    /// [`Fold::strided`] asks of a range (forwards, within
+    /// [`Fold::EXACT_BOUND`], a stride that divides its span), because the
+    /// only ones that exist were read from a fold that passed it, or
+    /// decomposed from one that did.
     #[must_use]
-    pub fn halve(self) -> Option<Self> {
-        let n = self.len();
-        (n >= 2 && n.is_multiple_of(2)).then(|| Self {
-            // `n` even means `hi - lo` is an exact multiple of `2 * stride`
-            // (it was one of `stride`), so `len()` stays exact integer
-            // division on the result.
-            stride: self.stride * 2,
+    pub fn with_range(self, range: KnownRange) -> Self {
+        Self {
+            lo: range.lo,
+            hi: range.hi,
+            stride: range.stride,
             ..self
-        })
-    }
-
-    /// The fold over everything *before* the last index, and that index — or
-    /// `None` when the domain is empty.
-    ///
-    /// ```text
-    /// ⊕_{[lo,hi) step s} f  =  ⊕_{[lo,hi-s) step s} f ⊕ f(hi-s)
-    /// ```
-    ///
-    /// [`Fold::peel`]'s mirror, and the one a rewrite should use: run to
-    /// exhaustion over a `stride`-1 fold it builds the **left**-leaning chain
-    /// `((f(lo) ⊕ f(lo+1)) ⊕ …)`. Peeling from the front instead yields the
-    /// same value in the opposite association, and an e-graph then has to
-    /// spend reassociation rules — and the classes they mint — to reach the
-    /// shape everything downstream was tuned on.
-    #[must_use]
-    pub fn peel_back(self) -> Option<(Self, u32)> {
-        (!self.is_empty()).then(|| {
-            let rest = Self {
-                hi: self.hi - self.stride,
-                ..self
-            };
-            (rest, rest.hi)
-        })
+        }
     }
 
     /// The monoid's byte in [`Fold::to_bits`]: its code
@@ -571,7 +494,7 @@ impl Fold {
     /// The fold [`Fold::to_bits`] wrote, or `None` if the bits do not name
     /// one: anything at or above bit `UNUSED_BITS` (112), an op that
     /// generates no algebra, an index outside the binder space, a range
-    /// [`Fold::admits`] does not — reversed, or ending past
+    /// [`KnownRange::admits`] does not — reversed, or ending past
     /// [`Fold::EXACT_BOUND`] — a zero stride, or a stride that does not
     /// divide `hi - lo` exactly.
     ///
@@ -588,15 +511,14 @@ impl Fold {
         let binder = Binder::from_slot(((bits >> 64) & 0xff) as u8)?;
         let lo = ((bits >> 32) & 0xffff_ffff) as u32;
         let hi = (bits & 0xffff_ffff) as u32;
-        (Self::admits(&(lo..hi)) && stride != 0 && (hi - lo).is_multiple_of(stride)).then_some(
-            Self {
+        (KnownRange::admits(&(lo..hi)) && stride != 0 && (hi - lo).is_multiple_of(stride))
+            .then_some(Self {
                 monoid,
                 binder,
                 lo,
                 hi,
                 stride,
-            },
-        )
+            })
     }
 }
 
@@ -618,7 +540,7 @@ impl core::fmt::Display for Fold {
             self.hi
         )?;
         // The step is worth stating once it is not 1 — the shape
-        // `Fold::halve` leaves behind — since the bounds alone would then
+        // `KnownRange::halve` leaves behind — since the bounds alone would then
         // read as "every index" and aren't.
         if self.stride != 1 {
             write!(f, " step {}", self.stride)?;
@@ -627,9 +549,173 @@ impl core::fmt::Display for Fold {
     }
 }
 
+/// The message of an `expect` on a range that is not known yet. Every bound is
+/// a constant, so [`Fold::known_range`] and the three readers built on it are
+/// `Some` for every fold. Until bounds are values
+/// (docs/language/2026-10-20-a-bound-is-a-value.md, A3), a site that needs a
+/// range and has no answer of its own for an unknown one expects it with this
+/// message: one grep target for the step that makes the `None` reachable.
+pub const KNOWN_RANGE: &str = "every fold bound is a constant until bounds are values \
+     (docs/language/2026-10-20-a-bound-is-a-value.md)";
+
+/// A fold's range when it is known: the indices `lo, lo + stride, …` below
+/// `hi`. The view every reader of a range reads.
+///
+/// ```text
+/// ⊕_{k ∈ lo, lo+s, lo+2s, …, hi-s} f(k)
+/// ```
+///
+/// Forwards (`lo <= hi`), ending at or before [`Fold::EXACT_BOUND`], with a
+/// stride that divides `hi - lo` exactly, so [`KnownRange::len`] is integer
+/// division. Those are the invariants the fold constructors check, and the
+/// only way to hold one is to read it from a fold that passed them
+/// ([`Fold::known_range`]) or to decompose one that did
+/// ([`KnownRange::peel`], [`KnownRange::peel_back`], [`KnownRange::halve`]),
+/// each of which preserves them. There is no reversed inhabitant to
+/// normalize.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KnownRange {
+    lo: u32,
+    hi: u32,
+    stride: u32,
+}
+
+impl KnownRange {
+    /// Whether `range` is a domain a fold may range over: forwards, and
+    /// ending at or before [`Fold::EXACT_BOUND`], so that every index
+    /// it names, and its end, is an exact `f32`.
+    ///
+    /// The one statement of the contract: the constructors panic where it
+    /// fails, [`Fold::from_bits`] refuses where it fails, and a front end
+    /// asks it to refuse a range with its own words before building one.
+    #[must_use]
+    pub fn admits(range: &Range<u32>) -> bool {
+        range.start <= range.end && range.end <= Fold::EXACT_BOUND
+    }
+
+    /// The half-open range every visited index lies within.
+    ///
+    /// The *bound*, not the visited set: once [`KnownRange::halve`] has run,
+    /// the indices in `[lo, hi)` that are actually visited are `lo`,
+    /// `lo + stride`, `lo + 2·stride`, … — [`KnownRange::stride`] apart, not
+    /// consecutive. [`KnownRange::len`] is the count that stays exact either
+    /// way.
+    #[must_use]
+    pub fn range(self) -> Range<u32> {
+        self.lo..self.hi
+    }
+
+    /// The step between one visited index and the next. `1` from
+    /// [`Fold::new`], or [`Fold::strided`]'s own argument;
+    /// [`KnownRange::halve`] is the only thing that doubles it afterward.
+    #[must_use]
+    pub fn stride(self) -> u32 {
+        self.stride
+    }
+
+    /// How many terms the fold combines — the *trip count*, which
+    /// [`KnownRange::halve`] halves without touching [`KnownRange::range`].
+    /// Distinct from the index span `hi - lo`: they coincide only at
+    /// `stride == 1`, and every caller here wants the trip count (how many
+    /// times the body is evaluated), never the span.
+    #[must_use]
+    pub fn len(self) -> u32 {
+        (self.hi - self.lo) / self.stride
+    }
+
+    /// Whether the domain is empty — in which case the fold *is* its monoid's
+    /// identity, whatever the body says.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.lo == self.hi
+    }
+
+    /// The first index, and the range over everything after it — or `None`
+    /// when the domain is empty.
+    ///
+    /// ```text
+    /// ⊕_{[lo,hi) step s} f  =  f(lo) ⊕ ⊕_{[lo+s,hi) step s} f
+    /// ```
+    ///
+    /// The decomposition, as one method. Only the range moves, so the tail
+    /// folds *the same body* — which is what lets an e-graph state this as a
+    /// rule (the tail shares the body's e-class) and what makes unrolling and
+    /// peeling one operation rather than two.
+    #[must_use]
+    pub fn peel(self) -> Option<(u32, Self)> {
+        (!self.is_empty()).then(|| {
+            let rest = Self {
+                lo: self.lo + self.stride,
+                ..self
+            };
+            (self.lo, rest)
+        })
+    }
+
+    /// Halve the trip count by doubling the stride: `[lo,hi) step s` becomes
+    /// `[lo,hi) step 2s`. `None` when there are fewer than two terms, or an
+    /// odd number of them — [`KnownRange::peel_back`] is the epilogue for the
+    /// latter (peel one off the back, then halve the even remainder), not a
+    /// second one.
+    ///
+    /// **Doubles the stride, does not split the range.** `[lo,hi) step s`
+    /// visits `lo, lo+s, lo+2s, …` in order; doubling the stride re-groups
+    /// that same sequence into adjacent pairs —
+    /// `(f(lo)⊕f(lo+s)) ⊕ (f(lo+2s)⊕f(lo+3s)) ⊕ …` — the original order,
+    /// only re-bracketed, so it needs associativity alone and holds for every
+    /// [`Monoid`] here. Halving the *range* into `[lo,mid)` and `[mid,hi)`
+    /// instead pairs `f(lo)⊕f(mid)`, `f(lo+1)⊕f(mid+1)`, … — it interleaves
+    /// the sequence rather than re-bracketing it, and needs commutativity on
+    /// top of associativity to still equal the original fold.
+    ///
+    /// Run to exhaustion (peeling the odd remainder as it arises) this
+    /// reaches the same fully-unrolled term [`KnownRange::peel_back`] does, in
+    /// `⌈log₂ n⌉` steps rather than `n`.
+    #[must_use]
+    pub fn halve(self) -> Option<Self> {
+        let n = self.len();
+        (n >= 2 && n.is_multiple_of(2)).then(|| Self {
+            // `n` even means `hi - lo` is an exact multiple of `2 * stride`
+            // (it was one of `stride`), so `len()` stays exact integer
+            // division on the result.
+            stride: self.stride * 2,
+            ..self
+        })
+    }
+
+    /// The range over everything *before* the last index, and that index — or
+    /// `None` when the domain is empty.
+    ///
+    /// ```text
+    /// ⊕_{[lo,hi) step s} f  =  ⊕_{[lo,hi-s) step s} f ⊕ f(hi-s)
+    /// ```
+    ///
+    /// [`KnownRange::peel`]'s mirror, and the one a rewrite should use: run to
+    /// exhaustion over a `stride`-1 fold it builds the **left**-leaning chain
+    /// `((f(lo) ⊕ f(lo+1)) ⊕ …)`. Peeling from the front instead yields the
+    /// same value in the opposite association, and an e-graph then has to
+    /// spend reassociation rules — and the classes they mint — to reach the
+    /// shape everything downstream was tuned on.
+    #[must_use]
+    pub fn peel_back(self) -> Option<(Self, u32)> {
+        (!self.is_empty()).then(|| {
+            let rest = Self {
+                hi: self.hi - self.stride,
+                ..self
+            };
+            (rest, rest.hi)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The range of a fold built by hand, with no node behind it.
+    fn known(fold: Fold) -> KnownRange {
+        fold.known_range().expect(KNOWN_RANGE)
+    }
 
     #[test]
     fn a_binder_is_a_slot_not_a_var_index() {
@@ -645,15 +731,15 @@ mod tests {
     #[test]
     fn peeling_to_exhaustion_is_unrolling() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
-        let mut fold = Fold::new(Monoid::SUM, b, 3..7);
+        let mut range = known(Fold::new(Monoid::SUM, b, 3..7));
         let mut indices = alloc::vec::Vec::new();
-        while let Some((k, rest)) = fold.peel() {
+        while let Some((k, rest)) = range.peel() {
             indices.push(k);
-            fold = rest;
+            range = rest;
         }
         assert_eq!(indices, [3, 4, 5, 6]);
-        assert!(fold.is_empty());
-        assert_eq!(fold.len(), 0);
+        assert!(range.is_empty());
+        assert_eq!(range.len(), 0);
     }
 
     /// A monoid round-trips through its code, every one of them, and a code
@@ -699,8 +785,8 @@ mod tests {
     fn an_empty_fold_is_its_identity() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
         let empty = Fold::new(Monoid::SUM, b, 5..5);
-        assert!(empty.is_empty());
-        assert_eq!(empty.peel(), None);
+        assert!(known(empty).is_empty());
+        assert_eq!(known(empty).peel(), None);
         assert_eq!(empty.monoid().identity(), 0.0);
         assert_eq!(Monoid::PRODUCT.identity(), 1.0);
         assert_eq!(Monoid::MIN.identity(), f32::INFINITY);
@@ -713,7 +799,7 @@ mod tests {
         // Built through variables: a literal `7..3` is a lint about an empty
         // range, and the point here is the *constructor's* refusal.
         let (lo, hi) = (7u32, 3u32);
-        assert!(Fold::new(Monoid::SUM, b, lo..hi).is_empty());
+        assert!(known(Fold::new(Monoid::SUM, b, lo..hi)).is_empty());
     }
 
     /// A range ends at most at 2²⁴, where an `f32` index stops naming every
@@ -727,11 +813,11 @@ mod tests {
         assert_eq!(bound as f32 as u32, bound, "the bound itself is exact");
         assert_ne!((bound + 1) as f32 as u32, bound + 1, "and one past is not");
         for admitted in [0..0, 0..bound, bound - 1..bound, bound..bound] {
-            assert!(Fold::admits(&admitted), "{admitted:?}");
+            assert!(KnownRange::admits(&admitted), "{admitted:?}");
         }
         let (lo, hi) = (7u32, 3u32);
         for refused in [0..bound + 1, bound + 1..bound + 1, 0..u32::MAX, lo..hi] {
-            assert!(!Fold::admits(&refused), "{refused:?}");
+            assert!(!KnownRange::admits(&refused), "{refused:?}");
         }
     }
 
@@ -742,7 +828,7 @@ mod tests {
     fn a_range_past_the_exact_bound_is_refused() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
         let past = Fold::EXACT_BOUND + 1;
-        assert!(!Fold::new(Monoid::SUM, b, 16_777_100..past).is_empty());
+        assert!(!known(Fold::new(Monoid::SUM, b, 16_777_100..past)).is_empty());
     }
 
     /// Bits naming a range past the bound name no fold: a corrupt key is a
@@ -779,9 +865,9 @@ mod tests {
     fn a_range_past_sixteen_bits_is_a_fold_like_any_other() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
         let wide = Fold::new(Monoid::SUM, b, 1_000..1_000_000);
-        assert_eq!(wide.len(), 999_000);
-        assert_eq!(wide.range(), 1_000..1_000_000);
-        let halved = wide.halve().expect("an even trip count halves");
+        assert_eq!(known(wide).len(), 999_000);
+        assert_eq!(known(wide).range(), 1_000..1_000_000);
+        let halved = known(wide).halve().expect("an even trip count halves");
         assert_eq!(halved.len(), 499_500);
         let back = Fold::from_bits(wide.to_bits()).expect("a fold's own bits name a fold");
         assert_eq!(back, wide);
@@ -805,13 +891,13 @@ mod tests {
     fn strided_builds_with_the_given_step() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
         let fold = Fold::strided(Monoid::SUM, b, 0..12, 3);
-        assert_eq!(fold.stride(), 3);
+        assert_eq!(known(fold).stride(), 3);
         assert_eq!(
-            fold.range(),
+            known(fold).range(),
             0..12,
             "range() names the bound, not stride's steps"
         );
-        assert_eq!(fold.len(), 4);
+        assert_eq!(known(fold).len(), 4);
         let back = Fold::from_bits(fold.to_bits()).expect("a strided fold's own bits name it");
         assert_eq!(back, fold);
     }
@@ -820,14 +906,14 @@ mod tests {
     #[should_panic(expected = "must divide")]
     fn strided_refuses_a_stride_that_does_not_divide_the_span() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
-        assert!(!Fold::strided(Monoid::SUM, b, 0..10, 3).is_empty());
+        assert!(!known(Fold::strided(Monoid::SUM, b, 0..10, 3)).is_empty());
     }
 
     #[test]
     #[should_panic(expected = "nonzero")]
     fn strided_refuses_a_zero_stride() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
-        assert!(!Fold::strided(Monoid::SUM, b, 0..10, 0).is_empty());
+        assert!(!known(Fold::strided(Monoid::SUM, b, 0..10, 0)).is_empty());
     }
 
     #[test]
@@ -842,9 +928,9 @@ mod tests {
     #[test]
     fn halve_doubles_the_stride_and_halves_the_trip_count() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
-        let fold = Fold::new(Monoid::SUM, b, 0..8);
-        assert_eq!(fold.stride(), 1);
-        let once = fold.halve().expect("8 is even and has more than one term");
+        let range = known(Fold::new(Monoid::SUM, b, 0..8));
+        assert_eq!(range.stride(), 1);
+        let once = range.halve().expect("8 is even and has more than one term");
         assert_eq!(once.stride(), 2);
         assert_eq!(once.len(), 4);
         assert_eq!(once.range(), 0..8, "halve moves the stride, not the bound");
@@ -862,27 +948,27 @@ mod tests {
     fn halve_declines_on_an_odd_or_too_short_fold() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
         assert_eq!(
-            Fold::new(Monoid::SUM, b, 0..0).halve(),
+            known(Fold::new(Monoid::SUM, b, 0..0)).halve(),
             None,
             "zero terms: nothing to pair"
         );
         assert_eq!(
-            Fold::new(Monoid::SUM, b, 0..1).halve(),
+            known(Fold::new(Monoid::SUM, b, 0..1)).halve(),
             None,
             "one term: nothing to pair it with"
         );
         assert_eq!(
-            Fold::new(Monoid::SUM, b, 0..7).halve(),
+            known(Fold::new(Monoid::SUM, b, 0..7)).halve(),
             None,
             "an odd trip count has no even pairing"
         );
-        assert!(Fold::new(Monoid::SUM, b, 0..2).halve().is_some());
+        assert!(known(Fold::new(Monoid::SUM, b, 0..2)).halve().is_some());
     }
 
     /// **The load-bearing property.** Halving to exhaustion (falling back to
-    /// [`Fold::peel_back`] for the odd remainder, the preference
+    /// [`KnownRange::peel_back`] for the odd remainder, the preference
     /// `egraph::fold_rules::HalveFold` gives it) must visit the same terms,
-    /// in the same left-to-right order, as [`Fold::peel`] does one at a time
+    /// in the same left-to-right order, as [`KnownRange::peel`] does one at a time
     /// — for an even trip count (pure halving, no remainder ever arises) and
     /// an odd one (forces the peel-back epilogue at more than one level of
     /// the recursion).
@@ -902,9 +988,9 @@ mod tests {
     /// instantiated to make the order legible without an arena or a JIT.
     #[test]
     fn halving_to_exhaustion_visits_the_same_terms_in_the_same_order_as_peeling() {
-        fn combine(fold: Fold, terms: &[alloc::vec::Vec<u32>]) -> alloc::vec::Vec<u32> {
-            assert_eq!(fold.len() as usize, terms.len());
-            if let Some(halved) = fold.halve() {
+        fn combine(range: KnownRange, terms: &[alloc::vec::Vec<u32>]) -> alloc::vec::Vec<u32> {
+            assert_eq!(range.len() as usize, terms.len());
+            if let Some(halved) = range.halve() {
                 let paired: alloc::vec::Vec<alloc::vec::Vec<u32>> = terms
                     .as_chunks::<2>()
                     .0
@@ -913,7 +999,7 @@ mod tests {
                     .collect();
                 return combine(halved, &paired);
             }
-            let (rest, _) = fold.peel_back().expect("a non-empty fold has a last term");
+            let (rest, _) = range.peel_back().expect("a non-empty fold has a last term");
             let last = terms.last().expect("len matches terms.len()").clone();
             if rest.is_empty() {
                 return last;
@@ -925,19 +1011,19 @@ mod tests {
 
         let b = Binder::from_slot(0).expect("slot 0 exists");
         for &(lo, hi) in &[(0u32, 8u32), (3, 11), (0, 7), (2, 9), (0, 1), (5, 6)] {
-            let fold = Fold::new(Monoid::SUM, b, lo..hi);
+            let range = known(Fold::new(Monoid::SUM, b, lo..hi));
             let want: alloc::vec::Vec<u32> = (lo..hi).collect();
 
             let terms: alloc::vec::Vec<alloc::vec::Vec<u32>> =
                 (lo..hi).map(|k| alloc::vec![k]).collect();
-            let halved_order = combine(fold, &terms);
+            let halved_order = combine(range, &terms);
             assert_eq!(
                 halved_order, want,
                 "halving {lo}..{hi} must visit every index once, in ascending order"
             );
 
             let mut peeled_order = alloc::vec::Vec::new();
-            let mut rest = fold;
+            let mut rest = range;
             while let Some((k, shorter)) = rest.peel() {
                 peeled_order.push(k);
                 rest = shorter;
@@ -949,23 +1035,43 @@ mod tests {
         }
     }
 
+    /// A fold's range is its own `known_range`, and `with_range` swaps only
+    /// the range: monoid and binder stay, and putting the range back is the
+    /// identity.
+    #[test]
+    fn with_range_replaces_the_range_and_nothing_else() {
+        let b = Binder::from_slot(1).expect("slot 1 exists");
+        let fold = Fold::new(Monoid::PRODUCT, b, 2..9);
+        assert_eq!(fold.with_range(known(fold)), fold);
+
+        let (first, rest) = known(fold).peel().expect("2..9 is not empty");
+        assert_eq!(first, 2);
+        let tail = fold.with_range(rest);
+        assert_eq!(tail, Fold::new(Monoid::PRODUCT, b, 3..9));
+        assert_eq!(known(tail), rest);
+        assert_eq!(tail.monoid(), Monoid::PRODUCT);
+        assert_eq!(tail.binder(), b);
+    }
+
     #[test]
     fn to_bits_round_trips_a_halved_fold() {
         let b = Binder::from_slot(2).expect("slot 2 exists");
-        let fold = Fold::new(Monoid::MAX, b, 10..26)
+        let whole = Fold::new(Monoid::MAX, b, 10..26);
+        let range = known(whole)
             .halve()
             .expect("16 is even")
             .halve()
             .expect("8 is still even");
-        assert_eq!(fold.stride(), 4);
-        assert_eq!(fold.len(), 4);
+        let fold = whole.with_range(range);
+        assert_eq!(known(fold).stride(), 4);
+        assert_eq!(known(fold).len(), 4);
 
         let back = Fold::from_bits(fold.to_bits()).expect("a fold's own bits name a fold");
         assert_eq!(back, fold);
-        assert_eq!(back.stride(), 4);
+        assert_eq!(known(back).stride(), 4);
         assert_eq!(back.monoid(), Monoid::MAX);
         assert_eq!(back.binder(), b);
-        assert_eq!(back.range(), 10..26);
+        assert_eq!(known(back).range(), 10..26);
     }
 
     #[test]

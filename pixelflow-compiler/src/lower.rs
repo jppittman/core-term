@@ -20,7 +20,7 @@
 //! fold is opened and closed by [`ExprArena::open_fold`] and
 //! [`ExprArena::close_fold`], whose binder is chosen and placeholder renamed
 //! by [`ExprArena::close_over`], as `Kernel::over`'s are; a range is one
-//! [`Fold::admits`]; a kernel is applied by [`ExprArena::apply`]. So each
+//! [`KnownRange::admits`]; a kernel is applied by [`ExprArena::apply`]. So each
 //! construction written here and the same one built with the builder are
 //! one program (`tests/the_library_is_the_builders.rs`,
 //! `tests/fold_is_kernel_over.rs`, `tests/kernel_typed_parameters.rs`).
@@ -71,7 +71,7 @@ use pixelflow_ir::arena::{
     Axis, ExprArena, ExprId, IndexSpaceFull, OpenFold, UniformDecl, UniformIdentity,
 };
 use pixelflow_ir::library;
-use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
+use pixelflow_ir::{Binder, Fold, KnownRange, Monoid, OpKind};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::ops::Range;
@@ -136,7 +136,7 @@ impl Projection {
 }
 
 /// The range a fold runs over, as lowering hands it to a [`Site`]: known
-/// here, and admitted ([`known_range`]), or naming an entry's structural
+/// here, and admitted ([`literal_range`]), or naming an entry's structural
 /// parameters, known when its host function is instantiated.
 #[derive(Debug, Clone)]
 pub(crate) enum FoldRange {
@@ -248,7 +248,7 @@ fn monoid(reduction: Reduction) -> Monoid {
     }
 }
 
-/// A known fold's bounds at the IR's width, if [`Fold::admits`] them.
+/// A known fold's bounds at the IR's width, if [`KnownRange::admits`] them.
 ///
 /// `sema` holds a bound in 64 bits, as the control plane is, and has
 /// refused a range that runs backwards. The IR narrows a bound twice: its
@@ -257,12 +257,12 @@ fn monoid(reduction: Reduction) -> Monoid {
 /// lane is the tighter of the two, the one A5 would not lift, and the IR's
 /// to state; lowering asks it before building the body, so the refusal
 /// names the bounds, in the words of both narrowings.
-fn known_range(lo: u64, hi: u64) -> Result<Range<u32>, String> {
+fn literal_range(lo: u64, hi: u64) -> Result<Range<u32>, String> {
     let range = match (u32::try_from(lo), u32::try_from(hi)) {
         (Ok(lo), Ok(hi)) => Some(lo..hi),
         _ => None,
     };
-    range.filter(Fold::admits).ok_or_else(|| {
+    range.filter(KnownRange::admits).ok_or_else(|| {
         let bound = Fold::EXACT_BOUND;
         format!(
             "the range `{lo}..{hi}` reaches past {bound} (2^24): a fold's index is an `f32` \
@@ -298,7 +298,7 @@ const HOLE_STRIDE: u32 = 2;
 ///
 /// An open fold is built as any fold is, over [`OPEN_RANGE`] strided by
 /// [`HOLE_STRIDE`]` + k` for the `k`th distinct range text: the ends of a
-/// range [`Fold::admits`] have no room for a placeholder, and its
+/// range [`KnownRange::admits`] have no room for a placeholder, and its
 /// stride does. Two folds over one range text, of one monoid and one body,
 /// are one fold, and are interned as one; two over different ranges never
 /// are. The range text lives in the fold's bits rather than beside a node
@@ -332,15 +332,15 @@ impl Holes {
             })
     }
 
-    /// The range an open fold of this template is over, or `None` if `fold`
-    /// is a known one.
+    /// The range an open fold of this template is over, or `None` unless
+    /// `range` is a placeholder (`OPEN_RANGE` at a hole's stride).
     ///
     /// # Panics
     ///
     /// On a placeholder stride no hole names — one from another template.
     /// Emitted as it stands it would be an empty fold, its monoid's
     /// identity, with plausible pixels.
-    pub fn range_of(&self, range: Fold) -> Option<&StructuralRange> {
+    pub fn range_of(&self, range: KnownRange) -> Option<&StructuralRange> {
         if range.range() != OPEN_RANGE {
             return None;
         }
@@ -778,7 +778,7 @@ impl<S: Site> Lowering<'_, S> {
         };
         let bounds = range_bounds(&fold.range, scope).map_err(|e| e.to_string())?;
         let range = match bounds {
-            Bounds::Known(lo, hi) => FoldRange::Known(known_range(lo, hi)?),
+            Bounds::Known(lo, hi) => FoldRange::Known(literal_range(lo, hi)?),
             Bounds::Structural(range) => FoldRange::Structural(range),
         };
         // One placeholder per fold open at once, the `n`th for `n` open, so a
@@ -1060,6 +1060,7 @@ mod tests {
     use crate::sema::Ty;
     use pixelflow_ir::Placeholder;
     use pixelflow_ir::arena::{ExprNode, UniformId};
+    use pixelflow_ir::fold::KNOWN_RANGE;
     use quote::quote;
 
     /// Lower a block straight from the parser, with no `sema` in front: what
@@ -1178,12 +1179,14 @@ mod tests {
         let mut open = Vec::new();
         let mut known = Vec::new();
         let mut params = Vec::new();
-        for (_, node) in arena.nodes() {
+        for (id, node) in arena.nodes() {
             match node {
-                ExprNode::Reduce { fold, .. } => match holes.range_of(fold) {
-                    Some(range) => open.push(range.text()),
-                    None => known.push(fold),
-                },
+                ExprNode::Reduce { fold, .. } => {
+                    match holes.range_of(arena.known_range(id).expect(KNOWN_RANGE)) {
+                        Some(range) => open.push(range.text()),
+                        None => known.push(fold),
+                    }
+                }
                 ExprNode::Param(k) => params.push(k),
                 _ => {}
             }
@@ -1206,7 +1209,7 @@ mod tests {
     fn a_placeholder_no_hole_names_is_refused() {
         let binder = Binder::all().next().expect("a binder");
         let stray = Fold::strided(Monoid::SUM, binder, OPEN_RANGE, HOLE_STRIDE);
-        let _unreachable = Holes::default().range_of(stray);
+        let _unreachable = Holes::default().range_of(stray.known_range().expect(KNOWN_RANGE));
     }
 
     /// A known fold is never read as a hole, whatever its range: empty at
@@ -1219,7 +1222,8 @@ mod tests {
             Fold::new(Monoid::SUM, binder, OPEN_RANGE),
             Fold::strided(Monoid::SUM, binder, 0..8, HOLE_STRIDE),
         ] {
-            assert!(holes.range_of(known).is_none(), "{known}");
+            let range = known.known_range().expect(KNOWN_RANGE);
+            assert!(holes.range_of(range).is_none(), "{known}");
         }
     }
 
@@ -1333,17 +1337,17 @@ mod tests {
     #[test]
     fn a_fold_lowers_to_one_reduce_and_leaves_nothing_behind() {
         let (arena, root) = lowered(quote! { || (2..6).map(|i| X * (i as f32)).sum() });
-        let ExprNode::Reduce { fold: range, body } = arena.node(root) else {
+        let ExprNode::Reduce { fold, body } = arena.node(root) else {
             panic!("expected a fold, got {}", arena.display(root));
         };
-        assert_eq!(range.range(), 2..6);
-        assert_eq!(range.monoid(), Monoid::SUM);
-        assert_eq!(range.binder().slot(), 0);
+        assert_eq!(arena.known_range(root).expect(KNOWN_RANGE).range(), 2..6);
+        assert_eq!(fold.monoid(), Monoid::SUM);
+        assert_eq!(fold.binder().slot(), 0);
         let ExprNode::Binary(OpKind::Mul, x, index) = arena.node(body) else {
             panic!("expected the product, got {}", arena.display(body));
         };
         assert!(matches!(arena.node(x), ExprNode::Var(0)));
-        assert!(matches!(arena.node(index), ExprNode::Var(v) if v == range.binder().var()));
+        assert!(matches!(arena.node(index), ExprNode::Var(v) if v == fold.binder().var()));
         assert!(!holds_a_placeholder(&arena));
         assert_eq!(
             arena.len(),
@@ -1420,10 +1424,13 @@ mod tests {
             );
         }
         let (arena, root) = lowered(quote! { || (16777215..16777216).map(|i| i as f32).sum() });
-        let ExprNode::Reduce { fold: range, .. } = arena.node(root) else {
+        let ExprNode::Reduce { .. } = arena.node(root) else {
             panic!("expected a fold, got {}", arena.display(root));
         };
-        assert_eq!(range.range(), 16_777_215..16_777_216);
+        assert_eq!(
+            arena.known_range(root).expect(KNOWN_RANGE).range(),
+            16_777_215..16_777_216
+        );
     }
 
     /// Folds nest as deep as the IR has binders, and no deeper: one more is

@@ -16,7 +16,8 @@ under a cost. `Optimizer::run` is its one entry; the five laws of §8 are its co
 - The budget: `Budget` resolves to `Limits` (iterations, minted ids, applications); `SaturationConfig`
   picks the tier from the input.
 - Extraction and cost: the tree and shared DP arms and their arbiter, `Selection`. `cost(If) = cost(m) +
-  (cost(a)+cost(b))/2 + cost(select)`; a fold costs `len·body + (len−1)·combine`; a surviving `Dwrt`
+  (cost(a)+cost(b))/2 + cost(select)`; a fold costs `len·body + (len−1)·combine`, its `len` read off its
+  node (`ENode::known_range`, per node: after `HalveFold` a class holds two ranges); a surviving `Dwrt`
   costs `LEGALIZATION_PRICE`. The fold rewrites and the chain rule are here; other rule bodies are `crate::math`.
 - The guided loop, provenance journal, labeler and growth telemetry: research, off in production.
 

@@ -486,8 +486,9 @@ shares files with A2–A4 but no hunk. #1427 rewrites the compiler's `ast`/`pars
 
 Order: A0 goes now. A1 goes now, except its the-language-is-kernel `:179`/`:186` rows,
 which follow #1431, and its D-table rows, which follow #1323 (§5's "Hunk" column). A2a goes
-against main with #1431 still open (2026-10-22), so #1431 rebases onto A2a, which leaves its
-adjacent hunks (the `fold.monoid().identity()` lines) alone. A2b–A4 rebase onto #1431 once
+against main with #1431 still open (2026-10-22), so #1431 rebases onto A2a. A2a leaves the
+`fold.monoid().identity()` lines alone; the emptiness guard above two of them and a few import
+lines still conflict, each resolved by keeping both sides. A2b–A4 rebase onto #1431 once
 merged; if it is abandoned, they proceed against main. #1432 is
 "whichever lands second rebases". A5–A7 go after #1323 and #1427, with a cut-over: when A4
 lands, A5 goes against main as it then stands, and any later #1427 commits rebase onto
@@ -529,7 +530,8 @@ A5's deletion, which removes code #1427 only re-scopes.
   header until A2b moves `lo`/`hi` out of `Fold`: the derived `Hash`/`Eq`/`Ord`, `Display`,
   and `to_bits`/`from_bits` (`key.rs`, the macro's tokens, the graphics test dumps, the
   pipeline corpora and bins). No byte or key changes. Gate: byte_probe empty, keys
-  unchanged, and no range read on a `Fold` outside `fold.rs` and the three readers.
+  unchanged, and no range read on a `Fold` outside `fold.rs`, the three readers, and tests
+  that build a fold by hand with no node behind it (the compiler's `Holes` tests).
 - **A2b. Bounds are values, constants only.** §3.1–§3.3's representation: `Bound` in the
   arena node, the e-graph node and the schedule; constructors take literal ranges, a
   `Value` bound panics by name. The diff stays inside the constructors, the walkers that

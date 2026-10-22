@@ -32,7 +32,7 @@ pub mod dyadic;
 /// binds, and the domain that index runs over. See the module docs for why
 /// those are a type rather than three `Const` children.
 pub mod fold;
-pub use fold::{Binder, Fold, Monoid, Placeholder};
+pub use fold::{Binder, Fold, KnownRange, Monoid, Placeholder};
 
 pub mod kind;
 pub mod library;
