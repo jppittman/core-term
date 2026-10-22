@@ -7,18 +7,18 @@ use futures::future::join_all;
 use tokio::task::JoinSet;
 
 use super::reply::{
-    decide_preamble, decision_schema, explain_preamble, findings_schema, labels, parse_decision,
-    parse_findings, prompt,
+    Step, ask, decide_preamble, decision_schema, explain_preamble, findings_schema, labels,
+    parse_decision, parse_findings, prompt,
 };
-use super::{Call, Finding, Report, Reviewers};
-use crate::agent::{Ask, Question, Usage};
+use super::{Call, Finding, Report, Session};
+use crate::agent::{Ask, Usage};
 use crate::decide::{Choice, Decide, Decisions};
 use crate::model::ModelLevel;
 use crate::rule::{Outcome, Rule, UNSURE, Verdict};
 
 /// What one rule made of one unit.
 struct Judged {
-    rule: usize,
+    rule: Arc<Rule>,
     /// Tokens its model calls used.
     usage: Usage,
     escalated: bool,
@@ -35,23 +35,28 @@ struct Reviewed {
 }
 
 pub(super) async fn review<A: Ask, D: Decide>(
-    reviewers: Arc<Reviewers<A, D>>,
-    rules: Arc<Vec<Rule>>,
-    plan: Vec<Call>,
+    session: Arc<Session<A, D>>,
+    calls: Vec<Call>,
 ) -> Result<Report> {
-    let mut calls = JoinSet::new();
-    for call in plan {
-        let (reviewers, rules) = (reviewers.clone(), rules.clone());
-        calls.spawn(async move { reviewed(&reviewers, &rules, &call).await });
+    let mut report = Report::default();
+    let mut tasks = JoinSet::new();
+    for call in calls {
+        for rule in &call.rules {
+            report
+                .rules
+                .entry(rule.id.clone())
+                .or_insert_with(|| rule.clone());
+        }
+        let session = session.clone();
+        tasks.spawn(async move { reviewed(&session, &call).await });
     }
 
-    let mut report = Report::default();
-    while let Some(joined) = calls.join_next().await {
+    while let Some(joined) = tasks.join_next().await {
         let reviewed = joined?;
         report.system_one += reviewed.system_one;
         report.failures.extend(reviewed.system_one_failure);
         for judged in reviewed.judged {
-            let id = &rules[judged.rule].id;
+            let id = &judged.rule.id;
             *report.usage.entry(id.clone()).or_default() += judged.usage;
             if judged.escalated {
                 *report.escalated.entry(id.clone()).or_default() += 1;
@@ -78,26 +83,22 @@ pub(super) async fn review<A: Ask, D: Decide>(
     Ok(report)
 }
 
-async fn reviewed<A: Ask, D: Decide>(
-    reviewers: &Reviewers<A, D>,
-    rules: &[Rule],
-    call: &Call,
-) -> Reviewed {
+async fn reviewed<A: Ask, D: Decide>(session: &Session<A, D>, call: &Call) -> Reviewed {
     let state = prompt(call);
-    let labels: Vec<Vec<(&str, &str)>> = call.rules.iter().map(|&r| labels(&rules[r])).collect();
+    let labels: Vec<Vec<(&str, &str)>> = call.rules.iter().map(|rule| labels(rule)).collect();
     let questions: Vec<Choice<'_>> = call
         .rules
         .iter()
         .zip(&labels)
-        .map(|(&r, labels)| Choice {
-            name: &rules[r].id,
-            instructions: &rules[r].decision.question,
+        .map(|(rule, labels)| Choice {
+            name: &rule.id,
+            instructions: &rule.decision.question,
             labels,
         })
         .collect();
     // If System One fails, every question goes to the model: a slower
     // review, not a smaller one.
-    let (decisions, system_one_failure) = match reviewers.decide.decide(&state, &questions).await {
+    let (decisions, system_one_failure) = match session.decide.decide(&state, &questions).await {
         Ok(decisions) => (decisions, None),
         Err(error) => {
             let error = error.context(format!("System One on {}", place(call)));
@@ -107,17 +108,11 @@ async fn reviewed<A: Ask, D: Decide>(
 
     let unit = Seen {
         call,
-        rules,
         state,
         decisions,
     };
     // Each rule's questions about the unit are independent of the others'.
-    let judged = join_all(
-        call.rules
-            .iter()
-            .map(|&index| judge(reviewers, &unit, index)),
-    )
-    .await;
+    let judged = join_all(call.rules.iter().map(|rule| judge(session, &unit, rule))).await;
     Reviewed {
         system_one: unit.decisions.usage,
         system_one_failure,
@@ -129,27 +124,25 @@ async fn reviewed<A: Ask, D: Decide>(
 /// made of it.
 struct Seen<'c> {
     call: &'c Call,
-    rules: &'c [Rule],
     /// What every model call about the unit is shown; System One's state.
     state: String,
     decisions: Decisions,
 }
 
 async fn judge<A: Ask, D: Decide>(
-    reviewers: &Reviewers<A, D>,
+    session: &Session<A, D>,
     unit: &Seen<'_>,
-    index: usize,
+    rule: &Arc<Rule>,
 ) -> Judged {
-    let rule = &unit.rules[index];
     let context = || format!("rule {} on {}", rule.id, place(unit.call));
     let settled = unit
         .decisions
         .answers
         .get(&rule.id)
-        .filter(|d| d.confidence >= reviewers.min_confidence)
+        .filter(|d| d.confidence >= session.min_confidence)
         .and_then(|d| rule.decision.outcomes.iter().find(|o| o.name == d.label));
     let mut asking = Asking {
-        model: &reviewers.ask,
+        model: &session.ask,
         rule,
         unit,
         usage: Usage::default(),
@@ -170,7 +163,7 @@ async fn judge<A: Ask, D: Decide>(
         }
     };
     Judged {
-        rule: index,
+        rule: rule.clone(),
         usage: asking.usage,
         escalated: settled.is_none(),
         outcome,
@@ -233,13 +226,12 @@ impl<'a, A: Ask> Asking<'a, A> {
         system: &str,
         schema: &serde_json::Value,
     ) -> Result<String> {
-        let question = Question {
+        let step = Step {
             level,
             system,
-            prompt: &self.unit.state,
-            schema: Some(schema),
+            schema,
         };
-        let answer = self.model.ask(&question).await?;
+        let answer = ask(self.model, &step, &self.unit.state).await?;
         self.usage += answer.usage;
         Ok(answer.text)
     }

@@ -10,8 +10,9 @@ use futures::future::join_all;
 use serde::Deserialize;
 
 use super::module;
-use super::{Finding, Identified, Report, Thing};
-use crate::agent::{Ask, Question, Usage};
+use super::reply::{Step, ask};
+use super::{Finding, Report, Thing};
+use crate::agent::{Ask, Usage};
 use crate::model::ModelLevel;
 
 /// A module's things are named once its findings come from at least this
@@ -43,44 +44,37 @@ What does it do, and how does it work? How does it behave: its inputs and \
 outputs, what it guarantees, what is true of every correct one? Be concrete \
 and complete. You have not seen the code; do not guess at it.";
 
-/// One kind of call naming makes.
-struct Step {
-    level: ModelLevel,
-    system: &'static str,
-    schema: fn() -> serde_json::Value,
+fn identify_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": { "things": { "type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "thing": { "type": "string" },
+                "context": { "type": "string" },
+                "symptoms": { "type": "array", "items": { "type": "integer" } }
+            },
+            "required": ["thing", "context", "symptoms"]
+        } } },
+        "required": ["things"]
+    })
 }
 
-const IDENTIFY: Step = Step {
-    level: ModelLevel::Fast,
-    system: IDENTIFIER,
-    schema: || {
-        serde_json::json!({
-            "type": "object",
-            "properties": { "things": { "type": "array", "items": {
-                "type": "object",
-                "properties": {
-                    "thing": { "type": "string" },
-                    "context": { "type": "string" },
-                    "symptoms": { "type": "array", "items": { "type": "integer" } }
-                },
-                "required": ["thing", "context", "symptoms"]
-            } } },
-            "required": ["things"]
-        })
-    },
-};
+fn describe_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": { "description": { "type": "string" } },
+        "required": ["description"]
+    })
+}
 
-const DESCRIBE: Step = Step {
-    level: ModelLevel::Fast,
-    system: DENOTER,
-    schema: || {
-        serde_json::json!({
-            "type": "object",
-            "properties": { "description": { "type": "string" } },
-            "required": ["description"]
-        })
-    },
-};
+/// What naming made of some modules: the things, what failed, the tokens used.
+#[derive(Default)]
+struct Identified {
+    things: Vec<Thing>,
+    failures: Vec<anyhow::Error>,
+    usage: Usage,
+}
 
 /// One module's symptoms: the findings in it, as indexes into the report.
 struct Cluster {
@@ -88,7 +82,7 @@ struct Cluster {
     symptoms: Vec<usize>,
 }
 
-pub(super) async fn identify<A: Ask>(agent: &A, report: &Report) -> Result<Identified> {
+pub(super) async fn identify<A: Ask>(agent: &A, report: &mut Report) -> Result<Usage> {
     let clusters = clusters(&report.findings);
     let named = join_all(
         clusters
@@ -103,7 +97,9 @@ pub(super) async fn identify<A: Ask>(agent: &A, report: &Report) -> Result<Ident
         identified.failures.extend(named.failures);
         identified.usage += named.usage;
     }
-    Ok(identified)
+    report.things = identified.things;
+    report.failures.extend(identified.failures);
+    Ok(identified.usage)
 }
 
 /// The things one cluster's symptoms are about, each described.
@@ -116,12 +112,17 @@ async fn named<A: Ask>(agent: &A, cluster: &Cluster, findings: &[Finding]) -> Re
         cluster.component.display(),
         numbered(&cluster.symptoms, findings)
     );
-    let parsed = ask(agent, &IDENTIFY, &prompt, &mut usage)
-        .await
-        .and_then(|reply| {
-            serde_json::from_str::<Things>(&reply)
-                .with_context(|| format!("reply is not a list of things: {reply}"))
-        });
+    let schema = identify_schema();
+    let step = Step {
+        level: ModelLevel::Fast,
+        system: IDENTIFIER,
+        schema: &schema,
+    };
+    let parsed = ask(agent, &step, &prompt).await.and_then(|answer| {
+        usage += answer.usage;
+        serde_json::from_str::<Things>(&answer.text)
+            .with_context(|| format!("reply is not a list of things: {}", answer.text))
+    });
     let named = match parsed {
         Ok(named) => named,
         Err(error) => {
@@ -177,30 +178,22 @@ struct Described {
 async fn describe<A: Ask>(agent: &A, thing: &Named) -> Described {
     let mut usage = Usage::default();
     let named = format!("{}, {}", thing.thing, thing.context);
-    let description = ask(agent, &DESCRIBE, &named, &mut usage)
-        .await
-        .and_then(|reply| {
-            let Description { description } = serde_json::from_str(&reply)
-                .with_context(|| format!("reply is not a description: {reply}"))?;
-            if description.trim().is_empty() {
-                bail!("{named} was described as nothing");
-            }
-            Ok(description)
-        });
-    Described { description, usage }
-}
-
-async fn ask<A: Ask>(agent: &A, step: &Step, prompt: &str, usage: &mut Usage) -> Result<String> {
-    let schema = (step.schema)();
-    let question = Question {
-        level: step.level,
-        system: step.system,
-        prompt,
-        schema: Some(&schema),
+    let schema = describe_schema();
+    let step = Step {
+        level: ModelLevel::Fast,
+        system: DENOTER,
+        schema: &schema,
     };
-    let answer = agent.ask(&question).await?;
-    *usage += answer.usage;
-    Ok(answer.text)
+    let description = ask(agent, &step, &named).await.and_then(|answer| {
+        usage += answer.usage;
+        let Description { description } = serde_json::from_str(&answer.text)
+            .with_context(|| format!("reply is not a description: {}", answer.text))?;
+        if description.trim().is_empty() {
+            bail!("{named} was described as nothing");
+        }
+        Ok(description)
+    });
+    Described { description, usage }
 }
 
 /// The modules whose findings converge: at least [`MIN_SYMPTOMS`] of them,

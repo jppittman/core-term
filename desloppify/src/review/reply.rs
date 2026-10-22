@@ -6,7 +6,30 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use super::Call;
+use crate::agent::{Answer, Ask, Question};
+use crate::model::ModelLevel;
 use crate::rule::{Outcome, Rule, UNSURE, Verdict};
+
+/// One kind of question to a model: the level it is asked at, what it is
+/// told, and the schema its reply is held to.
+pub(super) struct Step<'a> {
+    pub(super) level: ModelLevel,
+    pub(super) system: &'a str,
+    pub(super) schema: &'a serde_json::Value,
+}
+
+/// `prompt`, put to a model as `step` says. No call is made without a
+/// schema.
+pub(super) async fn ask<A: Ask>(agent: &A, step: &Step<'_>, prompt: &str) -> Result<Answer> {
+    agent
+        .ask(&Question {
+            level: step.level,
+            system: step.system,
+            prompt,
+            schema: Some(step.schema),
+        })
+        .await
+}
 
 const DECIDER: &str = "\
 You answer one question about the code you are shown, by choosing exactly one \
