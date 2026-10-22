@@ -298,7 +298,8 @@ its edge.
   unknown (L6).
 - `PeelFold`/`HalveFold` fire only on a known range; Peel plans `hi − s` as a new `Lit`.
   `EmptyFold` (`fold_rules.rs:319`) fires only on a known empty range (L6). `FactorFold`
-  declines unless known non-empty (decision 5). `substitute`/`rebuild` (`fold_rules.rs`)
+  declines a known empty range only; under a value bound it factors, accepting the
+  infinite-`c` edge at a runtime `n = 0` (decision 5). `substitute`/`rebuild` (`fold_rules.rs`)
   follow L7; `rebuild`'s comment (`fold_rules.rs:600-606`) is rewritten, since its premise
   ("its class's variance excludes it") now rests on L3 and L4 adds the bounds' bits.
   `ENode::variance` follows L4 in the same CL as the IR's; `insert` and `add` refuse L3 as
@@ -544,7 +545,7 @@ A5's deletion, which removes code #1427 only re-scopes.
 - **A3. Value bounds in the IR and e-graph.** `over_values` (`pub(crate)`), the
   `push_reduce` refusals (`BoundVaries`, `BoundSort`, `BoundOutOfDomain`),
   `BoundArithmetic` at `over_values`, L4 in both variance functions, L7, `KnownBound` (L8), the rules
-  gated on known ranges, `FactorFold`'s decline, `ESTIMATED_TRIPS` in `fold_cost` and
+  gated on known ranges, `FactorFold` factoring under a value bound (decision 5), `ESTIMATED_TRIPS` in `fold_cost` and
   `below`, and `below`'s bound operands. Codegen refuses a `Value` bound by name. Gate:
   byte_probe empty; pins for L2 (`over_values(5, 3)` is the identity, `Kernel::over(_, 5..3, _)`
   still refused), L3 (X, Y, own binder and an X-varying `Ref` refused; enclosing binder
@@ -622,20 +623,21 @@ still in the key (§3.5). Ruling 6 lands with B2; decision 4's interim is refuse
    `pieces.map(|p| piece_term(p, X, Y)).sum()`: in-domain by construction, no index in the
    surface, no spelling for B3's window. S2, `(0..pieces.len()).map(|i| piece_term(pieces(i), X, Y)).sum()`:
    your wording, but `0..pieces.len() + 5` is writable and needs a lift for the outside.
-2. **How `kernel!` spells a per-call count** (A6). Ruling 1 already admits a
+2. **Decided (JP, 2026-10-22): an `n: usize` entry parameter.** How `kernel!` spells a per-call count (A6). Ruling 1 already admits a
    `Variance::CONST` bound, so a per-call count is legal; what is open is its surface, for
    example a `n: usize` entry parameter. It replaces `<const N>`, which A5 deletes either way.
-3. **Item 2: taken by this plan (B1), or waited for** from the typed-arena series.
+3. **Item 2: taken by this plan (B1), or waited for** from the typed-arena series. (#1431, T1,
+   and #1432, T2, landed 2026-10-22 on JP's word; item 2 itself is still open.)
 4. **Refused: a production interim before item 2** (a table at a fixed capacity, padded
    with data). A capacity is a count in `BufferDecl` and the key (`key.rs:415-424`), which
    is the JIT-compile-time count ruling 6 rules out and the "static max" the totality doc
    held (`:196-200`) that this plan reverses. Ruling 6 lands with B2.
-5. **`FactorFold` when non-emptiness is unknown:** decline (loses `c·Σf` for a per-call
+5. **Decided (JP, 2026-10-22): accept the edge.** `FactorFold` when non-emptiness is unknown: decline (loses `c·Σf` for a per-call
    `n`), or accept the infinite-`c`/`−∞` edge its doc declines (`fold_rules.rs:346-349`),
    under "edge-case IEEE conformance is not on offer".
 6. **The pieces' codomain.** Ten channels as one `L × Fin 10 → Real` table (today's shape,
    in the grammar), or a record codomain, which needs an extension to `T ::= S | D → T`.
-7. **Public API.** Deleting `FontPrograms`, `GlyphRows` and `blank`, changing
+7. **Decided (JP, 2026-10-22): approved, all of it.** Public API. Deleting `FontPrograms`, `GlyphRows` and `blank`, changing
    `loop_blinn::run` and `Glyph::bake`, and adding `Kernel::over_values` (public from A4):
    this plan reads ruling 6 as permission for the first two; CLAUDE.md asks for it to be said.
 8. **A mask-sorted fold out of domain.** `ANY` and `ALL` (and `Int` folds after T6) have no
