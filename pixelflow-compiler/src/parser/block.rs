@@ -345,7 +345,7 @@ fn rounded_once(digits: &str, literal: &impl quote::ToTokens) -> syn::Result<f32
 /// An integer literal denotes an exact integer, and it is kept as one: which
 /// type it is — an `f32` where a value is expected, a `usize` in a range's
 /// bounds or a `usize` const — depends on where it stands, and
-/// [`LiteralExpr::f32_value`] and [`LiteralExpr::usize_value`] answer for
+/// [`LiteralExpr::f32_value`](crate::ast::LiteralExpr::f32_value) and [`LiteralExpr::usize_value`](crate::ast::LiteralExpr::usize_value) answer for
 /// each. Past `u128` it is refused, as rustc refuses it: no type in the
 /// language holds it.
 ///

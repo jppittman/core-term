@@ -41,7 +41,7 @@
 //! **Where a term is built is a [`Site`]** (Phase D-a). Lowering is one walk,
 //! and there are two places it can build:
 //!
-//! - [`Expansion`]: an [`ExprArena`], at macro expansion — every entry that
+//! - [`Expansion`]: an [`ExprArena`](pixelflow_ir::arena::ExprArena), at macro expansion — every entry that
 //!   takes no kernel. Its declarations hold a placeholder default, and
 //!   emission declares each with the call's value; an entry with structural
 //!   parameters lowers to a *template* whose folds over a range that names
