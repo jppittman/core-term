@@ -3062,6 +3062,72 @@ fn it_should_insert_blank_lines_at_cursor_and_scroll_lines_below_off_the_bottom_
     );
 }
 
+/// CSI L (IL) outside the active scrolling region must be a no-op, matching
+/// VT behavior: an insert whose cursor row isn't inside `[scroll_top,
+/// scroll_bot]` does nothing, even though the two bounds are each
+/// individually satisfiable on their own.
+#[test]
+fn it_should_do_nothing_on_csi_l_when_cursor_is_below_the_scrolling_region() {
+    let mut term = create_test_emulator(5, 5);
+    let rows = ["AAAAA", "BBBBB", "CCCCC", "DDDDD", "EEEEE"];
+    for (i, row) in rows.iter().enumerate() {
+        print_str(&mut term, row);
+        if i + 1 < rows.len() {
+            term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
+            term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+        }
+    }
+
+    // Region covers physical rows 1-3 (1-based 2-4); row 4 is below it.
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
+    )));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(5, 1),
+    )));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::InsertLine(2),
+    )));
+
+    let snapshot = term.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(
+        &snapshot,
+        &["AAAAA", "BBBBB", "CCCCC", "DDDDD", "EEEEE"],
+        Some((4, 0)),
+    );
+}
+
+/// Sibling of the CSI L case above, for CSI M (DL).
+#[test]
+fn it_should_do_nothing_on_csi_m_when_cursor_is_below_the_scrolling_region() {
+    let mut term = create_test_emulator(5, 5);
+    let rows = ["AAAAA", "BBBBB", "CCCCC", "DDDDD", "EEEEE"];
+    for (i, row) in rows.iter().enumerate() {
+        print_str(&mut term, row);
+        if i + 1 < rows.len() {
+            term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::CR)));
+            term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+        }
+    }
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 2, bottom: 4 },
+    )));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(5, 1),
+    )));
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::DeleteLine(2),
+    )));
+
+    let snapshot = term.get_render_snapshot().expect("Snapshot was None");
+    assert_screen_state(
+        &snapshot,
+        &["AAAAA", "BBBBB", "CCCCC", "DDDDD", "EEEEE"],
+        Some((4, 0)),
+    );
+}
+
 #[test]
 fn it_should_delete_lines_at_cursor_and_pull_lines_below_up_to_fill_the_gap_on_csi_m() {
     let mut term = create_test_emulator(5, 5);
