@@ -1292,6 +1292,54 @@ mod tests {
         );
     }
 
+    /// A literal equal to a fold's bound, built after the fold, is a node of
+    /// its own after the fold: a known bound is the fold's data, so nothing
+    /// the fold holds is there for the literal to intern to (plan L1,
+    /// docs/language/2026-10-20-a-bound-is-a-value.md). `combine` copies the
+    /// fold's kernel and then splices the divisor, so the divisor is the
+    /// later node.
+    #[test]
+    fn a_literal_equal_to_a_bound_lands_after_its_fold() {
+        let mean = Kernel::sum_over(4, |i| Kernel::x().mul(i)).div(&Kernel::constant(4.0));
+        let (arena, root) = mean.parts();
+        let mut reached = alloc::vec![false; arena.len()];
+        let mut stack = alloc::vec![root];
+        while let Some(id) = stack.pop() {
+            if !core::mem::replace(&mut reached[id.0 as usize], true) {
+                stack.extend(arena.children(id));
+            }
+        }
+        let live = |id: &ExprId| reached[id.0 as usize];
+        let fold = arena
+            .nodes()
+            .filter(|(id, _)| live(id))
+            .find_map(|(id, node)| matches!(node, ExprNode::Reduce { .. }).then_some(id))
+            .expect("a live fold");
+        let fours: Vec<ExprId> = arena
+            .nodes()
+            .filter(|(id, _)| live(id))
+            .filter_map(|(id, node)| {
+                matches!(node, ExprNode::Const(Lit::Real(v)) if v == 4.0).then_some(id)
+            })
+            .collect();
+        assert_eq!(
+            fours.len(),
+            1,
+            "one 4.0, the divisor: {}",
+            arena.display(root)
+        );
+        assert!(
+            fours[0] > fold,
+            "the divisor follows the fold: {}",
+            arena.display(root)
+        );
+        assert_eq!(
+            arena.children(fold).count(),
+            1,
+            "the fold's one child is its body"
+        );
+    }
+
     /// A hand-built arena that names the retired Z axis is refused where it
     /// would become a kernel. `Var` still carries reduction indices and the
     /// rewrite tier's pattern metavariables, so the arena cannot refuse the
