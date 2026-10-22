@@ -40,6 +40,7 @@ use std::time::Instant;
 
 use pixelflow_graphics::fonts::{Font, GlyphAtlas};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
+use pixelflow_ir::fold::KNOWN_RANGE;
 use pixelflow_pipeline::schema::fnv1a64_hex;
 
 /// core-term's font asset (`terminal_app.rs`: `FONT_FILENAME`).
@@ -72,8 +73,8 @@ fn trip_counts(arena: &ExprArena, root: ExprId) -> Vec<u32> {
         if core::mem::replace(&mut seen[id.0 as usize], true) {
             continue;
         }
-        if let ExprNode::Reduce { fold, .. } = arena.node(id) {
-            trips.push(fold.len());
+        if let ExprNode::Reduce { .. } = arena.node(id) {
+            trips.push(arena.known_range(id).expect(KNOWN_RANGE).len());
         }
         stack.extend(arena.children(id));
     }

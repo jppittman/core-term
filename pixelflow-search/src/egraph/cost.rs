@@ -15,8 +15,9 @@
 //! - Custom domain-specific cost models
 
 use super::node::ENode;
+use pixelflow_ir::fold::KNOWN_RANGE;
 use pixelflow_ir::kind::OpMap;
-use pixelflow_ir::{Fold, OpKind};
+use pixelflow_ir::{Fold, KnownRange, OpKind};
 
 /// The price of a node only legalization can remove: a `Dwrt` the chain rule
 /// did not reach. The term is correct, the calculus left it symbolic, and
@@ -388,12 +389,10 @@ impl CostModel {
             //
             // An unpriceable monoid keeps the sentinel: extraction must not
             // choose a fold whose combiner has no operation to emit.
-            ENode::Reduce { fold: range, .. } => {
-                match super::fold_rules::combiner_op(range.monoid()) {
-                    Some(_) => self.fold_cost(*range, 0),
-                    None => usize::MAX / 4,
-                }
-            }
+            ENode::Reduce { fold, .. } => match super::fold_rules::combiner_op(fold.monoid()) {
+                Some(_) => self.fold_cost(*fold, node.known_range().expect(KNOWN_RANGE), 0),
+                None => usize::MAX / 4,
+            },
         }
     }
 
@@ -403,15 +402,18 @@ impl CostModel {
     ///
     /// The one formula for a fold's price. The extractor reaches it in two
     /// halves, because a node's own cost cannot see its children's:
-    /// [`node_op_cost`](Self::node_op_cost) is `fold_cost(fold, 0)`, the
-    /// combiner chain, and the DP multiplies the body's price by the trip
+    /// [`node_op_cost`](Self::node_op_cost) is `fold_cost(fold, range, 0)`,
+    /// the combiner chain, and the DP multiplies the body's price by the trip
     /// count where it has that price in hand (`extract.rs`'s `below`).
+    ///
+    /// `fold` is the algebra and `range` the trips, read off the node that
+    /// holds the fold ([`ENode::known_range`]) and not off `fold`'s header.
     ///
     /// Saturating: a nest of long folds over an expensive body is a price
     /// past any budget, not an overflow.
     #[must_use]
-    pub fn fold_cost(&self, fold: Fold, body: usize) -> usize {
-        let trips = fold.len() as usize;
+    pub fn fold_cost(&self, fold: Fold, range: KnownRange, body: usize) -> usize {
+        let trips = range.len() as usize;
         let combines = trips.saturating_sub(1);
         trips
             .saturating_mul(body)
@@ -716,17 +718,16 @@ mod cost_model_accessors {
     /// A fold's price is [`CostModel::fold_cost`]. The extractor's DP reaches
     /// it in two halves — `node_op_cost` is the combiner chain, and the DP adds
     /// the body once per trip. Pinned: with no rewrite rule to choose another
-    /// form, `Σ_{j<40} |X − j|` is priced exactly `fold_cost(fold, − + |·|)`.
+    /// form, `Σ_{j<40} |X − j|` is priced exactly `fold_cost(fold, range, − + |·|)`.
     #[test]
     fn the_extractor_prices_a_fold_at_fold_cost() {
         use crate::egraph::extract::extract_dag;
         use crate::egraph::{Vocabulary, insert};
         use pixelflow_ir::ExprArena;
-        use pixelflow_ir::fold::{Binder, Fold, Monoid};
+        use pixelflow_ir::fold::{Binder, Fold, KNOWN_RANGE, Monoid};
 
         let binder = Binder::from_slot(0).expect("a live binder");
         let fold = Fold::new(Monoid::SUM, binder, 0..40);
-        let range = fold;
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let j = a.push_var(binder.var());
@@ -741,10 +742,11 @@ mod cost_model_accessors {
         let cost = dag.total_cost;
 
         let body_cost = model.cost(OpKind::Sub) + model.cost(OpKind::Abs);
-        assert_eq!(cost, model.fold_cost(range, body_cost));
+        let range = a.known_range(root).expect(KNOWN_RANGE);
+        assert_eq!(cost, model.fold_cost(fold, range, body_cost));
         assert_eq!(
             model.node_op_cost(&ENode::Reduce { fold, body: class }),
-            model.fold_cost(range, 0),
+            model.fold_cost(fold, range, 0),
             "the node's own share is the fold with its body free"
         );
     }

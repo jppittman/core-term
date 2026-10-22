@@ -12,6 +12,7 @@ use super::provenance::ENodeId;
 use alloc::collections::BinaryHeap;
 use alloc::vec::Vec;
 use core::cmp::Reverse;
+use pixelflow_ir::fold::KNOWN_RANGE;
 use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, Lit, OpKind, Shape, Variance};
 
 /// A witnessed choice map: an e-graph, a root e-class, and a well-founded
@@ -1675,9 +1676,10 @@ fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize 
 /// the settlement is no longer exact at an `If` — see [`Settling`].
 fn below(node: &ENode, mut operand: impl Iterator<Item = usize>) -> usize {
     match node {
-        ENode::Reduce { fold, .. } => {
+        ENode::Reduce { .. } => {
             let body = operand.next().expect("a fold has a body");
-            usize::try_from((body as u64).saturating_mul(u64::from(fold.len())))
+            let range = node.known_range().expect(KNOWN_RANGE);
+            usize::try_from((body as u64).saturating_mul(u64::from(range.len())))
                 .unwrap_or(usize::MAX)
         }
         ENode::Op { op: OpKind::If, .. } => {

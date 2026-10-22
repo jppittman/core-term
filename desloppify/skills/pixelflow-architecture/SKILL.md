@@ -15,7 +15,8 @@ description: Crate boundaries and design constraints of the pixelflow workspace 
   (`docs/language/2026-10-15-kernels-evaluate-kernels.md` §3). A kernel is a
   description, `Manifold::compile` specializes it at a lattice's shape,
   `Lattice::collapse` is the only verb that produces numbers. The language is a
-  DAG: no iteration binder.
+  DAG whose one binder is the fold, and no fold's bound is a function of a
+  coordinate or of a lattice binder.
 - **SIMD is an implementation detail.** Nothing outside `pixelflow-codegen`'s
   emitters names a lane, a vector width, or an intrinsic. The width is the JIT's
   (`pixelflow_codegen::jit_vector_bytes()`), chosen once at startup by CPUID —

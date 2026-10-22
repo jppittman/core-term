@@ -177,7 +177,7 @@ went with the tiers that held them. A copy is a future divergence.
 - **A kernel with a lattice is the evaluation API**: `Kernel` describes, `Manifold::compile` specializes it at a shape, `Lattice::collapse` tabulates it. There is no per-batch entry and no interpreter.
 - **SIMD as algebra**: users write equations; the compiler owns the loop nest, the hoisting, the pack and the register allocation, and emits the assembly. Lane width is never in the vocabulary.
 - **The Fixed Observer**: Camera is at origin. Movement is achieved by warping coordinate space.
-- **The language is a DAG**: no iteration binder. A fixed-count iteration is unrolled at construction; a trip count that must change is a recompile through the shape-keyed cache.
+- **The language is a DAG**: the fold is its one binder, and no fold's bound is a function of a coordinate (X, Y) or of a lattice binder. Today every bound is a constant, so a trip count that must change is a recompile through the shape-keyed cache. The plan that makes bounds values placed by their variance is docs/language/2026-10-20-a-bound-is-a-value.md.
 - **Zero allocations** - No per-frame heap allocation (ping-pong buffer strategy).
 - **Platform on main thread** - Especially macOS Cocoa (Apple requirement).
 
@@ -432,7 +432,8 @@ docs/codegen/2026-09-22-the-isa-is-decided-at-startup.md.
   **Branchless is the limit**: no case survives to runtime at all, because one
   expression is correct for every input. It is what this codebase is made of —
   a comparison yields a mask rather than a `bool`, and the language is a DAG
-  with no binder — so take it wherever the hardware offers it. `If` is
+  whose one binder, the fold, has no bound that varies with a coordinate — so
+  take it wherever the hardware offers it. `If` is
   **not** an example of it, however much it looks like one; see "`If`
   guards its arms" below. What it does not license is hand-rolling a
   *worse* branchless form than the instruction already there: the retired

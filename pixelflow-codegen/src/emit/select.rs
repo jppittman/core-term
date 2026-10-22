@@ -18,7 +18,7 @@ use crate::program::{
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use pixelflow_ir::fold::{Binder, Fold, Monoid};
+use pixelflow_ir::fold::{Binder, Fold, KnownRange, Monoid};
 
 /// Selection: a scoped schedule as one machine function.
 pub(super) struct Select<B: IsaBackend>(pub(super) PhantomData<fn() -> B>);
@@ -144,7 +144,7 @@ impl<B: IsaBackend> Selector<'_, B> {
             ScheduledOp::Const(_)
                 | ScheduledOp::Seq(..)
                 | ScheduledOp::Var(_)
-                | ScheduledOp::Reduce(..)
+                | ScheduledOp::Reduce { .. }
         ) {
             self.scheduled[scope_ix(scope)] += 1;
         }
@@ -168,14 +168,14 @@ impl<B: IsaBackend> Selector<'_, B> {
                 B::store(&mut self.b, store);
                 return Ok(());
             }
-            ScheduledOp::Reduce(fold, body) => {
+            ScheduledOp::Reduce { fold, range, body } => {
                 let j = scoped
                     .folds
                     .iter()
                     .position(|f| f.parent == scope && f.reduce == def.value)
                     .unwrap_or_else(|| panic!("{:?} opens no fold in its scope", def.value));
                 self.scheduled[scope_ix(scope)] += 1;
-                match self.fold(scope, j, (*fold, *body))? {
+                match self.fold(scope, j, (*fold, *range, *body))? {
                     Some(result) => result,
                     None => return Ok(()),
                 }
@@ -262,16 +262,16 @@ impl<B: IsaBackend> Selector<'_, B> {
         &mut self,
         parent: Scope,
         j: usize,
-        (fold, body): (Fold, ValueId),
+        (fold, range, body): (Fold, KnownRange, ValueId),
     ) -> Result<Option<B::Lane>, CompileError> {
         assert!(
-            !fold.is_empty(),
+            !range.is_empty(),
             "an empty fold is its monoid's identity before it reaches selection"
         );
         let accumulates = fold.monoid() != Monoid::SEQ;
-        let range = fold.range();
+        let bounds = range.range();
 
-        let lo = self.constant(range.start as f32)?;
+        let lo = self.constant(bounds.start as f32)?;
         let seeds: Vec<B::Lane> = if accumulates {
             alloc::vec![lo, self.constant(lane_pattern(fold.monoid().identity()))?]
         } else {
@@ -285,7 +285,7 @@ impl<B: IsaBackend> Selector<'_, B> {
             Some(&(index, trips)) => (Some(index), trips),
             None => (None, 1),
         };
-        let trips = parent_trips * u64::from(fold.len());
+        let trips = parent_trips * u64::from(range.len());
         let index = self.b.open_loop(head.label(), parent_loop, trips);
         let head_label = head.label();
         let params: Vec<B::Lane> = head.params().iter().map(|&p| B::param_lane(p)).collect();
@@ -307,9 +307,9 @@ impl<B: IsaBackend> Selector<'_, B> {
             Some(body) => Some(self.binary(legal(fold.combine_op()), params[1], body)?),
             None => None,
         };
-        let stride = self.constant(fold.stride() as f32)?;
+        let stride = self.constant(range.stride() as f32)?;
         let step = self.binary(BinaryOp::Add, binder, stride)?;
-        let end = self.constant(range.end as f32)?;
+        let end = self.constant(bounds.end as f32)?;
         let done = self.lane(LaneOp::Compare(CompareOp::Ge, step, end))?;
         let exit = self.b.block(&[], parent);
         let args = [Some(step), accumulated]

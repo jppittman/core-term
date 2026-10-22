@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::dag::{Builder, Id, Memo, Node};
-use crate::fold::{Binder, Fold, Placeholder};
+use crate::fold::{Binder, Fold, KnownRange, Placeholder};
 use crate::key::KernelKey;
 use crate::kind::OpKind;
 use crate::lit::Lit;
@@ -411,7 +411,7 @@ pub enum ExprNode {
     /// [`NaryChildren`] — and comes back through [`ExprArena::children`].
     Nary(OpKind, NaryChildren),
     /// A fold: `⊕_{k} body[fold.binder() := k]` over its range's visited
-    /// indices (`lo`, `lo+stride`, …, [`Fold::len`] of them) — see [`Fold`].
+    /// indices (`lo`, `lo+stride`, …, [`KnownRange::len`] of them) — see [`Fold`].
     ///
     /// The only node that *binds* — the binder is not free in the result — and
     /// the only one whose metadata is part of its identity rather than a
@@ -1094,6 +1094,28 @@ impl ExprArena {
                 }
             }
         }
+    }
+
+    /// The range of the `Reduce` at `id`, when it is known: every bound is a
+    /// constant today, so this is `Some` for every fold.
+    ///
+    /// The arena's reader of a fold's range, beside the e-graph node's and the
+    /// schedule's: a caller that reasons about how many terms a fold has, or
+    /// whether it has any, reads it here and not off the [`Fold`] header, so
+    /// that the representation can move the bounds out of the header without
+    /// every caller changing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is out of bounds or is not a `Reduce`: only a fold has a
+    /// range, and asking another node for one is a caller that lost track of
+    /// which node it holds.
+    #[must_use]
+    pub fn known_range(&self, id: ExprId) -> Option<KnownRange> {
+        let NodeData::Reduce(fold) = *self.builder.dag().get(id.0) else {
+            panic!("known_range: {id:?} is not a Reduce — only a fold has a range");
+        };
+        fold.known_range()
     }
 
     /// Get the [`OpKind`] of the node at `id`.

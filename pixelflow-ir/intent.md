@@ -37,7 +37,7 @@ except for the process-global store a `Ref` names into.
 
 ## Contract
 `src/lib.rs` re-exports the surface: `Kernel`, `Uniform`, `Bits`, `OpKind`,
-`Fold`/`Monoid`/`Binder`, `KernelKey`, `KernelStore`, `Variance`/`LatticeShape`,
+`Fold`/`KnownRange`/`Monoid`/`Binder`, `KernelKey`, `KernelStore`, `Variance`/`LatticeShape`,
 `ExprArena`/`ExprId`/`ExprNode`, `Dag`/`Node`/`Rooted`, `Ir`/`Shape`/`Children`,
 `Optimize`/`Identity`/`Then`, `passes`, `dyadic`, `library`. Only compiler
 crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
@@ -69,7 +69,12 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   `Real`/`Int`/`Mask` on nodes and `Lit::Int` are ruled (kernels-evaluate-kernels
   §2) and wait on T2–T3 of docs/language/2026-10-17-the-arena-is-typed.md.
 - `Var(u8)` means an axis or a binder by range; `Fold`'s ends are `u32`,
-  `Binder` a `u8`, against the 64-bit control-plane rule.
+  `Binder` a `u8`, against the 64-bit control-plane rule. A fold's bounds
+  still live in its header and are never unknown. Everything that reasons
+  about a range reads it as a `KnownRange` through `ExprArena::known_range`
+  (serializing and naming a fold read the header); the bounds become the
+  node's operands next
+  (`docs/language/2026-10-20-a-bound-is-a-value.md` A2b, A3).
 - `Buffer`, `BoundManifold`'s link tables and `passes::lattice` are in the
   tree and not concepts (DENOTATION §11).
 
