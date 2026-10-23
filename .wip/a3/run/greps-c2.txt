@@ -1,0 +1,18 @@
+== grep -rnwE 'A3' --include=*.rs pixelflow-*
+rc=1
+== grep -nw 'A3' pixelflow-ir/intent.md
+rc=1
+== grep -rn 'fold_cost(' --include=*.rs .
+./pixelflow-search/src/egraph/cost.rs:405:                    Some(_) => self.fold_cost(fold, header.priced_trips(), 0),
+./pixelflow-search/src/egraph/cost.rs:419:    /// [`node_op_cost`](Self::node_op_cost) is `fold_cost(fold, trips, 0)`,
+./pixelflow-search/src/egraph/cost.rs:432:    pub fn fold_cost(&self, fold: Fold, trips: u64, body: usize) -> usize {
+./pixelflow-search/src/egraph/cost.rs:743:    /// form, `Σ_{j<40} |X − j|` is priced exactly `fold_cost(fold, 40, − + |·|)`.
+./pixelflow-search/src/egraph/cost.rs:745:    fn the_extractor_prices_a_fold_at_fold_cost() {
+./pixelflow-search/src/egraph/cost.rs:767:        assert_eq!(cost, model.fold_cost(fold, 40, body_cost));
+./pixelflow-search/src/egraph/cost.rs:770:            model.fold_cost(fold, 40, 0),
+./pixelflow-search/src/egraph/cost.rs:777:    /// extractor totals `Σ_{j<u} |X − j|` at `fold_cost(fold, 32, − + |·|)`:
+./pixelflow-search/src/egraph/cost.rs:816:            model.fold_cost(fold, Fold::ESTIMATED_TRIPS, 0),
+./pixelflow-search/src/egraph/cost.rs:822:            model.fold_cost(fold, Fold::ESTIMATED_TRIPS, body_cost)
+rc=0
+== grep -rln '\.wip' --include=*.rs --include=*.md . | grep -v '^./.wip/'
+rc=1

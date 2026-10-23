@@ -1,0 +1,13 @@
+Reduce-site checklist at HEAD d4bcd11
+grep: 176 lines, 172 sites (deduped by (file, line))
+class            sites
+already-correct     38
+changed-by-A3       25
+left                13
+tests               76
+n/a                  5
+A4                  15
+A5                   0
+classified         172
+UNCLASSIFIED 0
+STALE 0
