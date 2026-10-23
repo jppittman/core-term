@@ -1,3 +1,0 @@
-warnings: base 28, head 28
-NEW 0
-GONE 0

@@ -1,2 +1,0 @@
-(121 pre-existing violation(s) grandfathered by cfg_encapsulation_baseline.txt -- not fixed, not failing)
-OK: no new platform cfg encapsulation violations (121 pre-existing, grandfathered)

@@ -1,2 +1,0 @@
-    Checking pixelflow-search v0.1.0 (/home/user/pixelflow/pixelflow-search)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.35s

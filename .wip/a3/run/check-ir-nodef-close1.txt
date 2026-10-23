@@ -1,4 +1,0 @@
-   Compiling libm v0.2.15
-    Checking pixelflow-ir v0.1.0 (/home/user/pixelflow/pixelflow-ir)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.41s
-EXIT 0
