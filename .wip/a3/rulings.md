@@ -1,0 +1,18 @@
+# A3: rulings on the critique (authoritative over spec.md where they differ)
+
+Base: main after #1446 (fold header counts stored in 32 bits; readers return u64). Re-grep; never trust a line number.
+
+- **B1** — the "A3 mentions" check: `grep -rnwE 'A3'` scoped to `pixelflow-*` and `pixelflow-ir/intent.md`. Reword `fold.rs:574`, `:793`, `:1524`, `passes.rs:1600` (and any other hit) as A3 makes them true.
+- **B2** — classify every `Reduce {` site: paste the critique's table into the checklist; the generator reports 0 unclassified, 0 stale at head.
+- **N1** — L3 is checked by one per-node transfer function, run as today's forward pass and as a rooted, memoized walk from the bound. Never a whole-arena `compute_arena_variance` per value-bounded fold; never re-resolve every `Ref` per fold.
+- **N2** — discovery moves into `close_over`, before the copy: a `Const` bound is read into `Bound::Lit` and never copied. `over_values` then needs no discovery of its own. Update J9's text.
+- **N3** — pricing: a `Value` bound whose child extracts to an in-domain integer literal is priced at that count; otherwise `ESTIMATED_TRIPS`. The extractor's DP holds the bound child's pick before it prices the fold. `FoldHeader::priced_trips` stays the arena/header-side reader (literal or estimate); the extractor computes the effective trips from the picks and passes them to `fold_cost(fold, trips, body)` and `below`. Amend the plan's §3.2 / §4 sentence "no price site needs a graph" to say pricing reads the bound children's extracted picks. Pin it: a class holding both twins of a fold with n > 32 prices both at n.
+- **N4** — `push_reduce` (the internal constructor) keeps an out-of-domain or non-integer `Const` bound as a `Value` bound instead of refusing it, so a rule- or fold-made literal never panics at extraction and A4's guard yields NaN (L5). `BoundOutOfDomain` is refused at the user surfaces only (`over_values`, `Kernel::over`'s literal range, and `kernel!` at A6). A `Lit::Mask` bound is still `BoundSort` everywhere. Update plan §3.1's push_reduce sentence and add one line to the A4 bullet: the guard handles a rule-made out-of-domain literal.
+- **N5** — state `substitute_vars_with`'s precondition (never substitutes a slot a nested fold rebinds) in §3.4 and its doc; do not claim L7 for it.
+- **N6** — T-S-6 ends by extracting (`extract(&eg, root, &CostModel::latency_prior())`) and asserts the arena holds the fold with `hi` a `Value` reading the outer binder (or a literal after unrolling) and `free_index(root) == None`.
+- **N7** — add T-S-4b (a rebinding inner fold is named, not entered, after `PeelFold` on the outer).
+- **N8** — add `pixelflow-graphics/tests/production_glyph_arena_dump.rs:171` to the A4 bullet's serializer list; §10 says the L8/HalveFold pins are e-graph-level (no `ConstantFold`, no production path) because the key refuses value bounds until A4.
+- **N9** — fix `kernel.rs` `Kernel::over`'s doc ("range is static… backend unrolls"), give `KNOWN_RANGE` a true reason for `glyph_phase_split.rs` (production glyphs before B2), narrow `pixelflow-search/src/egraph/intent.md`'s E6 restatement to known ranges.
+- **N10** — `Fold::count` is `pub(crate)`; one function holds `n <= EXACT_BOUND` and both `KnownRange::admits` and `Fold::count` call it; rename `real_sorted` to `takes_a_value_bound`; `over_values` refuses a `Param`/`Buffer` root with its own message (not `BoundArithmetic`).
+- Everything stays byte-identical on today's kernels (every bound literal): byte_probe both tiers, the 29 font programs' keys, saturation telemetry including extraction fields.
+- Every intent.md stays within 80 lines.
