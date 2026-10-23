@@ -196,6 +196,6 @@ the file re-sorted, so some search rows moved within the file.
 - `pixelflow-codegen` and `pixelflow-core` need no source change for search; `cargo test -p pixelflow-codegen` is green.
 - Gates 1b, 2, 2x and 5 need `pixelflow-compiler` to build (its `lower.rs:515` and `emit.rs:838`). Run them once step 7 lands:
   the harness above says the search crate itself moves nothing on literal folds, but only those gates read the 29 programs.
-- The `chosen` table costs one `Vec<Option<Lit>>` per DP pass and one node lookup and store per settle. Gate 4's
-  instruction count is the arbiter; I expect it well inside +0.5% (about 2 MB of writes and a few million instructions
-  against 6.3e9) but did not measure it, for the reason above.
+- The `chosen` table costs one `Vec<Option<Lit>>` per DP pass and one node lookup and store per settle. The instruction
+  count (the harness's gate 5, §11's gate 4) is the arbiter; I expect it well inside +0.5% (about 2 MB of writes and a few
+  million instructions against 6.3e9) but did not measure it, for the reason above.
