@@ -108,6 +108,10 @@ impl Pass for Lower {
 /// arena's uniform-slot order, read once per call) and then the origin
 /// block's: `x0`, `y0`.
 ///
+/// A fold's bound may be a value rather than a literal: the fold is then
+/// compiled inside its guard (`passes::legalize`), computing its fold or NaN
+/// on every tier.
+///
 /// # Panics
 ///
 /// Panics if the arena names a retired coordinate axis (`Var(2)`/`Var(3)`,
@@ -118,7 +122,9 @@ impl Pass for Lower {
 /// `X` and `Y`, so a retired axis would survive into the schedule as a `Var`
 /// no fold binds, and the allocator's refusal there names a binder, not an
 /// axis; this one names the axis. Also panics on a zero extent, which has
-/// no sample to compute.
+/// no sample to compute. A fold whose bound computes a mask is refused too,
+/// by name (`BoundSort`) and on every tier alike: a target may hold a mask
+/// where a loop's seed cannot be.
 pub fn compile(
     arena: &ExprArena,
     root: ExprId,
@@ -169,8 +175,7 @@ pub(crate) mod tests {
     const TWO_BATCHES: LatticeShape = LatticeShape::new([8, 2]);
     const FOUR_LANES: u32 = 4;
 
-    /// The nest of `kernel`, and the `Reduce` defs in it with a bound that is
-    /// a value, each with the scope it sits in.
+    /// The scoped schedule of `kernel` at `TWO_BATCHES` and `FOUR_LANES`.
     fn nest_of(kernel: &pixelflow_ir::Kernel) -> crate::program::ScopedSchedule<()> {
         use crate::program::Nest;
 
@@ -202,7 +207,7 @@ pub(crate) mod tests {
         fold
     }
 
-    /// Every `Compare` and `If` def of `schedule`, by kind.
+    /// How many `Compare` and `If` defs `schedule` holds, in that order.
     fn count_guards(schedule: &[Def]) -> (usize, usize) {
         use crate::program::ScheduledOp;
 

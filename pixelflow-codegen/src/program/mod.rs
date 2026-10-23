@@ -171,6 +171,12 @@ macro_rules! legal_ops {
         #[derive(Copy, Clone, Debug, PartialEq, Eq)]
         pub(crate) enum $name { $($op),+ }
 
+        #[cfg(test)]
+        impl $name {
+            /// Every op of this type, for a test that must cover each.
+            pub(crate) const ALL: &'static [Self] = &[$(Self::$op),+];
+        }
+
         impl Legal for $name {
             fn of(kind: OpKind) -> Option<Self> {
                 match kind {
@@ -203,22 +209,26 @@ pub(crate) enum MaskOp {
 }
 
 impl BinaryOp {
-    /// What this op is on two masks, if it is one that leaves a mask. A
-    /// comparison is a mask and `BitAnd`/`BitOr` of two is another; every
-    /// other op yields a number, or a bit pattern read as one.
+    /// The mask op this op is on `a` and `b`, each its operand as a mask when
+    /// it is one, with the two masks: a bitwise op on two masks leaves a mask,
+    /// and every other pairing yields a number, or a bit pattern read as one.
+    /// A comparison is a mask whatever it compares, so it takes no operands to
+    /// say so.
     ///
-    /// The one place that says which ops keep a mask a mask: a selector that
-    /// holds masks apart from numbers (AVX-512's opmasks) asks it to choose
-    /// the file of a result, and [`ScheduledOp::is_mask`] asks it to say what
-    /// that choice will be before a selector is reached.
-    pub(crate) fn on_masks(self) -> Option<MaskOp> {
-        match self {
-            Self::BitAnd => Some(MaskOp::And),
-            Self::BitOr => Some(MaskOp::Or),
+    /// The one place that says which binary ops keep a mask a mask. A
+    /// selector that holds masks apart from numbers (AVX-512's opmasks) hands
+    /// it each operand it holds as one and takes the file of the result from
+    /// the answer; [`ScheduledOp::is_mask`] hands it what the schedule says of
+    /// each operand, to ask that choice before a selector is reached.
+    pub(crate) fn on_masks<M>(self, a: Option<M>, b: Option<M>) -> Option<(MaskOp, M, M)> {
+        let op = match self {
+            Self::BitAnd => MaskOp::And,
+            Self::BitOr => MaskOp::Or,
             Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Min | Self::Max | Self::IAdd => {
-                None
+                return None;
             }
-        }
+        };
+        Some((op, a?, b?))
     }
 }
 
@@ -408,20 +418,27 @@ pub(crate) struct ArmBlock {
 
 impl ScheduledOp {
     /// Whether the value this op defines is a mask: a comparison, or a
-    /// bitwise op ([`BinaryOp::on_masks`]) on two operands that are masks,
+    /// bitwise op on two operands that are masks ([`BinaryOp::on_masks`]),
     /// `operand_is_mask` saying which. A reinterpretation defines no value
     /// (lowering maps it to its operand), so it keeps its operand's answer.
     ///
     /// A mask is a bit pattern, not a number, and a target may hold it in a
     /// file of its own (AVX-512's opmasks, which no vector instruction reads
     /// as a head's parameter), so what a position that needs a number may
-    /// take is asked here, once, rather than of each target.
+    /// take is asked here, before any target is chosen. The bitwise rule is
+    /// the selector's own (`on_masks`); that a comparison is a mask, and that
+    /// nothing else is, is the selector's choice of file restated, and the
+    /// AVX-512 test `a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask`
+    /// holds the two equal.
     pub(crate) fn is_mask(&self, operand_is_mask: impl Fn(ValueId) -> bool) -> bool {
         match self {
             Self::Compare(..) => true,
-            Self::Binary(op, a, b) => {
-                op.on_masks().is_some() && operand_is_mask(*a) && operand_is_mask(*b)
-            }
+            Self::Binary(op, a, b) => op
+                .on_masks(
+                    operand_is_mask(*a).then_some(()),
+                    operand_is_mask(*b).then_some(()),
+                )
+                .is_some(),
             _ => false,
         }
     }

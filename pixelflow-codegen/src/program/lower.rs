@@ -518,7 +518,8 @@ pub(crate) fn arena_to_schedule(
                     // A mask is what a target may hold in a file of its own,
                     // where a head's parameter cannot be: AVX-512 panics
                     // there, and the other tiers would read its bits as a
-                    // count. `is_mask` is the answer the selectors act on.
+                    // count. `is_mask` asks, before selection, which file
+                    // AVX-512 will pick.
                     assert!(
                         !masks.is_mask(&schedule, map_child(term)),
                         "arena_to_schedule: {}: the bound computes a mask (a comparison, or a \
@@ -830,7 +831,7 @@ mod tests {
 
     /// A target may hold a mask where a loop's seed cannot be (AVX-512's
     /// opmask file), so a bound that computes one is refused on every tier
-    /// alike, by the predicate the selectors act on (`ScheduledOp::is_mask`):
+    /// alike, by `ScheduledOp::is_mask`, which AVX-512's selector is held to:
     /// a comparison, a bitwise op on two masks, a reinterpretation of either.
     /// A bitwise op on a mask and a number is a number, and a count.
     #[test]

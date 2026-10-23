@@ -75,7 +75,8 @@ impl ScopeTraffic {
 /// here knows: the static model prices it at [`Fold::ESTIMATED_TRIPS`], and
 /// that price is carried as an estimate, so that no measurement can read it as
 /// a count. A loop nested in an estimate is an estimate too, for it runs that
-/// many times that many times.
+/// many times that many times, and so is a nest of literals whose product
+/// passes `u64`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trips {
     /// Every bound is a literal: the body runs exactly this many times.
@@ -99,13 +100,13 @@ impl Trips {
     }
 
     /// These trips of a loop inside `parent`: their product, an estimate if
-    /// either is. Saturating, for a product past `u64` is a weight, not a
-    /// count anything runs.
+    /// either is. A product past `u64` is a weight, not a count to report, so
+    /// it is an estimate at `u64::MAX`.
     pub(in crate::emit) fn nested_in(self, parent: Self) -> Self {
-        let product = parent.weight().saturating_mul(self.weight());
-        match (self, parent) {
-            (Self::Known(_), Self::Known(_)) => Self::Known(product),
-            _ => Self::Estimated(product),
+        let product = parent.weight().checked_mul(self.weight());
+        match (self, parent, product) {
+            (Self::Known(_), Self::Known(_), Some(count)) => Self::Known(count),
+            (_, _, product) => Self::Estimated(product.unwrap_or(u64::MAX)),
         }
     }
 
@@ -337,11 +338,12 @@ mod tests {
         assert_eq!(Trips::Known(3).nested_in(Trips::Known(4)), Trips::Known(12));
     }
 
+    /// A product of literal trips past `u64` is not a count: it prices at the
+    /// most the allocator can weigh, and `dynamic_memory_ops` does not report it.
     #[test]
-    fn nesting_saturates() {
-        assert_eq!(
-            Trips::Known(u64::MAX).nested_in(Trips::Known(2)),
-            Trips::Known(u64::MAX)
-        );
+    fn a_product_past_u64_is_an_estimate() {
+        let nested = Trips::Known(u64::MAX).nested_in(Trips::Known(2));
+        assert_eq!(nested, Trips::Estimated(u64::MAX));
+        assert_eq!(nested.known(), None);
     }
 }

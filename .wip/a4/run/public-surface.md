@@ -59,13 +59,20 @@ behavior or documented contract differs from a747770.
 
 Two callers outside this crate stop compiling until they handle the new types, both named by spec section 4.4 and **not touched here**: `pixelflow-pipeline/src/collapse_bench/mod.rs` (`:313` multiplies a `Trips` by a `u64`, `:329` stores the `Option`) and `pixelflow-graphics/examples/constant_traffic.rs` (`:50` prints the `Option` with `{}`).
 
+### Changed behavior or contract (no signature change)
+
+| Item | Change |
+|---|---|
+| `pixelflow_codegen::emit::compile` (re-exported from `pipeline::compile`; the entry `pixelflow-core`'s compile and bake reach through `jit_cache`) | A fold whose bound is a value compiles, inside its guard, and computes its fold or NaN on every tier. A bound that computes a mask panics with `BoundSort` on every tier (a new sentence in the `# Panics` section); the pipeline-bug panics (a bound reading a lattice binder, a value-bounded fold read other than once) are for an arena `legalize` did not produce, and this entry always runs it. Was: panicked with `VALUE_BOUND` in lowering. |
+| `pixelflow_codegen::jit_cache::compile` | Accepts a value-bounded kernel (`Kernel::over_values`): `canonical` is total over it, the optimizer keeps its bound, and every count of one kernel shares one program. Was: panicked in `canonical` (and before that in lowering). A computed mask bound is not reachable here (`Kernel::over_values` refuses a computed bound), so no new panic. The doc gains one sentence. |
+
 ### Crate-private additions (listed so a reviewer can see nothing leaked)
 
-- `program/mod.rs`: `pub(crate) enum MaskOp { And, Or }`; `BinaryOp::on_masks(self) -> Option<MaskOp>` (`pub(crate)`); `ScheduledOp::is_mask(&self, impl Fn(ValueId) -> bool) -> bool` (`pub(crate)`). `program::operands` (already `pub(crate)`) now yields a `Reduce`'s value bounds.
+- `program/mod.rs`: `pub(crate) enum MaskOp { And, Or }`; `BinaryOp::on_masks<M>(self, Option<M>, Option<M>) -> Option<(MaskOp, M, M)>` (`pub(crate)`): the one place that says a bitwise op on two masks leaves a mask, called by AVX-512's selector (with each operand's opmask) and by `ScheduledOp::is_mask(&self, impl Fn(ValueId) -> bool) -> bool` (`pub(crate)`, with the schedule's answer). `#[cfg(test)] ALL` on each `legal_ops!` enum (`pub(crate)`, test builds only), which the AVX-512 agreement test iterates. `program::operands` (already `pub(crate)`) now yields a `Reduce`'s value bounds.
 - `emit/traffic.rs`: `Trips::ONCE`, `Trips::of`, `Trips::nested_in`, `Trips::weight`, all `pub(in crate::emit)`.
 - `emit/select.rs`: private `UNIT_STRIDE`, `Looped`, `Selector::bound`. `emit/build.rs`: `Builder::open_loop` takes a `Trips` (`pub(super)`). `emit/mod.rs`: private `Loop.trips: Trips`. `regalloc/local.rs`: `LoopFacts.trips` stays a `u64`, read through `Trips::weight`.
 - `program/lower.rs`: private `ValueFold`, `ValueFolds`, `MaskValues`, `assert_off_the_lattice`.
-- `emit/avx512.rs`: `KOp::of` is now `BinaryOp::on_masks` mapped (same ops, same encodings; no byte moves).
+- `emit/avx512.rs`: `KOp::of` is `impl From<MaskOp> for KOp` (same ops, same encodings; no byte moves); `Lane::opmask` (private) is a lane as the mask it is held in, if it is one.
 
 ### Removed
 

@@ -56,11 +56,14 @@ pub(crate) fn program_digest(arena: &ExprArena, root: ExprId) -> u64 {
 fn a_value_bound_is_in_the_program_digest() {
     use pixelflow_ir::{Binder, Bound, Fold, Monoid, Uniform};
 
-    /// `Σ_{k<n} k`, with `n` the `slot`-th of two declared uniforms.
+    /// `Σ_{k<n} k`, with `n` the `slot`-th of two declared uniforms. Both are
+    /// leaves of the arena, so the arenas differ in one child edge and nothing
+    /// else.
     fn counted_by(slot: usize) -> (ExprArena, ExprId) {
         let mut arena = ExprArena::new();
         let slots = [3.0, 5.0].map(|default| arena.declare_uniform(Uniform::new(default).decl()));
-        let count = arena.push_uniform(slots[slot]);
+        let counts = slots.map(|slot| arena.push_uniform(slot));
+        let count = counts[slot];
         let binder = Binder::from_slot(0).expect("the first binder");
         let index = arena.push_var(binder.var());
         let root = arena.push_reduce(

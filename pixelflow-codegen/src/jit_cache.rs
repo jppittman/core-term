@@ -82,7 +82,9 @@ pub struct Linked {
 ///
 /// The returned `Arc` is the shared handle — two constructions of the same
 /// kernel at the same shape yield pointer-equal manifolds — and the link
-/// beside it says what this construction's slots bind.
+/// beside it says what this construction's slots bind. A fold whose bound is a
+/// value compiles inside its guard (`Kernel::over_values`), and every count it
+/// is run with shares the one program.
 ///
 /// # Errors
 ///

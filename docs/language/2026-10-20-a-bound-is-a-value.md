@@ -382,11 +382,13 @@ its edge.
   true arm is the fold: the single-reader property placement rests on (pipeline-bug
   panics). `FoldHeader::new` already refuses a stride other than 1 beside a value bound, so
   no stride assert is added. A value bound that computes a mask is refused by name on every
-  tier, through the predicate the AVX-512 selector holds a lane in an opmask by
-  (`ScheduledOp::is_mask`): AVX2 and NEON would read its bits as a float, and AVX-512 would
-  panic in selection.
-- `Trips::{Known(u64), Estimated(u64)}` from selection, saturating, a nested fold's trips
-  the product of its parent's; the allocator reads the number through `Trips::weight`.
+  tier, by `ScheduledOp::is_mask`: AVX2 and NEON would read its bits as a float, and AVX-512
+  would panic in selection. The predicate and the AVX-512 selector share the bitwise rule
+  (`BinaryOp::on_masks`), and a test selects every op over a mask and a number and holds
+  the opmask file to the predicate's answer.
+- `Trips::{Known(u64), Estimated(u64)}` from selection, a nested fold's trips the product
+  of its parent's (an estimate at `u64::MAX` when the product passes `u64`); the allocator
+  reads the number through `Trips::weight`.
   `EmitTraffic.trips` carries the type, and `dynamic_memory_ops` is `None` over an
   estimate, so no measurement shows an estimate as a count. `Display` prints a known count
   as the bare number and an estimate as `~n`, so byte_probe's `trips=` text

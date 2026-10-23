@@ -227,16 +227,7 @@ fn a_ragged_row_runs_the_guard_in_both_column_folds() {
 fn a_count_at_the_exact_bound_runs_every_trip() {
     let build =
         || Kernel::over_values(Monoid::SUM, &zero(), &count(TOP), |_| Kernel::constant(1.0));
-    let planes = [
-        (
-            "as written",
-            within(move || run_raw(&build(), LatticeShape::POINT).0),
-        ),
-        (
-            "optimized",
-            within(move || run_linked(&build(), LatticeShape::POINT)),
-        ),
-    ];
+    let planes = both(LatticeShape::POINT, build);
     assert_plane(LatticeShape::POINT, planes, "Σ_{k<2^24} 1", |_, _| TOP);
 }
 
@@ -572,10 +563,10 @@ fn a_bound_that_is_not_carried_is_reloaded_at_every_latch() {
 
 /// A guard whose masks are the call's but whose fold is the column's: its two
 /// masks are computed once, live across every batch, and are read again by
-/// the arm tests in each, on every tier. Where they live between batches is
-/// the tier's: the opmask file (AVX-512) has no register to keep them in, so
-/// each batch reloads them and the frame grows by the slots they live in,
-/// narrow ones among them; NEON's vector file keeps them resident.
+/// the guard's two `If`s in each, on every tier. Where they live between
+/// batches is the tier's: the opmask file (AVX-512) has no register to keep
+/// them in, so each batch reloads them and the frame grows by the slots they
+/// live in, narrow ones among them; NEON's vector file keeps them resident.
 #[test]
 fn a_guard_computed_once_per_call_is_read_again_in_every_batch() {
     let over = |hi: Option<f32>| match hi {
@@ -585,9 +576,11 @@ fn a_guard_computed_once_per_call_is_read_again_in_every_batch() {
     let (value, value_frame) = traffic_of(&over(Some(7.0)));
     let (literal, literal_frame) = traffic_of(&over(None));
     let column = |t: &EmitTraffic| t.scopes[2];
-    assert!(
-        column(&value).instructions > column(&literal).instructions,
-        "each batch's arm tests read the masks: {:?} against {:?}",
+    assert_eq!(
+        column(&value).instructions,
+        column(&literal).instructions + 2,
+        "the column fold's every batch runs the guard's two selects, one per mask: \
+         {:?} against {:?}",
         column(&value),
         column(&literal)
     );
@@ -613,8 +606,9 @@ fn every_count_is_one_program() {
     let linked: Vec<_> = [0.0f32, 1.0, 7.0, 1000.0]
         .into_iter()
         .map(|n| {
-            let kernel = sum_of_x_plus_k(n);
-            let linked = jit_cache::compile(&kernel, SHAPE).expect("the kernel compiles");
+            let linked = within(move || {
+                jit_cache::compile(&sum_of_x_plus_k(n), SHAPE).expect("the kernel compiles")
+            });
             (n, linked)
         })
         .collect();
@@ -625,7 +619,8 @@ fn every_count_is_one_program() {
             "n = {n} compiled to a program of its own"
         );
         let block: Vec<f32> = each.uniforms.iter().map(|d| d.default).collect();
-        let plane = call(&each.kernel, &block, SHAPE);
+        let code = Arc::clone(&each.kernel);
+        let plane = within(move || call(&code, &block, SHAPE));
         let planes = [("shared code", plane)];
         assert_plane(SHAPE, planes, &format!("n = {n}"), |x, _| {
             fold_of(Monoid::SUM, 0, *n as u64, |k| x + k)

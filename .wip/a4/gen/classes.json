@@ -1948,12 +1948,12 @@
  {
   "file": "pixelflow-pipeline/src/bin/corpus_gaps.rs",
   "fn": "hash_cons_keeps_a_value_bound",
-  "text": "matches!(consed.node(fold), ExprNode::Reduce { hi: Bound::Value(_), .. }),",
+  "text": "ExprNode::Reduce {",
   "count": 1,
   "class": "tests",
   "reason": "test: two folds that differ only in a bound's child stay two nodes",
   "lines": [
-   954
+   956
   ]
  },
  {

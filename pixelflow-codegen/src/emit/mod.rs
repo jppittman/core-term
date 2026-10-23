@@ -31,12 +31,13 @@
 //! A fold whose bound is a value arrives inside the guard
 //! [`pixelflow_ir::passes::legalize`] builds (an `If`'s arm): its counter
 //! starts at `lo`'s lane and its latch compares against `hi`'s, and the arm is
-//! skipped when the range is empty or outside `[0, 2²⁴]`. The latch's compare
-//! reads two registers, so `hi` is one the allocator carries across the loop or
-//! reloads at each latch, where a literal end is a constant placed again at its
-//! read. The guard's masks are the call's when the bounds are, and the arm
-//! tests that read them run in every batch of the fold they guard, so a mask
-//! the register file cannot keep (an opmask, on AVX-512) is reloaded in each.
+//! skipped when the range is empty or a bound is not a count in `[0, 2²⁴]` (a
+//! fraction, NaN and an infinity are none). The latch's compare reads two
+//! registers, so `hi` is one the allocator carries across the loop or reloads
+//! at each latch, where a literal end is a constant placed again at its read.
+//! The guard's masks are the call's when the bounds are, and the arm tests that
+//! read them run in every batch of the fold they guard, so a mask the register
+//! file cannot keep (an opmask, on AVX-512) is reloaded in each.
 //!
 //! ## Spilling
 //!
