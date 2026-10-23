@@ -1,0 +1,21 @@
+# r4 codegen-mechanics review: probe evidence (read-only on tracked files)
+
+## Runtime probes: /home/user/scratch/a4-r4-cg-probe/tests/probe.rs (target /dev/shm/a4-r4-cg-t)
+R1 fold in the row scope (SHAPE, RAGGED; n = 0, 3, NaN, 2.5), R2 24 sibling value folds (opmask
+pressure under P-c), R3 value lo for MIN/MAX/PRODUCT, R4 call-invariant fold with a value lo (RAGGED),
+R5 a value fold's body reading a guarded call-invariant sibling, R6 -0.0 seed (first trip sees -0.0:
+1/k = -inf as written), R7 trips for a value fold nested in a literal fold at RAGGED.
+PIXELFLOW_ISA=avx512: 7 passed. PIXELFLOW_ISA=avx2: 7 passed (raw and optimized paths, bit for bit).
+R7 avx512 trips: [Known(1), Known(3), Known(6), Known(18), Estimated(576), Known(3), Known(9), Estimated(288)]
+
+## NEON counted on this host: scratch copy /home/user/scratch/a4-r4-cg-neon/pixelflow-codegen
+(detached crate, two #[test]s appended to emit::tests calling compile_for::<B>; tracked tree untouched)
+value_bounds_jit traffic pins at [64, 4]:
+  neon   wall value  last loads=45 | wall literal last loads=44   (reload pin holds: +1)
+  neon   guard value col loads=0 instr=7 | guard literal col loads=0 instr=5 (matches the CI N1 note)
+  avx2   wall 45 vs 44; guard col instr 7 vs 5, loads 1 vs 0, frame 96 vs 48
+  avx512 wall 45 vs 44; guard col instr 7 vs 5, loads 4 vs 0, frame 64 vs 48
+NEON compile of the kernels added after the last NEON CI run: the nest at depths 12, 13, 14 (POINT) and
+11 ([1920,1080]) and the select-between-masks bound all select, allocate and assemble.
+
+Verdict for this lens: no defect found.

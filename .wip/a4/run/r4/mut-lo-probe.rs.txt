@@ -1,0 +1,40 @@
+//! A value `lo` outside the domain beside a literal `hi`, against the mutated guard.
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
+use pixelflow_codegen::emit;
+use pixelflow_ir::fold::Monoid;
+use pixelflow_ir::{Kernel, LatticeShape, Uniform};
+
+const ORIGIN: [f32; 2] = [1.0, 2.0];
+
+fn run(lo: f32) -> Option<Vec<f32>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let k = Kernel::over_values(Monoid::SUM, &Uniform::new(lo).kernel(), &Kernel::constant(9.0), |k| {
+            Kernel::x().add(k)
+        });
+        let (arena, root) = k.parts();
+        let block: Vec<f32> = arena.uniforms().iter().map(|d| d.default).collect();
+        let shape = LatticeShape::new([8, 1]);
+        let compiled = emit::compile(arena, root, shape).expect("compiles");
+        let mut out = vec![0.0f32; 8];
+        let ctx: [*const f32; 2] = [block.as_ptr(), ORIGIN.as_ptr()];
+        unsafe { compiled.code.call(ctx.as_ptr(), out.as_mut_ptr(), 8) };
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(v) => Some(v),
+        Err(RecvTimeoutError::Timeout) => None,
+        Err(RecvTimeoutError::Disconnected) => panic!("worker died"),
+    }
+}
+
+#[test]
+fn lo_outside_the_domain() {
+    for lo in [f32::NAN, f32::NEG_INFINITY, -1.0, 2.5, f32::INFINITY, 16_777_218.0] {
+        match run(lo) {
+            Some(v) => eprintln!("lo={lo}: first sample {} (want NaN)", v[0]),
+            None => eprintln!("lo={lo}: HANG (no answer in 10 s)"),
+        }
+    }
+}

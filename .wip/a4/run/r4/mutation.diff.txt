@@ -1,0 +1,14 @@
+diff --git a/home/user/pixelflow/pixelflow-ir/src/passes/guard.rs b/home/user/scratch/a4-r4-mut/pixelflow-ir/src/passes/guard.rs
+index bdba571..5f33f5f 100644
+--- a/home/user/pixelflow/pixelflow-ir/src/passes/guard.rs
++++ b/home/user/scratch/a4-r4-mut/pixelflow-ir/src/passes/guard.rs
+@@ -84,7 +84,8 @@ fn guard(arena: &mut ExprArena, folded: ExprId) -> ExprId {
+             let high = in_domain(arena, high);
+             arena.push_binary(OpKind::BitAnd, low, high)
+         }
+-        (Some(term), _) | (None, Some(term)) => in_domain(arena, term),
++        (Some(term), Some(_)) | (None, Some(term)) => in_domain(arena, term),
++        (Some(_), None) => arena.push_lit(crate::lit::Lit::Mask(true)),
+         (None, None) => return folded,
+     };
+     let start = term(arena, lo);
