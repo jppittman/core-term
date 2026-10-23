@@ -1,0 +1,4 @@
+    Checking rig-core v0.43.0
+    Checking desloppify v0.1.0 (/home/user/pixelflow/desloppify)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 59s
+exit=0
