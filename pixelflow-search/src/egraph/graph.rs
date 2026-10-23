@@ -287,9 +287,10 @@ impl EGraph {
     /// so a reference to it inserts as an opaque leaf
     /// ([`ENode::Ref`]) rather than being declined.
     ///
-    /// The runtime tier's unit walk calls this once per unit a term reads,
-    /// before inserting the term: it is the walk that holds each unit's body,
-    /// and so the only place its variance can be computed
+    /// `runtime::saturate` calls this for every unit of the program, before it
+    /// inserts a job's term, with the variance the runtime tier's unit walk
+    /// (`runtime::Program::of`) computed: that walk holds each unit's body, so
+    /// it is the only place the variance can be computed
     /// (docs/language/2026-09-25-the-language-is-kernel.md §4, O1).
     ///
     /// # Panics
@@ -303,11 +304,10 @@ impl EGraph {
     /// what they claim about it.
     ///
     /// This sees a variance and nothing else, and a fold index that escaped
-    /// its builder (a placeholder) has an empty one (`Variance::of_var`). Its
-    /// only caller outside tests, `runtime::saturate`, admits the leaves
-    /// `runtime::Program::of` built, and `Program::of` refused an open unit by
-    /// `ExprArena::free_index` when it resolved the body: closedness is judged
-    /// there, on the term.
+    /// its builder (a placeholder) has an empty one (`Variance::of_var`).
+    /// Closedness is judged before the call, on the term: `Program::of`
+    /// refuses an open unit by `ExprArena::free_index` when it resolves the
+    /// body.
     pub(crate) fn admit_unit(&mut self, key: KernelKey, variance: Variance) {
         assert!(
             variance.without(Variance::COORDS).is_const(),

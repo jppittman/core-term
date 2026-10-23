@@ -1,0 +1,13 @@
+Reduce-site checklist at HEAD caf1004
+grep: 179 lines, 175 sites (deduped by (file, line))
+class            sites
+already-correct     38
+changed-by-A3       26
+left                13
+tests               78
+n/a                  5
+A4                  15
+A5                   0
+classified         175
+UNCLASSIFIED 0
+STALE 0

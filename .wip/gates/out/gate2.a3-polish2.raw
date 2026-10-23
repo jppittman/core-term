@@ -1,0 +1,35 @@
+
+running 1 test
+test fonts::loop_blinn::program::tests::zz_gate_font_kernels ... ZZGATE n=0 nodes=1 key=9919b7114ef15733 digest=bb8d8325715bcf6c
+ZZGATE n=2 nodes=228 key=31646676a87a6388 digest=22ad8819798461a6
+ZZGATE n=3 nodes=324 key=e0b8b38182925dba digest=0d4f7399df82cb0b
+ZZGATE n=4 nodes=433 key=10fe4b005bbaad87 digest=3f57978fd8fd8eee
+ZZGATE n=5 nodes=534 key=cfc70492cc09413b digest=f13bbc5dd25d016e
+ZZGATE n=6 nodes=634 key=b11ab431ab6789e5 digest=66f2f3ce86fa33af
+ZZGATE n=7 nodes=734 key=bade07757e78c839 digest=725d776e23cfd1e7
+ZZGATE n=8 nodes=834 key=80c10f9283530428 digest=f6ea72e18196e9f8
+ZZGATE n=10 nodes=1034 key=8c42dbd9033e377a digest=45bad83d4ca2fe0b
+ZZGATE n=11 nodes=1134 key=3996907278e3cf0c digest=af13639d6b5ca510
+ZZGATE n=12 nodes=1234 key=6769b7f734e4fd88 digest=e283cc6c515fc2be
+ZZGATE n=13 nodes=1334 key=1d9bcbb021717313 digest=0262448662183a05
+ZZGATE n=16 nodes=1634 key=3548237fecb8ba10 digest=96eb4d76e6bfe25a
+ZZGATE n=17 nodes=1734 key=255cc0686e9a8d00 digest=9dadd0fe2acc31f6
+ZZGATE n=18 nodes=1834 key=07d3872637127fab digest=5be238fc353a80ca
+ZZGATE n=19 nodes=1934 key=3fb658b81c6d8e41 digest=0260fe225c2f1952
+ZZGATE n=20 nodes=2034 key=6856abc95d4957ae digest=04a49075b7514427
+ZZGATE n=21 nodes=2134 key=a2e2b0e89798c6a0 digest=3fd075a0a94ce7cf
+ZZGATE n=23 nodes=2334 key=c0765adbab4693be digest=42779bdff095bb84
+ZZGATE n=24 nodes=2434 key=7df0e0f4f7c0e383 digest=45a441d3ff6aa023
+ZZGATE n=25 nodes=2534 key=6c536894753d6ba1 digest=fefe4152ce74a235
+ZZGATE n=27 nodes=2734 key=f3a795807fd842cf digest=880195b33efb5393
+ZZGATE n=28 nodes=2834 key=696c3b28deba5e88 digest=cbac85f06515952e
+ZZGATE n=29 nodes=2934 key=59cb3aa8964bb7fc digest=36859d8f254805be
+ZZGATE n=32 nodes=3234 key=a1161df7f68dbcc7 digest=7d54923bbbbe0e79
+ZZGATE n=34 nodes=3434 key=f84b769434f37c43 digest=350d616e52716a1c
+ZZGATE n=36 nodes=3634 key=9588ed34958cd953 digest=7cfb34699ba23808
+ZZGATE n=38 nodes=3834 key=1cf2cc48da444466 digest=f735f80ead8f22d8
+ZZGATE n=40 nodes=4034 key=03353a7bfa09da6b digest=e95137a9d464391e
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 123 filtered out; finished in 1.19s
+

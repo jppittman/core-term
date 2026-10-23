@@ -579,3 +579,50 @@ follow the code, J28 records the round. `gen/classes.json`: the `of_child` row f
 Outputs: `../../gates/out/*.a3-polish1*` (the throwaway measurements `a3-polish1-f3`, `-a`, `-b`, `-c` too); this directory's `*-polish1*` files. Scratch: `/home/user/scratch/polish1/` (`capture`: the
 placeholder-capture repro; `peelprobe`: which rule set derives `Σ_{k<1} i = i`).
 
+
+# A3 polish, round 2 (TAG=a3-polish2)
+
+Code base `3bfdaded`; branch `claude/integral-area-work-ojiej6`, HEAD `caf1004` when the run started. Gate failures of polish round 1: none. One finding, verified first. The only tracked file edited is
+`pixelflow-search/src/egraph/graph.rs` (a doc comment; no code, no test). `df -h /` showed 11 GB free before every build.
+
+## `EGraph::admit_unit`'s doc named the wrong caller (`graph.rs:290`, blocking). Verified, applied
+
+**Verified.** The first paragraph read "The runtime tier's unit walk calls this once per unit a term reads, before inserting the term"; the paragraph round 1 added below it says its only caller outside
+tests is `runtime::saturate`. Read against `runtime.rs` at HEAD: the one non-test call is `saturate`'s `for (&key, &variance) in job.leaves { egraph.admit_unit(key, variance); }` (`runtime.rs:733-734`),
+in the "one term, one run" section; `Program::of` (the unit walk, `runtime.rs:275`) computes each unit's variance and never calls `admit_unit`. "Once per unit a term reads" is also wrong:
+`Program::optimize` builds one `leaves` map from every unit of the program (`runtime.rs:336-337`) and hands the same map to the outer job and to every unit's job (`runtime.rs:338-355`), so `saturate` admits
+all of them for each job, whether or not that job's term reads them. The sentence was unchanged since `3bfdaded`, but it sat in the doc round 1 rewrote, on the point round 1 meant to correct.
+
+**Applied.** The first paragraph now reads: `runtime::saturate` calls this for every unit of the program, before it inserts a job's term, with the variance the runtime tier's unit walk
+(`runtime::Program::of`) computed; that walk holds each unit's body, so it is the only place the variance can be computed (the same citation as before). The closing paragraph of round 1 is merged
+into the sentence it was repeating: it keeps "this sees a variance and nothing else, and a fold index that escaped its builder has an empty one" and says closedness is judged before the call, on the term,
+by `Program::of`'s `ExprArena::free_index`; it no longer names `saturate` a second time. Nothing in the doc now says two different things about the caller.
+
+**Left as they are, deliberately.** Five other places say "the runtime tier's unit walk admits ..." (`node.rs` `ENode::Ref`, `graph.rs` `FrozenGraph::units` and the `ref_variance` panic text, `insert.rs`,
+`tests/ir_insert.rs`). There "unit walk" names the runtime tier's handling of units as a whole (the walk and the saturation it feeds), none of them names a function or a count, and none contradicts the new
+paragraph; the panic text is a substring `insert.rs`'s `should_panic` pins. The finding was about `admit_unit`'s own doc, which now names the function.
+
+## Gates after this round (TAG=a3-polish2), on the final tree
+
+| gate | result |
+|---|---|
+| 1 `byteprobe.sh a3-polish2` | exit 0; avx512 and avx2 (127 lines each) IDENTICAL to base |
+| 1b `gate1b.sh a3-polish2` | exit 0; 29 lines IDENTICAL to base; self-check n=2 `22ad8819798461a6`, n=40 `e95137a9d464391e` equal the pins |
+| 2 `gate2.sh a3-polish2` | exit 0; IDENTICAL to base (29 records) |
+| 2x `gate2x.sh a3-polish2` | exit 0; IDENTICAL to base (extraction fields) |
+| 5 `measure.sh` | not run: a doc comment emits no code, and gates 1, 1b, 2 and 2x are byte- and record-identical to base, so the compile cost is round 1's (+0.191 percent) |
+| `cargo test -p pixelflow-search` / `--all-features` / `--features saturation-telemetry` | 434 / 437 / 437 passed, 0 failed (ignored 15 / 15 / 15); equal to round 1; no compiler warning in any log (`tests-polish2.*.txt`) |
+| other crates' tests | not rerun: the diff is a doc comment in `pixelflow-search`, the only crate touched |
+| `cargo +1.99.0 clippy -p pixelflow-ir -p pixelflow-search -p pixelflow-codegen --all-targets --all-features -- -D warnings` (`CARGO_TARGET_DIR=/home/user/scratch/a3-close1/t199`) | exit 0, no warning (`clippy-polish2-199.txt`) |
+| `cargo +1.99.0 clippy --workspace --all-targets --all-features -- -D warnings`, same target dir | exit 0; the only `warning:` line is core-term's `build.rs` note (`clippy-polish2-199-workspace.txt`) |
+| `cargo fmt --all -- --check` | exit 0, empty |
+| `RUSTFLAGS="-D warnings" cargo check -p pixelflow-{ir,search} --no-default-features` | exit 0, exit 0 |
+| `RUSTDOCFLAGS="-D warnings" cargo doc -p pixelflow-codegen --no-deps --document-private-items` | exit 0 |
+| rustdoc C4 (`rustdoc_norm.py --compare`), pixelflow-search | base 28, head 28, NEW 0, GONE 0; the normalized set equals round 1's |
+| `scripts/check-intent.sh`, `check-doc-paths.sh`, `check-cfg-encapsulation.sh`, `check-bin-declarations.sh` | exit 0 each |
+| `PATH=/home/user/scratch/cargo-hack-root/bin:$PATH scripts/check-feature-matrix.sh` | exit 0, "every crate's every feature builds in isolation" |
+| checklist (`python3 -I .wip/a3/gen/checklist.py`) | 175 sites, 0 UNCLASSIFIED, 0 STALE (already-correct 38, changed-by-A3 26, left 13, tests 78, n/a 5, A4 15, A5 0) |
+| B1 greps (`greps-p2.txt`) | `A3` in `pixelflow-*` `.rs` and `pixelflow-ir/intent.md`: empty; `fold_cost(` only in `cost.rs`; no tracked file outside `.wip` citing `.wip`; the added lines of the A3 diff name no `.wip` path; the one model-name hit is the `fold_rules.rs` line citing `CLAUDE.md`, as in round 1; the label hits are the plan's own step names and the typed-arena doc's `T6`, as in round 1; this round adds none |
+| `git status --short pixelflow-graphics` after the gates; `git lfs ls-files \| grep -c .` | empty; 68 |
+
+Outputs: `../../gates/out/*.a3-polish2*`; this directory's `*-polish2*` files.
