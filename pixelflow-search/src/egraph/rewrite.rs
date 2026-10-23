@@ -170,7 +170,7 @@ pub enum RewriteAction {
     /// [`Plan`](super::fold_rules::Plan).
     ///
     /// A plan can be declined when it is built: a fold of it whose value bound
-    /// lands in a class that varies with a coordinate or with the fold's own
+    /// is a class whose fact varies with a coordinate or with the fold's own
     /// binder (L3 of docs/language/2026-10-20-a-bound-is-a-value.md) is not
     /// added, and the matched class is not unioned with anything. The nodes
     /// built before that fold stay, and the prediction counts them.

@@ -84,7 +84,7 @@ within +0.5% of base. §10 lists the pins; §11 the order and the greps.
 | L3 (plan:180-188) | `ExprArena::push_reduce` (every arena construction) and `EGraph::add` (backstop) | `Fold::admits_bound(end, reads)`: `reads ∩ (COORDS ∪ {b}) = ∅`. In the arena `reads` is `variance_from(arena, term)`, the per-node transfer function run from the bound and memoized (N1); in the e-graph, the bound class's fact | `BoundRefusal::BoundVaries { end, reads }` | panic in both |
 | L4 (plan:189) | `variance.rs`'s `transfer` (both drivers) and `ENode::variance` (`node.rs:528-556`) | `(var(body) \ b) ∪ var(lo) ∪ var(hi)`; a literal bound contributes nothing; a known empty range is `CONST` (arena only, as today) | — | — |
 | L6 (plan:192-195) | `PeelFold` (`fold_rules.rs:393`), `HalveFold` (`:435`), `EmptyFold` (`:480-481`): already gated at `3bfdaded`. `FactorFold` (`:499`) changes to decline a known empty range only (decision 5) | the rule reads `node.known_range()` | — | decline |
-| L7 (plan:196-198) | `PlanBuilder::substitute` (`fold_rules.rs`) through L4's class fact; arena side, `close_over`'s rename. `ExprArena::substitute_vars_with` is **not** L7 (N5, §3.4) | substitutes into a nested fold's bounds always, and into its body unless the fold rebinds the slot. A class reached as a nested fold's value bound (a `Site::Bound`) is rebuilt through its first member whose own variance, over its children's facts, `Fold::admits_bound` accepts, and so is every class under it; the plan declines when a class under a bound has none (round 4, F2, §6.8). Bodies keep the first member. The rebuilt bound is judged again where it lands: `plan_shape` asks the sink whether it `refuses` a fold before making it, and a bound that hash-conses into a class whose fact fails L3 declines the plan (closing round 2, J27). | — | the rule declines (`None`) |
+| L7 (plan:196-198) | `PlanBuilder::substitute` (`fold_rules.rs`) through L4's class fact; arena side, `close_over`'s rename. `ExprArena::substitute_vars_with` is **not** L7 (N5, §3.4) | substitutes into a nested fold's bounds always, and into its body unless the fold rebinds the slot. A class reached as a nested fold's value bound (a `Site::Bound`) is rebuilt through its first member that is no fold and whose own variance, over its children's facts, `Fold::bound_may_read` accepts, and so is every class under it; the plan declines when a class under a bound has none (round 4, F2, §6.8; polish round 1). Bodies keep the first member. The rebuilt bound is judged again where it lands: `plan_shape` asks the sink whether it `refuses` a fold before making it, and a bound that hash-conses into a class whose fact fails L3 declines the plan (closing round 2, J27). | — | the rule declines (`None`) |
 | L8 (plan:199-202) | `KnownBound` (new rule, `fold_rules.rs`, last in `fold_rules()`) | the value bounds' classes hold literals naming counts, so the fold over those counts is added to the class | — | decline otherwise |
 
 ### 1.2 Refusal order
@@ -354,6 +354,12 @@ impl<R: Copy> Bound<R> {
 `HeadRef`, `u8` in tests) is `Copy`.
 
 ### 2.6 `Fold::admits_bound` (new, `pub`): L3 stated once
+
+*Polish round 1:* the law is `Fold::bound_may_read(self, reads) -> bool` (new, `pub`, `#[must_use]`),
+the same at both ends of a range, and `admits_bound` is `match self.bound_may_read(reads) { true =>
+Ok(()), false => Err(BoundVaries { end, reads }) }`. A reader that only chooses among terms
+(`Site::member`) asks the predicate and fabricates no `BoundEnd`; a reader that names a refusal
+asks `admits_bound`. The code below is the first spelling.
 
 ```rust
 /// L3: whether this fold may take a bound at `end` that varies with
@@ -1547,12 +1553,17 @@ panicking inside saturation (`.wip/a3/run/scratch-r4-run1.txt`: `Σ_{i<8} ( Σ_{
 1) − X )` under `RuleSet::runtime()` at `compatibility(12)`). The walk now carries a `Site`:
 
 - `Site::Body` (every site of a fold over literals, and everything under a fold's body): the first
-  member, `representative`, as before. Its memo is the old `BTreeMap<EClassId, Done>`, so the literal
-  path builds no wider key (`Memo.body`).
+  member, `egraph.nodes(class).next()` (`representative` was inlined in polish round 1: it had one
+  caller). Its memo is the old `BTreeMap<EClassId, Done>`, so the literal path builds no wider key
+  (`Memo.body`).
 - `Site::Bound { fold }` (a nested fold's value bound, and every class under one): the first member
-  whose own variance, `ENode::variance` over its children's class facts, `fold.admits_bound`
-  accepts. `None` when no member does, and the plan declines. A fold nested inside a value bound has
-  no site (`None` again): no builder makes one.
+  that is no `ENode::Reduce` and whose own variance, `ENode::variance` over its children's class
+  facts, `fold.bound_may_read` accepts. `None` when no member does, and the plan declines. A fold
+  under a bound is skipped as a member, not declined on: the walk does not enter one (its body would
+  need the law lifted by its own binder), and saturation can put a fold into a bound's class
+  (`RuleSet::runtime()` derives `Σ_{k<1} i = i`; `PeelFold` alone does not), so "no builder makes
+  one" was wrong. `Site::of_child` is
+  total because of that skip.
 
 The substitution's own effect needs no accounting in the check: a leaf becomes a literal or the
 substituted binder plus its stride, and that binder is neither a coordinate nor the nested fold's
@@ -2550,10 +2561,17 @@ built (plan:437-458).
   one member per class, by cost, and a bound's pick is not constrained to keep L3. A bound class
   whose chosen member reads a coordinate the class does not vary with is materialized through it,
   and `ExprArena::push_reduce` (`arena.rs`, L3 on the term) refuses the fold with `BoundVaries`:
-  loud, never silent. With a non-negative cost model the cheapest member of a class that holds a
-  lawful one is that one in the cases tried (the repro extracts `i + 1`), so the hole is reached
-  where a class holds no lawful member at all: a fact that is the meet of members that each read a
-  different coordinate (`i + X` beside `i + Y`, T-S-14). A4 decides whether a bound's pick is
+  loud, never silent. The hole is reached whenever the cheapest member of a bound class reads a
+  coordinate, which includes a class whose lawful member costs more as well as one with no lawful
+  member at all. With no lawful member: a fact that is the meet of members that each read a
+  different coordinate (`i + X` beside `i + Y`, T-S-14). With a dearer lawful one: `Pow(i, 2)` beside
+  `((i·i) + X) − X`, unioned as the true equation `i² = (i·i + X) − X`, has the fact `{i}`, so its
+  fold is admitted, and extraction (no rules) picks the spelling that reads `X`, the cheaper, and is
+  refused (pinned by `extracting_a_bound_class_whose_cheapest_member_reads_a_coordinate_is_refused_by_name`).
+  The earlier wording, that the hole is reached only where a class holds no lawful member, held for
+  the cases tried first (the repro extracts `i + 1`) and set the boundary in the wrong place; whether
+  a saturated graph still holds the cheap spelling is the rules' business (`RuleSet::runtime()` at
+  `compatibility(6)` rewrites that graph's bound away and extracts `6X`, correct). A4 decides whether a bound's pick is
   constrained (the settlement, the `Reranker` seam, or a refusal at the settle). The F2 pin does
   **not** show that extraction never picks such a member, so the plan's A4 bullet carries one
   sentence saying so. Rejected: constraining the pick in A3, which is the extractor's DP (a
@@ -2562,9 +2580,13 @@ built (plan:437-458).
 - **J25. `PlanBuilder::substitute` keeps a site, not a mode flag (round 4, F2).** `Site::Body` and
   `Site::Bound { fold }` are one enum, the memo is two maps so the literal path's key stays a class,
   and `Site::of_child` is the one place a child's site is decided. A fold nested inside a value
-  bound declines (`None`): its body would need the refused set lifted by its own binder, and no
-  builder makes one. Rejected: a `refused: Variance` set carried down and lifted at a nested fold,
-  which is the same decision with a bitset and a case no builder reaches.
+  bound is not entered: its body would need the refused set lifted by its own binder. Round 4 had
+  the walk decline on one (`None` from `of_child`), justified by "no builder makes one", which was
+  wrong: saturation can put a fold into a bound's class. Polish round 1: `Site::member` skips a
+  `Reduce` member at a bound and reads the next lawful one, so a fold under a bound is never chosen,
+  the justification is gone, and `of_child` is total. Declining on the fold had lost a rewrite
+  whenever a later member of the class kept L3. Rejected: a `refused: Variance` set carried down and
+  lifted at a nested fold, which is the same decision with a bitset and a case no builder reaches.
 - **J27. The graph declines a plan whose bound lands in a class that fails L3 (closing round 2).**
   A rebuilt bound is a term, `plan_shape` adds it, and the e-graph is hash-consed: the node can
   already be in the memo, in a class whose fact was seeded wider than the node and is never repaired
@@ -2599,10 +2621,51 @@ built (plan:437-458).
   the node canonicalizes to), so `add` could still panic; (b) refreshing a class's fact on a memo hit
   (sound by the law, but it touches every `add` of a literal kernel); (c) loosening the backstop to
   "some member keeps L3", which is wrong one level down (a bound `W + 1` whose child `W` is stale has
-  one member and no lawful one). The orphans a declined plan leaves (its nodes before the `Reduce`)
-  are terms the graph may hold; they cost classes, never soundness, and only on a plan that
-  panicked before.
+  one member and no lawful one). A declined plan makes no union, but it is not a plan that built
+  nothing: `plan_shape` refuses a fold only when it reaches it, so every node made before that point
+  stays in the graph, a lawful nested fold earlier in the same plan among them (reviewed with
+  `PeelFold` alone over `Σ_{i<1}(Σ_{j<i} X·j + Σ_{j<i+1} X·j)` after `P = (X − X) + 1`, `X − X = 0`:
+  value-bounded inner folds 2 → 3, one class more, the matched class gains no member, and the
+  prediction counts the orphan exactly). Those orphans cost classes, never soundness, and only on a
+  plan that panicked before. The refusal reads a bound's class *fact*, so it covers both ways a
+  bound's class is seeded wider than its term: the bound landed in a stale class, or the plan minted
+  a class for it over a child that did (`(i + 1)·2` with `i + 1` in `P`; pinned by the third case of
+  `a_rebuilt_bound_that_lands_in_a_stale_class_is_declined`).
 - **J26. One `ENode::literal_twin` (round 4, F3).** `KnownBound::apply` and the three price sites
   call the same `pub(crate)` method on `ENode`, so a fold's literal form is one definition and
   neither the rule's doc nor the extractor's asserts that two agree. Rejected: keeping the two
   copies and a test that compares them, which is a check that the duplication has not drifted.
+- **J28. Polish round 1: the closing pass's non-blocking findings (TAG=a3-polish1).** Twenty findings,
+  two not applied (the blocking one, fixed in d4bcd11, and the one that says "no defect"). Decisions:
+  (a) L3 has an end-free predicate, `Fold::bound_may_read(self, reads) -> bool` (`pub`, because the
+  e-graph is another crate); `admits_bound` calls it and `Site::member` calls it, so no `BoundEnd` is
+  fabricated for a question that has none. Rejected: leaving `member` on `admits_bound(BoundEnd::Hi,
+  ..)` with a comment saying the end is ignored, which is a convention held by prose.
+  (b) `Site::member` skips an `ENode::Reduce` at a bound, so `of_child` is total and the round-4
+  justification "no builder makes one" is gone with the case (J25). The skip is more complete than the
+  decline it replaces (a class whose first lawful member is a fold reads the next one) and a literal
+  fold has no site that is a bound.
+  (c) `representative` is inlined (`egraph.nodes(class).next()`); `Site` derives `Clone, Copy` only (the
+  memo keys on `(EClassId, Fold)`).
+  (d) The literal twin's fast path. The finding measured the closing pass at +5.6 M Ir over r3 (close1)
+  and asked for an inlined guard over a non-inlined body. Measured on the same workload (total Ir,
+  extraction inclusive Ir): r3 6,305,898,607 / 1,136,559,328; close2 6,308,131,681 / 1,137,870,806;
+  guard + `#[inline(never)]` body 6,310,530,002 / 1,140,855,973 (worse than close2 by 2.4 M);
+  guard + `#[inline]` body 6,307,997,174 / 1,138,113,466 (equal to close2 within 0.14 M, kept);
+  guard + one `&dyn Fn` body 6,350,414,320 / 1,143,588,336 (an inlining cliff in saturation, +0.865
+  percent, rejected). The guard is inlined in every form, so what moves is placement in the pricing
+  loops (`extract_dag_over` self +1.36 M, `BinaryHeap::pop` +0.88 M, `memset` -0.65 M against r3), and
+  the guard split alone is worth nothing measurable. Recorded, not removed: +2.10 M Ir (+0.033
+  percent) over r3.
+  (e) The test assertions that could not fail are replaced by ones that can: the plan was declined
+  (`total_unions == 0` for a rule that is alone in its set), `P`'s fact still reads `X`, the stale
+  graph's value-bounded inner fold count is below its control's, and the rebuilt bound holds no `Sub`
+  member. Each was checked by mutation: removing the decline makes the stale tests panic with
+  `BoundVaries`; removing the decline and the backstop makes the new assertions themselves fail.
+  (f) A second extraction pin (J24) and the `(i + 1)·2` case (J27) are tests, because a gap that is
+  only written down is a gap nothing will tell A4 about.
+  (g) `Kernel::over`'s doc said an index cannot escape its fold. It can (a clone), and the next fold
+  that reclaims the placeholder captures it with no refusal anywhere: `Kernel::sum_over(3, |j|
+  j.add(&escaped))` is `Σ_j (j + j)`, closed. Pre-existing at `3bfdaded` and not A3's, so the doc is
+  corrected and `docs/BACKLOG.md` C10 tracks the hole.
+

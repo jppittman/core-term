@@ -458,3 +458,124 @@ round 1 (`if let ENode::Reduce { header, .. } = &node && header.arity() > 1` the
 
 `pixelflow-ir` and `pixelflow-codegen` are untouched this round (no tracked file of either differs from the previous commit), so their tests were not re-run; both were built by the gates.
 Outputs: `../../gates/out/*.a3-close2*`; this directory's `*-close2*` files.
+
+# A3 polish, round 1 (TAG=a3-polish1)
+
+Code base `3bfdaded`; HEAD at the start of the round `3a696db` (the closing gates of round 2, `7e1a2f3`, plus the polish inputs). The polish diff is
+`git diff 7e1a2f3 -- . ':!.wip'`. Input: `run/closing-nonblocking.json`, 20 findings. Not applied: #7 (the blocking one, fixed in `d4bcd11`) and #17 ("no defect").
+Every other finding was checked against the code before a line changed; the outcomes follow, in the order the round's brief listed them.
+
+## F3: the literal twin's fast path (finding #0). Applied, measured, and the claim "reduced, not removed" stands
+
+**Verified.** The numbers in the finding are right for `close1` (total Ir 6,311,544,165 against r3's 6,305,898,607, +5.65 M) and wrong about the tip it was filed
+against: closing round 2 had already brought the total to 6,308,131,681 (+2.23 M over r3; +0.193 percent over base), so the gap the finding asks to close was 2.2 M, not 5.6 M.
+
+**Done.** `ENode::literal_twin` (`node.rs`) is an `#[inline(always)]` guard (not a `Reduce`, or arity 1: `None`) over `ENode::value_bounded_twin` (private), the
+`discover`/`reduce` work. A leaf and an operation answer on the first test, a fold over literals on the second, and only a fold with a value bound reaches the rest.
+The doc says what the guard is and no longer says "answer on the first test" of a fold over literals.
+
+**Measured**, three forms of the body behind the one guard, on the same workload (`zz_prof_all_cold`; throwaway tags kept in `gates/out/`):
+
+| tree | tag | total Ir (vs base) | `extract_dag_over` inclusive | `Saturation::saturate` inclusive |
+|---|---|---|---|---|
+| base | `base` | 6,295,969,957 | 1,123,555,965 | 2,079,429,510 |
+| r3 (before the move to `node.rs`) | `a3-r3` | 6,305,898,607 (+0.158) | 1,136,559,328 (+1.157) | 2,076,320,833 (-0.149) |
+| close1 (the finding's tree) | `a3-close1` | 6,311,544,165 (+0.247) | 1,142,798,209 (+1.713) | 2,076,042,600 (-0.163) |
+| close2 (HEAD at the start of this round) | `a3-close2` | 6,308,131,681 (+0.193) | 1,137,870,806 (+1.274) | 2,076,709,606 (-0.131) |
+| guard + `#[inline(never)]` body, `node.rs` change alone | `a3-polish1-f3` | 6,312,486,737 (+0.262) | 1,139,849,121 (+1.450) | 2,077,266,197 (-0.104) |
+| guard + `#[inline(never)]` body, final tree | `a3-polish1-a` | 6,310,530,002 (+0.231) | 1,140,855,973 (+1.540) | 2,075,533,808 (-0.187) |
+| guard + `#[inline]` body (**kept**), final tree | `a3-polish1-b`, `a3-polish1` | **6,307,995,455 (+0.191)** | **1,138,113,466 (+1.296)** | 2,076,970,165 (-0.118) |
+| guard + one `&dyn Fn` `#[inline(never)]` body | `a3-polish1-c` | 6,350,414,320 (+0.865) | 1,143,588,336 (+1.783) | 2,111,563,930 (+1.545) |
+
+The brief's literal shape (an out-of-line body) measured **worse** than the tip, by 2.4 M Ir (+0.231 percent), and the single non-generic body hit an inlining
+cliff far from the twin (`Saturation::saturate` +35 M inclusive: an iterator adapter in saturation's class-set walk, a `FlatMap` over `Enumerate<Iter<u64>>`, stopped being inlined, +118 M
+outlined against -82 M in `saturate`; round 2 met the same kind of cliff around `add`). The kept form, with the body `#[inline]`,
+equals close2 within 0.14 M. So the guard at the call site is worth nothing measurable: it was already what the compiler emitted. **The closing pass's remaining cost,
+recorded and not removed:** +2,096,848 Ir over r3 (+0.033 percent of the total), in `extract_dag_over`'s own cost (+1.36 M) and `BinaryHeap::pop` (+0.88 M, which no
+change of this round or the last touches), against `memset` -0.65 M; every one is code placement in the settle loops, since gates 1b, 2 and 2x are identical to base
+(no pricing moved). It is inside the +0.5 percent limit with a factor of 2.6 to spare. A fold over literals still does no new work: it returns on its header in the
+guard, before anything is read.
+
+## Docs made false (findings #1/#10, #2/#11, #3, #4, #5, #9, #12, #16, #18). All applied; two corrected beyond the finding's wording
+
+| finding | where | what is true now |
+|---|---|---|
+| #1, #10 (`graph.rs`, `admit_unit`) | the caller | verified: `runtime::saturate` is the only caller outside tests (`runtime.rs:734`) and it holds `job.leaves` (key to variance), no body. The doc says `saturate` admits the leaves `Program::of` built, and `Program::of` refused an open unit by `free_index` when it resolved the body |
+| #2, #11 (`variance.rs`, `of_var`) | the paragraph | verified false against `Program::of` (its variance assertion reads a variance) and against placement. Now: **a variance never decides that a term is closed** (a closedness check asks `free_index`, which counts a placeholder free: `Kernel::by_ref`, and the unit walk beside its variance assertion); placement does read a variance, and only of a term from which a `Var` that is no fold's binder has been refused (codegen's `Var` arm) |
+| #3 (`codegen/program/lower.rs`) | the panic | split by case on `Variance::VARIABLES`: a coordinate or retired axis (collapse was skipped, "built without the lowering pipeline") and an index past the binder slots ("a fold index that escaped its builder ... the kernel is open"); the doc of the function and the test's `expected` follow. `Binder::from_var`'s doc lists a `Placeholder` and an index past the space among its `None`s. **Not done:** the finding's aside that `pipeline::compile` could refuse `free_index(root)` by name: it adds a walk to every compile and the brief did not ask for it |
+| #4 (`node.rs` `literal_twin`, `fold_rules.rs` `KnownBound`) | "cannot disagree", "are the same" | now what one construction buys: given the same literal for each bound class, the rule and the price build the same fold; which literal each finds is its own (a class member for the rule, the chosen form for the price), and so is whether it finds one |
+| #5 (`fold_rules.rs`) | `representative`, the `substitute` summary, plan L7, "no builder makes one" | `representative` is gone (inlined, #13); the summary says "one member per e-class and site"; the module doc's bullet and L7 say "a class reached as a bound, or under one"; the justification is gone with the case (#14). **Verified in passing**: the finding's example (`PeelFold` unions `Σ_{k<1} i` with `i`) is not `PeelFold` alone: `RuleSet::runtime()` derives it and `PeelFold`/`EmptyFold` alone do not (`/home/user/scratch/polish1/peelprobe`); the docs say "the runtime rules derive" |
+| #9 (`graph.rs`, `GrowthPredictor`) | "never iterated" | amended, not given a lookup: `pending` is iterated by one reader, `fact`, whose answer is order-independent because ids are unique, so the capacity is still unobservable; the cost scales with the capacity and is paid only for a fold's value bound |
+| #12 (`fold_rules.rs` `substitute`, `HalveFold`; `graph.rs` `plan_shape`, `add`, `NodeSink::refuses`, `VaryingBound`; `rewrite.rs` `Plan`) | the decline condition | stated in full: the class fact of a value bound fails L3, whether the bound landed in a stale class or was minted over a child that did. The `(i + 1)·2` case is pinned (below) |
+| #16 (`node.rs`) | "first test" | "a leaf and an operation answer on the first test and a fold over literals on the second" |
+| #18 (`docs/language/2026-10-20-a-bound-is-a-value.md`, L7) | "building no fold and making no union" | verified false (`plan_shape` refuses a fold only when it reaches it; the reviewer's orphan probe, re-run: value-bounded inner folds 2 -> 3, classes 13 -> 14, the matched class gains no member). Now: it makes no union, and the nodes it made before that fold stay, as orphans that cost classes and never soundness (a lawful nested fold can be among them). The A3 bullet's pin list says "declined: the fold is not built" |
+
+## Code (findings #6, #13, #14)
+
+- `Site` derives `Clone, Copy` only (the memo keys on `(EClassId, Fold)`; nothing compared a `Site`).
+- **`Fold::bound_may_read(self, reads) -> bool`** (`fold.rs`, `pub` because the e-graph is another crate, `#[must_use]`): L3 stated once and end-free; `admits_bound` is
+  `match self.bound_may_read(reads)`; `Site::member` calls it, so no `BoundEnd::Hi` is fabricated. The test helpers that used `admits_bound` for a yes or no use it too,
+  and `fold_rules.rs` no longer imports `BoundEnd`.
+- **`Site::member`'s `Bound` arm skips an `ENode::Reduce`.** Verified: the decline it replaces lost a rewrite whenever a later member of the class kept L3, and saturation
+  does put a fold into a bound's class. With the skip a fold under a bound is never chosen, so `Site::of_child` is total (it returns a `Site`, and `substitute` drops a `?`)
+  and the old arm `(Site::Bound, _) => None` is gone with the case it covered. Soundness: the skip only removes candidates the walk would have refused, and the graph's
+  refusal (`plan_shape`) is untouched.
+- `representative` is inlined into `Site::member`'s body arm (one caller).
+
+## Tests (findings #6, #15, #12, #19)
+
+Each assertion below was checked by mutation (the mutants are not kept):
+
+- `a_nested_bound_is_rebuilt_through_the_member_that_keeps_l3`: the loop asserting L3 on every bound in the graph cannot fail (`add`'s backstop makes it true or panics first). Replaced by:
+  the graph took the plan (value-bounded inner folds 2; a plan through the varying spelling is declined and builds none), and the rebuilt bound classes hold no `Sub` member.
+- `a_rebuilt_bound_that_lands_in_a_stale_class_is_declined`: the vacuous `num_classes() >= classes` is gone. Added: the control's rule unions something (`total_unions > 0`), the stale run
+  unions **nothing** (`total_unions == 0`: the plan was declined), the stale graph holds fewer value-bounded inner folds than its control (1 against 2), and `P`'s fact still reads `X`.
+  A third case, `HalveFold` with the bound `i * 2`, pins the bound the plan **mints** over a child that landed in `P` (`(i + 1) * 2`). Mutants: removing `plan_shape`'s refusal fails the test
+  (at its first case) with the `BoundVaries` panic; removing it **and** `add`'s backstop fails `total_unions == 0` instead, so the new assertions are not carried by the panic.
+- `the_runtime_rules_saturate_a_graph_with_a_stale_bound_class`: now asserts the landing (a halved copy's `i + 1` is `P`), the decline (fewer value-bounded inner folds than a control over the bare
+  index, 2 against 11 / 18 / 36 at n = 2 / 4 / 8), that `P`'s fact still reads `X`, and that the extracted term holds an inner fold (its bound loop could not be vacuous). The doc's claim that the
+  bound lands in `P` "at every level" is corrected: the halving is declined at its first level, whatever the extent. Same mutants, same results.
+- New `a_fold_in_a_bound_class_is_skipped_for_the_next_member` (the skip: the plan holds two folds, the outer and the shifted copy, and none for the bound; without the skip it holds a third) and
+  `extracting_a_bound_class_whose_cheapest_member_reads_a_coordinate_is_refused_by_name` (finding #19's optional second pin, `should_panic("BoundVaries")` beside the first).
+- Search tests: 434 / 437 / 437 passed (default / `--all-features` / `--features saturation-telemetry`), two more than close2's 432 / 435 / 435.
+
+## `Kernel::over` and the capture hole (finding #8). Applied; the finding is right and reproduced
+
+`Kernel::over`'s doc no longer says an index cannot escape. **Reproduced** at HEAD with a scratch crate (`/home/user/scratch/polish1/capture`): a closure keeps a clone of its index; the fold closes and
+releases its placeholder (`BinderScope`'s drop); `Kernel::sum_over(3, |j| j.add(&escaped))` takes the same placeholder, and `close_over` renames the escaped clone with it: the result is
+`reduce[add_4[0..3)](add(Var(4), Var(4)))`, `free_index` is `None`, and nothing refuses. Before it is captured the escaped index is open (`free_index` is `Some(64)`) and caught where closedness is asked.
+Pre-existing at `3bfdaded` (`BinderScope` and the sentence are both in the base), so it is tracked and not fixed: **`docs/BACKLOG.md` C10**, in the table's own format (id, what, where), says what closing it needs:
+placeholders that are never reissued, which a `u8` index cannot supply for a process's lifetime, or an index identity outside `Var(u8)`.
+
+## `.wip` only (findings #18's option, #19)
+
+`spec.md`: J24 states the extraction hole generally (the cheapest member of a bound class reads a coordinate; a class whose lawful member costs more as well as one with no lawful member; the `dear` probe
+reproduced: no rules, `BoundVaries`; `RuleSet::runtime()` rewrites that graph's bound away and extracts `6X`), J25 drops "no builder makes one", J27 says a declined plan leaves orphans, §1.1, §2.6 and §6.8
+follow the code, J28 records the round. `gen/classes.json`: the `of_child` row follows its new text, rows added for `Site::member` and for the two sites of the new test. `run/public-surface.md`: `Fold::bound_may_read`
+(new `pub`), the `HalveFold`/`PeelFold` row, `value_bounded_twin`, and a stale line corrected (`refuse_a_varying_bound` is the name in the code; the file said it was gone in favour of a `refusal` that does not exist).
+
+## Gates after this round (TAG=a3-polish1), on the final tree
+
+| gate | result |
+|---|---|
+| 1 `byteprobe.sh a3-polish1` | exit 0; avx512 and avx2 IDENTICAL to base |
+| 1b `gate1b.sh a3-polish1` | exit 0; 29 lines IDENTICAL; self-check n=2 `22ad8819798461a6`, n=40 `e95137a9d464391e` equal the pins |
+| 2 `gate2.sh a3-polish1` | exit 0; IDENTICAL to base (29 records) |
+| 2x `gate2x.sh a3-polish1` | exit 0; IDENTICAL to base (extraction fields) |
+| 5 `measure.sh a3-polish1` | total Ir 6,307,995,455 (+0.191 percent; limit +0.5: PASS; close2 was +0.193, r3 +0.158); `Saturation::saturate` inclusive 2,076,970,165 (-0.118); `extract_dag_over` inclusive 1,138,113,466 (+1.296; close2 +1.274, r3 +1.157); median peak RSS 97,768 KiB (+1.339; five runs 97,168 to 98,712, close2 +1.289; reported only); median wall 1100 ms (runs 1009 to 1247; uncontrolled, reported only) |
+| `cargo test -p` ir / search / search `--all-features` / search `--features saturation-telemetry` / codegen / compiler | 375 / 434 / 437 / 437 / 161 / 304 passed, 0 failed (ignored 2 / 15 / 15 / 15 / 0 / 6); search is two tests above close2 (432 / 435 / 435); no compiler warning in any log (`tests-polish1.*.txt`) |
+| `cargo +1.99.0 clippy -p pixelflow-ir -p pixelflow-search -p pixelflow-codegen --all-targets --all-features -- -D warnings` (CI's toolchain; `CARGO_TARGET_DIR=/home/user/scratch/a3-close1/t199`) | exit 0, no warning (`clippy-polish1-199.txt`) |
+| `cargo +1.99.0 clippy --workspace --all-targets --all-features -- -D warnings`, same target dir | exit 0, no warning (`clippy-polish1-199-workspace.txt`) |
+| `cargo fmt --all -- --check` | exit 0 |
+| `RUSTFLAGS="-D warnings" cargo check -p pixelflow-{ir,search} --no-default-features` | exit 0, exit 0 |
+| `RUSTDOCFLAGS="-D warnings" cargo doc -p pixelflow-codegen --no-deps --document-private-items` | exit 0 |
+| rustdoc C4 (`rustdoc_norm.py --compare`) | pixelflow-ir base 38, head 38, NEW 0, GONE 0; pixelflow-search base 28, head 28, NEW 0, GONE 0 |
+| `scripts/check-intent.sh`, `check-doc-paths.sh` (checks `docs/BACKLOG.md` C10's paths), `check-cfg-encapsulation.sh`, `check-bin-declarations.sh` | exit 0 each |
+| `PATH=/home/user/scratch/cargo-hack-root/bin:$PATH scripts/check-feature-matrix.sh` | exit 0, "every crate's every feature builds in isolation" |
+| checklist (`python3 -I .wip/a3/gen/checklist.py`) | 175 sites, 0 UNCLASSIFIED, 0 STALE (already-correct 38, changed-by-A3 26, left 13, tests 78, n/a 5, A4 15, A5 0) |
+| B1 greps (`A3` in `pixelflow-*` `.rs` and `pixelflow-ir/intent.md`), `fold_cost(` only in `cost.rs`, no tracked file outside `.wip` citing `.wip`, no model name, `.wip` label or ruling label in the added tracked lines | empty / empty / only `cost.rs` / empty / empty |
+| `git status --short pixelflow-graphics` after the gates; `git lfs ls-files \| grep -c .` | empty; 68 |
+
+Outputs: `../../gates/out/*.a3-polish1*` (the throwaway measurements `a3-polish1-f3`, `-a`, `-b`, `-c` too); this directory's `*-polish1*` files. Scratch: `/home/user/scratch/polish1/` (`capture`: the
+placeholder-capture repro; `peelprobe`: which rule set derives `Σ_{k<1} i = i`).
+

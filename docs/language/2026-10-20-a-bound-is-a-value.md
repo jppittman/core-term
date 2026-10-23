@@ -197,13 +197,16 @@ program is never reported over budget. `docs/DENOTATION.md:62-66` is amended to 
   known `v` shows which.
 - **L7 (substitution).** Substituting a slot into a fold substitutes into its bounds
   always (by L3 no bound reads the fold's own slot), and into its body only when the fold
-  does not rebind the slot. A class reached as a bound is rebuilt through its first member
-  that keeps L3, because a class's fact is the meet over its members and its first member
-  can read a coordinate the class does not; the rewrite declines when no member does. The
-  rebuilt bound is a term, and the graph hash-conses it: it can land in a class seeded wider
-  than the term (a fact is never repaired upward) whose fact L3 then reads. The graph
-  refuses such a fold to the plan builder, and the rewrite declines there too, building
-  no fold and making no union; `EGraph::add` panics only for a caller that is not a plan.
+  does not rebind the slot. A class reached as a bound, or under one, is rebuilt through its
+  first member that keeps L3 and is no fold, because a class's fact is the meet over its
+  members and its first member can read a coordinate the class does not; the rewrite
+  declines when no member does. The rebuilt bound is a term, and the graph hash-conses it:
+  its class can be seeded wider than the term (a fact is never repaired upward), whether the
+  term lands in a class that already exists or is minted over a child that did, and L3 then
+  reads that fact. The graph refuses such a fold to the plan builder, and the rewrite
+  declines there too: it makes no union, and the nodes it made before that fold stay, as
+  orphans that cost classes and never soundness (a lawful nested fold can be among them);
+  `EGraph::add` panics only for a caller that is not a plan.
 - **L8 (discovery).** Peeling an outer fold substitutes `i := Const(k)` into an inner
   bound `0..i`; the bound's class gains a `Const` member, the one normalizing rule
   (`KnownBound`, §3.2) reads it into the node, and the inner fold becomes known and
@@ -599,7 +602,7 @@ A5's deletion, which removes code #1427 only re-scopes.
   accepted), `ANY`/`ALL`/`SEQ` under a value bound refused, a non-leaf bound refused at
   `over_values`, L4, L7, L8 (a peel makes the inner bound known), a triangular fold
   whose outer fold `HalveFold` halves (the rule-made `0..(i + s)` accepted), and a rule-made
-  bound that lands in a class whose fact fails L3 (declined, not built). **Done:**
+  bound whose class fact fails L3 (declined: the fold is not built). **Done:**
   byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and `=avx2`; the 29 font
   programs' keys, digests and saturation telemetry, the extraction fields included,
   unchanged on every pinned kernel. A placeholder's variance is `CONST` (it is a binder-to-be, never a coordinate,

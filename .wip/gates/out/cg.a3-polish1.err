@@ -1,0 +1,11 @@
+==28072== Callgrind, a call-graph generating cache profiler
+==28072== Copyright (C) 2002-2017, and GNU GPL'd, by Josef Weidendorfer et al.
+==28072== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==28072== Command: /home/user/scratch/gates-bin/bin.measure --ignored --nocapture --test-threads=1 zz_prof_all_cold
+==28072== 
+==28072== For interactive control, run 'callgrind_control -h'.
+==28072== 
+==28072== Events    : Ir
+==28072== Collected : 6307995455
+==28072== 
+==28072== I   refs:      6,307,995,455

@@ -59,14 +59,15 @@
 //!   representative gives a term equal to the substitution of the whole class.
 //!   It is less *complete* — nodes added to the class later get no substituted
 //!   twin — never wrong. `ChainRule` differentiates a representative for the
-//!   same reason. The representative is the class's first node, except under a
-//!   nested fold's value bound, where it is the first that keeps L3 of
-//!   docs/language/2026-10-20-a-bound-is-a-value.md (a class's fact is the
-//!   meet over its members, so its first member can read a coordinate the
-//!   class does not), and the rewrite declines when none does. It declines
-//!   too when the bound it rebuilds lands in a class the graph refuses: the
-//!   term is lawful, but hash-consing can resolve it to a class seeded wider
-//!   than it, and a fact is never repaired upward.
+//!   same reason. The representative is the class's first node, except in a
+//!   nested fold's value bound, or anywhere under one, where it is the first
+//!   that keeps L3 of docs/language/2026-10-20-a-bound-is-a-value.md and is no
+//!   fold (a class's fact is the meet over its members, so its first member
+//!   can read a coordinate the class does not), and the rewrite declines when
+//!   none is. It declines too when the class fact of a bound it rebuilds
+//!   fails L3: the term is lawful, but a fact is seeded at birth and never
+//!   repaired upward, so the bound can land in a class that already exists, or
+//!   be minted over a child that did, seeded wider than the term.
 //! - **The class fact is the invariance test.** A class whose variance fact
 //!   (`EGraph::variance`) lacks the binder denotes a function the binder does
 //!   not reach, so substituting into it is the identity: the walk names the
@@ -84,7 +85,6 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::fold::BoundEnd;
 use pixelflow_ir::{Binder, Bound, Fold, KnownRange, Lit, Monoid, OpKind, ShiftCount};
 
 use super::graph::EGraph;
@@ -193,8 +193,9 @@ impl PlanBuilder {
     }
 
     /// Build `class` with every leaf occurrence of the substitution's
-    /// binder rebuilt by its `leaf`, walking one member per e-class and
-    /// naming, unwalked, every class whose variance fact clears the binder.
+    /// binder rebuilt by its `leaf`, walking one member per e-class and site
+    /// and naming, unwalked, every class whose variance fact clears the
+    /// binder.
     ///
     /// Shared by both rules that substitute under a binder: `PeelFold`
     /// (`binder := value`, a literal) and `HalveFold` (`binder := binder +
@@ -208,32 +209,34 @@ impl PlanBuilder {
     /// and a body may read anything. As a nested fold's value bound, the first
     /// member that keeps L3 of docs/language/2026-10-20-a-bound-is-a-value.md:
     /// reads no coordinate and not its fold's own binder, judged by
-    /// `Fold::admits_bound` on the member's own variance over its children's
-    /// facts. The class's fact is the meet over its members, so a member can
-    /// read a coordinate the class does not vary with (`((i + X) + 1) − X`
-    /// beside `i + 1`), and rebuilding through it would hand the graph a bound
-    /// that varies, which `EGraph::add` refuses by panicking inside saturation.
-    /// The same holds of everything a bound is made of, so the walk keeps the
-    /// site for every class under a bound.
+    /// `Fold::bound_may_read` on the member's own variance over its children's
+    /// facts, and that is no fold. The class's fact is the meet over its
+    /// members, so a member can read a coordinate the class does not vary with
+    /// (`((i + X) + 1) − X` beside `i + 1`), and rebuilding through it would
+    /// hand the graph a bound that varies, which `EGraph::add` refuses by
+    /// panicking inside saturation. The same holds of everything a bound is
+    /// made of, so the walk keeps the site for every class under a bound.
     ///
     /// The substitution itself adds no refused bit: a leaf becomes a literal or
     /// the substituted binder plus its stride, and that binder is neither a
     /// coordinate nor a nested fold's own (a fold that rebinds it is named
     /// before it is entered), so a node this plan mints is as lawful as the
-    /// member it was read from. What the walk cannot see is where a node lands:
-    /// the graph is hash-consed, and a rebuilt bound can resolve to a class that
-    /// already exists, seeded wider than the term and never repaired upward
-    /// (`EGraph::variance`'s fact is what `add` reads). The walk does not
-    /// replay the memo to find out. The plan is built node by node, and the
-    /// graph asks of each fold whether its bound lands in a class that varies:
-    /// if so the rewrite is declined there (`plan_shape`), before `add`'s
-    /// backstop could panic.
+    /// member it was read from. What the walk cannot see is the fact the graph
+    /// will read for it. A class's fact is seeded at birth and never repaired
+    /// upward (`EGraph::variance` is what `add` reads), so a bound's class can
+    /// be seeded wider than the bound as a term: because the bound resolves to
+    /// a class that already exists, or because the plan mints a class for it
+    /// over a child that did. The walk does not replay the memo to find out.
+    /// The plan is built node by node, and the graph asks of each fold whether
+    /// the class fact of one of its value bounds fails L3: if so the rewrite is
+    /// declined there (`plan_shape`), before `add`'s backstop could panic.
     ///
     /// Returns `None` when the walk re-enters a class it is already inside —
     /// a merged class can reach itself, and a substitution through a cycle
-    /// does not terminate — when a class under a value bound has no member
-    /// that keeps L3, and when a fold is nested inside a value bound (which no
-    /// builder makes). Declining costs completeness and never soundness.
+    /// does not terminate — and when a class in or under a value bound has no
+    /// member that keeps L3 and is no fold (a fold under a bound is not
+    /// entered: its body would need the law lifted by its own binder).
+    /// Declining costs completeness and never soundness.
     fn substitute<L: FnMut(&mut Self, EClassId) -> HeadRef>(
         &mut self,
         egraph: &EGraph,
@@ -291,7 +294,7 @@ impl PlanBuilder {
                     tasks.push(Task::Build(class, site));
                     let children = node.children_slice();
                     for (position, &child) in children.iter().enumerate().rev() {
-                        let child_site = site.of_child(&node, position)?;
+                        let child_site = site.of_child(&node, position);
                         tasks.push(Task::Visit(child, child_site));
                     }
                 }
@@ -329,48 +332,50 @@ impl PlanBuilder {
 
 /// Where [`PlanBuilder::substitute`] is rebuilding a class, which decides the
 /// member it reads.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy)]
 enum Site {
     /// A fold's body, or what is under one: any member does, and the first is
     /// read. Every site a fold over literals has.
     Body,
     /// A value bound of the nested fold `fold`, or what is under one: the
-    /// member must keep L3 for that fold. The end is not part of the site: the
-    /// law is the same at both, and the end only names a refusal.
+    /// member must keep L3 for that fold and be no fold. The end is not part
+    /// of the site: the law is the same at both (`Fold::bound_may_read`).
     Bound { fold: Fold },
 }
 
 impl Site {
     /// The member of `class` the walk reads at this site: for a body its
-    /// first, for a bound its first that keeps L3. `None` when a bound's class
-    /// has none.
+    /// first, for a bound its first that keeps L3 and is no fold. `None` when
+    /// a bound's class has none.
+    ///
+    /// A fold is skipped under a bound because the walk does not enter one
+    /// there: its body would need the law lifted by its own binder. Skipping
+    /// it reads the next member, where declining the rewrite on it would not.
     fn member(self, egraph: &EGraph, class: EClassId) -> Option<&ENode> {
         match self {
-            Site::Body => representative(egraph, class),
+            Site::Body => egraph.nodes(class).next(),
             Site::Bound { fold } => egraph.nodes(class).find(|node| {
-                let reads = node.variance(
-                    |key| egraph.ref_variance(key),
-                    |child| egraph.variance(child),
-                );
-                fold.admits_bound(BoundEnd::Hi, reads).is_ok()
+                !matches!(node, ENode::Reduce { .. })
+                    && fold.bound_may_read(node.variance(
+                        |key| egraph.ref_variance(key),
+                        |child| egraph.variance(child),
+                    ))
             }),
         }
     }
 
-    /// The site of `node`'s child `position`, when the walk descends there.
-    /// A fold's body stays where the fold is; its value bounds are bounds. A
-    /// fold under a value bound has no site (`None`): its body would need the
-    /// law lifted by its own binder, and no builder makes one.
-    fn of_child(self, node: &ENode, position: usize) -> Option<Site> {
-        let ENode::Reduce { header, .. } = node else {
-            return Some(self);
-        };
-        match (self, position) {
-            (Site::Body, 0) => Some(Site::Body),
-            (Site::Body, _) => Some(Site::Bound {
+    /// The site of `node`'s child `position`. A fold's body stays where the
+    /// fold is, and its value bounds are bounds; every other node's children
+    /// are where it is.
+    ///
+    /// Total because [`Self::member`] never reads a fold at a bound: a fold
+    /// is only ever asked here from a body.
+    fn of_child(self, node: &ENode, position: usize) -> Site {
+        match (node, position) {
+            (ENode::Reduce { header, .. }, 1..) => Site::Bound {
                 fold: header.fold(),
-            }),
-            (Site::Bound { .. }, _) => None,
+            },
+            _ => self,
         }
     }
 }
@@ -400,12 +405,6 @@ impl Memo {
             Site::Bound { fold } => self.bound.insert((class, fold), done),
         };
     }
-}
-
-/// The node a substitution rebuilds `class` through: its first. See the
-/// module doc.
-fn representative(egraph: &EGraph, class: EClassId) -> Option<&ENode> {
-    egraph.nodes(class).next()
 }
 
 /// `⊕_{[lo,hi) step s} f = ⊕_{[lo,hi-s) step s} f ⊕ f(hi-s)`.
@@ -454,11 +453,11 @@ pub struct PeelFold;
 /// rule builds it only through a member of the bound's class that already keeps
 /// L3, so the shifted bound reads what that member read, the outer index plus
 /// its stride, and a bound class with no such member declines the rewrite. The
-/// graph declines it too where the shifted bound hash-conses into a class whose
-/// fact reads a coordinate: a fact is seeded at birth and never repaired
-/// upward, so a lawful term can land in a class seeded wider than it, and
-/// `EGraph::add` reads the class. The graph asks whether it would refuse the
-/// fold before making it, so the rewrite is declined there and `add`'s
+/// graph declines it too where the class fact of the shifted bound fails L3: a
+/// fact is seeded at birth and never repaired upward, so a lawful term can
+/// land in a class seeded wider than it, or be minted over a child that did,
+/// and `EGraph::add` reads the class. The graph asks whether it would refuse
+/// the fold before making it, so the rewrite is declined there and `add`'s
 /// backstop is not reached with a bound that varies.
 pub struct HalveFold;
 
@@ -554,8 +553,11 @@ pub struct FactorFold;
 /// content change to that class, which the dirty tracker watches.
 ///
 /// The fold it adds is `ENode::literal_twin`'s, the one function that makes a
-/// fold's literal form: the extractor prices a value-bounded fold as it, so
-/// the form this rule puts in the class and the one a price reads are the same.
+/// fold's literal form, and the extractor prices a value-bounded fold as it.
+/// One construction buys this much: given the same literal for each bound
+/// class, the form this rule puts in the class and the one a price reads are
+/// the same fold. Which literal each finds is its own: this rule scans the
+/// bound class's members, a price reads the form chosen for the class.
 ///
 /// Last in [`fold_rules`], so every rule before it keeps its `RuleIdx`, and
 /// inert on a fold over literals: it declines before reading the graph.
@@ -2081,19 +2083,89 @@ mod tests {
 
             // The graph takes the plan: this is the call that panicked.
             SaturationConfig::compatibility(1).run(&mut f.eg);
-            let refused = Variance::COORDS.union(Variance::from_var(binder(0).var()));
-            for class in f.eg.class_ids() {
-                let held: Vec<_> = f.eg.nodes(class).filter_map(ENode::as_reduce).collect();
-                for (_, _, hi, _) in held {
-                    if let Bound::Value(bound) = hi {
-                        assert!(
-                            f.eg.variance(bound).intersection(refused).is_const(),
-                            "n = {n}: a bound in the graph varies"
-                        );
-                    }
-                }
-            }
+            assert_eq!(
+                value_bounded_inner_folds(&f.eg),
+                2,
+                "{} at n = {n}: the graph took the plan, so the nested fold was rebuilt \
+                 (a plan through the varying spelling is declined, and builds none)",
+                rule.name()
+            );
+            let rebuilt: Vec<_> = f
+                .eg
+                .class_ids()
+                .flat_map(|class| f.eg.nodes(class).filter_map(ENode::as_reduce))
+                .filter_map(|(_, _, hi, _)| match hi {
+                    Bound::Value(bound) if f.eg.find(bound) != f.eg.find(f.bound) => Some(bound),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !rebuilt.is_empty()
+                    && rebuilt
+                        .iter()
+                        .all(|&bound| f.eg.nodes(bound).all(|node| !matches!(
+                            node,
+                            ENode::Op {
+                                op: OpKind::Sub,
+                                ..
+                            }
+                        ))),
+                "{} at n = {n}: the rebuilt bound is spelled `i + k`, not through `Sub`",
+                rule.name()
+            );
         }
+    }
+
+    /// `Σ_{k<1} i` beside `i · 1`, the fold the older: the same value (the
+    /// runtime rules derive the first equation), and both keep L3.
+    fn a_fold_beside_a_lawful_spelling(
+        eg: &mut Saturation,
+        [_, _, i, one]: [EClassId; 4],
+    ) -> [EClassId; 2] {
+        let fold = eg.add(ENode::reduce(
+            Fold::new(Monoid::SUM, binder(2)),
+            Bound::Lit(0),
+            Bound::Lit(1),
+            i,
+        ));
+        let times_one = eg.add(ENode::apply(OpKind::Mul, &[i, one]));
+        [fold, times_one]
+    }
+
+    /// **A fold in a bound's class is not a member the walk reads** (L7).
+    /// Saturation can put a fold into a bound's class (the runtime rules derive
+    /// `Σ_{k<1} i = i`), and a fold under a bound would need the law lifted by
+    /// its own binder, so the walk reads the next member that keeps L3: here
+    /// `i · 1`. The plan holds the outer fold and the nested fold's shifted
+    /// copy, and no fold for the bound.
+    #[test]
+    fn a_fold_in_a_bound_class_is_skipped_for_the_next_member() {
+        let mut f = over_a_joined_bound(alone(&HalveFold), 4, a_fold_beside_a_lawful_spelling);
+        let (class, outer) = f.outer;
+        assert!(
+            matches!(f.eg.nodes(f.bound).next(), Some(ENode::Reduce { .. })),
+            "the premise: the bound class's first member is the fold"
+        );
+        assert!(
+            has_a_member_that_keeps_l3(&f.eg, f.bound),
+            "the premise: and the fold keeps L3 itself"
+        );
+        let Some(RewriteAction::Plan(plan)) = HalveFold.apply(&f.eg, class, &outer) else {
+            panic!("the bound class has a member that is no fold and keeps L3, so it plans");
+        };
+        let folds = plan
+            .nodes
+            .iter()
+            .filter(|node| matches!(node, HeadNode::Reduce { .. }))
+            .count();
+        assert_eq!(folds, 2, "the bound was rebuilt through `i`: {plan:?}");
+
+        SaturationConfig::compatibility(1).run(&mut f.eg);
+        assert_eq!(
+            value_bounded_inner_folds(&f.eg),
+            2,
+            "the graph took the plan and built the shifted nested fold"
+        );
     }
 
     /// **A nested bound with no member that keeps L3 declines** (L7): the rule
@@ -2132,6 +2204,50 @@ mod tests {
     #[should_panic(expected = "BoundVaries")]
     fn extracting_a_bound_class_with_no_member_that_keeps_l3_is_refused_by_name() {
         let f = over_a_joined_bound(alloc::vec![], 4, two_spellings_that_each_read_a_coordinate);
+        let (class, _) = f.outer;
+        let _refused = extract(&f.eg, class, &CostModel::latency_prior());
+    }
+
+    /// `i²` beside `((i · i) + X) − X`, the same value (an equation the algebra
+    /// derives): the first is lawful and the dearer, the second reads `X` and
+    /// is the cheaper.
+    fn a_lawful_spelling_dearer_than_one_that_reads_a_coordinate(
+        eg: &mut Saturation,
+        [x, _, i, _]: [EClassId; 4],
+    ) -> [EClassId; 2] {
+        let two = eg.add(ENode::constant(2.0));
+        let squared = eg.add(ENode::apply(OpKind::Pow, &[i, two]));
+        let ii = eg.add(ENode::apply(OpKind::Mul, &[i, i]));
+        let iix = eg.add(ENode::apply(OpKind::Add, &[ii, x]));
+        let spelled = eg.add(ENode::apply(OpKind::Sub, &[iix, x]));
+        [squared, spelled]
+    }
+
+    /// **The hole is wider than a class with no lawful member.** The pick is by
+    /// cost, so a class that holds a lawful member (`i²`) is materialized
+    /// through a cheaper one that reads a coordinate (`((i · i) + X) − X`), and
+    /// the fold is refused with `BoundVaries` all the same. The class's fact is
+    /// the outer index alone, which is why the fold was admitted. Saturation
+    /// can leave the cheap spelling standing or rewrite it away; this graph has
+    /// no rules, so nothing does. A4 decides whether a bound's pick is
+    /// constrained, and this changes with it.
+    #[test]
+    #[should_panic(expected = "BoundVaries")]
+    fn extracting_a_bound_class_whose_cheapest_member_reads_a_coordinate_is_refused_by_name() {
+        let f = over_a_joined_bound(
+            alloc::vec![],
+            3,
+            a_lawful_spelling_dearer_than_one_that_reads_a_coordinate,
+        );
+        assert_eq!(
+            f.eg.variance(f.bound),
+            Variance::from_var(binder(1).var()),
+            "the premise: the class's fact is the outer index alone"
+        );
+        assert!(
+            has_a_member_that_keeps_l3(&f.eg, f.bound),
+            "the premise: a member of the class keeps L3"
+        );
         let (class, _) = f.outer;
         let _refused = extract(&f.eg, class, &CostModel::latency_prior());
     }
@@ -2366,12 +2482,10 @@ mod tests {
         eg.class_ids()
             .flat_map(|class| eg.nodes(class).filter_map(ENode::as_reduce))
             .all(|(fold, lo, hi, _)| {
-                [(BoundEnd::Lo, lo), (BoundEnd::Hi, hi)]
-                    .into_iter()
-                    .all(|(end, bound)| match bound {
-                        Bound::Lit(_) => true,
-                        Bound::Value(class) => fold.admits_bound(end, eg.variance(class)).is_ok(),
-                    })
+                [lo, hi].into_iter().all(|bound| match bound {
+                    Bound::Lit(_) => true,
+                    Bound::Value(class) => fold.bound_may_read(eg.variance(class)),
+                })
             })
     }
 
@@ -2381,40 +2495,77 @@ mod tests {
         let inner = Fold::new(Monoid::SUM, binder(0));
         eg.nodes(class).any(|node| {
             let reads = node.variance(|key| eg.ref_variance(key), |child| eg.variance(child));
-            inner.admits_bound(BoundEnd::Hi, reads).is_ok()
+            inner.bound_may_read(reads)
         })
     }
 
-    /// **A rebuilt bound that hash-conses into a stale class is declined, not
-    /// built** (L7 of docs/language/2026-10-20-a-bound-is-a-value.md). The rule
-    /// picked a member of the bound's class that keeps L3 and rebuilt it, and
-    /// the term it rebuilt is lawful (`i + 1`, `0 + 1`); but the graph is
-    /// hash-consed, so the term lands in the class that already holds it, and
-    /// that class's fact was seeded wider than the term and is never repaired
-    /// upward. `EGraph::add` reads the fact and panicked with `BoundVaries`.
-    /// The graph now refuses the node to the plan builder, which declines the
-    /// rewrite: nothing is unioned and no fold is built.
+    /// `i * 2`, the bound [`stale_index_plus_one`] has before it goes stale, with
+    /// the class `P` beside it: a halved copy's bound is `(i + 1) * 2`, a class
+    /// the plan mints over `i + 1`, which lands in `P`.
+    fn stale_double_index(eg: &mut Saturation) -> Stale {
+        let stale = stale_index_plus_one(eg);
+        let two = eg.add(ENode::constant(2.0));
+        let bound = eg.add(ENode::apply(OpKind::Mul, &[stale.bound, two]));
+        Stale {
+            bound,
+            landing: stale.landing,
+        }
+    }
+
+    /// [`stale_double_index`]'s bound with no `P` at all: the control.
+    fn fresh_double_index(eg: &mut Saturation) -> Stale {
+        let i = eg.add(ENode::Var(binder(1).var()));
+        let two = eg.add(ENode::constant(2.0));
+        let bound = eg.add(ENode::apply(OpKind::Mul, &[i, two]));
+        Stale {
+            bound,
+            landing: bound,
+        }
+    }
+
+    /// **A rebuilt bound whose class fact fails L3 is declined, not built** (L7
+    /// of docs/language/2026-10-20-a-bound-is-a-value.md). The rule picked a
+    /// member of the bound's class that keeps L3 and rebuilt it, and the term
+    /// it rebuilt is lawful (`i + 1`, `0 + 1`, `(i + 1) * 2`); but a class's
+    /// fact is seeded at birth and never repaired upward, so the term can land
+    /// in a class that already holds it, seeded wider than the term, or be
+    /// minted over a child that did. `EGraph::add` reads the fact and panicked
+    /// with `BoundVaries`. The graph now refuses the node to the plan builder,
+    /// which declines the rewrite: nothing is unioned and no fold is built.
     ///
-    /// The two minimal cases, `HalveFold` at `n = 4` and `PeelFold` at `n = 1`,
-    /// each the only rule of its graph, and a control with no stale class,
-    /// where the same rule builds the same fold, so the decline is the
-    /// staleness and not a rule that never fires.
+    /// Three cases, each the only rule of its graph: `HalveFold` at `n = 4`
+    /// with the bound landing in `P`, `PeelFold` at `n = 1` likewise, and
+    /// `HalveFold` with a bound the plan mints over a child that landed in `P`
+    /// (the `(i + 1) * 2`). Each has a control with no stale class, where the
+    /// same rule builds the nested fold, so the decline is the staleness and
+    /// not a rule that never fires. What the run shows: the control's rule
+    /// unions something and the stale graph's unions nothing (the plan was
+    /// declined), the stale graph holds fewer value-bounded inner folds than
+    /// the control, and `P`'s fact still reads `X` afterwards (nothing built
+    /// there, nothing repaired).
     #[test]
     fn a_rebuilt_bound_that_lands_in_a_stale_class_is_declined() {
         type Recipe = fn(&mut Saturation) -> Stale;
-        let cases: [(&dyn Rewrite, u64, Recipe, Recipe); 2] = [
+        let cases: [(&dyn Rewrite, u64, Recipe, Recipe); 3] = [
             (&HalveFold, 4, stale_index_plus_one, fresh_index),
             (&PeelFold, 1, stale_zero_plus_one, fresh_index_plus_one),
+            (&HalveFold, 4, stale_double_index, fresh_double_index),
         ];
         for (rule, n, stale, control) in cases {
             let mut eg = Saturation::over(RuleSet::new(alone(rule)));
             let made = control(&mut eg);
             nested_under(&mut eg, made.bound, n);
-            SaturationConfig::compatibility(1).run(&mut eg);
+            let ran = SaturationConfig::compatibility(1).run(&mut eg);
+            let built = value_bounded_inner_folds(&eg);
             assert_eq!(
-                value_bounded_inner_folds(&eg),
+                built,
                 2,
                 "{} at n = {n}: the control: with no stale class the rule rebuilds the nested fold",
+                rule.name()
+            );
+            assert!(
+                ran.total_unions > 0,
+                "{} at n = {n}: the control: the rule unions its plan",
                 rule.name()
             );
 
@@ -2437,10 +2588,15 @@ mod tests {
                 "{} at n = {n}: a member of the bound's class keeps L3, so the rule plans",
                 rule.name()
             );
-            let classes = eg.num_classes();
 
             // The graph takes the plan: this is the call that panicked.
-            SaturationConfig::compatibility(3).run(&mut eg);
+            let ran = SaturationConfig::compatibility(3).run(&mut eg);
+            assert_eq!(
+                ran.total_unions,
+                0,
+                "{} at n = {n}: the plan was declined, so nothing was unioned",
+                rule.name()
+            );
             assert_eq!(
                 value_bounded_inner_folds(&eg),
                 1,
@@ -2448,13 +2604,18 @@ mod tests {
                 rule.name()
             );
             assert!(
-                every_bound_keeps_l3(&eg),
-                "{} at n = {n}: a bound in the graph varies",
+                value_bounded_inner_folds(&eg) < built,
+                "{} at n = {n}: fewer inner folds than the control's",
                 rule.name()
             );
             assert!(
-                eg.num_classes() >= classes,
-                "{} at n = {n}: classes only grow",
+                eg.variance(made.landing).depends_on_x(),
+                "{} at n = {n}: P's fact still reads X: nothing repaired it",
+                rule.name()
+            );
+            assert!(
+                every_bound_keeps_l3(&eg),
+                "{} at n = {n}: a bound in the graph varies",
                 rule.name()
             );
         }
@@ -2464,10 +2625,13 @@ mod tests {
     /// bound lands in** (L7). The full set, commutativity and constant folding
     /// among it, repairs some staleness by minting a lawful twin of the stale
     /// class (`i + 1` beside `P`), so [`stale_either_order`] holds both
-    /// spellings of `P`'s sum first and no twin is born: the bound lands in `P`
-    /// at every level the halving reaches (`n` = 2, 4, 8) and the graph declines
-    /// it each time. The first iteration is where it panicked; six leave room
-    /// for the halving to reach the levels below, at a cost the full set's
+    /// spellings of `P`'s sum first and no twin is born: a halved copy's bound,
+    /// `i + 1`, lands in `P` whatever the extent (`n` = 2, 4, 8), and the graph
+    /// declines it at each halving the outer fold offers. A control over the
+    /// bare index, with no `P`, halves through the same bound, so it holds more
+    /// value-bounded inner folds than the stale graph does, and `P`'s fact still
+    /// reads `X` afterwards. The first iteration is where it panicked; six leave
+    /// room for the control to halve its way down, at a cost the full set's
     /// growth keeps small. The extracted term is closed, and every bound reads
     /// the outer index and nothing else.
     #[test]
@@ -2475,6 +2639,11 @@ mod tests {
         let inner = Fold::new(Monoid::SUM, binder(0));
         let outer_index = Variance::from_var(binder(1).var());
         for n in [2, 4, 8] {
+            let mut control = Saturation::over(RuleSet::runtime());
+            let fresh = fresh_index(&mut control);
+            nested_under(&mut control, fresh.bound, n);
+            SaturationConfig::compatibility(6).run(&mut control);
+
             let mut eg = Saturation::over(RuleSet::runtime());
             let stale = stale_either_order(&mut eg);
             assert!(
@@ -2482,8 +2651,26 @@ mod tests {
                     && has_a_member_that_keeps_l3(&eg, stale.landing),
                 "n = {n}, the premise: the class reads X and a member of it does not"
             );
+            let one = eg.add(ENode::constant(1.0));
+            let shifted = eg.add(ENode::apply(OpKind::Add, &[stale.bound, one]));
+            assert_eq!(
+                eg.find(shifted),
+                eg.find(stale.landing),
+                "n = {n}, the premise: a halved copy's bound `i + 1` lands in P"
+            );
             let class = nested_under(&mut eg, stale.bound, n);
             SaturationConfig::compatibility(6).run(&mut eg);
+            assert!(
+                value_bounded_inner_folds(&eg) < value_bounded_inner_folds(&control),
+                "n = {n}: the halving was declined, so fewer inner folds than the control's \
+                 ({} against {})",
+                value_bounded_inner_folds(&eg),
+                value_bounded_inner_folds(&control)
+            );
+            assert!(
+                eg.variance(stale.landing).depends_on_x(),
+                "n = {n}: P's fact still reads X: nothing repaired it"
+            );
             assert!(
                 every_bound_keeps_l3(&eg),
                 "n = {n}: a bound in the graph varies"
@@ -2491,7 +2678,13 @@ mod tests {
 
             let (out, out_root, _) = extract(&eg, class, &CostModel::latency_prior());
             let variance = compute_arena_variance(&out);
-            for hi in nested_bounds(&out, out_root, inner) {
+            let bounds = nested_bounds(&out, out_root, inner);
+            assert!(
+                !bounds.is_empty(),
+                "n = {n}: the extracted term holds an inner fold: {}",
+                out.display(out_root)
+            );
+            for hi in bounds {
                 if let Bound::Value(bound) = hi {
                     assert!(
                         variance[bound.0 as usize].without(outer_index).is_const(),

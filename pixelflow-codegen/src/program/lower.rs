@@ -112,9 +112,10 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
 ///
 /// Panics if a `Param` or `Nary` node is encountered (these are not expected
 /// in JIT compilation), or a `Var` that is no fold's binder survived
-/// `collapse`: a coordinate, or a placeholder, a fold index that escaped its
-/// builder. The variance this reads types a placeholder as constant, so this
-/// is the refusal that stops one from being placed.
+/// `collapse`: a coordinate, which means `collapse` was skipped, or an index
+/// past the binder slots, a fold index that escaped its builder, which means
+/// the kernel is open. The variance this reads types such an index as
+/// constant, so this is the refusal that stops one from being placed.
 pub(crate) fn arena_to_schedule(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -188,11 +189,14 @@ pub(crate) fn arena_to_schedule(
 
         let sched_op = match node {
             ExprNode::Var(i) => match Binder::from_var(i) {
-                None => panic!(
+                None if i < Variance::VARIABLES => panic!(
                     "arena_to_schedule: Var({i}) is a coordinate, which \
-                     passes::lattice::collapse substitutes away, or a fold index that \
-                     escaped its builder and was never closed over -- this schedule was \
+                     passes::lattice::collapse substitutes away -- this schedule was \
                      built without the lowering pipeline"
+                ),
+                None => panic!(
+                    "arena_to_schedule: Var({i}) is a fold index that escaped its builder \
+                     and was never closed over: no fold binds it, so the kernel is open"
                 ),
                 Some(b) if lane == Some(b) => ScheduledOp::Lanes,
                 Some(b) => ScheduledOp::Var(b),
@@ -424,9 +428,10 @@ mod tests {
     /// A placeholder is a fold index that escaped its builder: `Variance::of_var`
     /// types it as constant, so placement would not tell it from a uniform, and
     /// the refusal is this `Var` arm's. It answers for the open term before
-    /// anything is scheduled, whatever the variance says.
+    /// anything is scheduled, whatever the variance says, and as an open
+    /// kernel, not as a schedule built without the lowering pipeline.
     #[test]
-    #[should_panic(expected = "escaped its builder")]
+    #[should_panic(expected = "so the kernel is open")]
     fn a_surviving_placeholder_fails_loudly() {
         let mut a = ExprArena::new();
         let index = a.push_var(

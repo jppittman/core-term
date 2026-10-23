@@ -304,9 +304,10 @@ impl EGraph {
     ///
     /// This sees a variance and nothing else, and a fold index that escaped
     /// its builder (a placeholder) has an empty one (`Variance::of_var`). Its
-    /// caller holds the unit's body, and refuses an open one by
-    /// `ExprArena::free_index` before it gets here (`runtime::Program::of`, the
-    /// only caller outside tests): closedness is judged there, on the term.
+    /// only caller outside tests, `runtime::saturate`, admits the leaves
+    /// `runtime::Program::of` built, and `Program::of` refused an open unit by
+    /// `ExprArena::free_index` when it resolved the body: closedness is judged
+    /// there, on the term.
     pub(crate) fn admit_unit(&mut self, key: KernelKey, variance: Variance) {
         assert!(
             variance.without(Variance::COORDS).is_const(),
@@ -379,11 +380,12 @@ impl EGraph {
     /// exceptions. The arena types a fold over a known empty range `CONST` and
     /// `ENode::variance` has no such arm, so a hand-built bound holding such a
     /// fold, which `push_reduce` admitted, may be refused here. And a fact is
-    /// never repaired upward, so a bound term that is lawful can hash-cons into
-    /// a class seeded wider than the term (`var_fact`'s law), and the class's
-    /// fact is what is read. A rule's plan does not reach this panic by the
-    /// second road: the graph asks whether it would refuse a plan's fold
-    /// before making it (`NodeSink::refuses`), and the rewrite is declined.
+    /// never repaired upward, so the class a lawful bound term lands in can be
+    /// seeded wider than the term (`var_fact`'s law): the class it hash-conses
+    /// into, or one `add` mints for it over a child that did. The class's fact
+    /// is what is read. A rule's plan does not reach this panic by the second
+    /// road: the graph asks whether it would refuse a plan's fold before making
+    /// it (`NodeSink::refuses`), and the rewrite is declined.
     pub fn add(&mut self, node: ENode) -> EClassId {
         let node = self.canonical_node(node);
         if let Some(&id) = self.memo.get(&node) {
@@ -1278,8 +1280,8 @@ impl EGraph {
 
 /// A fold node the graph will not hold: a value bound of it varies with a
 /// coordinate or with the fold's own binder (L3 of
-/// docs/language/2026-10-20-a-bound-is-a-value.md), judged on the class the
-/// bound lands in. Displays as the panic [`EGraph::add`] raises.
+/// docs/language/2026-10-20-a-bound-is-a-value.md), judged on the fact of the
+/// class the bound is. Displays as the panic [`EGraph::add`] raises.
 #[derive(Debug)]
 struct VaryingBound {
     fold: Fold,
@@ -1348,9 +1350,9 @@ fn varying_bound(node: &ENode, fact: impl Fn(EClassId) -> Variance) -> Option<Va
 trait NodeSink {
     fn make(&mut self, node: ENode) -> EClassId;
 
-    /// Whether `make(node)` would refuse it: a fold whose value bound lands in
-    /// a class that varies with a coordinate or with the fold's own binder (L3
-    /// of docs/language/2026-10-20-a-bound-is-a-value.md), which
+    /// Whether `make(node)` would refuse it: a fold one of whose value bounds
+    /// is a class whose fact varies with a coordinate or with the fold's own
+    /// binder (L3 of docs/language/2026-10-20-a-bound-is-a-value.md), which
     /// [`EGraph::add`] panics on. Asked of a plan's fold before it is made, and
     /// answered after the memo lookup `add` makes first, so a node the graph
     /// already holds is never refused. Reads nothing for a fold over literals.
@@ -1390,9 +1392,11 @@ impl NodeSink for EGraph {
 /// `pending`'s virtual ids are minted the same way [`EGraph::add`] mints
 /// real ones — sequentially from `egraph.num_classes()` — so a shape that
 /// references its own earlier output builds the identical composite node a
-/// real run would look up. The table is only probed, inserted into and
-/// counted, never iterated, so the capacity it keeps between predictions is
-/// not observable.
+/// real run would look up. The table is probed, inserted into and counted,
+/// and iterated by one reader, [`Self::fact`], which finds the node a pending
+/// id names. Its answer does not depend on the order, since ids are unique, so
+/// the capacity the table keeps between predictions is not observable; its
+/// cost scales with that capacity, and is paid only for a fold's value bound.
 struct GrowthPredictor<'a> {
     egraph: &'a EGraph,
     pending: &'a mut HashMap<ENode, EClassId>,
@@ -1763,15 +1767,17 @@ fn instantiate_template<S: NodeSink>(
 /// integrand), which a [`NodeSink`] cannot do; the rule does that half and
 /// this replays it, node by node in build order.
 ///
-/// `None` when a fold of the plan has a value bound that lands in a class
-/// varying with a coordinate or with the fold's own binder (L3 of
+/// `None` when a fold of the plan has a value bound whose class fact varies
+/// with a coordinate or with the fold's own binder (L3 of
 /// docs/language/2026-10-20-a-bound-is-a-value.md), where [`EGraph::add`] would
 /// panic. The rule chose the bound's members by their own variance, and that is
-/// the bound as a term; where it lands is the graph's to say, because
-/// hash-consing can resolve a lawful term to a class seeded wider than it
-/// (`var_fact` is never repaired upward). The nodes built before the refusal
-/// stay, as any `add` leaves them, and the caller makes no union. A prediction
-/// declines at the same node, so it counts the same classes.
+/// the bound as a term; the fact of the class it is is the graph's to say, and
+/// a fact is never repaired upward (`var_fact`), so the class can be seeded
+/// wider than the term: because hash-consing resolved the bound to a class that
+/// already exists, or because the bound is a class this plan minted over a
+/// child that did. The nodes built before the refusal stay, as any `add`
+/// leaves them, and the caller makes no union. A prediction declines at the
+/// same node, so it counts the same classes.
 fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> Option<EClassId> {
     use super::fold_rules::{HeadNode, HeadRef};
     let mut planned: Vec<EClassId> = Vec::with_capacity(plan.nodes.len());

@@ -1,0 +1,4 @@
+    Checking pixelflow-ir v0.1.0 (/home/user/pixelflow/pixelflow-ir)
+    Checking pixelflow-search v0.1.0 (/home/user/pixelflow/pixelflow-search)
+    Checking pixelflow-codegen v0.1.0 (/home/user/pixelflow/pixelflow-codegen)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.86s

@@ -709,9 +709,13 @@ impl Kernel {
     /// language without touching this method.
     ///
     /// The closure receives the bound index as a `Kernel` of its own, so Rust's
-    /// scoping *is* the binder's scoping — an index cannot escape the fold that
-    /// binds it, and a repeated index in nested folds is a genuine contraction
-    /// rather than an accident. `range` is the literal spelling of a known
+    /// scoping is the binder's scoping for what the closure returns, and a
+    /// repeated index in nested folds is a genuine contraction rather than an
+    /// accident. It is not a guarantee that the index stays there: a closure
+    /// can keep a clone of it, and a later fold that reclaims its placeholder
+    /// captures it, which no check sees (docs/BACKLOG.md C10). An index that
+    /// has escaped and is not captured is open, and `ExprArena::free_index`
+    /// says so. `range` is the literal spelling of a known
     /// range; a bound that is a value is `Kernel::over_values`'. Either way
     /// every bound is known before the lattice is traversed, which is what keeps
     /// the language total and its cost closed-form — `|D|·cost(body) +

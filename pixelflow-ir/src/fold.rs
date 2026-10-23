@@ -207,7 +207,9 @@ impl Binder {
     }
 
     /// The binder a [`Var`](crate::arena::ExprNode::Var) index names, or
-    /// `None` if that index is a lattice coordinate or a retired axis.
+    /// `None` if that index is a lattice coordinate, a retired axis, a
+    /// [`Placeholder`] (a fold index before its fold is closed), or past the
+    /// index space.
     #[must_use]
     pub fn from_var(index: u8) -> Option<Self> {
         Self::from_slot(index.checked_sub(REDUCE_BINDER_BASE)?)
@@ -676,26 +678,35 @@ impl Fold {
         (count as f32 == real && Self::is_exact(count)).then_some(count)
     }
 
-    /// L3: whether this fold may take a bound at `end` that varies with
-    /// `reads` — one sharing no bit with the coordinates, which would make the
-    /// trip count a function of the pixel, or with this fold's own binder,
-    /// which would make it a function of itself. An enclosing fold's binder is
-    /// a bound's to read (a triangular `0..i`), and a placeholder names no bit
+    /// L3: whether a bound of this fold may vary with `reads`. It may when
+    /// `reads` shares no bit with the coordinates, which would make the trip
+    /// count a function of the pixel, or with this fold's own binder, which
+    /// would make it a function of itself. An enclosing fold's binder is a
+    /// bound's to read (a triangular `0..i`), and a placeholder names no bit
     /// ([`Variance::of_var`]).
     ///
-    /// The one statement of the law: the arena asks it of a bound's term
-    /// (`ExprArena::push_reduce`), the e-graph of a bound's class
-    /// (`EGraph::add`).
+    /// The one statement of the law, and the same at both ends of a range:
+    /// [`Self::admits_bound`] names the end a refusal is for, and a reader that
+    /// only chooses among terms (the e-graph's rebuild of a bound) asks this.
+    #[inline]
+    #[must_use]
+    pub fn bound_may_read(self, reads: Variance) -> bool {
+        let refused = Variance::COORDS.union(Variance::from_var(self.binder.var()));
+        reads.intersection(refused).is_const()
+    }
+
+    /// L3 ([`Self::bound_may_read`]) asked of the bound at `end`: the arena
+    /// asks it of a bound's term (`ExprArena::push_reduce`), the e-graph of a
+    /// bound's class (`EGraph::add`).
     ///
     /// # Errors
     ///
     /// [`BoundRefusal::BoundVaries`], with what the bound varies with.
     pub fn admits_bound(self, end: BoundEnd, reads: Variance) -> Result<(), BoundRefusal> {
-        let refused = Variance::COORDS.union(Variance::from_var(self.binder.var()));
-        if reads.intersection(refused).is_const() {
-            return Ok(());
+        match self.bound_may_read(reads) {
+            true => Ok(()),
+            false => Err(BoundRefusal::BoundVaries { end, reads }),
         }
-        Err(BoundRefusal::BoundVaries { end, reads })
     }
 }
 

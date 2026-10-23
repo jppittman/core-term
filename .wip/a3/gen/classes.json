@@ -1771,13 +1771,24 @@
  },
  {
   "file": "pixelflow-search/src/egraph/fold_rules.rs",
-  "fn": "of_child",
-  "text": "let ENode::Reduce { header, .. } = node else {",
+  "fn": "member",
+  "text": "!matches!(node, ENode::Reduce { .. })",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "`Site::of_child` (L7): a fold's body keeps the site it is walked at, its value bounds are bounds, and a fold under a value bound declines",
+  "reason": "`Site::member` (L7): at a bound the walk reads the first member that keeps L3 and is no fold, because a fold under a bound would need the law lifted by its own binder",
   "lines": [
-   351
+   358
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "of_child",
+  "text": "(ENode::Reduce { header, .. }, 1..) => Site::Bound {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`Site::of_child` (L7): a fold's body keeps the site it is walked at, its value bounds are bounds, and every other node's children are where it is; `Site::member` never reads a fold at a bound, so there is no fold under one",
+  "lines": [
+   375
   ]
  },
  {
@@ -1789,6 +1800,28 @@
   "reason": "fold rule tests: the upper bound of every fold of one binder reachable in an extracted arena (T-S-6, T-S-13)",
   "lines": [
    881
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_fold_in_a_bound_class_is_skipped_for_the_next_member",
+  "text": "matches!(f.eg.nodes(f.bound).next(), Some(ENode::Reduce { .. })),",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests: a fold in a bound's class is skipped as a member at a bound (L7), premise that it is the class's first",
+  "lines": [
+   2146
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_fold_in_a_bound_class_is_skipped_for_the_next_member",
+  "text": ".filter(|node| matches!(node, HeadNode::Reduce { .. }))",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests: the plan holds the outer fold and the shifted nested fold, and no fold for the bound",
+  "lines": [
+   2159
   ]
  }
 ]

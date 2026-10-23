@@ -1,0 +1,44 @@
+{
+  "tag": "a3-polish1-f3",
+  "total_ir": 6312486737,
+  "saturate_inclusive_ir": 2077266197,
+  "extraction_inclusive_ir": 1139849121,
+  "median_peak_rss_kib": 97348,
+  "median_wall_ms": 1269,
+  "peak_rss_kib_runs": [
+    97348,
+    97880,
+    96492,
+    96596,
+    97488
+  ],
+  "wall_ms_runs": [
+    1367,
+    1269,
+    1233,
+    1094,
+    1607
+  ],
+  "matched": {
+    "saturate": [
+      {
+        "ir": 2077266197,
+        "name": "???:<pixelflow_search::egraph::graph::runner::Saturation>::saturate [/home/user/scratch/gates-bin/bin.measure]"
+      }
+    ],
+    "extraction": [
+      {
+        "ir": 1139849121,
+        "name": "???:pixelflow_search::egraph::extract::extract_dag_over::<pixelflow_search::egraph::cost::CostModel> [/home/user/scratch/gates-bin/bin.measure]"
+      }
+    ]
+  },
+  "vs_base": {
+    "total_ir": 0.262,
+    "saturate_inclusive_ir": -0.104,
+    "extraction_inclusive_ir": 1.45,
+    "median_peak_rss_kib": 0.904,
+    "median_wall_ms": 32.741,
+    "unit": "percent change from measure.base.txt"
+  }
+}

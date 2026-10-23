@@ -429,15 +429,20 @@ impl ENode {
     /// The one construction of a fold's literal form. `KnownBound` adds the
     /// result to the fold's class, finding each literal as a class member; the
     /// extractor never adds it and prices the fold as it, finding each
-    /// literal in the form chosen for the class. Because they are one
-    /// function the two cannot disagree about which folds have a literal form
-    /// or what it is (docs/language/2026-10-20-a-bound-is-a-value.md §3.2).
-    /// Known by construction, so `ENode::reduce` takes `FoldHeader::new`'s
-    /// literal path.
+    /// literal in the form chosen for the class. What one construction buys
+    /// is that, given the same literal for each bound class, the rule and the
+    /// price build the same fold. Which literal each finds is its own (a
+    /// class member for the rule, the chosen form for the price), and so is
+    /// whether it finds one: the two agree on a fold only where those do
+    /// (docs/language/2026-10-20-a-bound-is-a-value.md §3.2). Known by
+    /// construction, so `ENode::reduce` takes `FoldHeader::new`'s literal
+    /// path.
     ///
-    /// Inlined: every candidate the extractor prices asks, and a fold over
-    /// literals, a leaf and an operation answer on the first test.
-    #[inline]
+    /// The guard is inlined at every call site and the work past it is a
+    /// function of its own: every candidate the extractor prices asks, a leaf
+    /// and an operation answer on the first test and a fold over literals on
+    /// the second, and only a fold with a value bound reaches the rest.
+    #[inline(always)]
     pub(crate) fn literal_twin(&self, literal: impl Fn(EClassId) -> Option<Lit>) -> Option<ENode> {
         let ENode::Reduce { header, .. } = self else {
             return None;
@@ -445,6 +450,12 @@ impl ENode {
         if header.arity() == 1 {
             return None;
         }
+        self.value_bounded_twin(literal)
+    }
+
+    /// [`Self::literal_twin`] past its guard: the fold has a value bound.
+    #[inline]
+    fn value_bounded_twin(&self, literal: impl Fn(EClassId) -> Option<Lit>) -> Option<ENode> {
         let (fold, lo, hi, body) = self.as_reduce()?;
         let (lo, hi) = Bound::discover(lo, hi, literal).ok()?;
         let (Bound::Lit(_), Bound::Lit(_)) = (lo, hi) else {

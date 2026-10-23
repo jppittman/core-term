@@ -1,0 +1,11 @@
+==3989== Callgrind, a call-graph generating cache profiler
+==3989== Copyright (C) 2002-2017, and GNU GPL'd, by Josef Weidendorfer et al.
+==3989== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==3989== Command: /home/user/scratch/gates-bin/bin.measure --ignored --nocapture --test-threads=1 zz_prof_all_cold
+==3989== 
+==3989== For interactive control, run 'callgrind_control -h'.
+==3989== 
+==3989== Events    : Ir
+==3989== Collected : 6310530002
+==3989== 
+==3989== I   refs:      6,310,530,002

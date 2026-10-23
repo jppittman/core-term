@@ -131,11 +131,14 @@ impl Variance {
     ///
     /// That answer is *not* "closed". A placeholder can escape its builder (a
     /// closure may keep a clone of the index it was given), and the term that
-    /// holds it is open while its variance is empty. So no check of
-    /// closedness or placement may read a variance: they ask
+    /// holds it is open while its variance is empty. So a variance never
+    /// decides that a term is closed: a closedness check asks
     /// [`ExprArena::free_index`], which counts a placeholder free
-    /// (`Kernel::by_ref`, the runtime tier's unit walk), or refuse a `Var`
-    /// that is no fold's binder (codegen's lowering).
+    /// (`Kernel::by_ref`, and the runtime tier's unit walk beside its
+    /// variance assertion). Placement does read a variance, and reads it only
+    /// of a term from which a `Var` that is no fold's binder has already been
+    /// refused (codegen's lowering, in its `Var` arm), so a placeholder is
+    /// never placed as a constant.
     #[inline]
     #[must_use]
     pub const fn of_var(index: u8) -> Self {
