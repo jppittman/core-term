@@ -189,13 +189,14 @@ impl DerefMut for Operands {
 /// The order is structural too: variant in declaration order, then fields. It
 /// is a total order to sort and key by, not a measure of the node.
 ///
-/// **Width.** 48 bytes, from 24, since a fold's bounds became the node's
+/// **Width.** 32 bytes, from 24, since a fold's bounds became the node's
 /// (docs/language/2026-10-20-a-bound-is-a-value.md, A2b): a `Reduce` holds a
-/// [`FoldHeader`] (32 bytes, three 64-bit counts and four bytes) beside its
-/// inline children (16), and a node is as wide as its widest variant, so every
-/// node pays for it, not only folds. Measured with `size_of`, not budgeted:
-/// the counts are 64 bits because they describe a program, and the header is
-/// packed so that padding is not charged to that width.
+/// [`FoldHeader`] (16 bytes: three counts stored in 32 bits, and four bytes)
+/// beside its inline children (16), and a node is as wide as its widest
+/// variant, so every node pays for it, not only folds. Measured with
+/// `size_of`, not budgeted. The header first landed with 64-bit storage, 48
+/// bytes a node; the measurement below is why its storage is 32 bits, and the
+/// reason is written in [`FoldHeader`]'s doc.
 ///
 /// The growth was measured (2026-10-22) the way the `EClassId` paragraph above
 /// measured its own: a native release build, interleaved parent/head pairs,
@@ -216,8 +217,9 @@ impl DerefMut for Operands {
 ///   instructions are the deterministic signals.
 ///
 /// That is the size of growth that kept `EClassId` at `u32` (+18% and +8%).
-/// Narrowing the stored header on these numbers is a separate change, not
-/// this one's.
+/// With the counts stored in 32 bits, the 29-program peak RSS is 95.2 MB
+/// against 90.0 before A2b (+5.8%), measured in 12 rotating rounds of the
+/// three binaries (`FoldHeader`'s doc).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ENode {
     /// Variable with index (0=X, 1=Y, 2=Z, 3=W, etc.)
@@ -755,8 +757,8 @@ mod tests {
         );
         assert_eq!(
             core::mem::size_of::<ENode>(),
-            48,
-            "ENode: the widest variant is Reduce, a FoldHeader(32) and its Operands(16)"
+            32,
+            "ENode: the widest variant is Reduce, a FoldHeader(16) and its Operands(16)"
         );
     }
 }
