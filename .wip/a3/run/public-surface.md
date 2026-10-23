@@ -36,7 +36,7 @@ are reached through `pixelflow_ir::fold`, `pixelflow_ir::arena` and `pixelflow_i
 | `arena::ExprArena::substitute_vars_with(root, subs)` | doc states its precondition (`subs` names no slot a fold inside `root` rebinds); behavior unchanged; not the plan's L7 |
 | `fold::FoldHeader::to_bits`, `fold::FoldHeader::from_bits` | `to_bits`: doc text only (a value bound has no bits until A4 gives it a marker), still panics with `VALUE_BOUND`; `from_bits`: the stride test is written through the private `Fold::is_exact`, the same predicate |
 | `fold::KnownRange::admits` | the same predicate, written through `Fold::is_exact`, the one function `Fold::count` shares |
-| `arena::ExprArena::nodes`, `dag::Dag::iter`, `dag::Rooted::entries` | `#[must_use]` added in fix round 1 (clippy 1.97 `must_use_candidate`, workspace lint under `-D warnings`); signatures and behavior unchanged |
+| `arena::ExprArena::nodes`, `dag::Dag::iter`, `dag::Rooted::entries` | none: byte-identical to base. Fix round 1 had added `#[must_use]` to each; the commit that adds ruling R1 removed all three (CI's clippy rejects it as `double_must_use`), and `dag.rs` is not in the A3 diff |
 
 ### New, not public (listed so a reviewer can see none leaked)
 

@@ -140,3 +140,84 @@ Outputs: `../../gates/out/*.a3-fix1.*`.
 ## CI on 31d4b58 (after round 1)
 
 CI clippy 1.99 rejected the three `#[must_use]` added to `nodes`, `iter` and `entries` (`double_must_use`); Clippy and both Test jobs were red. Removed; see rulings.md round 3 R1. Local clippy 1.97 reports `must_use_candidate` on them at base too: a toolchain difference, not an A3 defect.
+
+# A3 fixes, round 2 (TAG=a3-fix2)
+
+Code base `3bfdaded`; HEAD at the start of the round `8d1ed9e`. The A3 diff is
+`git diff 3bfdaded -- . ':!.wip'` (24 files, +3217 -419, unchanged by this round: no tracked file outside
+`.wip/` was edited). Nothing here touches a `Reduce {` site: the checklist is unchanged (169 sites,
+0 UNCLASSIFIED, 0 STALE, `checklist-fix2.txt`).
+
+## Gate failures
+
+### Gate 6: `cargo clippy --workspace --all-targets --all-features -- -D warnings` on this host (reproduced; not an A3 defect; rejected, no code change)
+
+Reproduced on this host's stable (clippy 0.1.97, rustc 1.97.0): exit 101, three `clippy::must_use_candidate`
+errors and nothing else, `pixelflow-ir/src/arena.rs:1144` (`ExprArena::nodes`), `dag.rs:226` (`Dag::iter`),
+`dag.rs:579` (`Rooted::entries`), the build stopping at `pixelflow-ir` (`clippy-fix2-197-literal.txt`).
+
+Root cause, checked three ways:
+- The three signatures are byte-identical to base. `nodes` is at `arena.rs:1067` in `3bfdaded` with the same
+  `#[inline]` and no `#[must_use]`; `pixelflow-ir/src/dag.rs` is not in the A3 diff at all; `git diff 3bfdaded`
+  of `arena.rs` has no added or removed line naming `nodes` or `must_use`.
+- All three return `impl Iterator`, and `Iterator` is already `#[must_use]`. Clippy 1.97 still reports
+  `must_use_candidate` on them; clippy 1.99 reports the opposite, `double_must_use`, if they carry the
+  attribute. No single source text satisfies both toolchains, so the question is which toolchain governs.
+- Ruling R1 (round 3) answers it: CI's. `.github/workflows/rust.yaml:421` runs this literal command with
+  `dtolnay/rust-toolchain@stable`, which is 1.99 today. R1 also says what a local run on this older clippy
+  must show: those three reports and no other error.
+
+Evidence on CI's toolchain. Installed `1.99.0` beside the default (`rustup toolchain install 1.99.0 --profile
+minimal -c clippy --no-self-update`; the default stays 1.97; rust-toolchain.toml says `stable`, and `cargo
++1.99.0` overrides it per command). Then, with its own target dir (`CARGO_TARGET_DIR=/home/user/scratch/a3-fix2/t199`):
+- `cargo +1.99.0 clippy --workspace --all-targets --all-features -- -D warnings` at HEAD: **exit 0**, no warning,
+  no error (`clippy-fix2-199-literal.txt`). This is the gate as CI runs it.
+- The attribute the earlier round added, tried on a plain extraction of `3bfdaded` (`/home/user/scratch/a3-fix2/dm-src`,
+  not a worktree): `cargo +1.99.0 clippy -p pixelflow-ir ... -D warnings` exits 101 with "this function has a
+  `#[must_use]` attribute with no message, but returns a type already considered as `#[must_use]`" at the added
+  line (`clippy-fix2-199-double-must-use.txt`). So adding the attribute is what is wrong on CI's toolchain; it is
+  the reason `cc913d5` removed it, and the reason this round does not put it back.
+- CI itself: the `Clippy` job (and both `Test on` jobs) is `success` on `cc913d5` (run 39932387202) and on
+  `8d1ed9e` (run 39934526235), where `8d1ed9e` is HEAD at the start of this round.
+- Nothing hidden behind the stopped build on 1.97: a plain `cargo clippy --workspace --all-targets --all-features`
+  (no `-D`) exits 0 with exactly three warnings, the three above, and no other, so no A3-added `pub fn` lacks a
+  needed `#[must_use]` (`clippy-fix2-197-plain.txt`).
+
+Why no code change: an `#[allow(clippy::must_use_candidate)]` on the three would satisfy both toolchains, but it
+would add three lines to `dag.rs` (not an A3 file) and one to `arena.rs` to quiet an older clippy about code A3
+did not write, which R1 already rules a pass ("those three reports are its only errors"). The gate stays as
+written; its governing toolchain is CI's. For the next round: run gate 6 as `cargo +1.99.0 clippy --workspace
+--all-targets --all-features -- -D warnings` with a separate `CARGO_TARGET_DIR` (it needs the toolchain installed
+above), and use the 1.97 run only as the plain, no-`-D` count of three.
+
+## Blocking findings
+
+None were listed.
+
+## A note defect found while verifying (real, fixed)
+
+`public-surface.md` still carried a row saying `#[must_use]` was added to `ExprArena::nodes`, `Dag::iter` and
+`Rooted::entries`. `cc913d5` removed all three attributes but not the row, so the file listed a changed pub item that is
+not changed. The row now says the three are byte-identical to base. Notes only; no code.
+
+## Gates after this round (TAG=a3-fix2)
+
+| gate | result |
+|---|---|
+| 1 `byteprobe.sh a3-fix2` | exit 0; avx512 and avx2 IDENTICAL to base |
+| 1b `gate1b.sh a3-fix2` | exit 0; 29 lines IDENTICAL; self-check n=2 `22ad8819798461a6` and n=40 `e95137a9d464391e` equal the pins |
+| 2 `gate2.sh a3-fix2` | exit 0; IDENTICAL to base (29 records) |
+| 2x `gate2x.sh a3-fix2` | exit 0; IDENTICAL to base |
+| after gates | `git status --short pixelflow-graphics` empty; no tracked file modified |
+| `cargo test -p` ir / search / search `--all-features` / search `--features saturation-telemetry` | 375 / 424 / 427 / 427 passed, 0 failed (ignored 2 / 15 / 15 / 15) |
+| `cargo test -p` codegen / compiler / graphics / pipeline / core / runtime | 160 / 304 / 236 / 221 / 136 / 152 passed, 0 failed (ignored 0 / 6 / 15 / 2 / 1 / 6) |
+| test compiler warnings | 0 in every log (`tests-fix2-summary.txt`) |
+| clippy, 1.99.0 (CI's), literal `-D warnings` | exit 0 |
+| clippy, 1.97.0 (this host's), literal `-D warnings` | exit 101, exactly the three base reports (R1: a pass) |
+| clippy, 1.97.0, plain | exit 0, exactly those three warnings |
+| `cargo fmt --all -- --check` | exit 0 |
+| `scripts/check-intent.sh`, `check-doc-paths.sh`, `check-cfg-encapsulation.sh` | exit 0, exit 0, exit 0 (121 grandfathered) |
+| checklist (`python3 -I .wip/a3/gen/checklist.py`) | 169 sites, 0 UNCLASSIFIED, 0 STALE (already-correct 39, changed-by-A3 22, left 13, tests 75, n/a 5, A4 15, A5 0) |
+| LFS | `git lfs ls-files | grep -c .` is 68 before and after |
+
+Outputs: `../../gates/out/*.a3-fix2.*`; this directory's `*-fix2*` files.

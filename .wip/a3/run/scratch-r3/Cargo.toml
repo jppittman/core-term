@@ -1,0 +1,11 @@
+[package]
+name = "a3-r3-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+pixelflow-ir = { path = "../../../../pixelflow-ir" }
+pixelflow-search = { path = "../../../../pixelflow-search" }
