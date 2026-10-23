@@ -1,0 +1,417 @@
+   Compiling pixelflow-search v0.1.0 (/home/user/pixelflow/pixelflow-search)
+   Compiling pixelflow-codegen v0.1.0 (/home/user/pixelflow/pixelflow-codegen)
+   Compiling pixelflow-ir v0.1.0 (/home/user/pixelflow/pixelflow-ir)
+   Compiling pixelflow-compiler v0.1.0 (/home/user/pixelflow/pixelflow-compiler)
+   Compiling pixelflow-core v0.1.0 (/home/user/pixelflow/pixelflow-core)
+   Compiling pixelflow-graphics v0.1.0 (/home/user/pixelflow/pixelflow-graphics)
+   Compiling pixelflow-pipeline v0.1.0 (/home/user/pixelflow/pixelflow-pipeline)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.83s
+     Running unittests src/lib.rs (target.noindex/debug/deps/pixelflow_pipeline-dea5492c107cea38)
+
+running 174 tests
+test collapse_bench::corpus::tests::a_v2_corpus_names_the_version_it_is - should panic ... ok
+test collapse_bench::corpus::tests::a_v1_corpus_names_the_version_it_is - should panic ... ok
+test collapse_bench::corpus::tests::a_ternary_line_naming_a_binary_op_is_refused_naming_the_file - should panic ... ok
+test collapse_bench::predict::tests::geomean_of_ones_is_one ... ok
+test collapse_bench::predict::tests::spearman_averages_tied_ranks ... ok
+test collapse_bench::predict::tests::spearman_is_one_on_a_monotone_series_and_minus_one_reversed ... ok
+test collapse_bench::corpus::tests::every_synthetic_kernel_has_a_unique_name_and_a_bakeable_shape ... ok
+test collapse_bench::corpus::tests::a_written_corpus_reads_back_identical ... ok
+test collapse_bench::tests::the_visit_order_is_a_permutation_and_does_not_move ... ok
+test jit_bench::tests::a_large_expression_is_measurable_rather_than_rejected ... ok
+test jit_bench::tests::autoscale_reaches_tick_floor ... ok
+test jit_bench::tests::benchmark_compiled_times_the_given_code_object ... ok
+test jit_bench::tests::check_equivalence_rejects_nan_vs_finite ... ok
+test jit_bench::tests::constant_expr_benchmarks_successfully ... ok
+test jit_bench::tests::cost_label_mint_matches_the_hand_derived_ordering ... ok
+test jit_bench::tests::cost_label_mint_refuses_an_unprotected_measurement - should panic ... ok
+test jit_bench::tests::iqr_should_be_order_independent_and_zero_for_a_flat_sample ... ok
+test jit_bench::tests::latency_mode_feeds_both_coordinates_for_x_independent_expressions ... ok
+test jit_bench::tests::local_ns_normalize_is_the_only_path_to_session_ns ... ok
+test jit_bench::tests::nonpositive_adjusted_is_recorded_not_fatal ... ok
+test jit_bench::tests::op_count_counts_compute_ops_once ... ok
+test jit_bench::tests::plausibility_floor_fires_below_floor - should panic ... ok
+test jit_bench::tests::plausibility_floor_fires_on_zero_raw - should panic ... ok
+test jit_bench::tests::plausibility_floor_is_per_lane_not_per_call ... ok
+test jit_bench::tests::plausibility_floor_passes_above_floor ... ok
+test jit_bench::tests::plausibility_floor_spares_constant_folded ... ok
+test collapse_bench::corpus::tests::a_buffer_declaring_kernel_round_trips_and_bakes ... ok
+test jit_bench::tests::sentinel_arena_is_moderate_size ... ok
+test jit_bench::tests::scanline_mode_divides_by_the_whole_row ... ok
+test jit_bench::tests::sentinel_drift_rejects_bad_calibration - should panic ... ok
+test jit_bench::tests::sentinel_normalization_is_a_clock_correction ... ok
+test jit_bench::tests::sentinel_regime_change_detection ... ok
+test jit_bench::tests::sentinel_normalization_rejects_zero_reading - should panic ... ok
+test jit_bench::tests::session_ns_sub_is_the_only_way_to_remove_overhead ... ok
+test jit_bench::tests::var_free_arenas_keep_their_full_op_count ... ok
+test jit_bench::tests::var_free_arenas_still_execute_their_ops ... ok
+test jit_bench::tests::verify_log_ns ... ok
+test journal::tests::append_record_creates_parent_dir_and_appends_one_line_per_call ... ok
+test journal::tests::append_record_refuses_an_lfs_pointer_stub - should panic ... ok
+test journal::tests::diff_hash_distinguishes_trailing_whitespace_only_changes ... ok
+test jit_bench::tests::session_benchmarks_both_modes ... ok
+test journal::tests::environment_fingerprint_records_the_tier_the_jit_selected ... ok
+test journal::tests::git_returns_raw_untrimmed_stdout ... ok
+test collapse_bench::tests::hoisting_puts_work_in_a_prologue ... ok
+test poly::tests::chebyshev_fit_converges_with_degree ... ok
+test poly::tests::estrin_is_shallower_and_wider_than_horner ... ok
+test schema::tests::different_schema_text_yields_different_identity ... ok
+test schema::tests::fnv1a64_hex_and_fnv1a64_const_should_agree_on_the_same_bytes ... ok
+test schema::tests::identity_is_deterministic_and_nonzero ... ok
+test schema::tests::mismatch_error_names_the_regen_command_and_both_identities ... ok
+test shader_bench::tests::every_declared_name_resolves ... ok
+test shader_bench::tests::every_named_production_kernel_resolves ... ok
+test shader_bench::tests::names_are_unique ... ok
+test shader_bench::tests::node_counts_stay_in_the_corpus_realistic_band ... ok
+test training::bezier_family::oracle_tests::de_casteljau_reduces_correct_lerp_count ... ok
+test training::corpus::tests::a_fold_record_with_an_all_ones_end_names_no_fold ... ok
+test collapse_bench::tests::a_synthetic_kernel_compiles_and_reports_traffic ... ok
+test training::corpus::tests::a_unary_record_naming_a_binary_op_is_invalid_data ... ok
+test training::corpus::tests::bad_magic_fails ... ok
+test training::corpus::tests::compaction_drops_dead_nodes_and_preserves_the_expression ... ok
+test training::corpus::tests::compaction_preserves_dag_sharing ... ok
+test training::corpus::tests::corpus_identity_depends_on_more_than_the_schema_text ... ok
+test training::corpus::tests::compaction_refuses_buffer_nodes - should panic ... ok
+test training::corpus::tests::encoding_identity_changes_if_an_op_is_reassigned_a_different_byte ... ok
+test training::corpus::tests::corpus_identity_is_deterministic ... ok
+test training::corpus::tests::round_trip_empty ... ok
+test training::corpus::tests::round_trip_multiple_entries ... ok
+test training::corpus::tests::round_trip_nary ... ok
+test training::corpus::tests::round_trip_simple ... ok
+test training::corpus::tests::round_trip_ternary ... ok
+test training::corpus::tests::round_trip_with_const_and_unary ... ok
+test training::corpus::tests::schema_identity_changes_when_the_schema_text_does ... ok
+test training::corpus::tests::stale_schema_identity_is_refused_with_regeneration_hint ... ok
+test training::corpus::tests::stored_size_reflects_the_expression_not_the_arena ... ok
+test training::factored::tests::parse_kernel_code_arena_basic ... ok
+test training::factored::tests::parse_kernel_code_arena_deeply_shared ... ok
+test training::factored::tests::every_op_prints_as_a_method_that_parses_back_to_itself ... ok
+test training::factored::tests::parse_kernel_code_arena_methods ... ok
+test training::factored::tests::parse_kernel_code_arena_structural_sharing ... ok
+test training::factored::tests::parse_kernel_code_arena_round_trip ... ok
+test training::factored::tests::substitution_clears_the_reachable_retired_axes_not_the_arena ... ok
+test training::guide_bilinear::tests::ops_from_histogram_panics_loudly_on_an_unknown_op_name - should panic ... ok
+test training::guide_bilinear::tests::ops_from_histogram_round_trips_per_op_counts ... ok
+test training::guide_bilinear::tests::to_weights_should_refuse_a_checkpoint_from_another_schema - should panic ... ok
+test training::guide_bilinear::tests::to_weights_should_refuse_a_checkpoint_from_another_vocabulary - should panic ... ok
+test training::guide_bilinear::tests::a_checkpoint_should_round_trip_through_json_bit_exactly ... ok
+test training::guide_bilinear::tests::to_weights_should_refuse_a_checkpoint_whose_weights_were_edited - should panic ... ok
+test training::guide_linear::checkpoint_tests::a_checkpoint_from_another_vocabulary_is_refused_at_deploy_time ... ok
+test training::guide_linear::checkpoint_tests::a_checkpoint_without_a_readable_fingerprint_is_refused_rather_than_defaulted ... ok
+test training::guide_linear::checkpoint_tests::a_hand_edited_weight_is_refused_by_its_own_content_hash ... ok
+test training::guide_linear::tests::auc_roc_is_none_when_a_class_is_absent ... ok
+test training::guide_linear::checkpoint_tests::a_written_checkpoint_round_trips_and_deploys_against_the_vocabulary_it_names ... ok
+test training::guide_linear::tests::auc_roc_is_one_for_perfectly_separated_scores ... ok
+test training::guide_linear::tests::auc_roc_is_zero_for_perfectly_inverted_scores ... ok
+test training::guide_linear::tests::average_precision_groups_tied_scores_at_one_threshold ... ok
+test training::guide_linear::tests::average_precision_is_none_with_no_positives ... ok
+test training::guide_linear::tests::average_precision_is_one_for_perfectly_separated_scores ... ok
+test training::guide_linear::tests::average_precision_of_a_tied_block_is_independent_of_record_order ... ok
+test training::guide_linear::tests::l2_decays_every_weight_not_only_the_ones_a_sample_touched ... ok
+test training::guide_linear::tests::model_zero_start_scores_every_sample_at_the_bias_only ... ok
+test training::guide_linear::tests::sgd_step_moves_a_positive_samples_logit_upward ... ok
+test training::guide_linear::tests::op_index_table_has_one_entry_per_opkind_and_no_duplicate_names ... ok
+test training::guide_linear::tests::within_group_auc_ignores_between_group_score_offsets ... ok
+test training::guide_linear::tests::within_group_auc_is_none_when_no_group_holds_both_classes ... ok
+test training::mint::tests::label_is_the_true_kernel_time_independent_of_drift ... ok
+test training::mint::tests::labels_agree_across_collection_positions_with_overhead ... ok
+test training::mint::tests::normalization_preserves_nonpositive_adjusted ... ok
+test training::mint::tests::normalization_rescales_into_the_opening_clock ... ok
+test training::mint::tests::missing_sentinel_is_a_loud_error_not_a_skipped_correction - should panic ... ok
+test training::mint::tests::normalization_stats_summarize ... ok
+test training::mint::tests::normalized_targets_are_order_invariant_under_drift ... ok
+test training::mint::tests::normalization_stats_refuse_empty - should panic ... ok
+test training::mint::tests::scaling_the_adjusted_value_would_leave_a_drift_dependent_residue ... ok
+test training::mint::tests::unnormalized_targets_are_order_dependent ... ok
+test training::r2g::minter_tests::label_matches_the_section_2_naming_convention ... ok
+test training::r2g::minter_tests::spread_report_computes_max_minus_min_per_expression ... ok
+test training::r2g::minter_tests::spread_report_counts_zero_spread_expressions_and_their_record_share ... ok
+test training::r2g::minter_tests::spread_report_gate_does_not_fire_at_exactly_half ... ok
+test training::r2g::minter_tests::spread_report_gate_fires_past_half_zero_spread ... ok
+test training::r2g::minter_tests::spread_report_ignores_records_with_no_b100_return ... ok
+test training::r2g::r2g_checkpoint_tests::a_checkpoint_from_another_vocabulary_is_refused_at_deploy_time ... ok
+test training::r2g::r2g_checkpoint_tests::a_strict_bit_checkpoint_does_not_load_as_a_return_head ... ok
+test training::r2g::r2g_checkpoint_tests::an_unrecognized_objective_is_refused_rather_than_deployed ... ok
+test training::r2g::tests::label_budget_parses_the_two_registered_tiers_and_rejects_others ... ok
+test training::r2g::r2g_checkpoint_tests::a_written_checkpoint_round_trips_and_deploys_as_a_return_head ... ok
+test training::r2g::tests::log_regret_excludes_a_positive_cost_against_a_zero_best ... ok
+test training::r2g::tests::log_regret_is_positive_when_cost_exceeds_best ... ok
+test training::r2g::tests::log_regret_is_zero_when_both_cost_and_best_are_zero ... ok
+test training::r2g::tests::log_regret_is_zero_when_cost_equals_best ... ok
+test training::r2g::tests::r2g_record_deserializes_the_flattened_base_plus_trajectory_fields ... ok
+test training::r2g::tests::regression_target_parses_centered_and_raw_and_rejects_others ... ok
+test training::r2g::tests::sample_rank_pairs_emits_nothing_for_a_single_trajectory_expression ... ok
+test training::r2g::tests::sample_rank_pairs_is_deterministic_given_the_same_seed ... ok
+test training::r2g::tests::sample_rank_pairs_only_pairs_records_of_the_same_expression_and_decile ... ok
+test training::r2g::tests::sample_rank_pairs_signs_by_which_trajectory_had_lower_regret ... ok
+test training::r2g::tests::sample_rank_pairs_skips_zero_difference_pairs ... ok
+test training::r2g::tests::target_value_is_none_where_the_mint_recorded_no_label ... ok
+test training::r2g::tests::target_value_reads_the_requested_column ... ok
+test training::sh_family::tests::rng_is_deterministic_for_a_fixed_seed ... ok
+test training::split::tests::checked_in_manifest_is_valid ... ok
+test training::split::tests::checked_in_manifest_registers_the_bezier_ood_family ... ok
+test training::split::tests::checked_in_manifest_registers_the_sh_ood_family ... ok
+test training::split::tests::cross_tier_overlap_is_rejected ... ok
+test training::split::tests::dev_families_key_parses ... ok
+test training::split::tests::dev_family_colliding_with_a_final_kernel_name_is_rejected ... ok
+test training::split::tests::duplicate_band_is_rejected ... ok
+test training::split::tests::duplicate_dev_family_is_rejected ... ok
+test training::split::tests::empty_tier_is_rejected ... ok
+test training::split::tests::families_key_under_final_is_rejected ... ok
+test training::split::tests::families_key_under_train_is_rejected ... ok
+test training::split::tests::fence_of_x_times_2_blocks_x_times_3_the_review_case ... ok
+test training::split::tests::fence_refuses_to_build_from_a_missing_tier_file - should panic ... ok
+test training::split::tests::fence_refuses_to_build_from_an_empty_tier_file - should panic ... ok
+test training::split::tests::fence_reports_entries_and_distinct_keys_separately ... ok
+test training::split::tests::genuinely_different_topology_is_not_fenced ... ok
+test training::split::tests::inverted_seed_range_is_rejected ... ok
+test training::split::tests::kernels_outside_final_is_rejected ... ok
+test training::split::tests::malformed_values_are_rejected_with_line_numbers ... ok
+test training::split::tests::manifest_without_families_key_parses_with_an_empty_list ... ok
+test training::split::tests::missing_kernels_is_rejected ... ok
+test training::split::tests::parses_valid_manifest_and_assigns_tiers ... ok
+test training::split::tests::seed_range_contains_count_and_overlap_should_match_their_definitions ... ok
+test training::split::tests::shared_band_with_disjoint_seed_ranges_is_valid ... ok
+test training::split::tests::tier_ordering_reflects_sacredness ... ok
+test training::split::tests::unknown_key_and_unknown_section_are_rejected ... ok
+test training::split::tests::within_tier_seed_range_overlap_is_rejected ... ok
+test training::structural::tests::feature_quotient_collapses_literals ... ok
+test training::structural::tests::feature_quotient_collapses_var_index ... ok
+test training::structural::tests::feature_quotient_distinguishes_different_topology ... ok
+test training::structural::tests::identical_structures_in_different_arenas_share_a_key ... ok
+test training::structural::tests::key_is_stable_under_dag_sharing ... ok
+test training::sh_family::tests::draw_node_counts_are_in_a_plausible_range ... ok
+test journal::tests::status_filtering_ignores_excluded_paths_only_changes ... ok
+test journal::tests::diff_hash_exclusions_survive_running_from_a_subdirectory ... ok
+
+test result: ok. 174 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running unittests src/bin/bench_jit_compile_cost.rs (target.noindex/debug/deps/bench_jit_compile_cost-b8762b6454b039d1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/bench_jit_corpus.rs (target.noindex/debug/deps/bench_jit_corpus-5378b30076db08c9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/bench_jit_profile.rs (target.noindex/debug/deps/bench_jit_profile-ad2f42aed301d67b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/collapse_cost.rs (target.noindex/debug/deps/collapse_cost-534268e4d86a65e9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/corpus_gaps.rs (target.noindex/debug/deps/corpus_gaps-6e19d1f3ab1fe322)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/counterfactual_credit.rs (target.noindex/debug/deps/counterfactual_credit-5abbc373aa9e2b75)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/eval_control_guides.rs (target.noindex/debug/deps/eval_control_guides-6eeb9442bd2f234e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/extraction_witnesses.rs (target.noindex/debug/deps/extraction_witnesses-3047e0053b3b9bf9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/gen_r2g_trajectories.rs (target.noindex/debug/deps/gen_r2g_trajectories-78e50b3be79478c3)
+
+running 5 tests
+test tests::mixed_guide_reduces_to_the_base_guide_when_epsilon_is_zero ... ok
+test tests::build_policies_produces_the_twelve_named_arms ... ok
+test tests::unguided_trajectory_reproduces_run_anytime_curve_cost_at_b ... ok
+test tests::build_guide_refuses_a_nested_epsilon_mix - should panic ... ok
+test tests::minted_records_deserialize_as_r2g_record_and_trajectory_row ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.56s
+
+     Running unittests src/bin/gen_strict_labels.rs (target.noindex/debug/deps/gen_strict_labels-d500fa58d9a2d6e0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/guide_coverage_table.rs (target.noindex/debug/deps/guide_coverage_table-376be954b93d1160)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/guide_headroom.rs (target.noindex/debug/deps/guide_headroom-ae68fb1c88b8aa86)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/guide_scope_saturation_delta.rs (target.noindex/debug/deps/guide_scope_saturation_delta-1aadac93e568591e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase3_at_budget_eval.rs (target.noindex/debug/deps/phase3_at_budget_eval-0cec3e316b666909)
+
+running 9 tests
+test ops_stratum_tests::mixed_is_the_fallback ... ok
+test ops_stratum_tests::polynomial_only_is_vacuous_on_a_bare_leaf ... ok
+test ops_stratum_tests::one_div_breaks_polynomial_only_into_mixed ... ok
+test ops_stratum_tests::sqrt_recip_heavy_needs_three_root_ops ... ok
+test ops_stratum_tests::transcendental_heavy_needs_three_trans_ops ... ok
+test ops_stratum_tests::polynomial_only_over_add_sub_mul_muladd_neg ... ok
+test ops_stratum_tests::trig_heavy_needs_three_trig_ops ... ok
+test ops_stratum_tests::trig_takes_priority_over_transcendental_and_root ... ok
+test registered_rule_tests::registered_trig_indices_still_name_the_rules_the_registration_names ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase3_bilinear_eval.rs (target.noindex/debug/deps/phase3_bilinear_eval-e1df98f1027ea1be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase3_bisect_eval.rs (target.noindex/debug/deps/phase3_bisect_eval-fbf062a533440fed)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase3_round2_new_rules.rs (target.noindex/debug/deps/phase3_round2_new_rules-4a175335b7f9bad3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase3_round2_unguided_curves.rs (target.noindex/debug/deps/phase3_round2_unguided_curves-ac684ceda193a4ff)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase3_unguided_baseline.rs (target.noindex/debug/deps/phase3_unguided_baseline-5582ab774159c0eb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/r2g_spread_vs_budget.rs (target.noindex/debug/deps/r2g_spread_vs_budget-5c5d998d0e92b4cb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/skew_test_bilinear_guide.rs (target.noindex/debug/deps/skew_test_bilinear_guide-f007c1da9d7548d0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/skew_test_linear_guide.rs (target.noindex/debug/deps/skew_test_linear_guide-27043256a07c07d9)
+
+running 2 tests
+test tests::ops_from_histogram_round_trips_per_op_counts ... ok
+test tests::ops_from_histogram_panics_loudly_on_an_unknown_op_name - should panic ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running unittests src/bin/strict_label_output_class_recount.rs (target.noindex/debug/deps/strict_label_output_class_recount-f1edb4c62c08b9a1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/tightened_labeler_rank.rs (target.noindex/debug/deps/tightened_labeler_rank-37e06c7aca83e5eb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/train_guide.rs (target.noindex/debug/deps/train_guide-5a4a53307c6adf06)
+
+running 22 tests
+test tests::auc_roc_is_none_when_a_class_is_absent ... ok
+test tests::auc_roc_is_one_for_perfectly_separated_scores ... ok
+test tests::auc_roc_is_one_half_for_random_scores_indistinguishable_by_class ... ok
+test tests::auc_roc_is_zero_for_perfectly_inverted_scores ... ok
+test tests::average_precision_is_one_for_perfectly_separated_scores ... ok
+test tests::average_precision_is_none_with_no_positives ... ok
+test tests::calibration_tail_buckets_covers_the_whole_population_and_orders_by_score ... ok
+test tests::calibration_tail_buckets_is_monotonic_by_quantile_range ... ok
+test tests::model_zero_start_scores_every_sample_at_the_bias_only ... ok
+test tests::sgd_step_moves_a_negative_samples_logit_downward ... ok
+test tests::sgd_step_moves_a_positive_samples_logit_upward ... ok
+test tests::op_index_table_has_one_entry_per_opkind_and_no_duplicate_names ... ok
+test tests::shuffled_indices_differs_across_seeds ... ok
+test tests::shuffled_indices_is_deterministic_given_the_same_seed ... ok
+test tests::shuffled_indices_is_a_permutation ... ok
+test tests::sigmoid_is_finite_for_large_magnitude_inputs ... ok
+test tests::spearman_is_negative_one_for_inverted_rankings ... ok
+test tests::a_tiny_linearly_separable_dataset_is_learned_to_near_perfect_dev_auc ... ok
+test tests::spearman_is_one_for_identical_rankings ... ok
+test tests::weighted_bce_grad_matches_a_positive_label_scaled_by_pos_weight ... ok
+test tests::weighted_bce_loss_matches_unweighted_bce_when_pos_weight_is_one ... ok
+test tests::sigmoid_matches_naive_formula_away_from_the_stable_split ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/bin/train_guide_bilinear.rs (target.noindex/debug/deps/train_guide_bilinear-4a56eecceee7f996)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/train_guide_r2g.rs (target.noindex/debug/deps/train_guide_r2g-7edbf4b48e8dcce4)
+
+running 8 tests
+test tests::regime_rejects_out_of_band_sizes_and_post_budget_ordinals ... ok
+test tests::shuffled_indices_is_a_permutation_and_deterministic ... ok
+test tests::sigmoid_is_finite_and_bounded ... ok
+test tests::spearman_is_one_for_identical_rankings ... ok
+test tests::streamed_fnv_matches_the_one_shot_helper ... ok
+test tests::load_jsonl_reads_records_computes_targets_and_hashes_the_source ... ok
+test tests::a_tiny_synthetic_dataset_trains_a_model_that_beats_a_zero_baseline_on_dev_mse ... ok
+test tests::load_jsonl_refuses_an_empty_file - should panic ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running unittests src/bin/validate_corpus.rs (target.noindex/debug/deps/validate_corpus-1f24285146d27feb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/shader_and_psychedelic_arena_dump.rs (target.noindex/debug/deps/shader_and_psychedelic_arena_dump-4835cf100b5f135d)
+
+running 1 test
+test dump_shader_and_psychedelic_arenas ... ignored, telemetry dumper: PIXELFLOW_TELEMETRY_DIR=<dir> cargo test -p pixelflow-pipeline --release --test shader_and_psychedelic_arena_dump -- --ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pixelflow_pipeline
+
+running 2 tests
+test pixelflow-pipeline/src/alloc_probe.rs - alloc_probe (line 10) ... ignored
+test pixelflow-pipeline/src/training/split.rs - training::split::Fence (line 733) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

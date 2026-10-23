@@ -1,0 +1,10 @@
+tests-c1.pixelflow-codegen.txt: 161 passed, 0 failed, 0 ignored; warnings=0; suites=25
+tests-c1.pixelflow-compiler.txt: 304 passed, 0 failed, 6 ignored; warnings=0; suites=15
+tests-c1.pixelflow-core.txt: 136 passed, 0 failed, 1 ignored; warnings=0; suites=10
+tests-c1.pixelflow-graphics.txt: 236 passed, 0 failed, 15 ignored; warnings=0; suites=23
+tests-c1.pixelflow-ir.txt: 375 passed, 0 failed, 2 ignored; warnings=0; suites=6
+tests-c1.pixelflow-pipeline.txt: 221 passed, 0 failed, 2 ignored; warnings=0; suites=31
+tests-c1.pixelflow-runtime.txt: 152 passed, 0 failed, 6 ignored; warnings=0; suites=10
+tests-c1.pixelflow-search-all.txt: 432 passed, 0 failed, 15 ignored; warnings=0; suites=12
+tests-c1.pixelflow-search-default.txt: 429 passed, 0 failed, 15 ignored; warnings=0; suites=12
+tests-c1.pixelflow-search-telemetry.txt: 432 passed, 0 failed, 15 ignored; warnings=0; suites=12
