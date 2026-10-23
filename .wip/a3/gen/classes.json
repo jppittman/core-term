@@ -1198,17 +1198,6 @@
  },
  {
   "file": "pixelflow-search/src/egraph/extract.rs",
-  "fn": "literal_twin",
-  "text": "let ENode::Reduce { header, .. } = node else {",
-  "count": 1,
-  "class": "changed-by-A3",
-  "reason": "`literal_twin`: a fold whose value bounds were chosen as literals is priced as the fold over them (N3, J7)",
-  "lines": [
-   1671
-  ]
- },
- {
-  "file": "pixelflow-search/src/egraph/extract.rs",
   "fn": "below",
   "text": "ENode::Reduce { header, .. } => {",
   "count": 1,
@@ -1283,17 +1272,6 @@
   "reason": "`EmptyFold` fires on a known empty range only (L6)",
   "lines": [
    477
-  ]
- },
- {
-  "file": "pixelflow-search/src/egraph/fold_rules.rs",
-  "fn": "apply",
-  "text": "if !matches!(node, ENode::Reduce { header, .. } if header.arity() > 1) {",
-  "count": 1,
-  "class": "changed-by-A3",
-  "reason": "`KnownBound::apply` (L8): declines a fold over literals on its header, then reads the bound classes' literal members",
-  "lines": [
-   585
   ]
  },
  {
@@ -1426,17 +1404,6 @@
   "reason": "fold rule tests: T-S-6",
   "lines": [
    1709
-  ]
- },
- {
-  "file": "pixelflow-search/src/egraph/fold_rules.rs",
-  "fn": "a_triangular_fold_halves_with_a_rule_made_bound",
-  "text": "if let ExprNode::Reduce { fold, hi, .. } = out.node(id)",
-  "count": 1,
-  "class": "tests",
-  "reason": "fold rule tests: T-S-6 walks the extracted arena",
-  "lines": [
-   1746
   ]
  },
  {
@@ -1756,6 +1723,39 @@
   "reason": "`latency_prior_cost` walks `children()`",
   "lines": [
    265
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "literal_twin",
+  "text": "let ENode::Reduce { header, .. } = self else {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`ENode::literal_twin`: the one construction of a fold's literal form, called by `KnownBound::apply` and the extractor's price sites (N3, J7, F3); a fold over literals returns `None` on its header's arity",
+  "lines": [
+   438
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "of_child",
+  "text": "let ENode::Reduce { header, .. } = node else {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`Site::of_child` (L7): a fold's body keeps the site it is walked at, its value bounds are bounds, and a fold under a value bound declines",
+  "lines": [
+   351
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "nested_bounds",
+  "text": "if let ExprNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests: the upper bound of every fold of one binder reachable in an extracted arena (T-S-6, T-S-13)",
+  "lines": [
+   881
   ]
  }
 ]

@@ -1,0 +1,127 @@
+add_xy         len=260    fnv=ce0853d359a0ccac spills=5 hoisted=7 jit_len=260    jit_fnv=ce0853d359a0ccac
+swirl          len=692    fnv=334287f6ad42b017 spills=5 hoisted=23 jit_len=692    jit_fnv=7606fc4171bdbc56
+row_invariant  len=936    fnv=ad304d2e0841de17 spills=6 hoisted=32 jit_len=936    jit_fnv=ad304d2e0841de17
+both_regions   len=872    fnv=50408e14c0520bac spills=5 hoisted=8 jit_len=872    jit_fnv=50408e14c0520bac
+if_guard       len=980    fnv=eaf28c5cafaaea28 spills=6 hoisted=31 jit_len=932    jit_fnv=a49d0294ff9efaeb
+wide_spill     len=5948   fnv=446cbf31bbf339b3 spills=28 hoisted=45 jit_len=5948   jit_fnv=013b4ffd9febdb3e
+uniform_tint   len=292    fnv=12231d99e77143ad spills=5 hoisted=8 jit_len=292    jit_fnv=d601c62b01017a30
+named_beside   len=692    fnv=b39a5194779c2cee spills=5 hoisted=24 jit_len=692    jit_fnv=22a30714f0103edf
+named_arms     len=376    fnv=390bbac8a284607c spills=6 hoisted=10 jit_len=392    jit_fnv=083436ab29a8a867
+glyph_like_w1            len=512    fnv=3843fb9b49a2735d spills=5 hoisted=16 jit_len=508    jit_fnv=67a68020660e661f
+    compile: spill_count=5 frame_bytes=48 hoisted_values=16 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=4
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=7 stores=0 bytes=172
+    scope 1: trips=3 instructions=4 loads=0 remats=2 stores=0 bytes=67
+    scope 2: trips=3 instructions=8 loads=0 remats=2 stores=0 bytes=143
+    scope 3: trips=15 instructions=8 loads=0 remats=2 stores=0 bytes=97
+glyph_like_wL            len=516    fnv=f62e0615af4611a3 spills=5 hoisted=16 jit_len=496    jit_fnv=b87e71572ece0389
+    compile: spill_count=5 frame_bytes=48 hoisted_values=16 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=4
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=7 stores=0 bytes=172
+    scope 1: trips=3 instructions=4 loads=0 remats=2 stores=0 bytes=67
+    scope 2: trips=3 instructions=8 loads=0 remats=2 stores=0 bytes=134
+    scope 3: trips=15 instructions=8 loads=0 remats=2 stores=0 bytes=97
+glyph_like_w37           len=764    fnv=a8bb031b290f3043 spills=5 hoisted=17 jit_len=760    jit_fnv=68ead707debd7212
+    compile: spill_count=5 frame_bytes=48 hoisted_values=17 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=6
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=7 stores=0 bytes=172
+    scope 1: trips=3 instructions=5 loads=0 remats=3 stores=0 bytes=77
+    scope 2: trips=6 instructions=8 loads=0 remats=2 stores=0 bytes=134
+    scope 3: trips=30 instructions=8 loads=0 remats=2 stores=0 bytes=97
+    scope 4: trips=3 instructions=8 loads=0 remats=2 stores=0 bytes=143
+    scope 5: trips=15 instructions=8 loads=0 remats=2 stores=0 bytes=97
+two_sibling_folds_w37    len=864    fnv=897a05e94827ab44 spills=7 hoisted=15 jit_len=852    jit_fnv=022d697275380113
+    compile: spill_count=7 frame_bytes=192 hoisted_values=15 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=8
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=4 stores=0 bytes=136
+    scope 1: trips=3 instructions=4 loads=0 remats=3 stores=0 bytes=71
+    scope 2: trips=6 instructions=7 loads=2 remats=3 stores=2 bytes=168
+    scope 3: trips=36 instructions=2 loads=0 remats=2 stores=0 bytes=61
+    scope 4: trips=24 instructions=3 loads=0 remats=2 stores=0 bytes=67
+    scope 5: trips=3 instructions=7 loads=2 remats=3 stores=2 bytes=177
+    scope 6: trips=18 instructions=2 loads=0 remats=2 stores=0 bytes=61
+    scope 7: trips=12 instructions=3 loads=0 remats=2 stores=0 bytes=67
+parked_roots_w37         len=232304 fnv=240f3132afe1cdaa spills=2066 hoisted=4104 jit_len=232272 jit_fnv=82605b98c3789d39
+    compile: spill_count=2066 frame_bytes=131968 hoisted_values=4104 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=6
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=23 stores=4 bytes=818
+    scope 1: trips=3 instructions=2051 loads=2 remats=2028 stores=2051 bytes=55186
+    scope 2: trips=6 instructions=4 loads=5 remats=2 stores=2 bytes=173
+    scope 3: trips=18 instructions=6144 loads=2175 remats=2027 stores=126 bytes=82474
+    scope 4: trips=3 instructions=4 loads=5 remats=2 stores=2 bytes=182
+    scope 5: trips=9 instructions=6144 loads=2490 remats=2027 stores=64 bytes=85257
+guarded_if_in_fold_w37   len=1968   fnv=d37622b90361b0e8 spills=10 hoisted=37 jit_len=2052   jit_fnv=f3eea3859183a2ad
+    compile: spill_count=10 frame_bytes=384 hoisted_values=37 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=6
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=4 loads=0 remats=23 stores=3 bytes=349
+    scope 1: trips=3 instructions=2 loads=0 remats=3 stores=3 bytes=92
+    scope 2: trips=6 instructions=5 loads=5 remats=3 stores=2 bytes=189
+    scope 3: trips=24 instructions=45 loads=1 remats=8 stores=0 bytes=510
+    scope 4: trips=3 instructions=5 loads=5 remats=3 stores=2 bytes=198
+    scope 5: trips=12 instructions=45 loads=1 remats=8 stores=0 bytes=480
+unary_ops_w37            len=984    fnv=6ad1ab0fd74a5f89 spills=5 hoisted=16 jit_len=984    jit_fnv=e4b61b2fab8ccb61
+    compile: spill_count=5 frame_bytes=48 hoisted_values=16 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=4
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=9 stores=0 bytes=186
+    scope 1: trips=3 instructions=3 loads=0 remats=3 stores=0 bytes=65
+    scope 2: trips=6 instructions=39 loads=0 remats=2 stores=0 bytes=331
+    scope 3: trips=3 instructions=39 loads=0 remats=2 stores=0 bytes=340
+binary_ops_w37           len=788    fnv=a63d518e0e1f7421 spills=6 hoisted=12 jit_len=804    jit_fnv=f227d9687f450519
+    compile: spill_count=6 frame_bytes=48 hoisted_values=12 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=4
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=4 stores=0 bytes=136
+    scope 1: trips=3 instructions=4 loads=0 remats=3 stores=0 bytes=71
+    scope 2: trips=6 instructions=30 loads=0 remats=2 stores=0 bytes=262
+    scope 3: trips=3 instructions=30 loads=0 remats=2 stores=0 bytes=271
+shift_muladd_blend_w37   len=572    fnv=9743adf0de56b53d spills=5 hoisted=11 jit_len=572    jit_fnv=7d49c2023726d31e
+    compile: spill_count=5 frame_bytes=48 hoisted_values=11 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=4
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=3 stores=0 bytes=126
+    scope 1: trips=3 instructions=4 loads=0 remats=3 stores=0 bytes=71
+    scope 2: trips=6 instructions=14 loads=0 remats=2 stores=0 bytes=169
+    scope 3: trips=3 instructions=14 loads=0 remats=2 stores=0 bytes=178
+memory_w37               len=484    fnv=d11987ff7e9250ad spills=6 hoisted=9 jit_len=484    jit_fnv=dd5692d2bfb75c47
+    compile: spill_count=6 frame_bytes=48 hoisted_values=9 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=4
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=10 loads=0 remats=0 stores=0 bytes=136
+    scope 1: trips=3 instructions=4 loads=0 remats=3 stores=0 bytes=78
+    scope 2: trips=6 instructions=6 loads=0 remats=2 stores=0 bytes=113
+    scope 3: trips=3 instructions=6 loads=0 remats=2 stores=0 bytes=122
+deep_frame_w37           len=401852 fnv=62188aaf9fa74376 spills=3814 hoisted=159 jit_len=361992 jit_fnv=9850b26c0114ad77
+    compile: spill_count=3814 frame_bytes=243840 hoisted_values=159 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=4
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=5 loads=0 remats=0 stores=4 bytes=966
+    scope 1: trips=3 instructions=64 loads=2 remats=64 stores=39 bytes=1492
+    scope 2: trips=6 instructions=11344 loads=7790 remats=64 stores=4087 bytes=199397
+    scope 3: trips=3 instructions=11344 loads=7814 remats=64 stores=4082 bytes=199615
+mean_w37                 len=576    fnv=96ac45ce4dec2329 spills=5 hoisted=11 jit_len=632    jit_fnv=56da0ee09d929ccb
+    compile: spill_count=5 frame_bytes=48 hoisted_values=11 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=6
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=4 loads=0 remats=3 stores=0 bytes=122
+    scope 1: trips=3 instructions=2 loads=0 remats=3 stores=0 bytes=59
+    scope 2: trips=6 instructions=7 loads=0 remats=2 stores=0 bytes=114
+    scope 3: trips=42 instructions=2 loads=0 remats=2 stores=0 bytes=61
+    scope 4: trips=3 instructions=7 loads=0 remats=2 stores=0 bytes=123
+    scope 5: trips=21 instructions=2 loads=0 remats=2 stores=0 bytes=61
+mean_kernel_w37          len=576    fnv=2eab1e890f7ba4d5 spills=5 hoisted=11 jit_len=632    jit_fnv=56da0ee09d929ccb
+    compile: spill_count=5 frame_bytes=48 hoisted_values=11 vector_bytes=64 pool=32
+    traffic: carried=0 scopes=6
+    scaffold: instructions=0 loads=0 remats=0 stores=0 bytes=0
+    scope 0: trips=1 instructions=4 loads=0 remats=3 stores=0 bytes=122
+    scope 1: trips=3 instructions=2 loads=0 remats=3 stores=0 bytes=59
+    scope 2: trips=6 instructions=7 loads=0 remats=2 stores=0 bytes=114
+    scope 3: trips=42 instructions=2 loads=0 remats=2 stores=0 bytes=61
+    scope 4: trips=3 instructions=7 loads=0 remats=2 stores=0 bytes=123
+    scope 5: trips=21 instructions=2 loads=0 remats=2 stores=0 bytes=61

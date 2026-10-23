@@ -1,0 +1,11 @@
+==9284== Callgrind, a call-graph generating cache profiler
+==9284== Copyright (C) 2002-2017, and GNU GPL'd, by Josef Weidendorfer et al.
+==9284== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==9284== Command: /home/user/scratch/gates-bin/bin.measure --ignored --nocapture --test-threads=1 zz_prof_all_cold
+==9284== 
+==9284== For interactive control, run 'callgrind_control -h'.
+==9284== 
+==9284== Events    : Ir
+==9284== Collected : 6311544165
+==9284== 
+==9284== I   refs:      6,311,544,165

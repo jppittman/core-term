@@ -12,7 +12,6 @@ use super::provenance::ENodeId;
 use alloc::collections::BinaryHeap;
 use alloc::vec::Vec;
 use core::cmp::Reverse;
-use pixelflow_ir::fold::Bound;
 use pixelflow_ir::{Children, ExprArena, ExprId, Ir, LatticeShape, Lit, OpKind, Shape, Variance};
 
 /// A witnessed choice map: an e-graph, a root e-class, and a well-founded
@@ -1021,7 +1020,7 @@ impl Selection {
             // the fold over them, as the settlement priced it: the operands
             // are the classes' settled picks, so the claim and the price read
             // the same literals.
-            let twin = literal_twin(node, |class| self.node(egraph, pick_of(class)).literal());
+            let twin = node.literal_twin(|class| self.node(egraph, pick_of(class)).literal());
             let form = twin.as_ref().unwrap_or(node);
             let own = weighted_own(costs, form, shape.evals(node_variance));
             // Saturating throughout: a tree cost is exponential in the sharing
@@ -1655,33 +1654,6 @@ fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize 
         .unwrap_or(usize::MAX)
 }
 
-/// The fold `node` is priced as when it is not priced as itself: a fold whose
-/// value bounds were chosen as literals naming counts is priced as the fold
-/// over those counts — the literal twin `KnownBound` puts in its class, so the
-/// two price alike (docs/language/2026-10-20-a-bound-is-a-value.md §3.2).
-/// `chosen` is the literal a class was chosen as, `None` when its chosen form
-/// is no literal. `None` for every other node: one that is no fold, a fold over
-/// literals, and a fold over a value whose chosen form names no count (a mask
-/// among them), each priced as it stands — the last at `Fold::ESTIMATED_TRIPS`.
-///
-/// The twin is built only to be priced: it is never added to the graph. It is
-/// known by construction, so `ENode::reduce` takes `FoldHeader::new`'s literal
-/// path (discovery normalized it, L2).
-fn literal_twin(node: &ENode, chosen: impl Fn(EClassId) -> Option<Lit>) -> Option<ENode> {
-    let ENode::Reduce { header, .. } = node else {
-        return None;
-    };
-    if header.arity() == 1 {
-        return None;
-    }
-    let (fold, lo, hi, body) = node.as_reduce()?;
-    let (lo, hi) = Bound::discover(lo, hi, chosen).ok()?;
-    let (Bound::Lit(_), Bound::Lit(_)) = (lo, hi) else {
-        return None;
-    };
-    Some(ENode::reduce(fold, lo, hi, body))
-}
-
 /// **What `node`'s children cost per evaluation of `node`**, from each
 /// operand's cost in operand order: a tree cost, so an operand named twice is
 /// charged twice. Saturating throughout.
@@ -1706,7 +1678,7 @@ fn literal_twin(node: &ENode, chosen: impl Fn(EClassId) -> Option<Lit>) -> Optio
 ///
 /// The trips are the node's
 /// ([`FoldHeader::priced_trips`](pixelflow_ir::FoldHeader::priced_trips)), and
-/// a price site hands `below` a fold's priced form ([`literal_twin`]), so a
+/// a price site hands `below` a fold's priced form ([`ENode::literal_twin`]), so a
 /// fold whose value bounds were chosen as literals is multiplied by their
 /// count. Its operands are still those of the fold as written: the body, then
 /// each value bound, charged once — before value bounds `below` read only the
@@ -2137,7 +2109,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
     fn price(&mut self, candidate: Candidate, node: &ENode) -> Priced {
         let egraph = self.problem.egraph();
         let var = node_variance(egraph, node, &self.var, candidate.class());
-        let twin = literal_twin(node, |class| self.chosen[egraph.find(class).index()]);
+        let twin = node.literal_twin(|class| self.chosen[egraph.find(class).index()]);
         let form = twin.as_ref().unwrap_or(node);
         let own = weighted_own(self.dp.costs, form, self.dp.shape.evals(var));
         let cost = match node {
@@ -2394,7 +2366,7 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'
     fn price(&mut self, candidate: Candidate, node: &ENode) -> Priced {
         let egraph = self.problem.egraph();
         let var = node_variance(egraph, node, &self.var, candidate.class());
-        let twin = literal_twin(node, |class| self.chosen[egraph.find(class).index()]);
+        let twin = node.literal_twin(|class| self.chosen[egraph.find(class).index()]);
         let form = twin.as_ref().unwrap_or(node);
         let own = weighted_own(self.dp.costs, form, self.dp.shape.evals(var));
         let below = self

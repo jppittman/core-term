@@ -306,7 +306,8 @@ pub enum ENode {
     ///
     /// For a bound that is a value the shift's reason is reversed: a rule
     /// reaching it is the point. `PeelFold`'s substitution turning an inner
-    /// `0..i` into `0..k` is how a range becomes known (L8, `KnownBound`).
+    /// `0..i` into `0..k` is how a range becomes known (L8 of
+    /// docs/language/2026-10-20-a-bound-is-a-value.md, `KnownBound`).
     ///
     /// The fields are public, as `Op`'s are; [`ENode::reduce`] is the
     /// constructor that keeps the header and the children together, and
@@ -395,9 +396,7 @@ impl ENode {
     ///
     /// # Panics
     ///
-    /// As [`FoldHeader::new`]: on a literal pair it refuses, and on a value
-    /// bound the fold cannot take (`ANY`, `ALL` or `SEQ`; a stride other
-    /// than 1).
+    /// As [`FoldHeader::new`].
     #[must_use]
     pub fn reduce(fold: Fold, lo: Bound<EClassId>, hi: Bound<EClassId>, body: EClassId) -> Self {
         ENode::Reduce {
@@ -416,6 +415,42 @@ impl ENode {
         };
         let (lo, hi) = header.attach(children[1..].iter().copied());
         Some((header.fold(), lo, hi, children[0]))
+    }
+
+    /// The fold over the counts this fold's value bounds name, when `literal`
+    /// gives a literal for each bound's class and the two make the range
+    /// known: the fold in its literal form, `None` for every other node (one
+    /// that is no fold, a fold over literals, and a fold some bound of which
+    /// names no count: a fraction, a negative, past 2²⁴, a mask). The pair is
+    /// read as `Bound::discover` reads it, so a pair that runs backwards is
+    /// the empty range at its start (L2 of
+    /// docs/language/2026-10-20-a-bound-is-a-value.md).
+    ///
+    /// The one construction of a fold's literal form. `KnownBound` adds the
+    /// result to the fold's class, finding each literal as a class member; the
+    /// extractor never adds it and prices the fold as it, finding each
+    /// literal in the form chosen for the class. Because they are one
+    /// function the two cannot disagree about which folds have a literal form
+    /// or what it is (docs/language/2026-10-20-a-bound-is-a-value.md §3.2).
+    /// Known by construction, so `ENode::reduce` takes `FoldHeader::new`'s
+    /// literal path.
+    ///
+    /// Inlined: every candidate the extractor prices asks, and a fold over
+    /// literals, a leaf and an operation answer on the first test.
+    #[inline]
+    pub(crate) fn literal_twin(&self, literal: impl Fn(EClassId) -> Option<Lit>) -> Option<ENode> {
+        let ENode::Reduce { header, .. } = self else {
+            return None;
+        };
+        if header.arity() == 1 {
+            return None;
+        }
+        let (fold, lo, hi, body) = self.as_reduce()?;
+        let (lo, hi) = Bound::discover(lo, hi, literal).ok()?;
+        let (Bound::Lit(_), Bound::Lit(_)) = (lo, hi) else {
+            return None;
+        };
+        Some(ENode::reduce(fold, lo, hi, body))
     }
 
     /// The operation this node performs, if it is one: an `Op`'s own, or the
@@ -521,8 +556,9 @@ impl ENode {
     ///
     /// A leaf names its own variable (or none); an operation unions its
     /// children; a fold removes the index it binds from its body's, and adds
-    /// what its value bounds read, which they read outside that binding (L3,
-    /// L4). The one definition both consumers read: the e-graph's per-class
+    /// what its value bounds read, which they read outside that binding (L3 and
+    /// L4 of docs/language/2026-10-20-a-bound-is-a-value.md). The one definition
+    /// both consumers read: the e-graph's per-class
     /// fact (`EGraph::variance`), which feeds it the children's facts, and the
     /// extractor's `node_variance`, which feeds it the variance of the forms it
     /// chose.

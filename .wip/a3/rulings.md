@@ -62,3 +62,56 @@ These are authoritative over spec.md and over round 1 where they differ. `S#` = 
 # Round 3 (CI on 31d4b58)
 
 - **R1 — the toolchain is CI's.** This container's stable is rustc/clippy 1.97; CI's (`dtolnay/rust-toolchain@stable`) is 1.99. Local 1.97 clippy reports `must_use_candidate` on `ExprArena::nodes` (arena.rs), `Dag::iter` and `Rooted::entries` (dag.rs). All three return `impl Iterator`, which is already `#[must_use]`, and the same report fires at base, where none of the three is in A3's diff. CI's clippy rejects an added bare `#[must_use]` there as `double_must_use`, which turned Clippy and both Test jobs red on 31d4b58. So: never add `#[must_use]` to those three. A local clippy run passes when those three `must_use_candidate` reports are its only errors; any other error is real. The attributes were removed in the commit that adds this ruling.
+
+# Round 4 (review of 8da7c86)
+
+- **F1 (blocking) — a leaked placeholder must not pass the unit check.** Since J5 a placeholder `Var`
+  (64..128) has variance `CONST`, so `Program::of`'s Law U check in `pixelflow-search/src/runtime.rs`
+  (`variance.without(COORDS).is_const()`) admits a unit holding a leaked fold index that main refused
+  (repro: `let mut leaked = None; Kernel::sum_over(2, |i| { leaked = Some(i.clone()); i.clone() });`,
+  `KernelStore::intern` of the leaked kernel, `push_ref(key) + X` into
+  `optimize_runtime_arena(.., LatticeShape::POINT)`: main panics, head returned `add(Var(64), Var(0))`;
+  notes `run/review-r3-literal-notes.txt`). Fix: `Program::of` also refuses a unit whose body has
+  `free_index(body_root).is_some()` (the test `Kernel::by_ref` makes), with a message naming the escaped
+  index. Then every other check that judges closedness or placement by variance and could see a
+  placeholder (codegen `arena_to_schedule` and placement in `pixelflow-codegen/src/program/`,
+  `lower_dwrt` in `passes.rs`, the runtime tier, anything else `grep -rn
+  'compute_arena_variance\|of_var'` finds) must refuse a placeholder loudly (by `free_index`, or an
+  existing refusal cited with file:line), never silently treat it as constant. `of_var`'s doc is fixed
+  ("nothing that places a node sees a placeholder" is false: a placeholder can escape its builder, and
+  closedness checks use `free_index`). Pin: a `should_panic` test in `pixelflow-search` with the repro
+  program.
+- **F2 (blocking) — L7 never builds an unlawful bound.** `PlanBuilder::substitute` (`fold_rules.rs`)
+  walked a class through `representative`, its first member. For a class reached as a nested fold's
+  value bound, the first member can read a coordinate the class does not vary with (the class fact is
+  the meet over members), and the rebuilt bound then reads X: `EGraph::add`'s L3 backstop panics with
+  `BoundVaries` inside saturation (repro `run/scratch-r4-run1.txt`, source `run/scratch-r4/representative.rs`:
+  `Σ_{i<8} ( Σ_{j<i} X·j + ((i + X) + 1) − X )`, inner bound `Var(i)`, `Vocabulary::Runtime`,
+  `RuleSet::runtime()`, `SaturationConfig::compatibility(12)`). Fix: when substitution reaches a class
+  as a nested fold's value bound, walk the first member whose own variance (`ENode::variance` over its
+  children's class facts, after the substitution's own effect is accounted for) admits that end under
+  the fold's L3 (`Fold::admits_bound`); if none does, the plan declines (`None`): declining costs
+  completeness, never soundness. Bodies keep `representative`. Literal folds are untouched (no
+  value-bound child). Pins: the repro saturates without panicking under the runtime set and every
+  extracted inner bound reads only the outer index; the two minimal hand-made-union cases (`HalveFold`
+  alone at n=4, `PeelFold` alone at n=1) decline instead of panicking. `HalveFold`'s doc ("`EGraph::add`
+  accepts it…") says why it now holds. Spec §13 and one sentence in the plan's A4 bullet state the
+  remaining extraction-side hole: extraction picks one member per class, so a bound class whose chosen
+  member reads a coordinate the class does not vary with panics at materialization with `BoundVaries`
+  (loud); A4 decides whether a bound's pick is constrained, unless the F2 pin shows extraction already
+  never picks such a member, in which case say why.
+- **F3 — one literal twin.** `literal_twin` (`extract.rs`) and `KnownBound::apply` (`fold_rules.rs`)
+  built the same thing twice. Keep one function (e.g. `ENode::literal_twin(&self, literal: impl
+  Fn(EClassId) -> Option<Lit>) -> Option<ENode>` in `node.rs`, `pub(crate)` or narrower) and call it
+  from both; the docs stop asserting the two agree, because they are one.
+- **F4 — doc nits.** `KnownBound`'s rustdoc stops claiming "a single label" differs (also
+  `Saturation::total_evals` rises on every kernel with a fold); anchor the plan's law labels in
+  `pixelflow-search` docs where first used ("L3 of docs/language/2026-10-20-a-bound-is-a-value.md"),
+  since L1-L5 of the optimizer-api plan already name the optimizer laws; `FoldHeader::new`'s summary
+  line says what it checks (not "the one place a fold is checked against its bounds");
+  `ENode::reduce`'s Panics keeps only "As [`FoldHeader::new`]"; `is_the_fixture`'s doc names `copy`;
+  `variance.rs`'s stale comment above `transfer`'s `Var` arm; `close_over`'s doc paragraph order (the
+  "Constness is discovered first" paragraph must not break "that rule"'s antecedent).
+- **F5 — `.wip` only.** `run/public-surface.md`: drop the `must_use` row (R1 removed them), add
+  `egraph::extract`/`extract_dag` (they price a value-bounded fold by its literal twin, else
+  `ESTIMATED_TRIPS`) and the private `FoldHeader::with_a_value`, and whatever F1-F3 add.

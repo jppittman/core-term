@@ -84,7 +84,7 @@ within +0.5% of base. §10 lists the pins; §11 the order and the greps.
 | L3 (plan:180-188) | `ExprArena::push_reduce` (every arena construction) and `EGraph::add` (backstop) | `Fold::admits_bound(end, reads)`: `reads ∩ (COORDS ∪ {b}) = ∅`. In the arena `reads` is `variance_from(arena, term)`, the per-node transfer function run from the bound and memoized (N1); in the e-graph, the bound class's fact | `BoundRefusal::BoundVaries { end, reads }` | panic in both |
 | L4 (plan:189) | `variance.rs`'s `transfer` (both drivers) and `ENode::variance` (`node.rs:528-556`) | `(var(body) \ b) ∪ var(lo) ∪ var(hi)`; a literal bound contributes nothing; a known empty range is `CONST` (arena only, as today) | — | — |
 | L6 (plan:192-195) | `PeelFold` (`fold_rules.rs:393`), `HalveFold` (`:435`), `EmptyFold` (`:480-481`): already gated at `3bfdaded`. `FactorFold` (`:499`) changes to decline a known empty range only (decision 5) | the rule reads `node.known_range()` | — | decline |
-| L7 (plan:196-198) | `PlanBuilder::substitute` (`fold_rules.rs:191-275`) through L4's class fact; arena side, `close_over`'s rename. `ExprArena::substitute_vars_with` is **not** L7 (N5, §3.4) | substitutes into a nested fold's bounds always, and into its body unless the fold rebinds the slot | — | — |
+| L7 (plan:196-198) | `PlanBuilder::substitute` (`fold_rules.rs`) through L4's class fact; arena side, `close_over`'s rename. `ExprArena::substitute_vars_with` is **not** L7 (N5, §3.4) | substitutes into a nested fold's bounds always, and into its body unless the fold rebinds the slot. A class reached as a nested fold's value bound (a `Site::Bound`) is rebuilt through its first member whose own variance, over its children's facts, `Fold::admits_bound` accepts, and so is every class under it; the plan declines when a class under a bound has none (round 4, F2, §6.8). Bodies keep the first member. | — | the rule declines (`None`) |
 | L8 (plan:199-202) | `KnownBound` (new rule, `fold_rules.rs`, last in `fold_rules()`) | the value bounds' classes hold literals naming counts, so the fold over those counts is added to the class | — | decline otherwise |
 
 ### 1.2 Refusal order
@@ -115,7 +115,7 @@ saturation result moves (the model is the old critique's section (a)):
 | `ExprArena::close_over` / `close_fold` (§3.5) | With no value bound `roots == [body]`, and `from_arena_roots(self, &[body])` is `from_arena(self, body)` (`expr.rs:274-279`). The closed builder pushes `Var(binder)` first and the renamed body as today; `finish(&[body])` records entries without reordering (`dag.rs:545-558`); `to_arena_roots` pushes every DAG node in push order (`expr.rs:381`); then the same `push_reduce(fold, Lit, Lit, body)` interns the fold last, where today's DAG `Reduce` was pushed last. The tables are the same `Environment`. Same arena. Pinned by `a_fold_is_laid_out_as_the_builder_always_laid_it_out` (`kernel.rs:1278-1303`). |
 | `lowest_free_binder(roots)` (§3.5, J8) | Neutral for every builder: a placeholder (64 and up) gives `Binder::from_var(..) == None`, and a slot `Var` in a well-formed body sits under the `Reduce` that binds it, whose slot is already marked. |
 | `Kernel::over` (§4) | `FoldTerms { monoid, stride: 1, lo: Lit, hi: Lit }` into the `close_over` above. A reversed or past-2²⁴ range now panics at `push_reduce` inside `close_over`, not in the `fold_at` closure, with the same message. |
-| `Variance::of_var`, `transfer`, `compute_arena_variance` (§3.1-3.2) | An index below 64 is `from_var` as today; only placeholders (64..128) change, `ALL` → `CONST`, and no arena that reaches codegen (`program/lower.rs:147`), the unit check (`runtime.rs:289`), `lower_dwrt` (`passes.rs:600`), `nnue::factored` (`factored.rs:824`) or the e-graph holds one: each reads a closed term. A literal fold's arm is `(var(body) \ b)` with nothing unioned, today's. |
+| `Variance::of_var`, `transfer`, `compute_arena_variance` (§3.1-3.2) | An index below 64 is `from_var` as today; only placeholders (64..128) change, `ALL` → `CONST`, and no term a production path builds holds one. A placeholder can still escape its builder (a closure that keeps a clone of the index), and variance cannot say so, so no check of closedness or placement may read it (round 4, F1, §3.1): the unit check (`runtime.rs`, `Program::of`) refuses by `free_index`; `arena_to_schedule` refuses a `Var` that is no fold's binder by name (`program/lower.rs`); `lower_dwrt`'s tabulation (`passes.rs`) and `nnue::factored`'s histogram ask coordinate dependence and a statistic, which a placeholder answers exactly. A literal fold's arm is `(var(body) \ b)` with nothing unioned, today's. |
 | `free_index` (§3.3) | The fold arm unions the value bounds' free indices; a literal fold has none. |
 | `ENode::variance` (§6.1) | Folds over `children[1..]`, empty for a literal fold. `var_variance` → `of_var`: equal below 64, and no e-graph holds a `Var` at 64 or above (`insert` reads closed arenas; template metavariables shifted by `B_METAVAR_OFFSET`, `template.rs:335`, are renamed by `canonicalize_vars` before a rule exists and are matched, never inserted). |
 | `EGraph::add` (§6.2) | The backstop is skipped outright when `header.arity() == 1`: no fact is read, no class id moves. |
@@ -401,7 +401,7 @@ pub const ESTIMATED_TRIPS: u64 = 32;
 /// its known range's length, or [`Fold::ESTIMATED_TRIPS`] when a bound is a
 /// value. The extractor prices a fold whose value bounds were chosen as
 /// literals through the fold over those literals, whose header this is
-/// (`pixelflow-search`'s `literal_twin`).
+/// (`pixelflow-search`'s `ENode::literal_twin`).
 #[must_use]
 pub fn priced_trips(self) -> u64 {
     self.known_range()
@@ -552,9 +552,14 @@ In `impl Variance` (`variance.rs:56-229`), after `from_var` (`:83-111`):
 /// placeholder's variance is asked — L3's, inside `close_over`: does this
 /// bound vary with a coordinate, or with its own fold's binder? — has the
 /// answer no, which is exact, and a triangular fold built through the
-/// builder is accepted. Nothing that places a node sees a placeholder:
-/// `close_over` renames the one it closes before the term leaves its
-/// builder, so codegen, extraction and the e-graph read closed terms only.
+/// builder is accepted.
+///
+/// That answer is *not* "closed". A placeholder can escape its builder (a
+/// closure may keep a clone of the index it was given), and the term that
+/// holds it is open while its variance is empty. So no check of closedness or
+/// placement may read a variance: they ask [`ExprArena::free_index`], which
+/// counts a placeholder free (`Kernel::by_ref`, the runtime tier's unit walk),
+/// or refuse a `Var` that is no fold's binder (codegen's lowering).
 #[must_use]
 pub const fn of_var(index: u8) -> Self {
     if index < Self::VARIABLES {
@@ -1128,7 +1133,7 @@ text, so each of these is a row to rewrite in the CL, not a new class): `varianc
 move into `transfer` (changed-by-A3, `transfer`); `node.rs:552`'s arm text changes (changed-by-A3);
 new production hits — `graph.rs`'s `add` (`if let ENode::Reduce { header, children } = &node`,
 changed-by-A3: the backstop), `fold_rules.rs`'s `KnownBound::apply` (changed-by-A3: L8),
-`extract.rs`'s `literal_twin` (changed-by-A3: N3) — and every new test of §10 that matches
+`ENode::literal_twin` (new in `node.rs`: N3, F3) — and every new test of §10 that matches
 (tests). The fold arm of `free_index` keeps its hit with new text (changed-by-A3).
 
 | Site (`3bfdaded`) | In | Class | Why |
@@ -1522,8 +1527,8 @@ pins the declines on a uniform-bounded fold.
 
 ### 6.7 `HalveFold`'s rule-made bound arithmetic
 
-No code change. `HalveFold` substitutes `binder := binder + s` through `substitute`, which enters
-an inner fold's value bounds (L7), so an inner `0..i` becomes `0..(i + s)`: a plan
+`HalveFold`'s code is unchanged; its doc is amended (round 4, F2). `HalveFold` substitutes
+`binder := binder + s` through `substitute`, which enters an inner fold's value bounds (L7), so an inner `0..i` becomes `0..(i + s)`: a plan
 `HeadNode::Op { op: Add, children: [Class(i), Plan(s)] }` as the inner `HeadNode::Reduce`'s `hi`.
 `plan_shape` (`graph.rs:1626-1631`) builds it through `ENode::reduce` (a value bound under the
 inner fold's own monoid, stride 1: accepted) and `add` (its fact is `{i}`, the outer binder:
@@ -1533,7 +1538,36 @@ inside the outer fold's known range, which ends at or before 2²⁴, so it is ex
 
 ### 6.8 `substitute` and `rebuild`
 
-`substitute` (`fold_rules.rs:191-275`) is unchanged (§5). `rebuild`'s comment
+`substitute` (`fold_rules.rs`) is **changed in round 4 (F2)**; the version §5 described walked
+every class through `representative`, its first member, and that is unlawful for a class reached
+as a nested fold's value bound. A class's variance fact is the meet over its members, so its first
+member can read a coordinate the fact lacks (`((i + X) + 1) − X` beside `i + 1`: older class,
+older member first), and the rebuilt bound reads `X`, which `EGraph::add`'s backstop refuses by
+panicking inside saturation (`.wip/a3/run/scratch-r4-run1.txt`: `Σ_{i<8} ( Σ_{j<i} X·j + ((i + X) +
+1) − X )` under `RuleSet::runtime()` at `compatibility(12)`). The walk now carries a `Site`:
+
+- `Site::Body` (every site of a fold over literals, and everything under a fold's body): the first
+  member, `representative`, as before. Its memo is the old `BTreeMap<EClassId, Done>`, so the literal
+  path builds no wider key (`Memo.body`).
+- `Site::Bound { fold }` (a nested fold's value bound, and every class under one): the first member
+  whose own variance, `ENode::variance` over its children's class facts, `fold.admits_bound`
+  accepts. `None` when no member does, and the plan declines. A fold nested inside a value bound has
+  no site (`None` again): no builder makes one.
+
+The substitution's own effect needs no accounting in the check: a leaf becomes a literal or the
+substituted binder plus its stride, and that binder is neither a coordinate nor the nested fold's
+own (a fold that rebinds it is named before it is entered, L4), so the refused set never contains it
+and a member's variance before the substitution is the law's answer after it. By induction over the
+rebuilt bound's classes, every class `add` sees under the bound has a fact within what the nested
+fold's L3 admits. Pins: `a_nested_bound_is_rebuilt_through_the_member_that_keeps_l3` (HalveFold at
+n=4 and PeelFold at n=1, each alone, over a hand-made union; both **plan** through the lawful member
+`i + 1` rather than decline, because the class has one), `a_nested_bound_with_no_member_that_keeps_l3_declines`
+(`i + X` beside `i + Y`: the class reads neither, no member keeps L3, both rules decline), and
+`the_runtime_rules_saturate_a_triangular_fold_with_a_varying_spelling` (the repro and three variants
+under `RuleSet::runtime()`, extracting a closed term whose bounds read the outer index alone). Each
+fails without the change: the third with the `BoundVaries` panic. The extraction-side hole is J24.
+
+`rebuild`'s comment
 (`fold_rules.rs:620-626`) becomes:
 
 ```rust
@@ -1589,7 +1623,7 @@ trips to `fold_cost` and `below`" is met for an extractor generic over `CostFunc
   Its comment gains one sentence after "So the node's own share is `fold_cost` with the body
   free.": "Its trips are the header's (`FoldHeader::priced_trips`): the range's length, or the
   estimate when a bound is a value; the extractor prices a fold whose bounds it chose as literals
-  through the fold over them (`extract.rs`'s `literal_twin`)."
+  through the fold over them (`ENode::literal_twin`)."
 - `fold_cost` (`cost.rs:408-431`) takes the trips:
 
   ```rust
@@ -1622,7 +1656,14 @@ trips to `fold_cost` and `below`" is met for an extractor generic over `CostFunc
 
 ### 7.3 The extractor (extract.rs): the DP order, `literal_twin`, `below`
 
-**`literal_twin` (new, private):**
+**`ENode::literal_twin` (new, `pub(crate)`, in `node.rs`; round 4, F3).** It was a private function
+in `extract.rs` beside a copy of its body in `KnownBound::apply`; now there is one, and both call
+it, so the docs no longer assert that the two agree. The text below is the function as it was
+first specified in `extract.rs`; it is now `ENode::literal_twin(&self, literal: impl Fn(EClassId)
+-> Option<Lit>) -> Option<ENode>`, `node.literal_twin(chosen)` at the three price sites and
+`node.literal_twin(|class| egraph.nodes(class).find_map(ENode::literal))` in `KnownBound::apply`.
+
+**`literal_twin` (as first specified):**
 
 ```rust
 /// The fold `node` is priced as when it is not priced as itself: a fold
@@ -1913,6 +1954,9 @@ value bound until A4 (`to_bits`, §0), so no production path can carry one, and 
   16777216 (2^24)")]`.
 - **T-IR-8** `a_value_bound_has_no_bits_until_a4` (renamed; header from `FoldHeader::new`):
   `#[should_panic(expected = "a fold bound that is a value")]`.
+- **T-C-2** (round 4, F1) `a_surviving_placeholder_fails_loudly`: a `Var` of `Placeholder::nth(0)`
+  times a constant: `arena_to_schedule` panics with "escaped its builder" (the `Var` arm's refusal;
+  variance types a placeholder `CONST` and would let placement see a constant).
 - **T-IR-8b** `priced_trips_is_the_known_length_or_the_estimate`: `0..40 → 40`, `3..3 → 0`, a
   value bound → `32`; `Fold::ESTIMATED_TRIPS == 32`.
 - **T-IR-8c** `a_fold_admits_a_bound_reading_neither_a_coordinate_nor_its_own_binder` (L3's one
@@ -2113,6 +2157,22 @@ whose `hi` is `Value(t)`, `t` a term deeper than the body (`Add(Var(5), u)`), bo
   its one more index names `KnownBound`.
 - `reduce_range` (`:669-672`) keeps `expect(KNOWN_RANGE)`: no new test hands it a value-bounded
   node.
+- **T-S-11** (round 4, F2) `a_nested_bound_is_rebuilt_through_the_member_that_keeps_l3`,
+  **T-S-12** `a_nested_bound_with_no_member_that_keeps_l3_declines`, **T-S-13**
+  `the_runtime_rules_saturate_a_triangular_fold_with_a_varying_spelling`, **T-S-14**
+  `extracting_a_bound_class_with_no_member_that_keeps_l3_is_refused_by_name` (`#[should_panic(expected
+  = "BoundVaries")]`: the hole of J24, loud, which A4 may change). Shared helpers
+  `over_a_joined_bound`, `a_varying_spelling_beside_a_lawful_one`,
+  `two_spellings_that_each_read_a_coordinate`, `a_triangular_sum_beside` and `nested_bounds`
+  (which T-S-6 now uses too).
+
+### pixelflow-search, `src/runtime.rs` tests (round 4, F1)
+
+- **T-R-1** `a_unit_that_reads_an_escaped_fold_index_is_refused`: an index kept from
+  `Kernel::sum_over`'s closure, interned and named by `push_ref` beside `X`;
+  `compute_arena_variance` of it is `CONST` (asserted: the premise), and
+  `optimize_runtime_arena(.., LatticeShape::POINT)` panics with "an index no fold inside it binds"
+  (`Program::of`'s `free_index` check).
 
 ### `src/egraph/cost.rs`
 
@@ -2391,9 +2451,27 @@ built (plan:437-458).
   the inner term binds or reads). Rejected: today's `ALL`, which intersects `COORDS`, and the
   previous spec's `BINDERS`, which contains the inner binder's bit — either refuses every
   triangular fold built through `Kernel::over` and `over_values`, the plan's "enclosing binder
-  accepted" pin. `CONST` misleads no placer: no arena that codegen, extraction or the e-graph
-  reads holds a placeholder (`arena_to_schedule` would refuse `Var(64)` by name anyway). Index 128
-  and up stays `ALL`.
+  accepted" pin. Index 128
+  and up stays `ALL`. **Round 4 (F1) corrects this entry's claim that no arena a placer reads holds a
+  placeholder:** a placeholder can escape its builder (a closure that keeps a clone of the index),
+  and then the term that holds it is open with an empty variance. `CONST` is exact for the one
+  question it is asked (L3's, inside `close_over`), and it is not "closed", so no check of
+  closedness or placement may read it. The audit of every reader of a variance (`grep -rn
+  'compute_arena_variance\|of_var\|variance_from\|admits_bound'`): `Program::of` (`runtime.rs`) judged
+  a unit closed by `variance.without(COORDS).is_const()`, which at base refused an escaped index
+  (`ALL`) and at head admitted it, so it now also refuses `free_index(body_root).is_some()`, naming
+  the index (T-R-1). `EGraph::admit_unit` sees a variance and nothing else; its only caller is
+  `Program::of`, and its doc says so. `arena_to_schedule` (`program/lower.rs`) refuses any `Var` that
+  is no fold's binder before the variance reaches a placement, by name (T-C-2; the message now says a
+  placeholder is one of the two things it refuses). `lower_dwrt`'s tabulation (`passes.rs`) asks
+  whether an index moves with the variable being differentiated, which a placeholder answers
+  exactly (it is none of them; `diff_node`'s `Var` arm differentiates every other `Var` to 0, a
+  binder's included): not a closedness or placement check, unchanged. `nnue::factored`'s histogram and
+  the extractor's `best_var` price and classify; they judge nothing closed. `EGraph::add`'s backstop
+  and `push_reduce` are L3 itself. Rejected: restoring `ALL` for a placeholder, which refuses every
+  triangular fold built through the builder (this entry's first reason), and a `free_index` in each
+  reader, where one check in the unit walk and the lowering's own refusal cover the two places a
+  closed term is assumed.
 - **J6. `Fold::count` is `pub(crate)` (N10).** Another crate reads a count off a bound through
   `Bound::discover`, which is where a count is a bound. Rejected: a public `count` that invites a
   second reading of constness.
@@ -2465,3 +2543,26 @@ built (plan:437-458).
   value-bounded fold only when `KnownBound` has already put the twin in its class, which makes
   the price depend on whether a rule fired in the budget, and leaves a lone value twin over
   `Const(40)` at 32.
+- **J24. The extraction-side hole in L7 is documented, not closed (round 4, F2).** Extraction picks
+  one member per class, by cost, and a bound's pick is not constrained to keep L3. A bound class
+  whose chosen member reads a coordinate the class does not vary with is materialized through it,
+  and `ExprArena::push_reduce` (`arena.rs`, L3 on the term) refuses the fold with `BoundVaries`:
+  loud, never silent. With a non-negative cost model the cheapest member of a class that holds a
+  lawful one is that one in the cases tried (the repro extracts `i + 1`), so the hole is reached
+  where a class holds no lawful member at all: a fact that is the meet of members that each read a
+  different coordinate (`i + X` beside `i + Y`, T-S-14). A4 decides whether a bound's pick is
+  constrained (the settlement, the `Reranker` seam, or a refusal at the settle). The F2 pin does
+  **not** show that extraction never picks such a member, so the plan's A4 bullet carries one
+  sentence saying so. Rejected: constraining the pick in A3, which is the extractor's DP (a
+  per-site member filter inside `Settling`), with no value-bounded fold in any production pick and
+  a price site per extractor to change.
+- **J25. `PlanBuilder::substitute` keeps a site, not a mode flag (round 4, F2).** `Site::Body` and
+  `Site::Bound { fold }` are one enum, the memo is two maps so the literal path's key stays a class,
+  and `Site::of_child` is the one place a child's site is decided. A fold nested inside a value
+  bound declines (`None`): its body would need the refused set lifted by its own binder, and no
+  builder makes one. Rejected: a `refused: Variance` set carried down and lifted at a nested fold,
+  which is the same decision with a bitset and a case no builder reaches.
+- **J26. One `ENode::literal_twin` (round 4, F3).** `KnownBound::apply` and the three price sites
+  call the same `pub(crate)` method on `ENode`, so a fold's literal form is one definition and
+  neither the rule's doc nor the extractor's asserts that two agree. Rejected: keeping the two
+  copies and a test that compares them, which is a check that the duplication has not drifted.

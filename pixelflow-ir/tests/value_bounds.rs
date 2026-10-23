@@ -57,7 +57,7 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Whether `arena`'s `root` is the fixture's term and its inner fold's upper
+/// Whether `copy`'s `root` is the fixture's term and its inner fold's upper
 /// bound is still a value.
 fn is_the_fixture(copy: &ExprArena, root: ExprId, fixture: &Fixture) -> bool {
     let ExprNode::Reduce { body, .. } = copy.node(root) else {

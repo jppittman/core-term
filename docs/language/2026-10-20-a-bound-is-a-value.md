@@ -197,7 +197,9 @@ program is never reported over budget. `docs/DENOTATION.md:62-66` is amended to 
   known `v` shows which.
 - **L7 (substitution).** Substituting a slot into a fold substitutes into its bounds
   always (by L3 no bound reads the fold's own slot), and into its body only when the fold
-  does not rebind the slot.
+  does not rebind the slot. A class reached as a bound is rebuilt through its first member
+  that keeps L3, because a class's fact is the meet over its members and its first member
+  can read a coordinate the class does not; the rewrite declines when no member does.
 - **L8 (discovery).** Peeling an outer fold substitutes `i := Const(k)` into an inner
   bound `0..i`; the bound's class gains a `Const` member, the one normalizing rule
   (`KnownBound`, §3.2) reads it into the node, and the inner fold becomes known and
@@ -597,8 +599,11 @@ A5's deletion, which removes code #1427 only re-scopes.
   programs' keys, digests and saturation telemetry, the extraction fields included,
   unchanged on every pinned kernel. A placeholder's variance is `CONST` (it is a binder-to-be, never a coordinate,
   and L3 is checked again when `close_over` renames it into a slot), so a triangular fold
-  built through the builder passes L3. A value bound is priced by its class's chosen
-  literal through the fold's literal twin, and the key refuses a value bound until A4.
+  built through the builder passes L3. That answer is not "closed": a placeholder can escape
+  its builder, and closedness is judged by `free_index`, as `Kernel::by_ref` does and the
+  runtime tier's unit walk does for a unit it resolves. A value bound is priced by its
+  class's chosen literal through the fold's literal twin, and the key refuses a value bound
+  until A4.
   The L8 and `HalveFold` pins saturate over the fold rules alone, with no `ConstantFold`
   and no production optimizer: the key refuses a value bound, so no production path can
   carry one, and without `ConstantFold` a rule-made `0 + 1` stays the arithmetic it is,
@@ -623,7 +628,10 @@ A5's deletion, which removes code #1427 only re-scopes.
   `pixelflow-pipeline/src/bin/corpus_gaps.rs`, and the compiler's `arena_to_tokens`; the
   training corpus bumps its format version. The guard handles a rule-made out-of-domain
   literal: `push_reduce` keeps one as a value bound (A3), so the guard, not a panic,
-  decides it. Gate: byte_probe empty (no row has a value bound); new JIT tests in
+  decides it. Extraction picks one member per class, so a bound class whose chosen member
+  reads a coordinate the class does not vary with is refused at materialization with
+  `BoundVaries`, loudly; A4 decides whether a bound's pick is constrained. Gate: byte_probe
+  empty (no row has a value bound); new JIT tests in
   `pixelflow-codegen/tests/` against scalar Rust, every tier: a uniform `n` at 0, 1, 7,
   1000, `2²⁴` (in the domain), and `2²⁴ + 2`, NaN, 2.5, −1 (NaN, no hang); uniforms 5 and 3
   as `lo` and `hi` (the identity); a triangular `Σ_i Σ_{j<i}`; a uniform-bounded fold whose

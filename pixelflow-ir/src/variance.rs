@@ -127,10 +127,15 @@ impl Variance {
     /// question a placeholder's variance is asked — L3's, inside
     /// `close_over`: does this bound vary with a coordinate, or with its own
     /// fold's binder? — has the answer no, which is exact, and a triangular
-    /// fold built through the builder is accepted. Nothing that places a node
-    /// sees a placeholder: `close_over` renames the one it closes before the
-    /// term leaves its builder, so codegen, extraction and the e-graph read
-    /// closed terms only.
+    /// fold built through the builder is accepted.
+    ///
+    /// That answer is *not* "closed". A placeholder can escape its builder (a
+    /// closure may keep a clone of the index it was given), and the term that
+    /// holds it is open while its variance is empty. So no check of
+    /// closedness or placement may read a variance: they ask
+    /// [`ExprArena::free_index`], which counts a placeholder free
+    /// (`Kernel::by_ref`, the runtime tier's unit walk), or refuse a `Var`
+    /// that is no fold's binder (codegen's lowering).
     #[inline]
     #[must_use]
     pub const fn of_var(index: u8) -> Self {
@@ -347,8 +352,10 @@ fn referent_variance(_key: crate::key::KernelKey) -> Variance {
 /// one.
 fn transfer(arena: &ExprArena, id: ExprId, child: impl Fn(ExprId) -> Variance) -> Variance {
     match arena.node(id) {
-        // Coordinates and reduction index slots each get their own bit.
-        // Anything past them is not a variable this analysis knows.
+        // A coordinate, a retired axis or a binder slot gets its own bit; a
+        // placeholder (an enclosing fold's index before its fold closes)
+        // varies with nothing; anything past those is not a variable this
+        // analysis knows.
         ExprNode::Var(idx) => Variance::of_var(idx),
         ExprNode::Const(_) => Variance::CONST,
         // A buffer leaf is constant; a Gather's variance is the union of

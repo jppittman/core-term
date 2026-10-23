@@ -1703,17 +1703,17 @@ impl ExprArena {
     /// here, after the body exists, because which slots the body binds decides
     /// it — the reason a body is built against a placeholder at all.
     ///
+    /// The one definition of that rule and of the rename: `Kernel::over`
+    /// and `kernel!`'s lowering each build a fold through it,
+    /// so a fold written in the syntax and the same fold built with the
+    /// builder are one program.
+    ///
     /// **Constness is discovered first** ([`Bound::discover`]): a bound whose
     /// term is a literal naming a count is the fold's data, and its term is not
     /// copied — so a fold closed over two such terms is the fold over the
     /// literals, node for node, and a pair that discovery makes known runs
     /// forwards (L2). A literal naming no count stays a value bound, as
     /// `push_reduce` keeps one.
-    ///
-    /// The one definition of that rule and of the rename: `Kernel::over`
-    /// and `kernel!`'s lowering each build a fold through it,
-    /// so a fold written in the syntax and the same fold built with the
-    /// builder are one program.
     ///
     /// The arena returned holds this arena's buffer and uniform tables, slot
     /// for slot — every declaration, read or not, since a positional binding

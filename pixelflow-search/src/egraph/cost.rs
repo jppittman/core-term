@@ -395,7 +395,7 @@ impl CostModel {
             // trips are the header's (`FoldHeader::priced_trips`): the range's
             // length, or the estimate when a bound is a value; the extractor
             // prices a fold whose bounds it chose as literals through the fold
-            // over them (`extract.rs`'s `literal_twin`).
+            // over them (`ENode::literal_twin`).
             //
             // An unpriceable monoid keeps the sentinel: extraction must not
             // choose a fold whose combiner has no operation to emit.

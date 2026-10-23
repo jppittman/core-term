@@ -800,8 +800,9 @@ pub struct FoldHeader {
 }
 
 impl FoldHeader {
-    /// `fold` between `lo` and `hi`: the one place a fold is checked against
-    /// its bounds.
+    /// `fold` between `lo` and `hi`, with what the fold asks of its bounds
+    /// checked: a literal pair by `KnownRange::new` (order, domain, stride), a
+    /// value bound against the monoid, the stride, and any literal beside it.
     ///
     /// # Panics
     ///
@@ -901,7 +902,7 @@ impl FoldHeader {
     /// its known range's length, or [`Fold::ESTIMATED_TRIPS`] when a bound is a
     /// value. The extractor prices a fold whose value bounds were chosen as
     /// literals through the fold over those literals, whose header this is
-    /// (`pixelflow-search`'s `literal_twin`).
+    /// (`pixelflow-search`'s `ENode::literal_twin`).
     #[must_use]
     pub fn priced_trips(self) -> u64 {
         self.known_range()

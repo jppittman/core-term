@@ -301,6 +301,12 @@ impl EGraph {
     /// different variance: a key names one referent, so its variance is one
     /// value, and two `Ref` nodes for one key would otherwise differ only in
     /// what they claim about it.
+    ///
+    /// This sees a variance and nothing else, and a fold index that escaped
+    /// its builder (a placeholder) has an empty one (`Variance::of_var`). Its
+    /// caller holds the unit's body, and refuses an open one by
+    /// `ExprArena::free_index` before it gets here (`runtime::Program::of`, the
+    /// only caller outside tests): closedness is judged there, on the term.
     pub(crate) fn admit_unit(&mut self, key: KernelKey, variance: Variance) {
         assert!(
             variance.without(Variance::COORDS).is_const(),
@@ -359,7 +365,8 @@ impl EGraph {
     /// nothing to say what it varies as.
     ///
     /// On a fold whose value bound varies with a coordinate or with the fold's
-    /// own binder (`pixelflow_ir::fold::BoundRefusal::BoundVaries`, L3): the
+    /// own binder (`pixelflow_ir::fold::BoundRefusal::BoundVaries`, L3 of
+    /// docs/language/2026-10-20-a-bound-is-a-value.md): the
     /// backstop behind `ExprArena::push_reduce`, for a node a rule or a caller
     /// built. It does not refuse bound arithmetic
     /// (docs/language/2026-10-20-a-bound-is-a-value.md §1.4): `HalveFold`'s
@@ -415,7 +422,8 @@ impl EGraph {
     }
 
     /// Panic unless each value bound of the fold `header` and `children` name
-    /// varies with neither a coordinate nor the fold's own binder (L3, through
+    /// varies with neither a coordinate nor the fold's own binder (L3 of
+    /// docs/language/2026-10-20-a-bound-is-a-value.md, through
     /// `Fold::admits_bound`), read off the bound classes' facts.
     fn refuse_a_varying_bound(&self, header: &FoldHeader, children: &Operands) {
         let fold = header.fold();
@@ -3530,8 +3538,9 @@ mod variance_fact_tests {
         )
     }
 
-    /// **L3's backstop: a bound that reads a coordinate is refused.** The trip
-    /// count would be a function of the pixel.
+    /// **L3's backstop: a bound that reads a coordinate is refused** (L3 of
+    /// docs/language/2026-10-20-a-bound-is-a-value.md, not the optimizer's L3).
+    /// The trip count would be a function of the pixel.
     #[test]
     #[should_panic(expected = "BoundVaries")]
     fn add_refuses_a_bound_varying_with_x() {
@@ -3557,7 +3566,8 @@ mod variance_fact_tests {
     /// **An enclosing fold's index is a bound's to read.** `Σ_{j<i}` over the
     /// outer index `i` (slot 1) is added, and its class varies with the
     /// outer index, which the inner fold does not bind: its body less its own
-    /// index, and what its bound reads (L4).
+    /// index, and what its bound reads (L4 of
+    /// docs/language/2026-10-20-a-bound-is-a-value.md).
     #[test]
     fn add_takes_a_bound_reading_an_enclosing_binder() {
         let mut eg = EGraph::new();

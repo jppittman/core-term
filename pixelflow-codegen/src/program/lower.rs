@@ -111,7 +111,10 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
 /// # Panics
 ///
 /// Panics if a `Param` or `Nary` node is encountered (these are not expected
-/// in JIT compilation), or a coordinate `Var` survived `collapse`.
+/// in JIT compilation), or a `Var` that is no fold's binder survived
+/// `collapse`: a coordinate, or a placeholder, a fold index that escaped its
+/// builder. The variance this reads types a placeholder as constant, so this
+/// is the refusal that stops one from being placed.
 pub(crate) fn arena_to_schedule(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -187,7 +190,8 @@ pub(crate) fn arena_to_schedule(
             ExprNode::Var(i) => match Binder::from_var(i) {
                 None => panic!(
                     "arena_to_schedule: Var({i}) is a coordinate, which \
-                     passes::lattice::collapse substitutes away -- this schedule was \
+                     passes::lattice::collapse substitutes away, or a fold index that \
+                     escaped its builder and was never closed over -- this schedule was \
                      built without the lowering pipeline"
                 ),
                 Some(b) if lane == Some(b) => ScheduledOp::Lanes,
@@ -414,6 +418,24 @@ mod tests {
         let x = a.push_var(0);
         let two = a.push_const(2.0);
         let root = a.push_binary(OpKind::Mul, x, two);
+        let _ = arena_to_schedule(&a, root, RAW_ORIGIN);
+    }
+
+    /// A placeholder is a fold index that escaped its builder: `Variance::of_var`
+    /// types it as constant, so placement would not tell it from a uniform, and
+    /// the refusal is this `Var` arm's. It answers for the open term before
+    /// anything is scheduled, whatever the variance says.
+    #[test]
+    #[should_panic(expected = "escaped its builder")]
+    fn a_surviving_placeholder_fails_loudly() {
+        let mut a = ExprArena::new();
+        let index = a.push_var(
+            pixelflow_ir::fold::Placeholder::nth(0)
+                .expect("placeholder 0 exists")
+                .var(),
+        );
+        let two = a.push_const(2.0);
+        let root = a.push_binary(OpKind::Mul, index, two);
         let _ = arena_to_schedule(&a, root, RAW_ORIGIN);
     }
 
