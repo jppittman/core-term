@@ -694,11 +694,11 @@ impl Staged {
         term
     }
 
-    /// The closure an open fold closes into: its monoid, carried as a
-    /// header's bits (as [`node`] carries a `FoldHeader`), its binder the one
-    /// `close_fold` chooses, and its range — known, or this
-    /// instantiation's ([`instantiated_range`]).
-    fn fold_at(monoid: Monoid, range: FoldRange) -> TokenStream {
+    /// The [`FoldTerms`](pixelflow_ir::arena::FoldTerms) an open fold closes
+    /// over: its monoid, carried as a header's bits (as [`node`] carries a
+    /// `FoldHeader`), and its range — known, or this instantiation's
+    /// ([`instantiated_range`]). The binder is the one `close_fold` chooses.
+    fn fold_terms(monoid: Monoid, range: FoldRange) -> TokenStream {
         let first = Binder::from_slot(0).expect("the IR has a binder");
         let bits = pixelflow_ir::FoldHeader::new(
             pixelflow_ir::Fold::new(monoid, first),
@@ -713,22 +713,18 @@ impl Staged {
             }
             FoldRange::Structural(range) => instantiated_range(&range),
         };
-        quote! {
-            |__binder| {
-                let __range = #range;
-                ::pixelflow_core::__macro::ir::fold::FoldHeader::new(
-                    ::pixelflow_core::__macro::ir::fold::Fold::new(
-                        ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
-                            .expect("kernel! emitted a well-formed fold")
-                            .fold()
-                            .monoid(),
-                        __binder,
-                    ),
-                    ::pixelflow_core::__macro::ir::fold::Bound::Lit(__range.start),
-                    ::pixelflow_core::__macro::ir::fold::Bound::Lit(__range.end),
-                )
+        quote! {{
+            let __range = #range;
+            ::pixelflow_core::__macro::ir::arena::FoldTerms {
+                monoid: ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
+                    .expect("kernel! emitted a well-formed fold")
+                    .fold()
+                    .monoid(),
+                stride: 1,
+                lo: ::pixelflow_core::__macro::ir::fold::Bound::Lit(__range.start),
+                hi: ::pixelflow_core::__macro::ir::fold::Bound::Lit(__range.end),
             }
-        }
+        }}
     }
 }
 
@@ -825,17 +821,18 @@ impl Site for Staged {
                 .open_fold(#depth)
                 .expect("kernel! refused a fold nested past the binders at expansion");
         });
-        self.open.push((fold.clone(), Self::fold_at(monoid, range)));
+        self.open
+            .push((fold.clone(), Self::fold_terms(monoid, range)));
         Ok(self.step(quote!(#fold.index())))
     }
 
     fn close_fold(&mut self, body: Ident) -> Result<Ident, String> {
-        let (fold, fold_at) = self
+        let (fold, terms) = self
             .open
             .pop()
             .expect("lowering closes only the folds it opened");
         Ok(self.step(quote! {
-            __arena.close_fold(#fold, #body, #fold_at).expect(
+            __arena.close_fold(#fold, #body, #terms).expect(
                 "kernel!: a fold around a kernel's application has no binder left: its body, \
                  the argument's folds among them, binds every one of the IR's indices \
                  (`Binder::COUNT`)"

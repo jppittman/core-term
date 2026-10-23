@@ -177,10 +177,12 @@ program is never reported over budget. `docs/DENOTATION.md:62-66` is amended to 
   unknown pair is decided per call by the guard's `run` test. The literal
   `Range<u32>` spelling (`Kernel::over`, `kernel!`'s `5..3`) is still refused at
   construction, as today.
-- **L3 (legality).** `(var(lo) ∪ var(hi)) ∩ (COORDS ∪ {b}) = ∅`, computed by
-  `compute_arena_variance` over the bound roots, `Ref` resolved through the store
-  (`pixelflow-ir/src/variance.rs:337`, `:279-284`), the same function L4 extends; so
-  construction refuses what `collapse` would otherwise assert. It is checked by binder
+- **L3 (legality).** `(var(lo) ∪ var(hi)) ∩ (COORDS ∪ {b}) = ∅`, computed by the arena's
+  per-node variance transfer function run from each bound and memoized (`variance_from`,
+  `pixelflow-ir/src/variance.rs`) — the one `compute_arena_variance` runs forward, so a
+  `Ref` the bound reaches is resolved through the store and one it does not reach is not —
+  the same function L4 extends; so construction refuses what `collapse` would otherwise
+  assert. It is checked by binder
   slot, so it forbids shadowing: a fold may not rebind a slot its own bounds read, and
   `lowest_free_binder` scanning the bounds means `Kernel::over` never builds one. The
   lattice's row, column and lane binders do not exist until `collapse` substitutes X and
@@ -252,12 +254,15 @@ its edge.
 - **Constness is discovered, never declared.** Callers pass values. `push_reduce(fold, lo,
   hi, body)`, the one constructor, reads a `Const(Lit::Real(v))` bound (after #1431;
   `Lit::Int` after T6) with `v` an in-domain integer into `Bound::Lit`, and keeps any other
-  bound as `Value`. It refuses, by name: a non-integer or out-of-domain `Const`
-  (`BoundOutOfDomain`, today's `admits` as a predicate on one count); a `Lit::Mask` bound (a
-  mask is not a count); L3 (`BoundVaries`); a value bound on `ANY`, `ALL` or `SEQ`
-  (`BoundSort`, §1.4). `BoundArithmetic` (§1.4) is not among them: it is refused at the
-  user surfaces, `over_values` and `kernel!`'s sema, because rules make exact bound
-  arithmetic that extraction rebuilds through `push_reduce`.
+  bound as `Value`. It keeps a non-integer or out-of-domain `Const` as a `Value` bound,
+  whose guard makes the fold NaN (L5), so a literal a rule or the folder made never panics
+  at extraction; `BoundOutOfDomain` (today's `admits` as a predicate on one count) is
+  refused at the user surfaces only: `over_values`, `Kernel::over`'s literal range and
+  `kernel!` (A6). It refuses, by name: a `Lit::Mask` bound (`BoundSort`: a mask is not a
+  count); L3 (`BoundVaries`); a value bound on `ANY`, `ALL` or `SEQ` (`BoundSort`, §1.4).
+  `BoundArithmetic` (§1.4) is not among them: it is refused at the user surfaces,
+  `over_values` and `kernel!`'s sema, because rules make exact bound arithmetic that
+  extraction rebuilds through `push_reduce`.
 - `ExprArena::known_range(id)` is `Some` when both bounds are `Lit`, and returns a
   normalized range with no reversed inhabitant (`lo ≥ hi` is the empty range at `lo`).
   `len`, `is_empty`, `peel`, `peel_back`, `halve` and `admits` move to that view, and every
@@ -266,8 +271,10 @@ its edge.
   the do-while loop would run once; the normalized view has neither. `stride ≠ 1` only with
   a known range it divides, asserted at the push (only `pack` and `HalveFold` make strides,
   both on constants).
-- `close_over` takes the `Value` bounds as extra roots (`from_arena_roots`). A known bound
-  pushes nothing.
+- `close_over` discovers constness before it copies (`Bound::discover`): a bound whose term
+  is a `Const` naming a count is the fold's data and not a root, and the remaining `Value`
+  bounds are extra roots (`from_arena_roots`). A known bound pushes nothing, so
+  `over_values` over two constants is `over` over the literals, node for node.
 - `Kernel::over(monoid, Range<u32>, body)` stays the literal spelling and keeps its
   reversed-range refusal. A new `Kernel::over_values(monoid, &lo, &hi, body)` splices
   bounds with uniform order body, lo, hi, written with T4's typed handles in view;
@@ -277,8 +284,11 @@ its edge.
   `lowest_free_binder` (`arena.rs:1630`) scans them. The walkers that push only the body
   (`depth`, `has_var`, `has_degenerate`, `node_count_subtree`, `term_arena`, `expr.rs`'
   `child_ids[0]`) would skip value bounds silently, so the CL carries a grep-gated
-  checklist of every `Reduce {` site.
-- `canonical`: tag 10 and the header, a `Lit` pair at today's `to_bits` positions (both fit:
+  checklist of every `Reduce {` site. `ExprArena::substitute_vars_with` is not an L7
+  substitution: it enters every fold's body and bounds, so its callers substitute only
+  slots no nested fold rebinds (coordinates, retired axes, a template's metavariables), a
+  precondition its doc states.
+- `canonical` (A4): tag 10 and the header, a `Lit` pair at today's `to_bits` positions (both fit:
   the domain ends at 2²⁴), so a constant fold's key is unchanged; a `Value` bound writes a
   marker in its header field and appends its child's key after the body's.
 
@@ -305,11 +315,14 @@ its edge.
   `ENode::variance` follows L4 in the same CL as the IR's; `insert` and `add` refuse L3 as
   a backstop, and do not refuse bound arithmetic (§1.4): `HalveFold`'s `binder + s` in an
   inner bound is the rules' own, and exact.
-- **Pricing.** A known fold's `len` is read off the node, so `CostModel::fold_cost`
-  (`egraph/cost.rs:413-419`) and `below` (`egraph/extract.rs:1676-1692`) need no graph and
-  do not change in A2. A value-bounded fold prices at `ESTIMATED_TRIPS` (§4), and `below`
-  adds its `Value` bound operands once: it reads only the body operand today, so bound
-  arithmetic would go unpriced with no audit failure (A3).
+- **Pricing.** A known fold's `len` is read off the node. A value-bounded fold whose
+  bound's chosen form is an in-domain integer literal is priced at that count — the price
+  of the literal twin `KnownBound` puts in its class — and any other at `ESTIMATED_TRIPS`
+  (§4). So pricing reads the bound children's extracted picks: the DP prices a fold only
+  after every child class has settled (`extract.rs`'s `Settlement`), and hands the count to
+  `fold_cost` and `below` through the fold's literal twin. `below` adds its `Value` bound
+  operands once: it read only the body operand before value bounds, so bound arithmetic
+  would have gone unpriced with no audit failure.
 - `Value` bound classes **count** toward `inserted_class_count`: the budget is a function
   of the input, and the bounds are input. A known bound makes no class, so only kernels
   with value bounds can move across the 10/50/625 tier edges; that is measured, not
@@ -407,7 +420,9 @@ keyed on cost (LLVM's function specialization, loop versioning), never a binding
 `BranchProbabilityInfo` weights a back edge 124:4: 32 expected trips per level), read by
 `CostModel::fold_cost` (`egraph/cost.rs:413`), `below` (`egraph/extract.rs:1676-1692`)
 and `select.rs`' trips. Nested unknown folds multiply. A fold's own node says whether its
-range is known (§3.2), so no price site needs a graph. The estimate is policy: a carry
+range is known; a value bound is priced by its class's chosen form (§3.2), which the
+extractor holds before it prices the fold, so no price site needs more of the graph than
+the picks. The estimate is policy: a carry
 ranking at 32 may differ from one at the real count.
 
 **Exactness until T6.** A count is an integer in a `Real` lane by convention. The guard's
@@ -564,18 +579,42 @@ A5's deletion, which removes code #1427 only re-scopes.
   lifting of that cap widens both together. The reason is in `FoldHeader`'s doc, as
   CLAUDE.md's control-plane rule asks.
 - **A3. Value bounds in the IR and e-graph.** `over_values` (`pub(crate)`), the
-  `push_reduce` refusals (`BoundVaries`, `BoundSort`, `BoundOutOfDomain`),
+  `push_reduce` refusals (`BoundVaries`, `BoundSort`), `BoundOutOfDomain` and
   `BoundArithmetic` at `over_values`, L4 in both variance functions, L7, `KnownBound` (L8), the rules
-  gated on known ranges, `FactorFold` factoring under a value bound (decision 5), `ESTIMATED_TRIPS` in `fold_cost` and
-  `below`, and `below`'s bound operands. Codegen refuses a `Value` bound by name. Gate:
+  gated on known ranges, `FactorFold` factoring under a value bound (decision 5), the price of a
+  value-bounded fold in `fold_cost` and `below` (its bound's chosen literal through the fold's
+  literal twin, else `ESTIMATED_TRIPS`), and `below`'s bound operands. Codegen refuses a `Value`
+  bound by name. Gate:
   byte_probe empty; pins for L2 (`over_values(5, 3)` is the identity, `Kernel::over(_, 5..3, _)`
   still refused), L3 (X, Y, own binder and an X-varying `Ref` refused; enclosing binder
   accepted), `ANY`/`ALL`/`SEQ` under a value bound refused, a non-leaf bound refused at
   `over_values`, L4, L7, L8 (a peel makes the inner bound known), and a triangular fold
-  whose outer fold `HalveFold` halves (the rule-made `0..(i + s)` accepted).
+  whose outer fold `HalveFold` halves (the rule-made `0..(i + s)` accepted). **Done:**
+  byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and `=avx2`; the 29 font
+  programs' keys, digests and saturation telemetry, the extraction fields included,
+  unchanged. A placeholder's variance is `CONST` (it is a binder-to-be, never a coordinate,
+  and L3 is checked again when `close_over` renames it into a slot), so a triangular fold
+  built through the builder passes L3. A value bound is priced by its class's chosen
+  literal through the fold's literal twin, and the key refuses a value bound until A4.
+  The L8 and `HalveFold` pins saturate over the fold rules alone, with no `ConstantFold`
+  and no production optimizer: the key refuses a value bound, so no production path can
+  carry one, and without `ConstantFold` a rule-made `0 + 1` stays the arithmetic it is,
+  which the triangular pin must allow. `Saturation::total_evals` rises on every kernel
+  with a fold, because `KnownBound` is evaluated on every `Reduce`; no gate reads it, but
+  the anytime curves and the Guide research bins do, so a moved curve is not a regression.
 - **A4. Value bounds in codegen.** `Bound::Value`, the operand and carve change, the
   legalized guard, the post-collapse assert, `Trips` and its `Display`, `EmitTraffic`;
-  `over_values` public. Gate: byte_probe empty (no row has a value bound); new JIT tests in
+  `over_values` public. The key: a `Value` marker in `FoldHeader::to_bits`'s count field
+  and its `from_bits` inverse. The serializers that write a header without its children
+  refuse a value bound by name today and learn the marker:
+  `pixelflow-graphics/src/render/cell_grid.rs`'s and
+  `pixelflow-graphics/tests/production_glyph_arena_dump.rs:171`'s `dump_arena`,
+  `pixelflow-graphics/src/test_support.rs`'s `program_digest`,
+  `pixelflow-pipeline/src/collapse_bench/corpus.rs`,
+  `pixelflow-pipeline/src/bin/corpus_gaps.rs`, and the compiler's `arena_to_tokens`; the
+  training corpus bumps its format version. The guard handles a rule-made out-of-domain
+  literal: `push_reduce` keeps one as a value bound (A3), so the guard, not a panic,
+  decides it. Gate: byte_probe empty (no row has a value bound); new JIT tests in
   `pixelflow-codegen/tests/` against scalar Rust, every tier: a uniform `n` at 0, 1, 7,
   1000, `2²⁴` (in the domain), and `2²⁴ + 2`, NaN, 2.5, −1 (NaN, no hang); uniforms 5 and 3
   as `lo` and `hi` (the identity); a triangular `Σ_i Σ_{j<i}`; a uniform-bounded fold whose
@@ -618,7 +657,10 @@ still in the key (§3.5). Ruling 6 lands with B2; decision 4's interim is refuse
 - **B3. A run is a call.** `spans`, the outer fold over `G` and the inner fold over
   `Lattice(count(g))` reading `pieces ∘ ι_g` (§1.3); `Glyph::over` concatenates tables
   host-side with `Glyph::empty()` its unit (`tests/run_is_a_glyph.rs`). Gate: B2's, plus
-  one program for strings of different lengths, and a malformed span reads NaN.
+  one program for strings of different lengths, and a malformed span reads NaN. L3's walk
+  resolves each `Ref` a bound reaches through the referent's whole arena, on every push; no
+  production bound holds a `Ref` before this step. A referent's variance belongs to the
+  referent, so memoize it per referent when B3's profile asks.
 - **B4. `FontPrograms` goes** (decision 7); its tests move to B2's program.
 - **B5. The `kernel!` surface for a fold over a discrete kernel** (decision 1); the glyph
   is then written in `kernel!` again. Depends on O3 (the-language-is-kernel `:215-218`):

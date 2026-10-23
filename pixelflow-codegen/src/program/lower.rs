@@ -340,8 +340,8 @@ pub(crate) fn arena_to_schedule(
             ExprNode::Reduce { fold, lo, hi, body } => ScheduledOp::Reduce {
                 fold,
                 // Codegen takes no value bound until A4 places its operand
-                // (docs/language/2026-10-20-a-bound-is-a-value.md §3.3); none
-                // can be built until A3.
+                // (docs/language/2026-10-20-a-bound-is-a-value.md §3.3); the IR
+                // and the e-graph hold one, and `known` refuses it here by name.
                 lo: known(lo),
                 hi: known(hi),
                 body: map_child(body),
@@ -376,6 +376,7 @@ pub(crate) fn arena_to_schedule(
 mod tests {
     use super::*;
     use pixelflow_ir::arena::ExprArena;
+    use pixelflow_ir::fold::{Fold, Monoid};
 
     /// The uniform slots a schedule built by hand names for the origin.
     ///
@@ -427,5 +428,28 @@ mod tests {
             .by_ref();
         let (arena, root) = named.parts();
         let _ = arena_to_schedule(arena, root, RAW_ORIGIN);
+    }
+
+    /// The IR holds a fold whose bound is a value, and the schedule does not
+    /// yet: it refuses one by name here, for a caller that schedules an arena
+    /// directly (the key refuses it first on every compile path).
+    ///
+    /// The body is the binder's own `Var`, not `X`: a coordinate is a
+    /// survivor refused first, and would answer for the bound.
+    #[test]
+    #[should_panic(expected = "a fold bound that is a value")]
+    fn a_value_bound_is_refused_by_name_before_it_is_scheduled() {
+        let mut a = ExprArena::new();
+        let slot = a.declare_uniform(pixelflow_ir::Uniform::new(3.0).decl());
+        let count = a.push_uniform(slot);
+        let binder = Binder::from_slot(0).expect("slot 0 exists");
+        let i = a.push_var(binder.var());
+        let root = a.push_reduce(
+            Fold::new(Monoid::SUM, binder),
+            Bound::Lit(0),
+            Bound::Value(count),
+            i,
+        );
+        let _ = arena_to_schedule(&a, root, RAW_ORIGIN);
     }
 }

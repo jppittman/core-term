@@ -405,7 +405,7 @@ fn write_node(w: &mut impl Write, arena: &ExprArena, id: ExprId) -> io::Result<(
             if lo.value().is_some() || hi.value().is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "a value bound has no corpus encoding before A3's format version",
+                    "a value bound has no corpus encoding before A4's format version",
                 ));
             }
             w.write_all(&[TAG_REDUCE])?;

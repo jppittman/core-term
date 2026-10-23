@@ -73,3 +73,19 @@ is untouched, so `KnownBound` is reached as `egraph::fold_rules::KnownBound`, th
 (private structs). `graph.rs`: `EGraph::refuse_a_varying_bound` (private). `insert.rs`: `literal`
 (private fn). Removed: `node.rs`'s private `var_variance` (`Variance::of_var` is the one answer).
 `ENode::variance` stays `pub(crate)`.
+
+## pixelflow-codegen, pixelflow-compiler, pixelflow-pipeline (the tail)
+
+No `pub` item is added, removed or re-signed in these three crates, and nothing is re-exported.
+
+| Crate | Item | Visibility | What changed |
+|---|---|---|---|
+| `pixelflow-compiler` | `Staged::fold_at` renamed `Staged::fold_terms` (`emit.rs`) | private associated fn | emits a `FoldTerms` value where it emitted a closure; the arena it builds is the same, node for node |
+| `pixelflow-compiler` | `Expansion::close_fold` (`lower.rs`, the `Site` impl's method) | private | builds a `FoldTerms` for `ExprArena::close_fold`; `Fold` stays imported (`Fold::EXACT_BOUND`), `FoldHeader` moved into the test module's imports |
+| `pixelflow-codegen` | `program/lower.rs`: a comment, and test `a_value_bound_is_refused_by_name_before_it_is_scheduled` | test only | `arena_to_schedule` and `known` are unchanged and still refuse a value bound with `VALUE_BOUND` |
+| `pixelflow-pipeline` | `training/corpus.rs` `write_node`'s error text; a comment in `examples/glyph_phase_split.rs` | text only | "before A4's format version" |
+
+What the tail's code reaches that was already public: the `kernel!` expansion now names
+`::pixelflow_core::__macro::ir::arena::FoldTerms` (the `pub struct` from `pixelflow-ir`, listed above)
+and `::pixelflow_core::__macro::ir::fold::Bound::Lit`. `__macro` is `pixelflow-core`'s existing
+macro-support module; nothing is added to it.

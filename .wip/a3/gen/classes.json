@@ -60,7 +60,7 @@
   "text": "ExprNode::Reduce { fold, lo, hi, body } => ScheduledOp::Reduce {",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "comment only (\"none can be built until A3\"); `known` keeps refusing by name (A4)",
+  "reason": "comment only (\"none can be built until A3\" becomes \"the IR and the e-graph hold one, and `known` refuses it here by name\"); `known` keeps refusing by name (A4)",
   "lines": [
    340
   ]
@@ -1070,7 +1070,7 @@
   "text": "if let ExprNode::Reduce { .. } = arena.node(id) {",
   "count": 1,
   "class": "left",
-  "reason": "production glyph folds are literal until B2: `KNOWN_RANGE`'s reason (N9)",
+  "reason": "production glyph folds are literal until B2: `KNOWN_RANGE`'s reason, now stated in a comment at the `expect` (N9)",
   "lines": [
    78
   ]

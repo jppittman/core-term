@@ -76,6 +76,8 @@ fn trip_counts(arena: &ExprArena, root: ExprId) -> Vec<u64> {
             continue;
         }
         if let ExprNode::Reduce { .. } = arena.node(id) {
+            // A production glyph's folds are all literal until B2 lets a glyph
+            // bound a fold by a value (`KNOWN_RANGE` names this reason).
             trips.push(arena.known_range(id).expect(KNOWN_RANGE).len());
         }
         stack.extend(arena.children(id));
