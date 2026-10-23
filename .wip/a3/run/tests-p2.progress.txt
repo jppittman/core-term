@@ -1,0 +1,21 @@
+/dev/vda        252G   29G   11G  73% /
+pixelflow-ir done: EXIT 0 (avail 10896M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-search-default done: EXIT 0 (avail 10896M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-search-all done: EXIT 0 (avail 10896M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-search-telemetry done: EXIT 0 (avail 10896M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-codegen done: EXIT 0 (avail 10896M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-compiler done: EXIT 0 (avail 10883M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-graphics done: EXIT 0 (avail 10876M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-pipeline done: EXIT 0 (avail 10873M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-core done: EXIT 0 (avail 10838M)
+/dev/vda        252G   29G   11G  73% /
+pixelflow-runtime done: EXIT 0 (avail 10838M)
+DONE

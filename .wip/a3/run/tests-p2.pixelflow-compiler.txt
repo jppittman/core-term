@@ -1,0 +1,405 @@
+   Compiling pixelflow-codegen v0.1.0 (/home/user/pixelflow/pixelflow-codegen)
+   Compiling pixelflow-compiler v0.1.0 (/home/user/pixelflow/pixelflow-compiler)
+   Compiling pixelflow-core v0.1.0 (/home/user/pixelflow/pixelflow-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.98s
+     Running unittests src/lib.rs (target.noindex/debug/deps/pixelflow_compiler-862d9c9fc1a80810)
+
+running 146 tests
+test ast::tests::unary_op_from_syn_maps_neg_and_nothing_else ... ok
+test ast::tests::binary_op_from_syn_rejects_an_unsupported_syn_binop ... ok
+test ast::tests::binary_op_from_syn_maps_every_supported_syn_binop_to_its_own_variant ... ok
+test ast::tests::an_entrys_args_record_is_its_name_in_upper_camel_case ... ok
+test emit::tests::a_templates_holes_are_filled_by_the_instantiation ... ok
+test emit::tests::a_record_and_an_args_record_expand_to_host_structs ... ok
+test emit::tests::a_template_is_offered_to_no_optimizer ... ok
+test emit::tests::the_closure_form_expands_to_an_expression ... ok
+test every_advertised_method_compiles::a_name_the_front_end_does_not_advertise_is_still_refused ... ok
+test emit::tests::the_items_form_expands_to_items ... ok
+test every_advertised_method_compiles::a_known_name_at_the_wrong_arity_reports_the_arity ... ok
+test lower::tests::a_binding_is_resolved_before_a_coordinate_of_the_same_name ... ok
+test lower::tests::a_binding_shadows_a_parameter_only_inside_its_block ... ok
+test emit::tests::an_entry_that_takes_a_kernel_is_staged ... ok
+test lower::tests::a_const_lowers_to_its_value ... ok
+test lower::tests::a_bound_past_the_exact_index_is_refused ... ok
+test lower::tests::a_coordinate_in_a_helper_is_refused_here_too ... ok
+test lower::tests::a_fold_lowers_to_one_reduce_and_leaves_nothing_behind ... ok
+test lower::tests::a_helper_does_not_see_the_callers_locals ... ok
+test lower::tests::a_known_fold_is_no_hole ... ok
+test lower::tests::a_helper_is_inlined_in_its_own_scope ... ok
+test lower::tests::a_literal_lowers_to_the_value_the_parser_rounded_once ... ok
+test lower::tests::a_structural_parameter_leaves_the_template_open ... ok
+test every_advertised_method_compiles::through_the_kernel_raw_macros_pipeline ... ok
+test lower::tests::a_tuple_let_binds_every_name_at_once ... ok
+test lower::tests::a_usize_const_as_f32_is_its_value ... ok
+test lower::tests::an_if_lowers_to_the_if_node ... ok
+test lower::tests::a_value_is_not_converted ... ok
+test lower::tests::an_index_where_a_value_is_expected_is_refused_here_too ... ok
+test every_advertised_method_compiles::through_the_kernel_macros_pipeline ... ok
+test lower::tests::every_parameter_is_a_uniform_declared_in_order ... ok
+test lower::tests::helpers_call_helpers ... ok
+test lower::tests::nested_folds_take_distinct_slots_inside_out ... ok
+test parser::tests::a_cast_parses_with_its_operand ... ok
+test parser::tests::a_cast_to_anything_but_f32_is_refused ... ok
+test parser::tests::a_closure_outside_a_fold_is_refused ... ok
+test parser::tests::a_float_literal_past_f32s_range_is_refused ... ok
+test parser::tests::a_collection_spelled_any_way_is_refused_naming_its_sections ... ok
+test parser::tests::a_float_literal_rounds_once_to_f32 ... ok
+test parser::tests::a_fn_signature_is_plain ... ok
+test parser::tests::a_kernel_typed_parameter_is_an_entrys_and_not_a_closures ... ok
+test parser::tests::a_let_binds_a_plain_name ... ok
+test parser::tests::a_literal_suffixed_with_a_type_other_than_f32_is_refused ... ok
+test parser::tests::a_literal_that_is_not_a_number_is_refused ... ok
+test parser::tests::a_named_field_parses_as_a_field_read ... ok
+test parser::tests::a_path_from_outside_the_block_is_refused_by_name ... ok
+test parser::tests::a_fold_spelled_any_other_way_is_refused ... ok
+test parser::tests::a_record_parses_with_its_fields_and_docs ... ok
+test parser::tests::a_range_is_refused_naming_the_fold ... ok
+test parser::tests::a_record_pattern_a_tuple_value_and_a_record_literal_are_refused_naming_their_phase ... ok
+test parser::tests::a_record_that_is_not_named_fields_is_refused_naming_its_section ... ok
+test parser::tests::a_records_attributes_are_kept ... ok
+test parser::tests::a_terminal_statement_with_a_trailing_semicolon_is_not_the_blocks_final_expression ... ok
+test parser::tests::a_tuple_anywhere_but_a_destructuring_let_is_refused ... ok
+test parser::tests::a_tuple_let_binds_each_name_to_its_expression ... ok
+test parser::tests::an_entrys_const_generics_are_its_structural_parameters ... ok
+test parser::tests::an_if_with_its_else_parses_as_the_choice ... ok
+test parser::tests::a_tuple_let_of_another_shape_is_refused ... ok
+test parser::tests::an_integer_literal_is_exact_or_refused ... ok
+test parser::tests::an_if_without_an_else_is_refused ... ok
+test parser::tests::an_items_block_parses_consts_helpers_and_entries ... ok
+test parser::tests::an_integer_literal_is_kept_exact_for_its_position ... ok
+test parser::tests::any_other_expression_is_refused_at_parse ... ok
+test parser::tests::every_fold_spelling_parses_to_its_reduction ... ok
+test parser::tests::let_else_is_refused_rather_than_dropped ... ok
+test parser::tests::parse_block_body_with_a_scalar_param ... ok
+test parser::tests::loops_assignment_return_and_closures_are_refused ... ok
+test parser::tests::parse_empty_params ... ok
+test parser::tests::parse_block_expr ... ok
+test parser::tests::parse_let_with_type_annotation_extracts_both_name_and_type ... ok
+test parser::tests::parse_method_call ... ok
+test parser::tests::parse_multiple_params ... ok
+test parser::tests::parse_scalar_params_keep_their_declared_types ... ok
+test parser::tests::parse_simple_kernel ... ok
+test parser::tests::type_arguments_on_a_method_are_refused ... ok
+test parser::tests::rem_and_not_are_refused_by_name ... ok
+test sema::tests::a_binding_named_after_a_projection_is_refused ... ok
+test sema::tests::a_block_with_no_entry_is_refused ... ok
+test sema::tests::a_body_naming_a_retired_axis_is_refused_with_the_uniform_note ... ok
+test sema::tests::a_call_is_checked ... ok
+test sema::tests::a_const_is_evaluated_in_f32_per_operation ... ok
+test sema::tests::a_const_that_is_not_constant_is_refused ... ok
+test sema::tests::a_const_never_contracts_a_product_and_a_sum ... ok
+test sema::tests::a_coordinate_in_a_helper_is_refused ... ok
+test sema::tests::a_field_is_one_of_the_records_and_a_record_is_its_own_type ... ok
+test sema::tests::a_fold_index_is_scoped_to_the_folds_body ... ok
+test sema::tests::a_kernel_is_a_parameter_and_nothing_else ... ok
+test sema::tests::a_function_spelled_otherwise_is_refused ... ok
+test sema::tests::a_kernel_is_applied_and_passed_on ... ok
+test sema::tests::a_kernel_is_passed_on_by_name_to_a_kernel_typed_parameter ... ok
+test sema::tests::a_kernel_is_not_a_value ... ok
+test sema::tests::a_kernel_passed_on_moves_as_rustc_moves_it ... ok
+test sema::tests::a_kernel_passed_on_in_one_arm_is_the_others ... ok
+test sema::tests::a_let_annotation_is_checked ... ok
+test sema::tests::a_let_initializer_sees_the_binding_it_shadows ... ok
+test sema::tests::a_local_used_after_its_block_ends_is_refused ... ok
+test sema::tests::a_mask_used_as_a_number_is_a_type_error ... ok
+test sema::tests::a_let_named_after_a_coordinate_is_refused ... ok
+test sema::tests::a_parameter_named_z_is_ordinary ... ok
+test sema::tests::a_parameter_shadowed_in_an_inner_block_is_in_scope_after_it ... ok
+test sema::tests::a_number_used_as_a_mask_is_a_type_error ... ok
+test sema::tests::a_parameter_type_is_honored ... ok
+test sema::tests::a_range_from_usize_consts_is_evaluated_at_expansion ... ok
+test sema::tests::a_range_bound_that_is_not_constant_is_refused ... ok
+test sema::tests::a_record_is_named_aliased_passed_and_read_by_field ... ok
+test sema::tests::a_record_field_that_is_not_an_f32_is_refused_naming_its_section ... ok
+test sema::tests::a_retired_method_is_refused ... ok
+test sema::tests::a_return_type_is_checked ... ok
+test sema::tests::a_reversed_range_is_refused_and_an_empty_one_is_not ... ok
+test lower::tests::folds_nest_as_deep_as_the_ir_has_binders ... ok
+test sema::tests::a_structural_parameter_is_a_count ... ok
+test sema::tests::a_record_used_as_a_value_or_computed_is_refused_naming_phase_d ... ok
+test sema::tests::a_structural_parameter_is_not_a_value_and_is_its_entrys ... ok
+test sema::tests::a_usize_const_is_checked_as_rustc_checks_it ... ok
+test sema::tests::a_usize_is_not_a_declared_value_type ... ok
+test sema::tests::a_usize_where_a_value_is_expected_is_a_type_error ... ok
+test sema::tests::a_tuple_let_types_each_expression_before_binding_any_name ... ok
+test sema::tests::an_application_is_a_kernels_at_two_values ... ok
+test sema::tests::an_args_record_name_taken_twice_is_refused ... ok
+test sema::tests::an_item_is_not_shadowed ... ok
+test sema::tests::an_f32_const_converts_a_usize_const_by_as ... ok
+test sema::tests::an_unknown_name_is_refused_not_captured ... ok
+test sema::tests::analyze_simple_kernel ... ok
+test sema::tests::block_scoping ... ok
+test sema::tests::as_f32_converts_a_usize_and_nothing_else ... ok
+test sema::tests::error_on_duplicate_parameter ... ok
+test sema::tests::error_on_shadowing_intrinsic ... ok
+test sema::tests::every_advertised_op_method_has_a_typing ... ok
+test sema::tests::error_on_unknown_method ... ok
+test sema::tests::consts_are_evaluated_at_expansion ... ok
+test sema::tests::known_methods_accepted ... ok
+test sema::tests::every_fold_types_as_its_terms ... ok
+test sema::tests::typo_suggestion_for_method ... ok
+test sema::tests::typo_suggestion_for_method_is_absent_when_no_same_length_method_is_close ... ok
+test sema::tests::recursion_is_refused ... ok
+test sema::tests::the_arms_of_a_choice_have_one_type ... ok
+test sema::tests::typo_suggestion_for_method_names_the_exact_match_at_the_two_char_diff_boundary ... ok
+test symbol::tests::a_lookup_sees_the_innermost_binding_in_scope ... ok
+test sema::tests::typo_suggestion_for_method_matches_case_insensitively ... ok
+test symbol::tests::all_names_lists_intrinsics_and_every_registered_parameter ... ok
+test symbol::tests::intrinsics_are_predefined ... ok
+test symbol::tests::pop_scope_restores_the_binding_a_local_shadowed ... ok
+test symbol::tests::register_parameter_marks_name_as_parameter_and_not_intrinsic ... ok
+test symbol::tests::pop_scope_removes_locals_registered_since_the_matching_push_scope ... ok
+test lower::tests::a_placeholder_no_hole_names_is_refused - should panic ... ok
+test symbol::tests::the_kernels_own_scope_cannot_be_popped - should panic ... ok
+
+test result: ok. 146 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/bake_vs_scalar_truth.rs (target.noindex/debug/deps/bake_vs_scalar_truth-f0cfc75dda964d8b)
+
+running 5 tests
+test abs_recip_matches_scalar_truth ... ok
+test piecewise_matches_scalar_truth ... ok
+test params_match_scalar_truth ... ok
+test arithmetic_matches_scalar_truth ... ok
+test projections_are_the_symbolic_derivative ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/binding_times.rs (target.noindex/debug/deps/binding_times-85754b91daf209cb)
+
+running 9 tests
+test a_record_parameter_is_one_uniform_per_field_in_declaration_order ... ok
+test an_unread_parameter_binds_positionally ... ok
+test an_arity_mismatch_is_an_error ... ok
+test each_structural_range_is_a_hole_of_its_own ... ok
+test a_program_compiled_once_is_rebound_from_args ... ok
+test every_call_of_an_entry_at_one_instantiation_is_one_program ... ok
+test the_entrys_args_rebind_a_kernel_it_is_composed_into ... ok
+test the_macro_docs_example_bakes_and_rebinds ... ok
+test a_structural_parameter_named_as_the_emissions_locals_is_its_own ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/derivative_under_warp.rs (target.noindex/debug/deps/derivative_under_warp-e215612baa872c30)
+
+running 6 tests
+test a_composed_derivative_does_follow_the_warp ... ok
+test a_warped_derivative_follows_the_warp_in_kernel ... ok
+test a_warped_derivative_follows_the_warp_in_kernel_raw ... ok
+test an_unwarped_derivative_is_correct_in_both_macros ... ok
+test a_macro_derivative_agrees_with_the_composed_one_pointwise ... ok
+test a_macro_derivative_with_a_param_agrees_with_the_composed_one ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/fold_is_kernel_over.rs (target.noindex/debug/deps/fold_is_kernel_over-0b8331f47254e695)
+
+running 14 tests
+test a_fold_over_a_body_that_reads_another_fold_takes_the_next_slot ... ok
+test a_helpers_fold_inside_a_fold_is_nested_over_and_captures_nothing ... ok
+test a_max_is_max_over ... ok
+test a_min_is_min_over ... ok
+test a_nested_fold_is_nested_over_and_captures_nothing ... ok
+test a_product_is_product_over ... ok
+test a_range_that_starts_past_zero_is_over ... ok
+test a_sum_is_sum_over ... ok
+test all_is_all_over ... ok
+test an_empty_range_is_over_an_empty_range ... ok
+test any_is_any_over ... ok
+test a_baked_fold_is_its_terms_written_out ... ok
+test a_fold_in_a_helper_is_over ... ok
+test a_baked_fold_is_its_terms_written_out_whichever_extraction_chooses ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/items_block.rs (target.noindex/debug/deps/items_block-8e760d008686ee14)
+
+running 6 tests
+test an_entry_may_return_a_mask ... ok
+test an_entrys_parameters_are_uniforms_rebound_through_args ... ok
+test if_and_select_lower_to_the_same_arena ... ok
+test entries_share_a_helper ... ok
+test applying_a_helper_to_a_shifted_coordinate_warps_it ... ok
+test a_block_expands_where_no_prelude_is_in_scope ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests/jit_parity.rs (target.noindex/debug/deps/jit_parity-ad661976ae43adb2)
+
+running 12 tests
+test jit_chained_max_then_min_matches_scalar_reference ... ok
+test jit_exp ... ok
+test jit_arithmetic ... ok
+test jit_dxx_is_second_derivative ... ok
+test jit_noncommutative_heavy_right ... ok
+test jit_scalar_params ... ok
+test jit_sin_cos ... ok
+test jit_sqrt_norm ... ok
+test jit_v_is_identity ... ok
+test jit_unary ... ok
+test jit_dx_dy_of_distance_field ... ok
+test jit_font_coverage_matches_truth ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.62s
+
+     Running tests/kernel_5params.rs (target.noindex/debug/deps/kernel_5params-0dd886dc01fa70fe)
+
+running 5 tests
+test builder_arguments_reach_the_arena_in_declaration_order ... ok
+test kernel_5_params_compiles ... ok
+test kernel_6_params_compiles ... ok
+test kernel_8_params_compiles ... ok
+test kernel_7_params_compiles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/kernel_composition.rs (target.noindex/debug/deps/kernel_composition-7c89398fa1762013)
+
+running 6 tests
+test a_kernel_used_multiple_times_stays_one_dag ... ok
+test bare_and_at_sites_mix ... ok
+test composition_nests ... ok
+test derivative_of_nested_composition ... ok
+test at_sites_warp_coordinates_per_site ... ok
+test aa_ramp_over_circle_sdf ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/kernel_macro.rs (target.noindex/debug/deps/kernel_macro-fa25fcaf21ac8c17)
+
+running 30 tests
+test a_const_item_folds_and_an_f32_argument_is_a_uniform ... ok
+test a_uniform_argument_is_bound_per_call ... ok
+test macro_abs ... ok
+test macro_add_xy ... ok
+test kernel_raw_supports_pow_and_log10 ... ok
+test kernel_raw_supports_the_same_primitive_and_library_methods_as_kernel ... ok
+test macro_acos ... ok
+test macro_atan2_matches_reference_at_boundary_and_interior_points ... ok
+test macro_clamp_bounds_the_value_on_both_sides ... ok
+test macro_asin ... ok
+test macro_atan ... ok
+test macro_atan2_quadrants ... ok
+test macro_fract_is_x_minus_its_floor ... ok
+test macro_complex_expr ... ok
+test macro_log10 ... ok
+test macro_cos ... ok
+test macro_hypot_is_the_euclidean_norm ... ok
+test macro_negation ... ok
+test macro_division ... ok
+test macro_pow ... ok
+test macro_round ... ok
+test macro_min_returns_smaller_and_max_returns_larger ... ok
+test macro_return_x ... ok
+test macro_sin ... ok
+test macro_sqrt ... ok
+test no_params_is_a_kernel ... ok
+test macro_subtraction ... ok
+test two_params_is_a_builder ... ok
+test macro_sin_pi_half ... ok
+test one_param_is_a_builder ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/kernel_typed_parameters.rs (target.noindex/debug/deps/kernel_typed_parameters-fad4534ecc7bdd84)
+
+running 16 tests
+test a_composed_kernel_holds_only_its_program ... ok
+test a_name_summed_at_the_sample_stays_a_name ... ok
+test a_derivative_of_an_application_follows_the_warp ... ok
+test a_derivative_inside_an_argument_follows_the_warp ... ok
+test a_sum_of_two_kernels_is_their_sum ... ok
+test an_application_is_at ... ok
+test an_argument_holding_a_fold_inside_a_fold_captures_nothing ... ok
+test a_name_applied_inside_a_fold_is_what_it_names ... ok
+test a_structural_entry_applies_its_argument ... ok
+test an_unapplied_argument_declares_and_a_shared_one_declares_once ... ok
+test one_kernel_passed_twice_is_one_argument ... ok
+test an_open_argument_is_refused - should panic ... ok
+test an_argument_reading_a_table_is_refused - should panic ... ok
+test the_fold_around_an_application_binds_past_the_arguments ... ok
+test the_entrys_uniforms_come_first_then_each_arguments_in_order ... ok
+test an_argument_with_nested_folds_keeps_them ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/optimized_agrees_with_raw.rs (target.noindex/debug/deps/optimized_agrees_with_raw-3714ac3de92e1873)
+
+running 10 tests
+test abs_and_neg_agree ... ok
+test div_agrees ... ok
+test add_sub_mul_agrees ... ok
+test min_max_agrees ... ok
+test mul_add_agrees ... ok
+test exp_agrees_within_domain ... ok
+test select_on_comparison_agrees ... ok
+test sqrt_agrees ... ok
+test sin_agrees_within_domain ... ok
+test short_sum_over_agrees ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/rustc_is_the_oracle.rs (target.noindex/debug/deps/rustc_is_the_oracle-30d1f4114d6db1fc)
+
+running 30 tests
+test a_float_literal_rounds_once_as_rustc_rounds_it ... ok
+test a_const_never_contracts_as_rustc_never_does ... ok
+test a_const_is_evaluated_in_f32_as_rustc_evaluates_it ... ok
+test a_helper_and_a_const_mean_what_rusts_do ... ok
+test a_kernel_passed_on_in_one_arm_is_rusts ... ok
+test a_fold_over_an_empty_range_is_the_identity_as_in_rustc ... ok
+test a_let_in_the_same_block_sees_the_binding_it_shadows ... ok
+test a_fold_index_shadows_only_inside_its_body ... ok
+test a_kernel_passed_to_a_helper_is_rusts_closure_passed ... ok
+test a_helpers_fold_inside_a_fold_captures_nothing_as_in_rustc ... ok
+test a_min_folds_as_rustcs_does ... ok
+test a_parameter_is_visible_again_after_the_block_that_shadowed_it ... ok
+test a_product_folds_as_rustcs_does ... ok
+test a_nested_fold_captures_the_outer_index_as_rustcs_does ... ok
+test a_records_field_arithmetic_is_rustcs ... ok
+test a_max_folds_as_rustcs_does ... ok
+test a_tuple_let_binds_as_rustcs_does ... ok
+test all_folds_as_rustcs_does ... ok
+test a_range_from_consts_folds_as_rustcs_does ... ok
+test an_application_is_rusts_call ... ok
+test an_else_if_chain_chooses_as_rustcs_does ... ok
+test an_if_chooses_as_rustcs_does ... ok
+test an_inner_let_shadows_only_inside_its_block ... ok
+test an_integer_literal_is_exact ... ok
+test an_argument_holding_a_fold_inside_a_fold_is_rusts ... ok
+test each_use_sees_the_innermost_binding_in_scope ... ok
+test one_kernel_passed_twice_is_rusts_closure_shared ... ok
+test a_sum_folds_as_rustcs_does ... ok
+test a_structural_count_folds_as_rustcs_const_generic_does ... ok
+test any_folds_as_rustcs_does ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/the_library_is_the_builders.rs (target.noindex/debug/deps/the_library_is_the_builders-07f98fd38ed34059)
+
+running 9 tests
+test clamp_is_kernel_clamp ... ok
+test dwrt_by_index_is_dx_and_dy ... ok
+test dy_is_kernel_dy ... ok
+test dx_is_kernel_dx ... ok
+test fract_is_kernel_fract ... ok
+test a_derivative_of_a_library_method_in_a_helper_is_the_builders ... ok
+test v_is_the_value ... ok
+test hypot_is_kernel_hypot ... ok
+test the_hessian_is_the_derivative_twice ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pixelflow_compiler
+
+running 6 tests
+test pixelflow-compiler/src/lib.rs - kernel (line 106) ... ignored
+test pixelflow-compiler/src/lib.rs - kernel (line 185) ... ignored
+test pixelflow-compiler/src/lib.rs - kernel (line 197) ... ignored
+test pixelflow-compiler/src/lib.rs - kernel (line 234) ... ignored
+test pixelflow-compiler/src/lib.rs - kernel (line 277) ... ignored
+test pixelflow-compiler/src/lib.rs - kernel_raw (line 341) ... ignored
+
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.22s; merged doctests compilation took 0.21s
