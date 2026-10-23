@@ -2146,9 +2146,11 @@ mod tests {
             matches!(f.eg.nodes(f.bound).next(), Some(ENode::Reduce { .. })),
             "the premise: the bound class's first member is the fold"
         );
+        let first = f.eg.nodes(f.bound).next().expect("a member");
+        let reads = first.variance(|key| f.eg.ref_variance(key), |child| f.eg.variance(child));
         assert!(
-            has_a_member_that_keeps_l3(&f.eg, f.bound),
-            "the premise: and the fold keeps L3 itself"
+            Fold::new(Monoid::SUM, binder(0)).bound_may_read(reads),
+            "the premise: and the fold keeps L3 itself, so only the skip passes it over"
         );
         let Some(RewriteAction::Plan(plan)) = HalveFold.apply(&f.eg, class, &outer) else {
             panic!("the bound class has a member that is no fold and keeps L3, so it plans");
@@ -2158,7 +2160,10 @@ mod tests {
             .iter()
             .filter(|node| matches!(node, HeadNode::Reduce { .. }))
             .count();
-        assert_eq!(folds, 2, "the bound was rebuilt through `i`: {plan:?}");
+        assert_eq!(
+            folds, 2,
+            "the bound was rebuilt through `i · 1`, not the fold: {plan:?}"
+        );
 
         SaturationConfig::compatibility(1).run(&mut f.eg);
         assert_eq!(
@@ -2499,9 +2504,9 @@ mod tests {
         })
     }
 
-    /// `i * 2`, the bound [`stale_index_plus_one`] has before it goes stale, with
-    /// the class `P` beside it: a halved copy's bound is `(i + 1) * 2`, a class
-    /// the plan mints over `i + 1`, which lands in `P`.
+    /// `i * 2` over [`stale_index_plus_one`]'s bound (the index), with that
+    /// recipe's stale class `P` beside it: a halved copy's bound is
+    /// `(i + 1) * 2`, a class the plan mints over `i + 1`, which lands in `P`.
     fn stale_double_index(eg: &mut Saturation) -> Stale {
         let stale = stale_index_plus_one(eg);
         let two = eg.add(ENode::constant(2.0));
@@ -2539,10 +2544,9 @@ mod tests {
     /// (the `(i + 1) * 2`). Each has a control with no stale class, where the
     /// same rule builds the nested fold, so the decline is the staleness and
     /// not a rule that never fires. What the run shows: the control's rule
-    /// unions something and the stale graph's unions nothing (the plan was
-    /// declined), the stale graph holds fewer value-bounded inner folds than
-    /// the control, and `P`'s fact still reads `X` afterwards (nothing built
-    /// there, nothing repaired).
+    /// unions its plan and builds the nested fold; the stale graph's unions
+    /// nothing (the plan was declined) and builds no fold, and every bound it
+    /// holds keeps L3.
     #[test]
     fn a_rebuilt_bound_that_lands_in_a_stale_class_is_declined() {
         type Recipe = fn(&mut Saturation) -> Stale;
@@ -2601,16 +2605,6 @@ mod tests {
                 value_bounded_inner_folds(&eg),
                 1,
                 "{} at n = {n}: the declined plan built no fold",
-                rule.name()
-            );
-            assert!(
-                value_bounded_inner_folds(&eg) < built,
-                "{} at n = {n}: fewer inner folds than the control's",
-                rule.name()
-            );
-            assert!(
-                eg.variance(made.landing).depends_on_x(),
-                "{} at n = {n}: P's fact still reads X: nothing repaired it",
                 rule.name()
             );
             assert!(

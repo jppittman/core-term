@@ -112,10 +112,12 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
 ///
 /// Panics if a `Param` or `Nary` node is encountered (these are not expected
 /// in JIT compilation), or a `Var` that is no fold's binder survived
-/// `collapse`: a coordinate, which means `collapse` was skipped, or an index
-/// past the binder slots, a fold index that escaped its builder, which means
-/// the kernel is open. The variance this reads types such an index as
-/// constant, so this is the refusal that stops one from being placed.
+/// lowering: a coordinate or a retired axis, which means the lowering
+/// pipeline was skipped, or an index past the binder slots, which means the
+/// kernel is open. Such an index is a fold index that escaped its builder (a
+/// placeholder, which the variance this reads types as constant) or an index
+/// past the index space; either way this is the refusal that stops one from
+/// being placed.
 pub(crate) fn arena_to_schedule(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -190,13 +192,14 @@ pub(crate) fn arena_to_schedule(
         let sched_op = match node {
             ExprNode::Var(i) => match Binder::from_var(i) {
                 None if i < Variance::VARIABLES => panic!(
-                    "arena_to_schedule: Var({i}) is a coordinate, which \
-                     passes::lattice::collapse substitutes away -- this schedule was \
-                     built without the lowering pipeline"
+                    "arena_to_schedule: Var({i}) is a coordinate or a retired axis, which \
+                     the lowering pipeline substitutes away or refuses -- this schedule was \
+                     built without it"
                 ),
                 None => panic!(
-                    "arena_to_schedule: Var({i}) is a fold index that escaped its builder \
-                     and was never closed over: no fold binds it, so the kernel is open"
+                    "arena_to_schedule: Var({i}) is past the binder slots: a fold index that \
+                     escaped its builder, or an index past the index space. No fold binds it, \
+                     so the kernel is open"
                 ),
                 Some(b) if lane == Some(b) => ScheduledOp::Lanes,
                 Some(b) => ScheduledOp::Var(b),

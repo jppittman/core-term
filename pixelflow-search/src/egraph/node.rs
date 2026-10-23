@@ -438,10 +438,12 @@ impl ENode {
     /// construction, so `ENode::reduce` takes `FoldHeader::new`'s literal
     /// path.
     ///
-    /// The guard is inlined at every call site and the work past it is a
-    /// function of its own: every candidate the extractor prices asks, a leaf
-    /// and an operation answer on the first test and a fold over literals on
-    /// the second, and only a fold with a value bound reaches the rest.
+    /// The guard is inlined at every call site, and the work past it is a
+    /// separate function (`value_bounded_twin`), which the compiler may inline
+    /// as well and does at the price sites; an out-of-line body measured
+    /// worse. Every candidate the extractor prices asks: a leaf and an
+    /// operation answer on the first test, a fold over literals on the second,
+    /// and only a fold with a value bound reaches the rest.
     #[inline(always)]
     pub(crate) fn literal_twin(&self, literal: impl Fn(EClassId) -> Option<Lit>) -> Option<ENode> {
         let ENode::Reduce { header, .. } = self else {
