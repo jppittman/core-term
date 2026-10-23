@@ -11,6 +11,12 @@ a ledger row from gate 5 (`ledger.md` was not recreated; the first CL that needs
 
 **Bases** were recorded at tree `3bfdaded` (main). HEAD was then `c3889c4`, which differs from `3bfdaded` only by
 adding `.wip/` notes (no non-`.wip` file differs; checked with `git diff --quiet 3bfdade HEAD -- . ':!.wip'`).
+Verified at `a747770` (main after A3, #1447): gates 1, 1b, 2 and 2x (tag `a4-main`) are identical to those bases, so
+the byte, key and saturation bases stand and A3 is byte-identical on today's kernels. The gate 5 (`measure`) base was
+re-recorded there with `GATES_REBASE=1` (A3 moved total Ir by +0.227 percent; figures under "Gate 5 details"). The
+tree at the time was `72db468`, which differs from `a747770` only by `.wip/` (checked with
+`git diff --quiet a747770 HEAD -- . ':!.wip'`). The rustdoc bases for A4 are `/home/user/pixelflow/.wip/a4/rustdoc-base.<crate>.txt`
+(`pixelflow-ir` 38 warnings, `pixelflow-search` 28, `pixelflow-codegen` 0), normalized by `.wip/a4/rustdoc_norm.py`.
 Host: 4 cores, 15 GB, AVX-512 capable (`avx512f/dq/bw/cd/vl`), valgrind 3.22, Python 3.11, no `/usr/bin/time`.
 
 ## Using the scripts
@@ -85,8 +91,19 @@ five native runs for median peak RSS (`ru_maxrss`, KiB) and median wall ms (repo
 - Under callgrind the test runs on a spawned thread (libtest does that even with `--test-threads=1`); callgrind sums
   threads into the one file.
 
-Base (tree `3bfdaded`): total Ir 6,295,969,957; `Saturation::saturate` inclusive 2,079,429,510 (33.0 percent);
-`extract_dag_over` inclusive 1,123,555,965 (17.8 percent); median peak RSS 96,476 KiB; median wall 956 ms.
+Base (tree `a747770`, re-recorded): total Ir 6,310,238,494; `Saturation::saturate` inclusive 2,076,952,032 (32.9 percent);
+`extract_dag_over` inclusive 1,139,515,928 (18.1 percent); median peak RSS 96,536 KiB; median wall 1,072 ms.
+
+Previous base (tree `3bfdaded`, kept for the record; the old `measure.base.txt` and `cg.base.*` are copied to
+`/home/user/scratch/gates-old-base-3bfdaded/`): total Ir 6,295,969,957; `Saturation::saturate` inclusive 2,079,429,510
+(33.0 percent); `extract_dag_over` inclusive 1,123,555,965 (17.8 percent); median peak RSS 96,476 KiB; median wall 956 ms.
+A3 moved total Ir by +0.227 percent, `saturate` by -0.119 percent and `extract_dag_over` by +1.420 percent; the wall
+figure moved +12 percent between sessions and is VM drift, never decisive.
+
+**Lock note.** `build_probe` runs `cargo` inside `flock` on fd 9. If `sccache` (the `RUSTC_WRAPPER`) has no server running,
+cargo starts one that inherits fd 9, daemonizes, and keeps the lock held after the gate exits; the next gate then exits 3
+("another gate build holds ... .build.lock"). Fix without editing a script: `sccache --stop-server; sccache --start-server`
+from a shell that has no fd 9 open, so the server lives outside the lock.
 
 ## Files
 

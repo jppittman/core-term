@@ -1,11 +1,11 @@
-==6583== Callgrind, a call-graph generating cache profiler
-==6583== Copyright (C) 2002-2017, and GNU GPL'd, by Josef Weidendorfer et al.
-==6583== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
-==6583== Command: /home/user/scratch/gates-bin/bin.measure --ignored --nocapture --test-threads=1 zz_prof_all_cold
-==6583== 
-==6583== For interactive control, run 'callgrind_control -h'.
-==6583== 
-==6583== Events    : Ir
-==6583== Collected : 6295969957
-==6583== 
-==6583== I   refs:      6,295,969,957
+==1796== Callgrind, a call-graph generating cache profiler
+==1796== Copyright (C) 2002-2017, and GNU GPL'd, by Josef Weidendorfer et al.
+==1796== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==1796== Command: /home/user/scratch/gates-bin/bin.measure --ignored --nocapture --test-threads=1 zz_prof_all_cold
+==1796== 
+==1796== For interactive control, run 'callgrind_control -h'.
+==1796== 
+==1796== Events    : Ir
+==1796== Collected : 6310238494
+==1796== 
+==1796== I   refs:      6,310,238,494
