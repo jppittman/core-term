@@ -68,10 +68,10 @@ use crate::sema::{
 };
 use crate::symbol::Scopes;
 use pixelflow_ir::arena::{
-    Axis, ExprArena, ExprId, IndexSpaceFull, OpenFold, UniformDecl, UniformIdentity,
+    Axis, ExprArena, ExprId, FoldTerms, IndexSpaceFull, OpenFold, UniformDecl, UniformIdentity,
 };
 use pixelflow_ir::library;
-use pixelflow_ir::{Binder, Bound, Fold, FoldHeader, KnownRange, Monoid, OpKind};
+use pixelflow_ir::{Binder, Bound, Fold, KnownRange, Monoid, OpKind};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::ops::Range;
@@ -499,20 +499,22 @@ impl Site for Expansion {
             .open
             .pop()
             .expect("lowering closes only the folds it opened");
-        let fold_at = |binder: Binder| match fold {
-            ExpansionFold::Known(monoid, range) => FoldHeader::new(
-                Fold::new(monoid, binder),
-                Bound::Lit(range.start),
-                Bound::Lit(range.end),
-            ),
-            ExpansionFold::Hole(monoid, stride) => FoldHeader::new(
-                Fold::strided(monoid, binder, stride),
-                Bound::Lit(OPEN_RANGE.start),
-                Bound::Lit(OPEN_RANGE.end),
-            ),
+        let terms = match fold {
+            ExpansionFold::Known(monoid, range) => FoldTerms {
+                monoid,
+                stride: 1,
+                lo: Bound::Lit(range.start),
+                hi: Bound::Lit(range.end),
+            },
+            ExpansionFold::Hole(monoid, stride) => FoldTerms {
+                monoid,
+                stride,
+                lo: Bound::Lit(OPEN_RANGE.start),
+                hi: Bound::Lit(OPEN_RANGE.end),
+            },
         };
         self.arena
-            .close_fold(open, body, fold_at)
+            .close_fold(open, body, terms)
             .map_err(|IndexSpaceFull| {
                 format!(
                     "a fold whose body already binds all {} of the IR's indices \
@@ -1058,7 +1060,7 @@ mod tests {
     use crate::sema::Ty;
     use pixelflow_ir::arena::{ExprNode, UniformId};
     use pixelflow_ir::fold::KNOWN_RANGE;
-    use pixelflow_ir::{Lit, Placeholder};
+    use pixelflow_ir::{FoldHeader, Lit, Placeholder};
     use quote::quote;
 
     /// Lower a block straight from the parser, with no `sema` in front: what

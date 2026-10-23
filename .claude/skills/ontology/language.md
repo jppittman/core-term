@@ -535,6 +535,10 @@
   PeelFold peels once on an odd count, and EmptyFold is the base case. "A
   loop is a run-length-encoded unroll." "Nobody chooses between 'fold' and
   'unrolled': the author writes the fold, and extraction decides."
+- **Only over a known range** (L6 of a-bound-is-a-value): a fold whose bound
+  is a value is not unrolled, as LLVM does not fully unroll an unknown trip
+  count; `KnownBound` makes a range known when the e-graph discovers a
+  bound's constant — a peel substituting `i := k` into an inner `0..i` (L8).
 - **Is not:** a pass. JP: "I'm not anti unrolling. I'm anti bespoke
   unrolling pass." Not done at construction: one-pipeline Appendix A
   withdrew that after N separately written integrals failed to close from
@@ -548,7 +552,7 @@
   turns on a tie (see Tie-break). `pack(L)` is the same chunking law run as
   a pass (L2, open: "one chunking law, three implementations").
 - **Lives:** `pixelflow-search/src/egraph/fold_rules.rs` (`HalveFold`,
-  `PeelFold`, `EmptyFold`, `FactorFold`); `KnownRange::{peel, peel_back, halve}`
+  `PeelFold`, `EmptyFold`, `FactorFold`, `KnownBound`); `KnownRange::{peel, peel_back, halve}`
   (`pixelflow-ir/src/fold.rs`); `pixelflow-codegen/tests/halve_fold_jit.rs`.
   Decided in one-pipeline decisions (2026-09-25),
   a-surviving-reduce-is-a-loop 2a″ and E1b.

@@ -111,7 +111,13 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
 /// # Panics
 ///
 /// Panics if a `Param` or `Nary` node is encountered (these are not expected
-/// in JIT compilation), or a coordinate `Var` survived `collapse`.
+/// in JIT compilation), or a `Var` that is no fold's binder survived
+/// lowering: a coordinate or a retired axis, which means the lowering
+/// pipeline was skipped, or an index past the binder slots, which means the
+/// kernel is open. Such an index is a fold index that escaped its builder (a
+/// placeholder, which the variance this reads types as constant) or an index
+/// past the index space; either way this is the refusal that stops one from
+/// being placed.
 pub(crate) fn arena_to_schedule(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -185,10 +191,15 @@ pub(crate) fn arena_to_schedule(
 
         let sched_op = match node {
             ExprNode::Var(i) => match Binder::from_var(i) {
+                None if i < Variance::VARIABLES => panic!(
+                    "arena_to_schedule: Var({i}) is a coordinate or a retired axis, which \
+                     the lowering pipeline substitutes away or refuses -- this schedule was \
+                     built without it"
+                ),
                 None => panic!(
-                    "arena_to_schedule: Var({i}) is a coordinate, which \
-                     passes::lattice::collapse substitutes away -- this schedule was \
-                     built without the lowering pipeline"
+                    "arena_to_schedule: Var({i}) is past the binder slots: a fold index that \
+                     escaped its builder, or an index past the index space. No fold binds it, \
+                     so the kernel is open"
                 ),
                 Some(b) if lane == Some(b) => ScheduledOp::Lanes,
                 Some(b) => ScheduledOp::Var(b),
@@ -340,8 +351,8 @@ pub(crate) fn arena_to_schedule(
             ExprNode::Reduce { fold, lo, hi, body } => ScheduledOp::Reduce {
                 fold,
                 // Codegen takes no value bound until A4 places its operand
-                // (docs/language/2026-10-20-a-bound-is-a-value.md §3.3); none
-                // can be built until A3.
+                // (docs/language/2026-10-20-a-bound-is-a-value.md §3.3); the IR
+                // and the e-graph hold one, and `known` refuses it here by name.
                 lo: known(lo),
                 hi: known(hi),
                 body: map_child(body),
@@ -376,6 +387,7 @@ pub(crate) fn arena_to_schedule(
 mod tests {
     use super::*;
     use pixelflow_ir::arena::ExprArena;
+    use pixelflow_ir::fold::{Fold, Monoid};
 
     /// The uniform slots a schedule built by hand names for the origin.
     ///
@@ -416,6 +428,25 @@ mod tests {
         let _ = arena_to_schedule(&a, root, RAW_ORIGIN);
     }
 
+    /// A placeholder is a fold index that escaped its builder: `Variance::of_var`
+    /// types it as constant, so placement would not tell it from a uniform, and
+    /// the refusal is this `Var` arm's. It answers for the open term before
+    /// anything is scheduled, whatever the variance says, and as an open
+    /// kernel, not as a schedule built without the lowering pipeline.
+    #[test]
+    #[should_panic(expected = "so the kernel is open")]
+    fn a_surviving_placeholder_fails_loudly() {
+        let mut a = ExprArena::new();
+        let index = a.push_var(
+            pixelflow_ir::fold::Placeholder::nth(0)
+                .expect("placeholder 0 exists")
+                .var(),
+        );
+        let two = a.push_const(2.0);
+        let root = a.push_binary(OpKind::Mul, index, two);
+        let _ = arena_to_schedule(&a, root, RAW_ORIGIN);
+    }
+
     /// And the same for a `Ref`: its body is not in this arena at all, so a
     /// survivor is a schedule built without `expand_refs`. `compile` runs
     /// `legalize` first, so this too has to call the scheduler directly.
@@ -427,5 +458,28 @@ mod tests {
             .by_ref();
         let (arena, root) = named.parts();
         let _ = arena_to_schedule(arena, root, RAW_ORIGIN);
+    }
+
+    /// The IR holds a fold whose bound is a value, and the schedule does not
+    /// yet: it refuses one by name here, for a caller that schedules an arena
+    /// directly (the key refuses it first on every compile path).
+    ///
+    /// The body is the binder's own `Var`, not `X`: a coordinate is a
+    /// survivor refused first, and would answer for the bound.
+    #[test]
+    #[should_panic(expected = "a fold bound that is a value")]
+    fn a_value_bound_is_refused_by_name_before_it_is_scheduled() {
+        let mut a = ExprArena::new();
+        let slot = a.declare_uniform(pixelflow_ir::Uniform::new(3.0).decl());
+        let count = a.push_uniform(slot);
+        let binder = Binder::from_slot(0).expect("slot 0 exists");
+        let i = a.push_var(binder.var());
+        let root = a.push_reduce(
+            Fold::new(Monoid::SUM, binder),
+            Bound::Lit(0),
+            Bound::Value(count),
+            i,
+        );
+        let _ = arena_to_schedule(&a, root, RAW_ORIGIN);
     }
 }
