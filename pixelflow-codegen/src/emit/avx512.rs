@@ -36,6 +36,7 @@ use super::{
 use crate::error::CompileError;
 use crate::program::BinaryOp;
 use crate::program::IfArm;
+use crate::program::MaskOp;
 
 /// `vpternlogd`'s truth table for `A ? B : C` per bit, with `A` the
 /// destination (the mask), `B` the first source and `C` the second.
@@ -148,13 +149,14 @@ pub(super) enum KOp {
 }
 
 impl KOp {
-    /// The mask-register form of a bitwise op, when it has one.
+    /// The mask-register form of a bitwise op, when it has one: the ops
+    /// [`BinaryOp::on_masks`] says leave a mask, which is also what lowering
+    /// asks to know whether a fold's bound is one.
     fn of(op: BinaryOp) -> Option<Self> {
-        match op {
-            BinaryOp::BitAnd => Some(Self::And),
-            BinaryOp::BitOr => Some(Self::Or),
-            _ => None,
-        }
+        op.on_masks().map(|mask| match mask {
+            MaskOp::And => Self::And,
+            MaskOp::Or => Self::Or,
+        })
     }
 }
 
@@ -189,9 +191,10 @@ pub(in crate::emit) enum Avx512 {}
 
 /// One IR lane value on this machine. A comparison, and the `kandw`/`korw` of
 /// two of them, is a bit per lane in the opmask file; everything else is in the
-/// vector file. Where an instruction reads the other file's lane it is first
-/// widened (`vpmovm2d`), or, when it has a form for the lane where it is
-/// (`vblendmps`, `kortestw`), it reads it there.
+/// vector file (`ScheduledOp::is_mask` is that answer, asked before selection).
+/// Where an instruction reads the other file's lane it is first widened
+/// (`vpmovm2d`), or, when it has a form for the lane where it is (`vblendmps`,
+/// `kortestw`), it reads it there.
 #[derive(Copy, Clone)]
 pub(super) enum Lane {
     Vector(Value<Vector>),
@@ -592,6 +595,61 @@ impl X86 for Avx512 {
                 }))
             }),
             class => unreachable!("{class:?} is not reloaded"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::emit::IsaBackend;
+    use crate::program::{CompareOp, ScheduledOp, ValueId};
+
+    /// Lowering refuses a fold's bound that is a mask (`ScheduledOp::is_mask`)
+    /// because the opmask file is where this tier keeps one, and a loop's
+    /// parameter cannot be there. The two must be one answer: this selects every
+    /// comparison and every bitwise op over masks and numbers, and asks the
+    /// file each lands in.
+    #[test]
+    fn a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask() {
+        let (mut b, _) = Builder::<Avx512>::new();
+        <Avx512 as IsaBackend>::enter(&mut b);
+        let number = <Avx512 as X86>::lane(&mut b, LaneOp::Const(1.0)).expect("a constant selects");
+        let compared = LaneOp::Compare(CompareOp::Lt, number, number);
+        let mask = <Avx512 as X86>::lane(&mut b, compared).expect("a comparison selects");
+        assert!(matches!(mask, Lane::Opmask(_)));
+        assert!(
+            ScheduledOp::Compare(CompareOp::Lt, ValueId(0), ValueId(0)).is_mask(|_| false),
+            "a comparison is a mask whatever it compares"
+        );
+
+        // The schedule view: operand 0 is the mask, operand 1 a number.
+        let schedule_mask = |value: ValueId| value == ValueId(0);
+        let ops = [
+            BinaryOp::Add,
+            BinaryOp::Sub,
+            BinaryOp::Mul,
+            BinaryOp::Div,
+            BinaryOp::Min,
+            BinaryOp::Max,
+            BinaryOp::IAdd,
+            BinaryOp::BitAnd,
+            BinaryOp::BitOr,
+        ];
+        let operands = [(mask, ValueId(0)), (number, ValueId(1))];
+        for op in ops {
+            for &(a, a_id) in &operands {
+                for &(c, c_id) in &operands {
+                    let selected = <Avx512 as X86>::lane(&mut b, LaneOp::Binary(op, a, c))
+                        .expect("a bitwise or arithmetic op selects");
+                    let scheduled = ScheduledOp::Binary(op, a_id, c_id);
+                    assert_eq!(
+                        matches!(selected, Lane::Opmask(_)),
+                        scheduled.is_mask(schedule_mask),
+                        "{op:?} on operands {a_id:?}, {c_id:?}"
+                    );
+                }
+            }
         }
     }
 }

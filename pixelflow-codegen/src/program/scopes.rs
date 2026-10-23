@@ -240,7 +240,8 @@ fn extract_folds_bound_by(
         // *into*: its body is not an operand (`operands` says so —
         // the def's own emission never reads it), but it is this closure's
         // to carry — `structural_children`, which the walk below
-        // follows, yields it — so the recursion below can carve it out again
+        // follows, yields it, and its value bounds, which a deeper fold may
+        // compute — so the recursion below can carve it out again
         // one level down. One that does not is a placeholder like any other
         // hoisted value, remembered so the level below does not mistake it
         // for a fold of its own.

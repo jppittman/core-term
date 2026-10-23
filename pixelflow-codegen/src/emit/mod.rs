@@ -28,6 +28,16 @@
 //! is inlined into the column fold's
 //! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.2).
 //!
+//! A fold whose bound is a value arrives inside the guard
+//! [`pixelflow_ir::passes::legalize`] builds (an `If`'s arm): its counter
+//! starts at `lo`'s lane and its latch compares against `hi`'s, and the arm is
+//! skipped when the range is empty or outside `[0, 2²⁴]`. The latch's compare
+//! reads two registers, so `hi` is one the allocator carries across the loop or
+//! reloads at each latch, where a literal end is a constant placed again at its
+//! read. The guard's masks are the call's when the bounds are, and the arm
+//! tests that read them run in every batch of the fold they guard, so a mask
+//! the register file cannot keep (an opmask, on AVX-512) is reloaded in each.
+//!
 //! ## Spilling
 //!
 //! Values the register file cannot hold go to frame slots, which the allocator
@@ -52,7 +62,7 @@ mod x86_64;
 // this path), what it hands back, and the counts inside that.
 pub use crate::pipeline::compile;
 pub use executable::CompiledKernel;
-pub use traffic::{EmitTraffic, ScopeTraffic};
+pub use traffic::{EmitTraffic, ScopeTraffic, Trips};
 
 use asm::{Encoding, Label, Labels, Patch};
 use encoded::EncodedInst;
@@ -513,9 +523,9 @@ struct Loop {
     head: Label,
     /// The enclosing loop, as an index into [`Function::loops`].
     parent: Option<usize>,
-    /// How many times its body runs per call: its own trip count times its
+    /// How many times its body runs per call: its own trips nested in its
     /// parent's.
-    trips: u64,
+    trips: Trips,
 }
 
 /// The pool section: its label, then each entry with its own label, in order.
@@ -1586,6 +1596,55 @@ mod tests {
         compile_for::<aarch64::Neon>(&a, root, POINT).expect("NEON emit");
         compile_for::<avx2::Avx2>(&a, root, POINT).expect("AVX2 emit");
         compile_for::<avx512::Avx512>(&a, root, POINT).expect("AVX-512 emit");
+    }
+
+    /// A fold whose bound is a value, on every backend from this host: the
+    /// guard's arms around a loop whose counter starts at one lane and ends at
+    /// another. Three shapes that reach what a literal fold never does: a
+    /// seed that is another loop's counter (the allocator copies a parameter
+    /// it must not hand over), a bound read by nothing in the body that must
+    /// live across a wall of values, and a ragged row whose main and
+    /// remainder column folds both open the loop.
+    ///
+    /// NEON cannot run here; selection, allocation and assembly can, and the
+    /// loop uses no form a literal fold does not: a compare of two registers,
+    /// the arm skip, a copy.
+    #[test]
+    fn every_backend_emits_a_fold_whose_bound_is_a_value() {
+        use pixelflow_ir::fold::Monoid;
+        use pixelflow_ir::{Kernel, Uniform};
+
+        let (zero, eight) = (Kernel::constant(0.0), Kernel::constant(8.0));
+        let count = || Uniform::new(7.0).kernel();
+        let from_the_outer_index = Kernel::sum_over(8, |i| {
+            Kernel::over_values(Monoid::SUM, i, &eight, |j| Kernel::x().add(j))
+        });
+        let a_wall = Kernel::over_values(Monoid::SUM, &zero, &count(), |k| {
+            let terms: Vec<Kernel> = (1..=48)
+                .map(|m| Kernel::x().add(k).mul(&Kernel::constant(m as f32)))
+                .collect();
+            let up = terms[1..]
+                .iter()
+                .fold(terms[0].clone(), |acc, t| acc.add(t));
+            let down = terms
+                .iter()
+                .rev()
+                .skip(1)
+                .fold(terms[47].clone(), |acc, t| acc.add(t));
+            up.add(&down)
+        });
+        let ragged = Kernel::over_values(Monoid::SUM, &zero, &count(), |k| Kernel::x().add(k));
+
+        for (kernel, shape) in [
+            (from_the_outer_index, POINT),
+            (a_wall, LatticeShape::new([8, 2])),
+            (ragged, LatticeShape::new([37, 3])),
+        ] {
+            let (arena, root) = kernel.parts();
+            compile_for::<aarch64::Neon>(arena, root, shape).expect("NEON emit");
+            compile_for::<avx2::Avx2>(arena, root, shape).expect("AVX2 emit");
+            compile_for::<avx512::Avx512>(arena, root, shape).expect("AVX-512 emit");
+        }
     }
 
     // =========================================================================

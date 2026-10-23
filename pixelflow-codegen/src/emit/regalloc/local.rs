@@ -129,7 +129,8 @@ struct LoopFacts {
     latch: usize,
     /// The block that follows the latch's.
     exit: usize,
-    /// How many times its body runs per call.
+    /// How many times its body runs per call, an estimate's price for a fold
+    /// whose range is not known.
     trips: u64,
     parent: Option<usize>,
     /// The head's parameters, and what the backward branch passes to them.
@@ -198,7 +199,7 @@ impl Liveness {
                     head: 0,
                     latch: 0,
                     exit: 0,
-                    trips: l.trips,
+                    trips: l.trips.weight(),
                     parent: l.parent,
                     params: Vec::new(),
                     latch_args: Vec::new(),

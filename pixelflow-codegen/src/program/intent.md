@@ -18,8 +18,9 @@ for (§4); that is the input of `select` (§10).
   and takes no `ValueId` — lowering maps it to its operand, so no backend
   meets it and it is zero instructions on every target (`lower.rs`).
 - A fold's bounds in the schedule: `ScheduledOp::Reduce` carries the arena
-  node's `lo` and `hi` (literal until A4: lowering refuses a value bound),
-  and selection reads the range from them with `KnownRange::of`.
+  node's `lo` and `hi`; a value bound is an operand of the fold (`operands`),
+  its loop's seed and its latch's end, and selection reads a known range with
+  `KnownRange::of`.
 
 ## Never
 - No register, byte, allocator, ISA tier or driver is named: `program/` does
@@ -31,7 +32,10 @@ for (§4); that is the input of `select` (§10).
   is computed from reads; each `Def` carries the arena's variance.
 - No open term: a `Dwrt`, a coordinate `Var` or a `Ref` reaching
   `arena_to_schedule` panics, as does an op outside `UnaryOp`, `BinaryOp`,
-  `CompareOp` and `ShiftOp`: a bypassed pipeline, not a refused kernel.
+  `CompareOp` and `ShiftOp`, a value bound that reads a lattice binder, and a
+  value-bounded fold read other than once, as an `If`'s true arm: a bypassed
+  pipeline, not a refused kernel. A bound that computes a mask
+  (`ScheduledOp::is_mask`) is refused by name, `BoundSort`, on every tier.
 
 ## Contract
 `mod.rs` defines what `emit/` reads: `ValueId`, `Def`, `ScheduledOp` (with
@@ -46,8 +50,10 @@ for (§4); that is the input of `select` (§10).
   has not run on; `legal::<T>` makes an emitter's `match` over an op exhaustive.
 - `scripts/check-emit-boundary.sh` (CI job "Emit boundary"; rules P and E).
 - `ScopedSchedule::assert_closed`, run by `Own` on every scope; desloppify `phases-in-order`.
-- Tests: the three `fails_loudly` tests in `lower.rs`; through the emitter
-  `pixelflow-codegen/tests/shared_arm_value.rs` and `tests/collapse_paths.rs`.
+- Tests: the `*_fails_loudly` tests in `lower.rs` and
+  `a_bound_is_refused_exactly_when_it_computes_a_mask`; the carve in
+  `pipeline.rs`; through the emitter `pixelflow-codegen/tests/shared_arm_value.rs`,
+  `tests/collapse_paths.rs` and `tests/value_bounds_jit.rs`.
 
 ## Behind
 - `collapse` and `pack` still run in `pixelflow-ir/src/passes/lattice.rs`,
