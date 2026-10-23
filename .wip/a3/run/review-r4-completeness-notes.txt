@@ -1,0 +1,30 @@
+A3 review, round 4, completeness lens (read-only on tracked files; no build, no commit).
+Code at HEAD 8da7c86 == gated c1cbe26 (git diff --quiet c1cbe26 HEAD -- . ':!.wip'); A3 diff 24 files +3217 -419.
+
+Round 1: B1 (both greps and the phrase grep empty); B2 (checklist: 169 sites, 0 UNCLASSIFIED, 0 STALE);
+N1 (transfer variance.rs:348, compute_arena_variance :427, variance_from :454; push_reduce calls
+variance_from, arena.rs has no compute_arena_variance); N2 (close_over discovers before
+lowest_free_binder/from_arena_roots); N3/J7 (literal_twin extract.rs:1670, used at :1024, :2140, :2397;
+below reads priced_trips and folds the bound operands; fold_cost(fold, trips: u64, body) only in cost.rs);
+N4/J13 (push_reduce keeps an out-of-domain Const as Value; BoundOutOfDomain only in user_bound
+kernel.rs:871; plan 3.1 and A4 bullet amended); N5 (substitute_vars_with doc, plan walkers bullet);
+N6/C7/S4 (T-S-6 extracts, asserts a slot-0 fold, bound variance within the outer index, free_index None);
+N7 (T-S-4b); N8 (A4 bullet lists production_glyph_arena_dump.rs:171, which is the to_bits line);
+N9 (Kernel::over doc, KNOWN_RANGE text, glyph_phase_split comment, egraph intent E6); N10 (count
+pub(crate), is_exact shared by admits/count/assert_stride/from_bits/with_a_value, takes_a_value_bound,
+BoundNotANumber for Param/Buffer). All done.
+Round 2: J7, J5 (of_var doc), J12 (KnownBound needs both ends), J3, J13, C2 (expect(dead_code) x2),
+C3, C4/C5 (gates-r3; every added intra-doc link resolves to a public item or sits on a private one),
+C8, C9, C10, C11, C14 (variance_from doc, plan B3), C15, C16 (Done line has no labels; no .wip cited),
+S1 (push_reduce and BoundSort docs), S2 (add, transfer, ENode::variance docs), S3 (plan Done line),
+S6 (FactorFold doc, four edges). Done. R1: no must_use on nodes/iter/entries.
+Spec 10: every named pin exists once (T-IR-5 is named ..._an_arithmetic_fold_... because N10's own grep
+forbids real_sorted); the bodies assert what 10 and C7/C8 say; the std-gated pins run (std is default).
+Spec 12 docs and both intent.md files (80, 75 lines): done. classes.json rows for the 22 changed-by-A3 and
+the new test sites read against their sites: honest. Nothing of A4/A6 built.
+
+Finding (non-blocking): public-surface.md has no row for egraph::extract / extract_dag /
+extract_dag_scoped (pub, re-exported egraph/mod.rs:79-82), whose price of a value-bounded fold is new
+(literal twin, else the estimate; below adds bound operands and no longer expects KNOWN_RANGE). The file
+lists the same kind of behaviour-only change for node_op_cost (:69), EGraph::add and insert. Flagged in
+round 3's completeness notes; still missing.

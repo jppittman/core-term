@@ -1,0 +1,66 @@
+== halve
+O's first member: Op { op: Sub, children: [EClassId(4), EClassId(0)] }
+inserted: the inner fold's bound class passed L3
+
+thread 'main' (26949) panicked at /home/user/pixelflow/pixelflow-search/src/egraph/graph.rs:428:17:
+BoundVaries: a fold's hi bound varies with Variance{X,i5}: a bound reads no coordinate and not its own fold's binder (L3 of docs/language/2026-10-20-a-bound-is-a-value.md): Fold { monoid: Monoid(Add), binder: Binder(0), stride: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit 101
+== peel
+O's first member: Op { op: Sub, children: [EClassId(4), EClassId(0)] }
+inserted: the inner fold's bound class passed L3
+
+thread 'main' (26951) panicked at /home/user/pixelflow/pixelflow-search/src/egraph/graph.rs:428:17:
+BoundVaries: a fold's hi bound varies with Variance{X}: a bound reads no coordinate and not its own fold's binder (L3 of docs/language/2026-10-20-a-bound-is-a-value.md): Fold { monoid: Monoid(Add), binder: Binder(0), stride: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit 101
+== runtime
+PlusOne First n=8: reduce[add_5[0..8)](add(sub(add(add(Var(5), Var(0)), Const(1)), Var(0)), reduce[add_4[0.._)](mul(Var(0), Var(4)), add(Var(5), Const(1)))))
+  rules: runtime less None
+
+thread 'main' (26953) panicked at /home/user/pixelflow/pixelflow-search/src/egraph/graph.rs:428:17:
+BoundVaries: a fold's hi bound varies with Variance{X,i5}: a bound reads no coordinate and not its own fold's binder (L3 of docs/language/2026-10-20-a-bound-is-a-value.md): Fold { monoid: Monoid(Add), binder: Binder(0), stride: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit 101
+== leaf-first
+Leaf First n=8: reduce[add_5[0..8)](add(sub(add(add(Var(5), Var(0)), Const(1)), Var(0)), reduce[add_4[0.._)](mul(Var(0), Var(4)), Var(5))))
+  rules: runtime less None
+
+thread 'main' (26955) panicked at /home/user/pixelflow/pixelflow-search/src/egraph/graph.rs:428:17:
+BoundVaries: a fold's hi bound varies with Variance{X,i5}: a bound reads no coordinate and not its own fold's binder (L3 of docs/language/2026-10-20-a-bound-is-a-value.md): Fold { monoid: Monoid(Add), binder: Binder(0), stride: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit 101
+== leaf-last
+Leaf Last n=8: reduce[add_5[0..8)](add(reduce[add_4[0.._)](mul(Var(0), Var(4)), Var(5)), sub(add(add(Var(5), Var(0)), Const(1)), Var(0))))
+  rules: runtime less None
+
+thread 'main' (26957) panicked at /home/user/pixelflow/pixelflow-search/src/egraph/graph.rs:428:17:
+BoundVaries: a fold's hi bound varies with Variance{X,i5}: a bound reads no coordinate and not its own fold's binder (L3 of docs/language/2026-10-20-a-bound-is-a-value.md): Fold { monoid: Monoid(Add), binder: Binder(0), stride: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit 101
+== leaf-absent
+Leaf Absent n=8: reduce[add_5[0..8)](reduce[add_4[0.._)](mul(Var(0), Var(4)), Var(5)))
+  rules: runtime less None
+  saturated: MintedCap after 9 iterations
+  extracted: mul(Var(0), add(Const(16), Const(40)))
+exit 0
+== plus-absent
+PlusOne Absent n=8: reduce[add_5[0..8)](reduce[add_4[0.._)](mul(Var(0), Var(4)), add(Var(5), Const(1))))
+  rules: runtime less None
+  saturated: MintedCap after 8 iterations
+  extracted: mul_add(Var(0), Const(6), add(mul_add(Var(0), add(Const(6), Const(9)), mul_add(Var(0), Const(9), Var(0))), mul_add(Var(0), reduce[add_4[0..8) step 2](mul_add(Const(2), Var(4), Const(1))), mul_add(Var(0), add(Const(6), Const(9)), mul_add(Var(0), Const(9), Var(0))))))
+exit 0
+== leaf-last-no-halve
+Leaf Last n=8: reduce[add_5[0..8)](add(reduce[add_4[0.._)](mul(Var(0), Var(4)), Var(5)), sub(add(add(Var(5), Var(0)), Const(1)), Var(0))))
+  rules: runtime less Some("halve-fold")
+  saturated: IterationCeiling after 12 iterations
+  extracted: reduce[add_5[0..8)](mul_add(Var(0), reduce[add_4[0.._)](Var(4), Var(5)), add(Var(5), Const(1))))
+exit 0
+== leaf-last-no-peel
+Leaf Last n=8: reduce[add_5[0..8)](add(reduce[add_4[0.._)](mul(Var(0), Var(4)), Var(5)), sub(add(add(Var(5), Var(0)), Const(1)), Var(0))))
+  rules: runtime less Some("peel-fold")
+
+thread 'main' (26965) panicked at /home/user/pixelflow/pixelflow-search/src/egraph/graph.rs:428:17:
+BoundVaries: a fold's hi bound varies with Variance{X,i5}: a bound reads no coordinate and not its own fold's binder (L3 of docs/language/2026-10-20-a-bound-is-a-value.md): Fold { monoid: Monoid(Add), binder: Binder(0), stride: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+exit 101

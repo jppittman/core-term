@@ -1,0 +1,35 @@
+Round-4 adversarial review, soundness lens (value-bound paths). Read-only on tracked files.
+
+Probe: source .wip/a3/run/scratch-r4/representative.rs; manifest /home/user/scratch/a3-r4-probe/Cargo.toml
+(own [workspace], bin path points at the .wip source); target /home/user/scratch/a3-r4-target.
+Output: .wip/a3/run/scratch-r4-run1.txt.
+
+Finding (blocking): an L7 substitution can rebuild a nested fold's value bound so that it reads X,
+and EGraph::add's L3 backstop then panics saturation with BoundVaries on a term every check admitted.
+- Mechanism: PlanBuilder::substitute (fold_rules.rs:240, :263) walks a class through
+  `representative` (fold_rules.rs:294), its first member. A class's variance fact is the meet of its
+  members, so the first member can read X while the fact does not. union() keeps the older class as
+  root, so a class the kernel inserted (an X-reading spelling) is first when a rule-made, X-free
+  spelling joins it. HalveFold's shifted inner bound `i + 1` memo-hits that class; the next halving
+  substitutes `i := i + 2` into it through the X-reading member, and the rebuilt bound reads {X, i}.
+  graph.rs:428 panics.
+- Production rules, no hand union: Σ_{i<8} ( Σ_{j<i} X·j + ((i + X) + 1) − X ), the inner bound the
+  leaf `i` (what Kernel::over_values builds), inserted and run under RuleSet::runtime() with
+  SaturationConfig::compatibility(12): panics, whichever side of the Add the extra term sits on
+  (modes leaf-first, leaf-last). Without the extra term it saturates and extracts 56·X (leaf-absent).
+  Without HalveFold it saturates (leaf-last-no-halve); without PeelFold it still panics
+  (leaf-last-no-peel). With a hand-built union the same happens under HalveFold alone and under
+  PeelFold alone (modes halve, peel).
+- Contradicts HalveFold's doc (fold_rules.rs:336-341: "`EGraph::add` accepts it: it reads the outer
+  index and nothing else (L3)") and spec §6.7/§5 ("No code changes in `substitute`").
+- The pin a_triangular_fold_halves_with_a_rule_made_bound runs fold_rules() alone, with no algebra
+  to union a bound class with an X-reading spelling, so it cannot see this.
+- Not S1, S2 or C14.
+
+Checked, no finding: Bound::discover / Fold::count / is_exact; FoldHeader::new's value arm (sort,
+stride, literal beside a value); push_reduce's order; close_over (discovery before copy, roots,
+lowest_free_binder over bounds, rename, re-push); variance_from vs compute_arena_variance (memo,
+Ref); of_var placeholders; free_index; insert's visit order and discovery; EGraph::add backstop;
+ENode::variance (L4); KnownBound (equality, normalization, stride kept); FactorFold docs (S6 list);
+literal_twin at the three price sites; below's bound operands; Selection::to_arena attach order;
+over_values / user_bound refusals; the S1/S2/C14 doc statements.

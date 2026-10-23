@@ -1,0 +1,45 @@
+Round-3 adversarial review, literal-path lens ("nothing moves on the literal path"). Read-only on tracked
+files; no commit. Code at HEAD 8da7c86 (the A3 diff is `git diff 3bfdaded -- . ':!.wip'`, 24 files).
+
+Checked by reading the code (each item: base vs head on a fold whose bounds are both Bound::Lit):
+1. Extractor (extract.rs). literal_twin returns at `header.arity() == 1` before calling `chosen`;
+   Selection's pick_of is the old find, now a named closure (same expect, same order); `below` on a
+   literal fold reads priced_trips() == known_range().len() and folds an empty operand tail;
+   weighted_own/below take `form` == `node`. TreePricer/SharedPricer::settle write `chosen` (never read
+   on a literal fold). prefer/ties unchanged. node_op_cost: fold_cost(fold, priced_trips(), 0) ==
+   fold_cost(fold, range, 0) on 64-bit. Identical.
+2. close_over/close_fold/over. Kernel::over and both kernel! sites pass Bound::Lit, so no Const is
+   pushed. Bound::discover returns a Lit pair untouched before the copy. from_arena_roots(&[body]) ==
+   from_arena(body); one substitute_vars; finish keeps builder order; to_arena_roots pushes the same
+   nodes; arena.push_reduce appends the fold last, as base's to_arena of the builder's Reduce did.
+   Fold::strided(m, b, 1) == Fold::new(m, b). Reversed literal still reaches KnownRange::new.
+   lowest_free_binder now also takes a slot a reached binder Var reads: differs only for a body that
+   reads a binder no fold in it binds; no production builder makes one (kernel! and Kernel::over read
+   enclosing indices as placeholders; apply/at substitute coordinates only).
+3. push_reduce / EGraph::add / insert / inserted_class_count: discover's Lit-pair early return; the L3
+   loop `continue`s on Lit; EGraph::add gated on arity > 1. Ir gate (measure.a3-r3 vs base, cg-diff):
+   no variance_from, refuse_a_varying_bound or literal_at in the head profile; discover::<close_over>
+   3,132 Ir total; push_reduce +12,376 Ir. Total +0.158 percent.
+4. KnownBound is last in fold_rules(), runtime = all_rules ++ fold_rules, declines on arity before
+   reading the graph. FactorFold: base declines on is_none_or(empty), head on is_some_and(empty): equal
+   on a known range. Fingerprint/SaturationKey change and the class_cap label corner are the round-1
+   items already in spec 1.3.
+5. Variance: only Var 64..127 (placeholders) change, ALL -> CONST. See the finding below.
+6. Display / to_bits / key / corpus: unchanged code; only panic and refusal texts changed.
+
+Finding (with probe): the placeholder CONST reaches the runtime tier's unit check (Law U).
+Probe crate: /home/user/scratch/a3-r3-lit-probe/{head,base} (same main.rs; base deps are the pristine
+3bfdaded extraction /home/user/scratch/a3-r2/base-src, verified file-for-file for pixelflow-ir,
+pixelflow-search and Cargo.toml). The program: an index escapes Kernel::sum_over(2, ..)'s closure (a
+clone), is interned with KernelStore::intern, and read through push_ref beside X. Every bound in it is
+a literal.
+  base: compute_arena_variance(escaped index) = every variable; optimize_runtime_arena PANICKED:
+        "optimize_runtime_arena: the unit KernelKey(..) varies as Variance{X,Y,..}. A unit is optimized
+        out of its context, which is sound only for a term closed over the coordinates ..."
+  head: compute_arena_variance(escaped index) = Variance(CONST); free_index = Some(64);
+        optimize_runtime_arena returned Some("add(Var(64), Var(0))").
+So a refusal on an all-literal program became silent acceptance of an open term. spec.md:118 claims
+the unit check reads a closed term only; the check exists because KernelStore::intern and push_ref can
+name anything (runtime.rs doc of Program::of). Fix: refuse a unit whose body has
+free_index(body_root).is_some() (the test Kernel::by_ref makes) beside the variance assertion, and pin
+it with this probe's program as a should_panic test.
