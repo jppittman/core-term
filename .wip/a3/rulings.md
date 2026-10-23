@@ -58,3 +58,7 @@ These are authoritative over spec.md and over round 1 where they differ. `S#` = 
   - §2.11's list of `VALUE_BOUND` expecters (T-IR-26).
 - **C16.** The plan's A3 "Done" line states facts, not J-labels; nothing in the repo may cite `.wip`. The A3 bullet's refusal list is amended per N4.
 - **C10.** The Reduce-site checklist is `.wip/a3/gen/checklist.py` plus `.wip/a3/gen/classes.json`, keyed by (file, enclosing fn, trimmed hit text) with a per-key count and built from §5's table. It reports UNCLASSIFIED and STALE and exits non-zero on either. The rows A3 rewrites include `arena.rs:1757`, `extract.rs:1684` and `insert.rs:173`.
+
+# Round 3 (CI on 31d4b58)
+
+- **R1 — the toolchain is CI's.** This container's stable is rustc/clippy 1.97; CI's (`dtolnay/rust-toolchain@stable`) is 1.99. Local 1.97 clippy reports `must_use_candidate` on `ExprArena::nodes` (arena.rs), `Dag::iter` and `Rooted::entries` (dag.rs). All three return `impl Iterator`, which is already `#[must_use]`, and the same report fires at base, where none of the three is in A3's diff. CI's clippy rejects an added bare `#[must_use]` there as `double_must_use`, which turned Clippy and both Test jobs red on 31d4b58. So: never add `#[must_use]` to those three. A local clippy run passes when those three `must_use_candidate` reports are its only errors; any other error is real. The attributes were removed in the commit that adds this ruling.

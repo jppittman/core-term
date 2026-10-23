@@ -136,3 +136,7 @@ named), the `.wip` label in variance.rs (conformance and craft, item 4), and the
 | LFS | `git lfs ls-files | grep -c .` is 68 before and after |
 
 Outputs: `../../gates/out/*.a3-fix1.*`.
+
+## CI on 31d4b58 (after round 1)
+
+CI clippy 1.99 rejected the three `#[must_use]` added to `nodes`, `iter` and `entries` (`double_must_use`); Clippy and both Test jobs were red. Removed; see rulings.md round 3 R1. Local clippy 1.97 reports `must_use_candidate` on them at base too: a toolchain difference, not an A3 defect.
