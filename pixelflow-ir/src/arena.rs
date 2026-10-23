@@ -56,16 +56,11 @@ use crate::lit::Lit;
 /// A `Reduce`'s edges are its body, then each value bound in `lo`, `hi` order;
 /// its [`FoldHeader`] says how many.
 ///
-/// A `Reduce` stores its [`FoldHeader`], which is what sizes this enum: 32
-/// bytes, where it was 16 while a fold's ends were `u32`s inside it. The
-/// header holds the control plane's 64-bit counts, packed (see its doc); a
-/// `Fold` beside two `Bound<()>`s would be 48. Measured, not budgeted, and
-/// pinned by `what_a_node_costs_is_measured_not_budgeted`.
-///
-/// What the growth cost a whole compile was measured with the e-graph's
-/// `ENode` grown alongside (24 to 48 bytes; the method is in its doc): peak
-/// RSS +17% on the cold compile of the 29 programs ASCII needs and +10% on the
-/// n=40 program, and +5.2% instructions on the 29.
+/// A `Reduce` stores its [`FoldHeader`], which is what sizes this enum: 16
+/// bytes, as it was while a fold's ends were `u32`s inside the `Fold`. The
+/// header stores its counts in 32 bits for a measured reason, written in its
+/// doc; a `Fold` beside two `Bound<()>`s would be 48. Measured, not budgeted,
+/// and pinned by `what_a_node_costs_is_measured_not_budgeted`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 enum NodeData {
     Var(u8),
@@ -2739,8 +2734,8 @@ mod tests {
     fn what_a_node_costs_is_measured_not_budgeted() {
         assert_eq!(
             core::mem::size_of::<NodeData>(),
-            32,
-            "NodeData: the FoldHeader's 32 bytes and no more; the tag fits its niches"
+            16,
+            "NodeData: the FoldHeader's 16 bytes and no more; the tag fits its niches"
         );
     }
 

@@ -555,7 +555,14 @@ A5's deletion, which removes code #1427 only re-scopes.
   pairs); callgrind instructions on the 29 programs +5.2% (saturation +7.8%, extraction
   +3.4%). That is the size of growth that kept `EClassId` at `u32` (+18%, +8%). JP, 2026-10-22: land
   A2b wide, and measure the stored header narrowed to `u32` ends and stride (16 bytes) in a
-  follow-up CL, with the decision taken on both numbers.
+  follow-up CL, with the decision taken on both numbers. **Narrowed** (JP, 2026-10-23, on
+  the follow-up's numbers): the header stores its counts in 32 bits and its readers return
+  64, `FoldHeader` 16 bytes, `ENode` 32, `NodeData`/`ExprData` 16; peak RSS on the 29
+  programs 90.0 MB before A2b, 104.8 at 64-bit storage (+16.4%), 95.2 at 32-bit (+5.8%), 12
+  rotating rounds of the three binaries; instructions +5.2% and +3.9%. The width does not
+  bind while `Fold::EXACT_BOUND` is 2²⁴, and the key's fields are already 32 bits; T6's
+  lifting of that cap widens both together. The reason is in `FoldHeader`'s doc, as
+  CLAUDE.md's control-plane rule asks.
 - **A3. Value bounds in the IR and e-graph.** `over_values` (`pub(crate)`), the
   `push_reduce` refusals (`BoundVaries`, `BoundSort`, `BoundOutOfDomain`),
   `BoundArithmetic` at `over_values`, L4 in both variance functions, L7, `KnownBound` (L8), the rules

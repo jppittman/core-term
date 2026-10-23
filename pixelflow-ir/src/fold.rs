@@ -525,10 +525,33 @@ impl Held {
 /// break it.
 ///
 /// **Stored packed, read as a `Fold` and two `Bound<()>`s.** The fields are
-/// private: the three counts at the control plane's 64 bits, then the monoid,
-/// the binder and how each bound is held, one byte apiece — 32 bytes, where a
-/// `Fold` beside two `Bound<()>`s is 48, 20 of them padding. A node enum is as
-/// wide as its widest variant, so a `Reduce`'s padding is every node's.
+/// private: the three counts, then the monoid, the binder and how each bound
+/// is held, one byte apiece. A node enum is as wide as its widest variant, so
+/// what a `Reduce` stores, every node pays.
+///
+/// **The counts are stored in 32 bits**, against the control plane's 64-bit
+/// rule, for a measured reason (2026-10-22). The readers return 64 bits; only
+/// the storage is narrow. Stored at 64 bits (A2b of
+/// docs/language/2026-10-20-a-bound-is-a-value.md as it landed), the header
+/// was 32 bytes, `ENode` 48 and `NodeData`/`ExprData` 32; at 32 bits it is 16,
+/// and they are 32 and 16. Measured on a native release build, the cold
+/// compile of the 29 programs ASCII needs, 12 rounds of the three binaries in
+/// rotating order, each run its own process, peak RSS read from the parent
+/// (`ru_maxrss`, KiB, shown here divided by 1000). The harness is out of tree.
+///
+/// - Peak RSS, medians: 90.0 MB before A2b, 104.8 MB with 64-bit storage
+///   (+16.4%), 95.2 MB with 32-bit storage (+5.8%): narrowing recovers about
+///   65% of the growth.
+/// - Instructions (callgrind, deterministic), the same compile: 5,155 M before
+///   A2b, 5,424 M at 64 bits (+5.2%), 5,355 M at 32 bits (+3.9%).
+///
+/// The width does not bind. Every count a header holds is at most
+/// [`Fold::EXACT_BOUND`] (2²⁴, the `f32` counter's exact range), which the
+/// constructors check, and [`FoldHeader::to_bits`] already writes each count
+/// in a 32-bit field of the key. Lifting `EXACT_BOUND` (T6 of
+/// docs/language/2026-10-17-the-arena-is-typed.md, once the counter is an
+/// integer) is a key-format change that widens these fields and that storage
+/// together; the const assert beside `to_bits` is where a build says so.
 /// [`FoldHeader::fold`], [`FoldHeader::lo`] and [`FoldHeader::hi`] are the
 /// readers. A bound that is a value keeps its count at 0, so that equal bounds
 /// are equal in every field `Eq`, `Hash` and `Ord` read. The fields are
@@ -539,9 +562,9 @@ impl Held {
 pub struct FoldHeader {
     monoid: Monoid,
     binder: Binder,
-    lo: u64,
-    hi: u64,
-    stride: u64,
+    lo: u32,
+    hi: u32,
+    stride: u32,
     lo_held: Held,
     hi_held: Held,
 }
@@ -577,9 +600,9 @@ impl FoldHeader {
         Self {
             monoid: fold.monoid,
             binder: fold.binder,
-            lo,
-            hi,
-            stride: fold.stride,
+            lo: field(lo),
+            hi: field(hi),
+            stride: field(fold.stride),
             lo_held,
             hi_held,
         }
@@ -591,20 +614,20 @@ impl FoldHeader {
         Fold {
             monoid: self.monoid,
             binder: self.binder,
-            stride: self.stride,
+            stride: u64::from(self.stride),
         }
     }
 
     /// The first bound, as the literal it is or the mark of a child.
     #[must_use]
     pub fn lo(self) -> Bound<()> {
-        self.lo_held.bound(self.lo)
+        self.lo_held.bound(u64::from(self.lo))
     }
 
     /// The last bound, as the literal it is or the mark of a child.
     #[must_use]
     pub fn hi(self) -> Bound<()> {
-        self.hi_held.bound(self.hi)
+        self.hi_held.bound(u64::from(self.hi))
     }
 
     /// The range, when both bounds are literals: [`KnownRange::of`].
@@ -690,7 +713,7 @@ impl FoldHeader {
         let (Bound::Lit(lo), Bound::Lit(hi)) = (self.lo(), self.hi()) else {
             panic!("{VALUE_BOUND}: {self:?} has no bits");
         };
-        u128::from(field(self.stride)) << 80
+        u128::from(self.stride) << 80
             | u128::from(self.monoid_byte()) << 72
             | u128::from(self.binder.slot()) << 64
             | u128::from(field(lo)) << 32
@@ -728,8 +751,9 @@ impl FoldHeader {
     }
 }
 
-/// A count's 32-bit field in [`FoldHeader::to_bits`]. Every count a header
-/// holds is at most [`Fold::EXACT_BOUND`], which the constructors check.
+/// A count's 32-bit field, in a stored [`FoldHeader`] and in
+/// [`FoldHeader::to_bits`]. Every count a header holds is at most
+/// [`Fold::EXACT_BOUND`], which the constructors check.
 fn field(count: u64) -> u32 {
     u32::try_from(count)
         .expect("a fold's counts are at most Fold::EXACT_BOUND, which fits its 32-bit field")
@@ -740,9 +764,11 @@ fn field(count: u64) -> u32 {
 const UNUSED_BITS: u32 = 112;
 
 // The 32-bit fields hold every count a header may, with the all-ones field
-// left over: `from_bits` refuses it as past the bound. Lifting `EXACT_BOUND`
-// past this is the key-format change `to_bits` documents, and this is where a
-// build says so.
+// left over: `from_bits` refuses it as past the bound. They are also what a
+// header stores (`FoldHeader::store` narrows through `field`), so a count that
+// does not fit is impossible while this holds. Lifting `EXACT_BOUND` past this
+// is the key-format change `to_bits` documents, and this is where a build says
+// so.
 const _: () = assert!(Fold::EXACT_BOUND < u32::MAX as u64);
 
 /// One header printed the way every reader of an arena spells it: its
@@ -1645,10 +1671,10 @@ mod tests {
 
     /// What a fold costs a node, pinned as byte counts so a field that still
     /// fits `arena.rs`'s tripwire fails here with a number: `Fold` is a monoid,
-    /// a binder and a 64-bit stride; a header packs three 64-bit counts and
+    /// a binder and a 64-bit stride; a header packs three 32-bit counts and
     /// four bytes of the rest. Measured, not budgeted — facts about the types,
-    /// not widths their fields were chosen to meet: the control plane is
-    /// 64-bit.
+    /// not widths their fields were chosen to meet; the 32-bit counts have
+    /// their reason in [`FoldHeader`]'s doc.
     #[test]
     fn a_fold_header_is_measured_not_budgeted() {
         assert_eq!(
@@ -1668,13 +1694,13 @@ mod tests {
         );
         assert_eq!(
             core::mem::size_of::<FoldHeader>(),
-            32,
-            "FoldHeader: lo(8) + hi(8) + stride(8) + monoid(1) + binder(1) + two Held(2) + pad(4)"
+            16,
+            "FoldHeader: lo(4) + hi(4) + stride(4) + monoid(1) + binder(1) + two Held(2)"
         );
         assert_eq!(
             core::mem::size_of::<crate::expr::ExprData>(),
-            32,
-            "ExprData: the FoldHeader's 32 bytes and no more; the tag fits its niches"
+            16,
+            "ExprData: the FoldHeader's 16 bytes and no more; the tag fits its niches"
         );
         assert!(
             core::mem::size_of::<crate::arena::ExprNode>() <= 64,
