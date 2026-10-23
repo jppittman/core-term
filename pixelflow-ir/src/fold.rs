@@ -28,6 +28,7 @@ use core::ops::Range;
 use crate::arena::{REDUCE_BINDER_BASE, REDUCE_BINDERS};
 use crate::kind::{OpCode, OpKind};
 use crate::lit::Lit;
+use crate::variance::Variance;
 
 /// The algebra a reduction folds under: an associative combining operation
 /// together with the identity an empty domain folds to.
@@ -110,6 +111,18 @@ impl Monoid {
     #[must_use]
     pub(crate) fn unmarshal(code: OpCode) -> Option<Self> {
         OpKind::unmarshal(code).and_then(Self::of)
+    }
+
+    /// Whether a fold under this algebra may take a bound that is a value:
+    /// one whose sort has an answer for a bound outside the domain, NaN
+    /// (docs/language/2026-10-20-a-bound-is-a-value.md §1.4). `ANY` and `ALL`
+    /// fold masks, which have none (decision 8, open); `SEQ` is the lattice's,
+    /// whose ranges stay constant (§4, "Deferred").
+    pub(crate) const fn takes_a_value_bound(self) -> bool {
+        matches!(
+            self.0,
+            OpKind::Add | OpKind::Mul | OpKind::Min | OpKind::Max
+        )
     }
 }
 
@@ -335,6 +348,159 @@ impl<R> Bound<R> {
     }
 }
 
+impl<R: Copy> Bound<R> {
+    /// `lo` and `hi` with their constness discovered (plan §3.1: "constness is
+    /// discovered, never declared"): a value bound whose term is a literal
+    /// naming a count (`Fold::count`) is that count, and every other bound is
+    /// returned as it was — a term that is not a literal, or a real naming no
+    /// count, which stays a value for its guard to make NaN (L5).
+    ///
+    /// A pair this read makes known runs forwards: `[lo, hi)` with `lo > hi` is
+    /// the empty range at `lo` (L2), as Rust's `5..3` is empty. A pair passed
+    /// as two literals is returned untouched and `literal` is not called, so a
+    /// reversed one stays `KnownRange::new`'s to refuse.
+    ///
+    /// `literal` reads a value bound's term: its literal, or `None` when the
+    /// term is not one. The one reader of constness for every representation
+    /// that builds a fold — the arena's `push_reduce` and `close_over` read a
+    /// `Const` node, the e-graph's `insert` a `Shape::Const`, `KnownBound` a
+    /// class's members, the extractor a class's chosen form.
+    ///
+    /// # Errors
+    ///
+    /// [`BoundRefusal::BoundSort`] when a value bound's term is a mask literal:
+    /// a mask names no count.
+    pub fn discover(
+        lo: Self,
+        hi: Self,
+        literal: impl Fn(R) -> Option<Lit>,
+    ) -> Result<(Self, Self), BoundRefusal> {
+        if let (Self::Lit(_), Self::Lit(_)) = (lo, hi) {
+            return Ok((lo, hi));
+        }
+        let lo = lo.read(BoundEnd::Lo, &literal)?;
+        let hi = hi.read(BoundEnd::Hi, &literal)?;
+        // A value was read, so if the pair is known now, this read made it so.
+        Ok(match (lo, hi) {
+            (Self::Lit(l), Self::Lit(h)) if l > h => (lo, Self::Lit(l)),
+            pair => pair,
+        })
+    }
+
+    /// This bound with its term read: a value whose term is a literal naming a
+    /// count is that count.
+    fn read(
+        self,
+        end: BoundEnd,
+        literal: &impl Fn(R) -> Option<Lit>,
+    ) -> Result<Self, BoundRefusal> {
+        let Self::Value(term) = self else {
+            return Ok(self);
+        };
+        match literal(term) {
+            Some(Lit::Mask(_)) => Err(BoundRefusal::BoundSort { end }),
+            Some(real) => Ok(Fold::count(real).map_or(self, Self::Lit)),
+            None => Ok(self),
+        }
+    }
+}
+
+/// Which end of a fold's range a bound is: what a refusal names, so the
+/// message says which of the two the caller wrote wrong.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum BoundEnd {
+    /// The first bound: the index the fold starts at.
+    Lo,
+    /// The last bound: the index the fold stops before.
+    Hi,
+}
+
+impl core::fmt::Display for BoundEnd {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Lo => "lo",
+            Self::Hi => "hi",
+        })
+    }
+}
+
+/// Why a fold refuses a bound: each the law of
+/// docs/language/2026-10-20-a-bound-is-a-value.md it breaks, and the end it
+/// breaks it at.
+///
+/// Every constructor that refuses a bound refuses with one of these, and
+/// panics with its `Display`: a refusal is a builder's error, and the message
+/// names the law. Where each is refused is the plan's §1.4 and L3, and this
+/// type's variants say no more than which.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BoundRefusal {
+    /// A real literal that names no count — not an integer, or outside
+    /// `0..=Fold::EXACT_BOUND` (L5). Refused at the user surfaces only
+    /// (`Kernel::over_values`, and `kernel!` from A6); every other constructor
+    /// keeps such a literal as a value bound, whose guard makes the fold NaN
+    /// (A4), so a literal a rule made never panics.
+    BoundOutOfDomain { end: BoundEnd, literal: f32 },
+    /// A bound of a sort the fold cannot take (§1.4): a mask literal, which
+    /// names no count, under any fold; or any value bound under `ANY`, `ALL`
+    /// or `SEQ`, whose sorts have no out-of-domain answer (decision 8) or whose
+    /// ranges stay constant (the lattice's). The fold is in the panic's
+    /// context, not here: the mask case has no algebra to blame.
+    ///
+    /// The sort is read off the term as written: a mask *literal* is refused, a
+    /// computed bound that is a mask is not a literal and is admitted. The
+    /// arena gives a bound a sort (T6) and closes that.
+    BoundSort { end: BoundEnd },
+    /// A bound that varies with a coordinate or with its own fold's binder
+    /// (L3): `reads` is what it varies with.
+    BoundVaries { end: BoundEnd, reads: Variance },
+    /// A bound that is arithmetic, at a user surface (§1.4): until bounds are
+    /// `Int` (T6), a computed bound is `f32` arithmetic that can round into the
+    /// domain, so a user writes a leaf.
+    BoundArithmetic { end: BoundEnd },
+    /// A bound that is not a number at all: a builder's `Param` slot, filled
+    /// before a kernel exists, or a `Buffer`'s address, read through a gather.
+    BoundNotANumber { end: BoundEnd },
+}
+
+impl core::fmt::Display for BoundRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        const PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value.md";
+        match *self {
+            Self::BoundOutOfDomain { end, literal } => write!(
+                f,
+                "BoundOutOfDomain: a fold's {end} bound is {literal}, which names no count: a \
+                 count is an integer in 0..={} (2^24), where an `f32` counter is exact (L5, \
+                 §1.4 of {PLAN})",
+                Fold::EXACT_BOUND
+            ),
+            Self::BoundSort { end } => write!(
+                f,
+                "BoundSort: a fold's {end} bound has a sort the fold cannot take: a mask names \
+                 no count, and an ANY, ALL or SEQ fold takes literal bounds only (§1.4 and \
+                 decision 8 of {PLAN})"
+            ),
+            Self::BoundVaries { end, reads } => write!(
+                f,
+                "BoundVaries: a fold's {end} bound varies with {reads:?}: a bound reads no \
+                 coordinate and not its own fold's binder (L3 of {PLAN})"
+            ),
+            Self::BoundArithmetic { end } => write!(
+                f,
+                "BoundArithmetic: a fold's {end} bound is arithmetic: until bounds are `Int` (T6 \
+                 of docs/language/2026-10-17-the-arena-is-typed.md) a bound is a leaf — a \
+                 constant, a uniform or an enclosing fold's index — whose value is the count \
+                 exactly (§1.4 of {PLAN})"
+            ),
+            Self::BoundNotANumber { end } => write!(
+                f,
+                "BoundNotANumber: a fold's {end} bound is a builder's slot or a table's \
+                 address, not a number: a `Param` is filled before a kernel exists and a \
+                 `Buffer` is read through a gather (§1.4 of {PLAN})"
+            ),
+        }
+    }
+}
+
 /// The fold a [`Reduce`] performs: a monoid, the index it binds, and the step
 /// that index takes. Its bounds are the node's (`ExprNode::Reduce`'s `lo` and
 /// `hi`), not the fold's: a bound is a term, which a known one is stored as
@@ -389,6 +555,18 @@ impl Fold {
     /// their domain, not their width: the lane is the narrower of the two,
     /// and no width lifts it.
     pub const EXACT_BOUND: u64 = 1 << f32::MANTISSA_DIGITS;
+
+    /// The trips a fold is priced at when its range is not known: 32.
+    ///
+    /// LLVM's `BranchProbabilityInfo` weights a loop's back edge 124 against
+    /// its exit's 4 (`LBH_TAKEN_WEIGHT`, `LBH_NONTAKEN_WEIGHT`), a back-edge
+    /// probability of 31/32, so a loop it knows nothing about runs
+    /// `1 / (1 − 31/32) = 32` times. Policy, not a measurement of these
+    /// kernels: the static model prices a fold before its bound has a value
+    /// (docs/language/2026-10-20-a-bound-is-a-value.md §1.5), and a ranking at
+    /// 32 may differ from one at the real count (§4). Nested folds whose
+    /// ranges are not known multiply, as their trips do.
+    pub const ESTIMATED_TRIPS: u64 = 32;
 
     /// The fold of `monoid` binding `binder`, visiting every index its bounds
     /// name — [`Fold::strided`] with a stride of `1`.
@@ -467,6 +645,58 @@ impl Fold {
             Bound::Lit(range.hi),
         )
     }
+
+    /// Whether an `f32` counter holds `n` exactly: `n ≤ EXACT_BOUND`. The one
+    /// statement of the domain's ceiling — an end (`KnownRange::admits`), a
+    /// literal (`Fold::count`), a stride (`assert_stride`,
+    /// `FoldHeader::from_bits`) and a literal beside a value bound
+    /// (`FoldHeader::new`) all ask it.
+    const fn is_exact(n: u64) -> bool {
+        n <= Self::EXACT_BOUND
+    }
+
+    /// The count `literal` names: a real that is a non-negative integer an
+    /// `f32` counter holds exactly (`Fold::is_exact`), or `None` — a mask, a
+    /// fraction, a negative, a NaN, an infinity, or an integer past 2²⁴.
+    ///
+    /// `-0.0` is the integer `0`, as it is to a shift count
+    /// (`ShiftCount::from_literal`). Crate-private: another crate reads a count
+    /// off a bound through [`Bound::discover`], which is where a count is a
+    /// bound.
+    #[must_use]
+    pub(crate) fn count(literal: Lit) -> Option<u64> {
+        let real = literal.real()?;
+        // NaN and the negatives fail here; `-0.0 < 0.0` is false.
+        if real.is_nan() || real < 0.0 {
+            return None;
+        }
+        // `as` truncates a fraction and saturates past `u64::MAX`, so the round
+        // trip is exact for an integer and only for one.
+        let count = real as u64;
+        (count as f32 == real && Self::is_exact(count)).then_some(count)
+    }
+
+    /// L3: whether this fold may take a bound at `end` that varies with
+    /// `reads` — one sharing no bit with the coordinates, which would make the
+    /// trip count a function of the pixel, or with this fold's own binder,
+    /// which would make it a function of itself. An enclosing fold's binder is
+    /// a bound's to read (a triangular `0..i`), and a placeholder names no bit
+    /// ([`Variance::of_var`]).
+    ///
+    /// The one statement of the law: the arena asks it of a bound's term
+    /// (`ExprArena::push_reduce`), the e-graph of a bound's class
+    /// (`EGraph::add`).
+    ///
+    /// # Errors
+    ///
+    /// [`BoundRefusal::BoundVaries`], with what the bound varies with.
+    pub fn admits_bound(self, end: BoundEnd, reads: Variance) -> Result<(), BoundRefusal> {
+        let refused = Variance::COORDS.union(Variance::from_var(self.binder.var()));
+        if reads.intersection(refused).is_const() {
+            return Ok(());
+        }
+        Err(BoundRefusal::BoundVaries { end, reads })
+    }
 }
 
 /// The step `stride` is, or the panic that says why not: nonzero, and at most
@@ -476,7 +706,7 @@ impl Fold {
 fn assert_stride(stride: u64) {
     assert!(stride != 0, "a fold's stride must be nonzero");
     assert!(
-        stride <= Fold::EXACT_BOUND,
+        Fold::is_exact(stride),
         "a fold's stride is at most {} (2^24): {stride} — it is added to an `f32` index",
         Fold::EXACT_BOUND
     );
@@ -570,20 +800,51 @@ pub struct FoldHeader {
 }
 
 impl FoldHeader {
-    /// `fold` between `lo` and `hi`.
+    /// `fold` between `lo` and `hi`: the one place a fold is checked against
+    /// its bounds.
     ///
     /// # Panics
     ///
     /// On a literal pair `KnownRange::new` refuses (backwards, ending past
     /// [`Fold::EXACT_BOUND`], a stride that does not divide the span), with its
-    /// messages. Until A3, on any value bound, with [`VALUE_BOUND`]: the one
-    /// place a fold is checked against its bounds, so A3 lifts it here.
+    /// messages. On a value bound the fold cannot take: under `ANY`, `ALL` or
+    /// `SEQ` ([`BoundRefusal::BoundSort`]); at a stride other than 1, which
+    /// only a known range it divides may have; or beside a literal past
+    /// [`Fold::EXACT_BOUND`].
     #[must_use]
     pub fn new(fold: Fold, lo: Bound<()>, hi: Bound<()>) -> Self {
         let (Bound::Lit(l), Bound::Lit(h)) = (lo, hi) else {
-            panic!("{VALUE_BOUND}: {fold:?} from {lo:?} to {hi:?}");
+            return Self::with_a_value(fold, lo, hi);
         };
         Self::known(fold, KnownRange::new(l..h, fold.stride))
+    }
+
+    /// `fold` between `lo` and `hi`, at least one of them a value: what a value
+    /// bound asks of its fold, checked, and the header stored.
+    fn with_a_value(fold: Fold, lo: Bound<()>, hi: Bound<()>) -> Self {
+        let end = match lo {
+            Bound::Value(()) => BoundEnd::Lo,
+            Bound::Lit(_) => BoundEnd::Hi,
+        };
+        assert!(
+            fold.monoid.takes_a_value_bound(),
+            "{}: {fold:?}",
+            BoundRefusal::BoundSort { end }
+        );
+        assert!(
+            fold.stride == 1,
+            "a fold's stride is not 1 only over a known range it divides: {fold:?} from {lo:?} \
+             to {hi:?}"
+        );
+        for literal in [lo.lit(), hi.lit()].into_iter().flatten() {
+            assert!(
+                Fold::is_exact(literal),
+                "a fold's literal bound is at most {} (2^24): {literal} — its index is an \
+                 `f32` lane, which names every integer only that far",
+                Fold::EXACT_BOUND
+            );
+        }
+        Self::store(fold, lo, hi)
     }
 
     /// `fold` over `range`, taking `range`'s stride. Total.
@@ -594,7 +855,7 @@ impl FoldHeader {
     }
 
     /// The one writer of a header's fields: it checks nothing, and its callers
-    /// ([`FoldHeader::known`], and A3's `new` for a value) have.
+    /// ([`FoldHeader::known`], and `FoldHeader::new`'s value arm) have.
     fn store(fold: Fold, lo: Bound<()>, hi: Bound<()>) -> Self {
         let ((lo_held, lo), (hi_held, hi)) = (Held::hold(lo), Held::hold(hi));
         Self {
@@ -634,6 +895,17 @@ impl FoldHeader {
     #[must_use]
     pub fn known_range(self) -> Option<KnownRange> {
         KnownRange::of(self.fold(), self.lo(), self.hi())
+    }
+
+    /// The trips this fold is priced at by a reader holding only its header:
+    /// its known range's length, or [`Fold::ESTIMATED_TRIPS`] when a bound is a
+    /// value. The extractor prices a fold whose value bounds were chosen as
+    /// literals through the fold over those literals, whose header this is
+    /// (`pixelflow-search`'s `literal_twin`).
+    #[must_use]
+    pub fn priced_trips(self) -> u64 {
+        self.known_range()
+            .map_or(Fold::ESTIMATED_TRIPS, KnownRange::len)
     }
 
     /// How many children a node with this header has: its body, and one per
@@ -707,7 +979,7 @@ impl FoldHeader {
     /// # Panics
     ///
     /// On a value bound, with [`VALUE_BOUND`]: the layout has no field for a
-    /// child, so none is written before A3 gives it one.
+    /// child, so none is written until A4 gives it a marker.
     #[must_use]
     pub fn to_bits(self) -> u128 {
         let (Bound::Lit(lo), Bound::Lit(hi)) = (self.lo(), self.hi()) else {
@@ -741,7 +1013,7 @@ impl FoldHeader {
         let binder = Binder::from_slot(((bits >> 64) & 0xff) as u8)?;
         let lo = u64::from(((bits >> 32) & 0xffff_ffff) as u32);
         let hi = u64::from((bits & 0xffff_ffff) as u32);
-        if stride == 0 || stride > Fold::EXACT_BOUND {
+        if stride == 0 || !Fold::is_exact(stride) {
             return None;
         }
         (KnownRange::admits(&(lo..hi)) && (hi - lo).is_multiple_of(stride)).then(|| {
@@ -807,19 +1079,25 @@ fn write_bound(f: &mut core::fmt::Formatter<'_>, bound: Bound<()>) -> core::fmt:
     }
 }
 
-/// The message every constructor of a fold panics with on a value bound,
-/// until A3: one grep target for the step that lifts it, as [`KNOWN_RANGE`]
-/// is for the step that makes an unknown range reachable.
-pub const VALUE_BOUND: &str = "a fold bound that is a value is A3 of \
-     docs/language/2026-10-20-a-bound-is-a-value.md; until then every bound is a literal";
+/// The message the schedule and the bits refuse a value bound with, until A4:
+/// the IR and the e-graph hold one, `arena_to_schedule` takes a literal only,
+/// and so does [`FoldHeader::to_bits`] — and with it the canonical key,
+/// `kernel!`'s tokens, the dumps and the corpora. One grep target for the step
+/// that lifts it, as [`KNOWN_RANGE`] is for the steps that make an unknown
+/// range reachable where one is read.
+pub const VALUE_BOUND: &str = "a fold bound that is a value has no code and no key before A4 of \
+     docs/language/2026-10-20-a-bound-is-a-value.md: the IR and the e-graph hold one, the \
+     schedule and the bits take a literal";
 
-/// The message of an `expect` on a range that is not known yet. Every bound is
-/// a literal, so [`KnownRange::of`] and the three readers built on it are
-/// `Some` for every fold. Until bounds are values
-/// (docs/language/2026-10-20-a-bound-is-a-value.md, A3), a site that needs a
-/// range and has no answer of its own for an unknown one expects it with this
-/// message: one grep target for the step that makes the `None` reachable.
-pub const KNOWN_RANGE: &str = "every fold bound is a constant until bounds are values \
+/// The message of an `expect` on a range a site's folds always have. A site
+/// that reads a range and has no answer of its own for an unknown one reads it
+/// where every fold is literal: a lattice's fold (`SEQ`, which takes literal
+/// bounds only), a `kernel!` fold before A6, a production glyph's before B2, a
+/// schedule's (codegen refuses a value bound first, with [`VALUE_BOUND`]), or a
+/// test's own literal fold. One grep target for the steps that make the `None`
+/// reachable there.
+pub const KNOWN_RANGE: &str = "this fold's bounds are literals: a lattice's fold, a kernel! fold \
+     before A6, a production glyph's before B2, a schedule's, or a test's \
      (docs/language/2026-10-20-a-bound-is-a-value.md)";
 
 /// A fold's range when it is known: the indices `lo, lo + stride, …` below
@@ -901,7 +1179,7 @@ impl KnownRange {
     /// asks it to refuse a range with its own words before building one.
     #[must_use]
     pub fn admits(range: &Range<u64>) -> bool {
-        range.start <= range.end && range.end <= Fold::EXACT_BOUND
+        range.start <= range.end && Fold::is_exact(range.end)
     }
 
     /// The half-open range every visited index lies within.
@@ -1032,6 +1310,124 @@ mod tests {
     /// `fold` between two literal bounds.
     fn header(fold: Fold, lo: u64, hi: u64) -> FoldHeader {
         FoldHeader::new(fold, Bound::Lit(lo), Bound::Lit(hi))
+    }
+
+    /// The `slot`-th binder.
+    fn b(slot: u8) -> Binder {
+        Binder::from_slot(slot).expect("the slot exists")
+    }
+
+    /// The sum binding the `slot`-th binder.
+    fn sum(slot: u8) -> Fold {
+        Fold::new(Monoid::SUM, b(slot))
+    }
+
+    /// What a test's terms (named by a `u8`) are, for [`Bound::discover`]: a
+    /// count, a second count, no literal at all, a fraction, an integer past the
+    /// exact bound, a mask.
+    fn term(id: u8) -> Option<Lit> {
+        match id {
+            0 => Some(Lit::Real(2.0)),
+            1 => Some(Lit::Real(9.0)),
+            3 => Some(Lit::Real(2.5)),
+            4 => Some(Lit::Real(16_777_218.0)),
+            5 => Some(Lit::Mask(true)),
+            _ => None,
+        }
+    }
+
+    /// Terms for the reversed pair: five, then three.
+    fn reversed_term(id: u8) -> Option<Lit> {
+        Some(Lit::Real(if id == 0 { 5.0 } else { 3.0 }))
+    }
+
+    /// A count is a real that is a non-negative integer, held exactly: `-0.0`
+    /// is the integer `0`, and the exact bound itself is the last count.
+    #[test]
+    fn a_count_is_a_non_negative_integer_an_f32_counter_holds_exactly() {
+        let count = |real| Fold::count(Lit::Real(real));
+        assert_eq!(count(0.0), Some(0));
+        assert_eq!(count(-0.0), Some(0));
+        assert_eq!(count(7.0), Some(7));
+        assert_eq!(count(16_777_216.0), Some(Fold::EXACT_BOUND));
+        for no_count in [16_777_218.0, 2.5, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(count(no_count), None, "{no_count} names no count");
+        }
+        assert_eq!(Fold::count(Lit::Mask(true)), None);
+        assert_eq!(Fold::count(Lit::Mask(false)), None);
+    }
+
+    /// The ceiling of the domain is asked of one function: a range's end, a
+    /// literal's count and `Fold::is_exact` agree at, below and past it.
+    #[test]
+    fn the_exact_bound_is_stated_once() {
+        for n in [0, 7, Fold::EXACT_BOUND, Fold::EXACT_BOUND + 2] {
+            let exact = Fold::is_exact(n);
+            assert_eq!(KnownRange::admits(&(0..n)), exact, "a range ending at {n}");
+            assert_eq!(
+                Fold::count(Lit::Real(n as f32)).is_some(),
+                exact,
+                "a literal {n}"
+            );
+        }
+    }
+
+    /// Discovery reads a literal term into the bound and keeps every other: a
+    /// term with no literal, a fraction and a count past the domain stay values
+    /// (their guard makes the fold NaN), a mask is a sort error, and a pair of
+    /// literals is not read at all.
+    #[test]
+    fn discovery_reads_a_literal_term_and_keeps_every_other() {
+        use Bound::{Lit as Known, Value};
+        assert_eq!(
+            Bound::discover(Value(0u8), Value(1), term),
+            Ok((Known(2), Known(9)))
+        );
+        assert_eq!(
+            Bound::discover(Value(2u8), Value(1), term),
+            Ok((Value(2), Known(9)))
+        );
+        for no_count in [3u8, 4] {
+            assert_eq!(
+                Bound::discover(Known(0), Value(no_count), term),
+                Ok((Known(0), Value(no_count))),
+                "term {no_count} names no count and stays a value"
+            );
+        }
+        assert_eq!(
+            Bound::discover(Known(0), Value(5u8), term),
+            Err(BoundRefusal::BoundSort { end: BoundEnd::Hi })
+        );
+        assert_eq!(
+            Bound::discover(Value(5u8), Known(3), term),
+            Err(BoundRefusal::BoundSort { end: BoundEnd::Lo })
+        );
+        assert_eq!(
+            Bound::<u8>::discover(Known(7), Known(3), |_| panic!(
+                "a literal pair reads no term"
+            )),
+            Ok((Known(7), Known(3)))
+        );
+    }
+
+    /// L2: a pair this read makes known runs forwards, so `5..3` is the empty
+    /// range at 5 — while the pair a caller passed as two literals is left for
+    /// `KnownRange::new` to refuse.
+    #[test]
+    fn a_pair_discovery_makes_known_runs_forwards() {
+        use Bound::{Lit as Known, Value};
+        assert_eq!(
+            Bound::discover(Value(0u8), Value(1), reversed_term),
+            Ok((Known(5), Known(5)))
+        );
+        assert_eq!(
+            Bound::discover(Known(9), Value(1u8), reversed_term),
+            Ok((Known(9), Known(9)))
+        );
+        let empty = FoldHeader::new(sum(0), Known(5), Known(5))
+            .known_range()
+            .expect("two literals");
+        assert!(empty.is_empty());
     }
 
     #[test]
@@ -1537,24 +1933,160 @@ mod tests {
         );
     }
 
-    /// A bound that is a value is refused by name, wherever a fold meets its
-    /// bounds — until A3, when a child can be the bound.
+    /// A fold over an arithmetic algebra takes a bound that is a value at
+    /// stride one: its header holds the mark of a child, knows no range, and is
+    /// priced at the estimate; the algebras whose sorts have no out-of-domain
+    /// answer (`ANY`, `ALL`) and the lattice's (`SEQ`) take none.
     #[test]
-    #[should_panic(expected = "a fold bound that is a value")]
-    fn a_value_bound_is_refused_by_name_until_a3() {
-        let b = Binder::from_slot(0).expect("slot 0 exists");
-        let _refused = FoldHeader::new(Fold::new(Monoid::SUM, b), Bound::Lit(0), Bound::Value(()));
+    fn a_value_bound_takes_an_arithmetic_fold_at_stride_one() {
+        for monoid in [Monoid::SUM, Monoid::PRODUCT, Monoid::MIN, Monoid::MAX] {
+            assert!(monoid.takes_a_value_bound());
+            let value = FoldHeader::new(Fold::new(monoid, b(0)), Bound::Lit(0), Bound::Value(()));
+            assert_eq!(value.arity(), 2);
+            assert_eq!(value.known_range(), None);
+            assert_eq!(value.hi(), Bound::Value(()));
+            assert_eq!(value.priced_trips(), Fold::ESTIMATED_TRIPS);
+        }
+        for monoid in [Monoid::ANY, Monoid::ALL, Monoid::SEQ] {
+            assert!(!monoid.takes_a_value_bound());
+        }
     }
 
-    /// A header with a value bound is reachable only through the private
-    /// writer, as A3's constructor will: this module is the one place that can
-    /// say what the readers do with one.
+    /// A value bound on a fold of masks is refused by its sort (decision 8).
+    #[test]
+    #[should_panic(expected = "BoundSort")]
+    fn a_value_bound_on_an_any_fold_is_refused() {
+        let _refused = FoldHeader::new(
+            Fold::new(Monoid::ANY, b(0)),
+            Bound::Lit(0),
+            Bound::Value(()),
+        );
+    }
+
+    /// As for `ANY`: a mask has no NaN to answer an out-of-domain bound.
+    #[test]
+    #[should_panic(expected = "BoundSort")]
+    fn a_value_bound_on_an_all_fold_is_refused() {
+        let _refused = FoldHeader::new(
+            Fold::new(Monoid::ALL, b(0)),
+            Bound::Value(()),
+            Bound::Lit(3),
+        );
+    }
+
+    /// The lattice's folds keep constant ranges.
+    #[test]
+    #[should_panic(expected = "BoundSort")]
+    fn a_value_bound_on_a_seq_fold_is_refused() {
+        let _refused = FoldHeader::new(
+            Fold::new(Monoid::SEQ, b(0)),
+            Bound::Lit(0),
+            Bound::Value(()),
+        );
+    }
+
+    /// A stride other than 1 belongs to a known range it divides.
+    #[test]
+    #[should_panic(expected = "only over a known range it divides")]
+    fn a_value_bound_needs_stride_one() {
+        let _refused = FoldHeader::new(
+            Fold::strided(Monoid::SUM, b(0), 2),
+            Bound::Lit(0),
+            Bound::Value(()),
+        );
+    }
+
+    /// The literal beside a value is checked against the domain as any literal
+    /// is: no discovery or rule makes one past it, a hand-built node does.
+    #[test]
+    #[should_panic(expected = "a fold's literal bound is at most 16777216 (2^24)")]
+    fn a_literal_beside_a_value_is_in_the_domain() {
+        let _refused = FoldHeader::new(sum(0), Bound::Lit(Fold::EXACT_BOUND + 1), Bound::Value(()));
+    }
+
+    /// A known range is priced at its length, an unknown one at the estimate.
+    #[test]
+    fn priced_trips_is_the_known_length_or_the_estimate() {
+        assert_eq!(header(sum(0), 0, 40).priced_trips(), 40);
+        assert_eq!(header(sum(0), 3, 3).priced_trips(), 0);
+        let value = FoldHeader::new(sum(0), Bound::Lit(0), Bound::Value(()));
+        assert_eq!(value.priced_trips(), 32);
+        assert_eq!(Fold::ESTIMATED_TRIPS, 32);
+    }
+
+    /// L3, stated once: a fold admits a bound that reads neither a coordinate
+    /// nor its own binder, and an enclosing fold's binder is a bound's to read.
+    #[test]
+    fn a_fold_admits_a_bound_reading_neither_a_coordinate_nor_its_own_binder() {
+        let fold = sum(0);
+        assert_eq!(fold.admits_bound(BoundEnd::Lo, Variance::CONST), Ok(()));
+        assert_eq!(
+            fold.admits_bound(BoundEnd::Hi, Variance::from_var(5)),
+            Ok(())
+        );
+        for (end, reads) in [
+            (BoundEnd::Hi, Variance::X),
+            (BoundEnd::Lo, Variance::Y),
+            (BoundEnd::Hi, Variance::from_var(b(0).var())),
+        ] {
+            assert_eq!(
+                fold.admits_bound(end, reads),
+                Err(BoundRefusal::BoundVaries { end, reads })
+            );
+        }
+    }
+
+    /// Each refusal starts with its name, which is what a `should_panic` matches,
+    /// and holds the law it breaks.
+    #[test]
+    fn a_bound_refusal_names_its_law() {
+        let end = BoundEnd::Hi;
+        for (refusal, name, law) in [
+            (
+                BoundRefusal::BoundOutOfDomain { end, literal: 2.5 },
+                "BoundOutOfDomain",
+                "L5",
+            ),
+            (BoundRefusal::BoundSort { end }, "BoundSort", "decision 8"),
+            (
+                BoundRefusal::BoundVaries {
+                    end,
+                    reads: Variance::X,
+                },
+                "BoundVaries",
+                "L3",
+            ),
+            (
+                BoundRefusal::BoundArithmetic { end },
+                "BoundArithmetic",
+                "T6",
+            ),
+            (
+                BoundRefusal::BoundNotANumber { end },
+                "BoundNotANumber",
+                "`Param`",
+            ),
+        ] {
+            let shown = alloc::format!("{refusal}");
+            assert!(shown.starts_with(name), "{shown}");
+            assert!(shown.contains(law), "{shown} names {law}");
+            assert!(shown.contains("a fold's hi bound"), "{shown}");
+        }
+        let out_of_domain = BoundRefusal::BoundOutOfDomain {
+            end: BoundEnd::Lo,
+            literal: 2.5,
+        };
+        assert!(alloc::format!("{out_of_domain}").contains("a fold's lo bound is 2.5"));
+        assert_eq!(alloc::format!("{} {}", BoundEnd::Lo, BoundEnd::Hi), "lo hi");
+    }
+
+    /// A value bound's count field is 0, and the header still tells it from the
+    /// literal 0: how a bound is held is a field `Eq`, `Hash` and `Ord` read.
     #[test]
     fn a_value_bound_is_not_the_literal_zero() {
-        let b = Binder::from_slot(0).expect("slot 0 exists");
-        let fold = Fold::new(Monoid::SUM, b);
-        let zero = FoldHeader::store(fold, Bound::Lit(0), Bound::Lit(4));
-        let value = FoldHeader::store(fold, Bound::Value(()), Bound::Lit(4));
+        let fold = sum(0);
+        let zero = header(fold, 0, 4);
+        let value = FoldHeader::new(fold, Bound::Value(()), Bound::Lit(4));
         assert_ne!(
             zero, value,
             "the count field alone does not tell them apart"
@@ -1566,18 +2098,18 @@ mod tests {
         assert_eq!(value.fold(), fold);
         assert_eq!(
             value,
-            FoldHeader::store(fold, Bound::Value(()), Bound::Lit(4)),
+            FoldHeader::new(fold, Bound::Value(()), Bound::Lit(4)),
             "and a value is one header however it was written"
         );
     }
 
-    /// There are no bits for a child: the layout has a field for a count, and
-    /// writing a header whose bound is a value as one would name another fold.
+    /// There are no bits for a child until A4: the layout has a field for a
+    /// count, and writing a header whose bound is a value as one would name
+    /// another fold.
     #[test]
     #[should_panic(expected = "a fold bound that is a value")]
-    fn a_value_bound_has_no_bits_until_a3() {
-        let b = Binder::from_slot(0).expect("slot 0 exists");
-        let value = FoldHeader::store(Fold::new(Monoid::SUM, b), Bound::Lit(3), Bound::Value(()));
+    fn a_value_bound_has_no_bits_until_a4() {
+        let value = FoldHeader::new(sum(0), Bound::Lit(3), Bound::Value(()));
         let _refused = value.to_bits();
     }
 

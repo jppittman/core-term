@@ -343,12 +343,12 @@
  {
   "file": "pixelflow-ir/src/arena.rs",
   "fn": "free_index",
-  "text": "ExprNode::Reduce { fold, body, .. } => {",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => {",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "`free_index`: `(free(body) \\ b) ∪ free(lo) ∪ free(hi)` (§3.3)",
+  "reason": "`free_index`: `(free(body) \\ b) ∪ free(lo) ∪ free(hi)`; a bound is read outside the fold's binding (§3.3)",
   "lines": [
-   781
+   805
   ]
  },
  {
@@ -419,17 +419,6 @@
  },
  {
   "file": "pixelflow-ir/src/arena.rs",
-  "fn": "lowest_free_binder",
-  "text": "if let ExprNode::Reduce { fold, .. } = self.node(id) {",
-  "count": 1,
-  "class": "changed-by-A3",
-  "reason": "`lowest_free_binder(roots)`: scans the value bounds and marks binder `Var` reads (§3.5, J8)",
-  "lines": [
-   1757
-  ]
- },
- {
-  "file": "pixelflow-ir/src/arena.rs",
   "fn": "substitute_vars_with",
   "text": "ExprNode::Reduce { fold, lo, hi, body } => {",
   "count": 1,
@@ -437,6 +426,17 @@
   "reason": "`substitute_vars_with` maps both bounds; A3 states its precondition (N5, §3.4)",
   "lines": [
    1834
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "lowest_free_binder",
+  "text": "ExprNode::Reduce { fold, .. } => taken[usize::from(fold.binder().slot())] = true,",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`lowest_free_binder(roots)`: walks the value bounds' roots too and marks the binder `Var`s it reads (§3.5, J8)",
+  "lines": [
+   1883
   ]
  },
  {
@@ -508,6 +508,17 @@
  },
  {
   "file": "pixelflow-ir/src/arena.rs",
+  "fn": "push_reduce_keeps_a_literal_naming_no_count_as_a_value",
+  "text": "let ExprNode::Reduce { hi, .. } = a.node(fold) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "arena unit test (T-IR-13)",
+  "lines": [
+   2782
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
   "fn": "a_fold_opened_and_closed_is_close_overs_and_leaves_nothing_behind",
   "text": "let ExprNode::Reduce {",
   "count": 1,
@@ -515,6 +526,39 @@
   "reason": "arena unit tests",
   "lines": [
    2813
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "push_reduce_takes_a_bound_reading_an_enclosing_binder_a_uniform_or_a_placeholder",
+  "text": "let ExprNode::Reduce { hi, .. } = a.node(fold) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "arena unit test (T-IR-16)",
+  "lines": [
+   2864
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "close_over_copies_a_value_bound_after_the_body",
+  "text": "let ExprNode::Reduce { hi, .. } = *fold else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "arena unit test (T-IR-19)",
+  "lines": [
+   2925
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "close_over_binds_past_a_slot_its_bound_reads",
+  "text": "let ExprNode::Reduce { fold, .. } = closed.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "arena unit test (T-IR-21)",
+  "lines": [
+   2979
   ]
  },
  {
@@ -570,6 +614,29 @@
   "reason": "kernel unit tests",
   "lines": [
    1570
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/kernel.rs",
+  "fn": "root_fold",
+  "text": "let ExprNode::Reduce { lo, hi, .. } = arena.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "kernel unit test helper for the `over_values` tests (T-K-3)",
+  "lines": [
+   1800
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/kernel.rs",
+  "fn": "over_values_takes_an_enclosing_index",
+  "text": "let ExprNode::Reduce {",
+  "count": 2,
+  "class": "tests",
+  "reason": "kernel unit test (T-K-4)",
+  "lines": [
+   1889,
+   1895
   ]
  },
  {
@@ -900,24 +967,24 @@
  },
  {
   "file": "pixelflow-ir/src/variance.rs",
-  "fn": "compute_arena_variance",
+  "fn": "transfer",
   "text": "ExprNode::Reduce { .. } if arena.known_range(id).is_some_and(KnownRange::is_empty) => {",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "L4 in the per-node transfer function (§3.2)",
+  "reason": "`transfer`: a fold over a known empty range is CONST; a range that is not known is not known to be empty (L4, §3.2)",
   "lines": [
-   355
+   377
   ]
  },
  {
   "file": "pixelflow-ir/src/variance.rs",
-  "fn": "compute_arena_variance",
-  "text": "ExprNode::Reduce { fold, body, .. } => {",
+  "fn": "transfer",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => {",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "L4 in the per-node transfer function (§3.2)",
+  "reason": "`transfer`: `(var(body) \\ b) ∪ var(lo) ∪ var(hi)`, the bounds unmasked (L4, §3.2)",
   "lines": [
-   364
+   385
   ]
  },
  {
@@ -951,6 +1018,50 @@
   "reason": "variance unit tests",
   "lines": [
    798
+  ]
+ },
+ {
+  "file": "pixelflow-ir/tests/value_bounds.rs",
+  "fn": "is_the_fixture",
+  "text": "let ExprNode::Reduce { body, .. } = copy.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test helper (T-IR-24)",
+  "lines": [
+   63
+  ]
+ },
+ {
+  "file": "pixelflow-ir/tests/value_bounds.rs",
+  "fn": "is_the_fixture",
+  "text": "let ExprNode::Reduce { hi, .. } = copy.node(body) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test helper (T-IR-24)",
+  "lines": [
+   66
+  ]
+ },
+ {
+  "file": "pixelflow-ir/tests/value_bounds.rs",
+  "fn": "substituting_a_coordinate_leaves_a_bound_alone",
+  "text": "let ExprNode::Reduce { body: inner, .. } = f.arena.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test (T-IR-25)",
+  "lines": [
+   135
+  ]
+ },
+ {
+  "file": "pixelflow-ir/tests/value_bounds.rs",
+  "fn": "substituting_a_coordinate_leaves_a_bound_alone",
+  "text": "let ExprNode::Reduce { hi, body, .. } = f.arena.node(inner) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test (T-IR-25)",
+  "lines": [
+   138
   ]
  },
  {

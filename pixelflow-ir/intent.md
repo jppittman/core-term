@@ -70,7 +70,7 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
   by convention, a computed mask a lane like any other. Node sorts and `Lit::Int`
   are ruled (kernels-evaluate-kernels §2) and wait on the arena-is-typed T3.
 - `Var(u8)` means an axis or a binder by range; `Binder` a `u8`, against
-  the 64-bit control-plane rule. A fold's `Bound`s are all literal until A3.
+  the 64-bit control-plane rule. Codegen and the key take literal `Bound`s until A4.
 - `Buffer`, `BoundManifold`'s link tables and `passes::lattice` are in the
   tree and not concepts (DENOTATION §11).
 
