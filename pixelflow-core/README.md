@@ -61,11 +61,12 @@ The `Kernel` surface:
   related operations);
 - `Bits`, the integer/bitwise half, entered by `trunc_to_int`.
 
-Bounded reductions have constant extents today, and no bound may be a function of a coordinate
-or of a lattice binder. General unbounded recursion is intentionally outside the language: **the
-language is a DAG**, and the fold is its one binder. A trip count that must change is a recompile
-through the cache that already keys on shape; the plan that makes bounds values placed by their
-variance is [a bound is a value](../docs/language/2026-10-20-a-bound-is-a-value.md).
+A reduction's bounds are values: a literal, a per-call count (`Kernel::over_values` with a
+`Uniform`), or an enclosing reduction's index, and none may be a function of a coordinate or of a
+lattice binder. One compiled program serves every count, and a count outside `[0, 2²⁴]` makes the
+reduction NaN. General unbounded recursion is intentionally outside the language: **the language is
+a DAG**, and the fold is its one binder ([a bound is a
+value](../docs/language/2026-10-20-a-bound-is-a-value.md)).
 
 ## Lattices and materialization
 

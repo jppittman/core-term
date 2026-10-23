@@ -74,3 +74,25 @@ Nothing public. Private: `lower.rs`'s `known` helper (the VALUE_BOUND refusal) a
 ### Not widened
 
 No `pub(crate)` item became `pub`; no `pub` field was added; `ScopedSchedule`/`ScopeFold` fields keep their `pub(super)`. `push_write` is untouched (the test builds its `Write` through `Ir::embed`).
+
+## pixelflow-pipeline, pixelflow-compiler, pixelflow-graphics, pixelflow-search (implementer 3)
+
+No new `pub` item, no `pub` field, no visibility widening, no re-export. Every change is a behavior or a
+documented contract of an item that already existed, or private.
+
+### Changed behavior or contract (no signature change)
+
+| Item | Change |
+|---|---|
+| `pixelflow_pipeline::collapse_bench::features_of(&CompileResult) -> StaticFeatures` | Panics (new `# Panics` section) on a kernel with a fold whose range is not known: its trip counts are estimates, and `EmitTraffic::dynamic_memory_ops` is `None`. Reads both through the private `LITERAL_FOLDS` message. Was: summed `u64` trips and a `u64` count. A kernel whose bounds are all literals (every corpus kernel) is unchanged. |
+| `pixelflow_pipeline::collapse_bench::corpus::{encode, read_dir, write_dir}` (and the private `decode`) | The fixture format is v5: an `R` line is `R <header bits> <body>` then one id per bound that is a value, `lo`'s first. A literal fold's line is what it was. A v4 file is refused by name (`SUPERSEDED_HEADERS`). |
+| `pixelflow_pipeline::training::corpus::{write_corpus, read_corpus}` | A `Reduce` record (tag 9) is the header's bits, the body's id, then one id per bound that is a value, `lo`'s first. `write_corpus` no longer refuses a value bound. `CorpusFormat::SCHEMA` (private) names tag 9, so `corpus_identity()` moves and every earlier corpus is refused with the regeneration hint. |
+| `pixelflow_compiler::emit::arena_to_tokens(&ExprArena, ExprId, &EntryContext) -> TokenStream` | A fold with a bound that is a value emits `attach([child ids])` with those children after its body; a literal fold's tokens are unchanged (`attach(::core::iter::empty())`), as is an open fold's hole filling. `kernel!` cannot produce a value bound before its bounds are typed expressions, so only a hand-built arena reaches the new branch. |
+
+### Private, listed so a reviewer can see nothing leaked
+
+- `collapse_bench/mod.rs`: `const LITERAL_FOLDS`. `collapse_bench/corpus.rs`: `HEADER` is v5; `SUPERSEDED_HEADERS` gains v4.
+- `bin/corpus_gaps.rs`: `Key::Reduce(u128, Vec<u32>)` (was `(u128, u32)`) in the private `hash_cons`.
+- Tests and one example only elsewhere (`pixelflow-graphics`: `cell_grid.rs`'s and `production_glyph_arena_dump.rs`'s
+  `dump_arena` stay v1 and write a value bound's child; `examples/constant_traffic.rs` prints an estimate as "an
+  estimate"). `pixelflow-search`: docs and one intent line only; no code.

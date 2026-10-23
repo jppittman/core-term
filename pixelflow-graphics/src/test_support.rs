@@ -51,3 +51,38 @@ pub(crate) fn program_digest(arena: &ExprArena, root: ExprId) -> u64 {
     feed(&root.0.to_le_bytes());
     hash
 }
+
+#[test]
+fn a_value_bound_is_in_the_program_digest() {
+    use pixelflow_ir::{Binder, Bound, Fold, Monoid, Uniform};
+
+    /// `Σ_{k<n} k`, with `n` the `slot`-th of two declared uniforms.
+    fn counted_by(slot: usize) -> (ExprArena, ExprId) {
+        let mut arena = ExprArena::new();
+        let slots = [3.0, 5.0].map(|default| arena.declare_uniform(Uniform::new(default).decl()));
+        let count = arena.push_uniform(slots[slot]);
+        let binder = Binder::from_slot(0).expect("the first binder");
+        let index = arena.push_var(binder.var());
+        let root = arena.push_reduce(
+            Fold::new(Monoid::SUM, binder),
+            Bound::Lit(0),
+            Bound::Value(count),
+            index,
+        );
+        (arena, root)
+    }
+
+    let (by_first, first_root) = counted_by(0);
+    let (by_second, second_root) = counted_by(1);
+    assert_ne!(
+        program_digest(&by_first, first_root),
+        program_digest(&by_second, second_root),
+        "the digest reads the bound's child"
+    );
+    let (again, again_root) = counted_by(0);
+    assert_eq!(
+        program_digest(&by_first, first_root),
+        program_digest(&again, again_root),
+        "and is a function of the program"
+    );
+}

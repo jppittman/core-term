@@ -58,6 +58,8 @@ under a cost. `Optimizer::run` is its one entry; the five laws of §8 are its co
   sharing is never priced, but `extract_dag_over` also runs `shared_dag_dp_pass` and keeps the cheaper by
   `dag_cost`. Both arms are greedy (BACKLOG E5); a fold over a known range ties its unrolling and insertion
   order decides (E6); `Reranker` has no implementation outside tests.
+- A value bound's pick is unconstrained: a class read as a bound can settle on a member that reads a coordinate,
+  and `ExprArena::push_reduce` refuses it by name; pinned in `fold_rules.rs`, left loud until a kernel hits it.
 - No test pins `cost(If)` directly; `SETTLEMENT_DIGESTS` in `extract.rs` holds it.
 - `Vocabulary` still admits `Gather` and `ENode::Buffer`; the language has no bound buffers
   (kernels-evaluate-kernels, 2026-10-15). `mod.rs` lists an `extraction` module that does not exist and

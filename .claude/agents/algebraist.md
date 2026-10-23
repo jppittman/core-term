@@ -32,11 +32,10 @@ Rust type tree. Key properties:
    image by 2x — the direction reverses.
 2. **Pull-based**: nothing computes until a `Lattice` demands it.
 3. **The language is a DAG**: the fold is its one binder, and no fold's bound is a function
-   of a coordinate or of a lattice binder. Today every bound is a constant, so a trip count
-   that must change is a recompile through the shape-keyed cache; whether a constant fold is
-   unrolled is the e-graph's and extraction's choice (`PeelFold`, `HalveFold`).
-   `docs/language/2026-10-20-a-bound-is-a-value.md` makes bounds values placed by their
-   variance.
+   of a coordinate or of a lattice binder. A bound is a value placed by its variance: a
+   per-call count is a uniform, so one program serves every count, and outside `[0, 2²⁴]` the
+   fold is NaN; whether a constant fold is unrolled is the e-graph's and extraction's choice
+   (`PeelFold`, `HalveFold`). See `docs/language/2026-10-20-a-bound-is-a-value.md`.
 
 ### Core operations
 

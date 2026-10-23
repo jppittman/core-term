@@ -134,8 +134,9 @@
 - **Follows:** `Gather` leaving the algebra is a consequence of this, not
   the goal. Invariance is variance. A structural change recompiles and a
   uniform change never does. A uniform's default stays out of the key, while
-  a discrete kernel's lattice is in it, as an extent is. The instruction chosen for a binding time
-  (gather, broadcast, uniform load) is codegen's business.
+  a discrete kernel's lattice is in it, as an extent is. A fold's bound is placed by its variance like
+  any value (a-bound-is-a-value §1.2): a uniform bound is a per-call count, so one program serves every
+  count. The instruction chosen for a binding time (gather, broadcast, uniform load) is codegen's business.
 - **Lives:** `ExprNode::{Var, Uniform, Ref}` (no `Buffer`: bound buffers are retired, kernels-evaluate-kernels §2)
   (`pixelflow-ir/src/arena.rs`); `Variance` (`pixelflow-ir/src/variance.rs`).
   Decided in `2026-09-10-one-name-bound-later.md` §1–§5 (status Draft) and
@@ -420,8 +421,8 @@
   meaning ⊕ over a set under a monoid. "A reduction … means the same thing
   computed as one term peeled off a shorter reduction, as a split into two,
   or as a fully unrolled chain." It is the one node that binds. Its monoid,
-  binder and range are its identity, and its body is its only child until a
-  bound is a value (a-bound-is-a-value A3). It is spelled
+  binder and literal bounds are its identity, and its children are its body
+  and each bound that is a value. It is spelled
   `(a..b).map(|i| e).sum()`, `.product()`, `.any`, `.all`, or
   `.fold(±INF, min/max)`. "A fold is written once and stays a fold in every
   open value. Whether it runs as a loop or as copies is decided inside P, by
@@ -435,7 +436,8 @@
     hash-consed with every literal of the same value.
   - Loop-carried iteration (refused, D11).
   - Unrolled by a pass or at construction.
-  - Dynamically bounded.
+  - Bounded by a coordinate or a lattice binder, or by its own binder (L3); a
+    per-call bound is a value, not a dynamic bound.
   - An integral over a continuous domain: `Fold::Interval` was decided
     2026-09-23 and deleted 2026-09-29.
   - The style sense of "fold".
@@ -448,8 +450,10 @@
     (`compute_arena_variance`) and lowering schedules the identity
     (`arena_to_schedule`).
   - Peel and halve are e-graph rules, so unrolling is extraction's choice.
-  - A fold costs `len × body`, and its size for budgeting is also
-    `len × body`.
+  - A fold costs `n·body + (n−1)·combine` plus its value bounds once, `n` its
+    known length or `Fold::ESTIMATED_TRIPS`; outside `[0, 2²⁴]` a value-bounded
+    fold is NaN, by the guard `passes::legalize` ends with, which is an `If`
+    whose arm holds the loop.
   - `Dwrt` through a fold is linearity, which holds for Σ only.
   - Nested folds are nested loops.
   - A fold invariant in its enclosing binder is hoisted and runs once.
@@ -462,7 +466,9 @@
   `FoldHeader` (`pixelflow-ir/src/fold.rs`; the bounds are
   `ExprNode::Reduce`'s `lo` and `hi`), `ENode::Reduce`
   (`pixelflow-search/src/egraph/node.rs`), `ScheduledOp::Reduce`,
-  `Scope::Fold` (`pixelflow-codegen/src/program/mod.rs`);
+  `Scope::Fold` (`pixelflow-codegen/src/program/mod.rs`), the guard
+  (`pixelflow-ir/src/passes/guard.rs`) and `Trips`
+  (`pixelflow-codegen/src/emit/traffic.rs`);
   `pixelflow-search/src/egraph/fold_rules.rs`. Decided in a-fold-is-a-node
   §2, §5, §6; a-surviving-reduce-is-a-loop; collapse-is-a-fold; one-pipeline
   decisions. CLAUDE.md said "no iteration binder" (stale, one-pipeline
@@ -498,32 +504,30 @@
 
 ### Range (trip count)
 
-- **Is:** a fold's half-open `[lo, hi)` with a stride, constant at
-  construction. Its ends are expressions over literals and structural
-  parameters. "The rule is that ranges have to be constant" (JP,
-  2026-09-25). The range is the half that carries the load: peeling over a
-  range leaves the body unchanged and therefore shared.
-- **Is not:** a uniform or a runtime value ("a dynamic bound on `Fold` …
-  Refused"; "a data bound is a dynamic trip count, which is refused and
-  becomes a recompile"). Not implicitly zero-based. Not past 2²⁴, where an
-  `f32` index stops being exact. Not a value of its own in the IR yet: "A
-  range is a value", which would let sibling reductions over one range be
-  one loop with one accumulator each, is proposed and unbuilt
-  (a-glyph-is-a-formula §4.2).
-- **Follows:** the trip count is in the kernel's key, so 34 pieces and 11
-  pieces are two compiles. Constructors refuse a range past 2²⁴
-  (`KnownRange::admits`). The allocator ranks carries by static trip counts.
-  `bucketed_trip_count`'s power-of-two padding existed only because of
-  this, and goes (G3).
+- **Is:** a fold's half-open `[lo, hi)` with a stride; each end a literal (node
+  data) or a value (a child): a per-call count or an enclosing fold's index.
+  The range is the half that carries the load: peeling over a range leaves the
+  body unchanged and therefore shared.
+- **Is not:** a function of a coordinate, a lattice binder or the fold's own
+  binder (L3). Past 2²⁴: a literal is refused at construction, a value makes
+  the fold NaN. Not implicitly zero-based. Not a value of its own in the IR: a
+  range node shared by sibling folds is decision 9 (a-glyph-is-a-formula §4.2).
+- **Follows:** a known range is in the key; a value bound keys as its child, a
+  uniform's dense slot, so one program serves every count. Constructors refuse
+  a literal range past 2²⁴ (`KnownRange::admits`). The allocator weighs carries
+  by `Trips`, an estimate for a loop whose range is not known.
+  `bucketed_trip_count`'s padding existed only because counts were syntax, and
+  goes (B2).
 - **Lives:** `Fold { monoid, binder, stride }`, `Bound`, `FoldHeader`,
   `Fold::EXACT_BOUND`, `KnownRange` and `KnownRange::admits`
   (`pixelflow-ir/src/fold.rs`); the bounds are the node's
   (`ExprNode::Reduce`'s `lo` and `hi`), and a range is read through
   `ExprArena::known_range`, `ENode::known_range` or `ScheduledOp::Reduce`'s
-  bounds, all by `KnownRange::of`. Decided in a-fold-is-a-node §3,
+  bounds, all by `KnownRange::of`; the guard
+  (`pixelflow-ir/src/passes/guard.rs`) and `Trips`
+  (`pixelflow-codegen/src/emit/traffic.rs`). Decided in a-fold-is-a-node §3,
   a-surviving-reduce-is-a-loop §1 and §5, the-language-is-kernel §1.5 and
-  a-bound-is-a-value §3.1. Today every bound is a literal, and
-  `bucketed_trip_count` still pads in
+  a-bound-is-a-value §3.1. `bucketed_trip_count` still pads in
   `pixelflow-graphics/src/fonts/loop_blinn.rs`.
 
 ### Unrolling
@@ -911,12 +915,14 @@
 - **Is:** the root axiom: "The kernel language is total. It is not
   Turing-complete. Every program's cost is a closed-form function of static
   extents." Restated as strongly normalizing (2026-08-31).
-- **Is not:** a language with `while`, `fix`, recursion, `mut`, or dynamic
-  trip counts (`Fix` was removed: "it could not be given a static extent").
+- **Is not:** a language with `while`, `fix`, recursion, `mut`, or
+  coordinate-dependent trip counts (`Fix` was removed: "it could not be given a static extent").
   Superseded: `iterate[N]` (07-20 P10).
 - **Follows:** the cost model can be total. Saturation need not seek a
-  fixpoint, so the optimizer is budget-only. Ranges are constant, and
-  uniforms are never extents. Complex numbers, quaternions, polar
+  fixpoint, so the optimizer is budget-only. Every trip count is fixed before
+  the lattice is traversed, so a program's cost is closed-form per call; a
+  per-call count is a value, never a coordinate, and the lattice's extent is
+  never a uniform. Complex numbers, quaternions, polar
   coordinates, fract, hypot and clamp are library code.
 - **Lives:** `docs/language/2026-07-24-totality-and-the-cost-model.md`;
   `docs/language/2026-07-20-kernel-unification.md` "Root axiom";

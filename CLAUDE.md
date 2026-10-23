@@ -177,7 +177,7 @@ went with the tiers that held them. A copy is a future divergence.
 - **A kernel with a lattice is the evaluation API**: `Kernel` describes, `Manifold::compile` specializes it at a shape, `Lattice::collapse` tabulates it. There is no per-batch entry and no interpreter.
 - **SIMD as algebra**: users write equations; the compiler owns the loop nest, the hoisting, the pack and the register allocation, and emits the assembly. Lane width is never in the vocabulary.
 - **The Fixed Observer**: Camera is at origin. Movement is achieved by warping coordinate space.
-- **The language is a DAG**: the fold is its one binder, and no fold's bound is a function of a coordinate (X, Y) or of a lattice binder. Today every bound is a constant, so a trip count that must change is a recompile through the shape-keyed cache. The plan that makes bounds values placed by their variance is docs/language/2026-10-20-a-bound-is-a-value.md.
+- **The language is a DAG**: the fold is its one binder, and no fold's bound is a function of a coordinate (X, Y) or of a lattice binder. A bound is a value placed by its variance: a literal is the fold's data, which extraction may unroll; a per-call count is a uniform, computed once per call, so one program serves every count; outside `[0, 2²⁴]` the fold is NaN (docs/language/2026-10-20-a-bound-is-a-value.md).
 - **Zero allocations** - No per-frame heap allocation (ping-pong buffer strategy).
 - **Platform on main thread** - Especially macOS Cocoa (Apple requirement).
 
