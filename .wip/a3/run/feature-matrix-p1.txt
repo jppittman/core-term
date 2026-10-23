@@ -1,0 +1,5 @@
+OK: every crate's every feature builds in isolation
+
+real	0m43.092s
+user	0m4.559s
+sys	0m2.860s
