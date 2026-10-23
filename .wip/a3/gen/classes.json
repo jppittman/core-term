@@ -1171,7 +1171,7 @@
   "class": "changed-by-A3",
   "reason": "`node_op_cost`: `fold_cost(fold, header.priced_trips(), 0)` (§7)",
   "lines": [
-   399
+   402
   ]
  },
  {
@@ -1198,13 +1198,24 @@
  },
  {
   "file": "pixelflow-search/src/egraph/extract.rs",
-  "fn": "below",
-  "text": "ENode::Reduce { .. } => {",
+  "fn": "literal_twin",
+  "text": "let ENode::Reduce { header, .. } = node else {",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "`below` and `TreePricer::price`: the priced form (§7)",
+  "reason": "`literal_twin`: a fold whose value bounds were chosen as literals is priced as the fold over them (N3, J7)",
   "lines": [
-   1684
+   1671
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/extract.rs",
+  "fn": "below",
+  "text": "ENode::Reduce { header, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`below` multiplies the body by the priced form's `priced_trips()` and charges each value-bound operand once (§7)",
+  "lines": [
+   1726
   ]
  },
  {
@@ -1213,9 +1224,9 @@
   "text": "ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => {",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "`below` and `TreePricer::price`: the priced form (§7)",
+  "reason": "`TreePricer::price` hands `below` the priced form (`literal_twin`); the arm's text is unchanged (§7)",
   "lines": [
-   2101
+   2154
   ]
  },
  {
@@ -1226,7 +1237,7 @@
   "class": "tests",
   "reason": "extraction tests (`dense_reference_pass` changes mechanically)",
   "lines": [
-   2758
+   2828
   ]
  },
  {
@@ -1237,8 +1248,8 @@
   "class": "tests",
   "reason": "extraction tests (`dense_reference_pass` changes mechanically)",
   "lines": [
-   3503,
-   4116
+   3711,
+   4324
   ]
  },
  {
@@ -1249,7 +1260,7 @@
   "class": "n/a",
   "reason": "the `HeadNode::Reduce` definition",
   "lines": [
-   99
+   110
   ]
  },
  {
@@ -1260,7 +1271,7 @@
   "class": "already-correct",
   "reason": "`PlanBuilder::reduce` carries both bounds",
   "lines": [
-   165
+   176
   ]
  },
  {
@@ -1272,6 +1283,17 @@
   "reason": "`EmptyFold` fires on a known empty range only (L6)",
   "lines": [
    477
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "apply",
+  "text": "if !matches!(node, ENode::Reduce { header, .. } if header.arity() > 1) {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`KnownBound::apply` (L8): declines a fold over literals on its header, then reads the bound classes' literal members",
+  "lines": [
+   585
   ]
  },
  {
@@ -1298,17 +1320,6 @@
  },
  {
   "file": "pixelflow-search/src/egraph/fold_rules.rs",
-  "fn": "reduce_range",
-  "text": "matches!(node, ENode::Reduce { .. }).then(|| node.known_range().expect(KNOWN_RANGE))",
-  "count": 1,
-  "class": "tests",
-  "reason": "fold rule tests",
-  "lines": [
-   671
-  ]
- },
- {
-  "file": "pixelflow-search/src/egraph/fold_rules.rs",
   "fn": "a_peel_shares_the_body_it_folds",
   "text": "Some(node @ ENode::Reduce { .. }) => eg.find(body_of(node)),",
   "count": 1,
@@ -1327,6 +1338,17 @@
   "reason": "fold rule tests",
   "lines": [
    728
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "reduce_range",
+  "text": "matches!(node, ENode::Reduce { .. }).then(|| node.known_range().expect(KNOWN_RANGE))",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   794
   ]
  },
  {
@@ -1359,7 +1381,7 @@
   "class": "tests",
   "reason": "fold rule tests",
   "lines": [
-   1021
+   1144
   ]
  },
  {
@@ -1370,7 +1392,51 @@
   "class": "tests",
   "reason": "fold rule tests",
   "lines": [
-   1283
+   1407
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_peel_substitutes_into_a_nested_folds_bound",
+  "text": "HeadNode::Reduce { fold, lo, hi, body }",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests: T-S-4",
+  "lines": [
+   1504
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_peel_names_a_rebinding_fold_with_a_value_bound",
+  "text": ".any(|n| matches!(n, HeadNode::Reduce { fold, .. } if *fold == inner)),",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests: T-S-4b",
+  "lines": [
+   1548
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_triangular_fold_halves_with_a_rule_made_bound",
+  "text": "HeadNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests: T-S-6",
+  "lines": [
+   1709
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_triangular_fold_halves_with_a_rule_made_bound",
+  "text": "if let ExprNode::Reduce { fold, hi, .. } = out.node(id)",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests: T-S-6 walks the extracted arena",
+  "lines": [
+   1746
   ]
  },
  {
@@ -1381,7 +1447,7 @@
   "class": "tests",
   "reason": "fold rule tests",
   "lines": [
-   1373
+   1875
   ]
  },
  {
@@ -1392,7 +1458,18 @@
   "class": "tests",
   "reason": "fold rule tests",
   "lines": [
-   1382
+   1884
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/graph.rs",
+  "fn": "add",
+  "text": "if let ENode::Reduce { header, children } = &node",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`EGraph::add`'s L3 backstop: a fold with a value bound has each bound's class checked (`refuse_a_varying_bound`); a literal fold is skipped on its arity",
+  "lines": [
+   385
   ]
  },
  {
@@ -1403,7 +1480,7 @@
   "class": "already-correct",
   "reason": "`plan_shape` resolves both bounds into `ENode::reduce`",
   "lines": [
-   1626
+   1668
   ]
  },
  {
@@ -1414,16 +1491,16 @@
   "class": "left",
   "reason": "`derivative_shape`: no derivative rule for a fold; the `Dwrt` is kept",
   "lines": [
-   1695
+   1737
   ]
  },
  {
   "file": "pixelflow-search/src/egraph/insert.rs",
   "fn": "insert",
-  "text": "Shape::Reduce { body, lo, hi, .. } => {",
+  "text": "Shape::Reduce { fold, body, lo, hi } => {",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "`insert` discovers a literal bound; `inserted_class_count` mirrors it (§6.3)",
+  "reason": "`insert` discovers a literal bound (`Bound::discover`) before visiting the bounds; a literal makes no class (§6.3)",
   "lines": [
    173
   ]
@@ -1447,7 +1524,7 @@
   "class": "changed-by-A3",
   "reason": "`insert` discovers a literal bound; `inserted_class_count` mirrors it (§6.3)",
   "lines": [
-   264
+   283
   ]
  },
  {
@@ -1458,7 +1535,7 @@
   "class": "tests",
   "reason": "the `ValueBounded` test term",
   "lines": [
-   532
+   563
   ]
  },
  {
@@ -1469,7 +1546,7 @@
   "class": "changed-by-A3",
   "reason": "doc: a rule reaching a value bound is how a range becomes known (L8)",
   "lines": [
-   311
+   315
   ]
  },
  {
@@ -1480,7 +1557,7 @@
   "class": "changed-by-A3",
   "reason": "`ENode::reduce`: doc drops \"until A3\"; panics as `FoldHeader::new`",
   "lines": [
-   399
+   403
   ]
  },
  {
@@ -1491,7 +1568,7 @@
   "class": "already-correct",
   "reason": "`as_reduce`, `shape`, `children_slice(_mut)` carry every child",
   "lines": [
-   410
+   414
   ]
  },
  {
@@ -1502,7 +1579,7 @@
   "class": "already-correct",
   "reason": "`as_reduce`, `shape`, `children_slice(_mut)` carry every child",
   "lines": [
-   440
+   444
   ]
  },
  {
@@ -1513,7 +1590,7 @@
   "class": "changed-by-A3",
   "reason": "`known_range`: doc (\"every bound is a constant today\") rewritten",
   "lines": [
-   460
+   466
   ]
  },
  {
@@ -1524,7 +1601,7 @@
   "class": "already-correct",
   "reason": "`as_reduce`, `shape`, `children_slice(_mut)` carry every child",
   "lines": [
-   485
+   491
   ]
  },
  {
@@ -1535,18 +1612,18 @@
   "class": "already-correct",
   "reason": "`as_reduce`, `shape`, `children_slice(_mut)` carry every child",
   "lines": [
-   500
+   506
   ]
  },
  {
   "file": "pixelflow-search/src/egraph/node.rs",
   "fn": "variance",
-  "text": "ENode::Reduce { header, children } => {",
+  "text": "ENode::Reduce { header, children } => children[1..].iter().fold(",
   "count": 1,
   "class": "changed-by-A3",
-  "reason": "L4 in `ENode::variance` (§6.1)",
+  "reason": "L4 in `ENode::variance`: the body less its index, unioned with each value bound's variance (§6.1)",
   "lines": [
-   552
+   564
   ]
  },
  {

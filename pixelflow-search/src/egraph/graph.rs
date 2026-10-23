@@ -2,12 +2,13 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
-use super::node::{EClassId, ENode};
+use super::node::{EClassId, ENode, Operands};
 use super::ops;
 use super::provenance::{ENodeId, Provenance};
 use super::rewrite::{RewriteAction, RootShapes};
 use alloc::collections::BTreeMap;
 use columns::{Birth, Columns, Kept, SaturationColumns, Slot};
+use pixelflow_ir::fold::{Bound, BoundEnd, FoldHeader};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::{KernelKey, Lit, Variance};
 
@@ -356,10 +357,35 @@ impl EGraph {
     /// Panics on an [`ENode::Ref`] to a unit no walk has admitted
     /// (`EGraph::admit_unit`): the node is only a key, and the graph holds
     /// nothing to say what it varies as.
+    ///
+    /// On a fold whose value bound varies with a coordinate or with the fold's
+    /// own binder (`pixelflow_ir::fold::BoundRefusal::BoundVaries`, L3): the
+    /// backstop behind `ExprArena::push_reduce`, for a node a rule or a caller
+    /// built. It does not refuse bound arithmetic
+    /// (docs/language/2026-10-20-a-bound-is-a-value.md §1.4): `HalveFold`'s
+    /// `binder + s` in an inner bound is the rules' own, and exact.
+    ///
+    /// A class's fact is the meet of its members' variances, and a member's is
+    /// computed from its children's facts, so a bound class inserted from an
+    /// arena that passed `push_reduce`'s L3 passes here, and a merge only
+    /// shrinks a fact, so a node the graph holds never becomes illegal. One
+    /// exception: the arena types a fold over a known empty range `CONST` and
+    /// `ENode::variance` has no such arm, so a hand-built bound holding such a
+    /// fold, which `push_reduce` admitted, may be refused here.
     pub fn add(&mut self, node: ENode) -> EClassId {
         let node = self.canonical_node(node);
         if let Some(&id) = self.memo.get(&node) {
             return self.find(id);
+        }
+        // L3's backstop (docs/language/2026-10-20-a-bound-is-a-value.md §3.2):
+        // a bound read off the classes it is made of, as `push_reduce` reads
+        // one off its term, for a node a rule or a caller built. A fold whose
+        // bounds are both literals has none and is not looked at. Read before
+        // the graph changes: a refusal leaves it as it was.
+        if let ENode::Reduce { header, children } = &node
+            && header.arity() > 1
+        {
+            self.refuse_a_varying_bound(header, children);
         }
         // `node` is canonical, so each child is already its class's root; the
         // walk is the identity here and only hands the fact column the `Root`
@@ -386,6 +412,22 @@ impl EGraph {
         }
         self.memo.insert(node, id);
         id
+    }
+
+    /// Panic unless each value bound of the fold `header` and `children` name
+    /// varies with neither a coordinate nor the fold's own binder (L3, through
+    /// `Fold::admits_bound`), read off the bound classes' facts.
+    fn refuse_a_varying_bound(&self, header: &FoldHeader, children: &Operands) {
+        let fold = header.fold();
+        let (lo, hi) = header.attach(children[1..].iter().copied());
+        for (end, bound) in [(BoundEnd::Lo, lo), (BoundEnd::Hi, hi)] {
+            let Bound::Value(class) = bound else {
+                continue;
+            };
+            if let Err(refusal) = fold.admits_bound(end, self.variance(class)) {
+                panic!("{refusal}: {fold:?}");
+            }
+        }
     }
 
     /// Refused constant unions: the pairs of literals the graph declined to
@@ -3474,6 +3516,60 @@ mod variance_fact_tests {
             Variance::X.union(Variance::from_var(binder.var()))
         );
         assert_eq!(eg.variance(fold), Variance::X);
+    }
+
+    /// A sum over slot 0 whose body is `i`, with `hi` the class `bound`.
+    fn sum_to(eg: &mut EGraph, bound: EClassId) -> ENode {
+        let binder = Binder::from_slot(0).expect("a live binder");
+        let body = eg.add(ENode::Var(binder.var()));
+        ENode::reduce(
+            Fold::new(Monoid::SUM, binder),
+            Bound::Lit(0),
+            Bound::Value(bound),
+            body,
+        )
+    }
+
+    /// **L3's backstop: a bound that reads a coordinate is refused.** The trip
+    /// count would be a function of the pixel.
+    #[test]
+    #[should_panic(expected = "BoundVaries")]
+    fn add_refuses_a_bound_varying_with_x() {
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let fold = sum_to(&mut eg, x);
+        let _ = eg.add(fold);
+    }
+
+    /// **L3's backstop: a bound that reads its own fold's binder is refused.**
+    /// The trip count would be a function of itself.
+    #[test]
+    #[should_panic(expected = "BoundVaries")]
+    fn add_refuses_a_bound_reading_its_own_binder() {
+        let mut eg = EGraph::new();
+        let own = eg.add(ENode::Var(
+            Binder::from_slot(0).expect("a live binder").var(),
+        ));
+        let fold = sum_to(&mut eg, own);
+        let _ = eg.add(fold);
+    }
+
+    /// **An enclosing fold's index is a bound's to read.** `Σ_{j<i}` over the
+    /// outer index `i` (slot 1) is added, and its class varies with the
+    /// outer index, which the inner fold does not bind: its body less its own
+    /// index, and what its bound reads (L4).
+    #[test]
+    fn add_takes_a_bound_reading_an_enclosing_binder() {
+        let mut eg = EGraph::new();
+        let outer = eg.add(ENode::Var(
+            Binder::from_slot(1).expect("a live binder").var(),
+        ));
+        let fold = sum_to(&mut eg, outer);
+        let class = eg.add(fold);
+        assert_eq!(
+            eg.variance(class),
+            Variance::from_var(Binder::from_slot(1).expect("a live binder").var())
+        );
     }
 
     /// **A cycle does not certify invariance.** Once `X + 0` is merged with

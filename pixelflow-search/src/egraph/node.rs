@@ -304,6 +304,10 @@ pub enum ENode {
     /// rewrites every one: a class held outside that slice would never be
     /// canonicalized. The header says how many follow the body.
     ///
+    /// For a bound that is a value the shift's reason is reversed: a rule
+    /// reaching it is the point. `PeelFold`'s substitution turning an inner
+    /// `0..i` into `0..k` is how a range becomes known (L8, `KnownBound`).
+    ///
     /// The fields are public, as `Op`'s are; [`ENode::reduce`] is the
     /// constructor that keeps the header and the children together, and
     /// [`ENode::as_reduce`] the reader that gives them back as the parts
@@ -391,9 +395,9 @@ impl ENode {
     ///
     /// # Panics
     ///
-    /// As [`FoldHeader::new`]: on a literal pair it refuses, and until A3 on
-    /// any value bound, with
-    /// [`VALUE_BOUND`](pixelflow_ir::fold::VALUE_BOUND).
+    /// As [`FoldHeader::new`]: on a literal pair it refuses, and on a value
+    /// bound the fold cannot take (`ANY`, `ALL` or `SEQ`; a stride other
+    /// than 1).
     #[must_use]
     pub fn reduce(fold: Fold, lo: Bound<EClassId>, hi: Bound<EClassId>, body: EClassId) -> Self {
         ENode::Reduce {
@@ -443,8 +447,10 @@ impl ENode {
         }
     }
 
-    /// The range of the fold this node performs, when it is known: every bound
-    /// is a constant today, so this is `Some` for every fold.
+    /// The range of the fold this node performs, when it is known: `Some` when
+    /// both bounds are literals, `None` when either is a value — the case a
+    /// reader's own answer for an unknown range is for (a rule declines, an
+    /// emptiness test is false).
     ///
     /// The e-graph's reader of a fold's range, beside the arena's and the
     /// schedule's. **Per node, not per class:** after `HalveFold` one class
@@ -514,10 +520,15 @@ impl ENode {
     /// depends on — the forward transfer function of variance.
     ///
     /// A leaf names its own variable (or none); an operation unions its
-    /// children; a fold removes the index it binds. The one definition both
-    /// consumers read: the e-graph's per-class fact (`EGraph::variance`),
-    /// which feeds it the children's facts, and the extractor's
-    /// `node_variance`, which feeds it the variance of the forms it chose.
+    /// children; a fold removes the index it binds from its body's, and adds
+    /// what its value bounds read, which they read outside that binding (L3,
+    /// L4). The one definition both consumers read: the e-graph's per-class
+    /// fact (`EGraph::variance`), which feeds it the children's facts, and the
+    /// extractor's `node_variance`, which feeds it the variance of the forms it
+    /// chose.
+    ///
+    /// The arena's transfer types a fold over a known empty range `CONST`;
+    /// this has no such arm, so it keeps that fold's body less its index.
     ///
     /// Monotone in `child`: a larger answer for a child can only give a
     /// larger answer here, so an over-approximation in gives an
@@ -531,7 +542,7 @@ impl ENode {
         mut child: impl FnMut(EClassId) -> Variance,
     ) -> Variance {
         match self {
-            ENode::Var(v) => var_variance(*v),
+            ENode::Var(v) => Variance::of_var(*v),
             // A buffer's contents are fixed for the kernel's lifetime — a
             // read of one varies with its index, which is the `Gather`'s
             // other children, unioned by the `Op` arm. A uniform or a
@@ -547,26 +558,14 @@ impl ENode {
                 .fold(Variance::CONST, |acc, &c| acc.union(child(c))),
             ENode::Shift { operand, .. } => child(*operand),
             // The one node that *shrinks* the set: its index is bound, so it
-            // is not free in the result.
-            // Body only: a value bound's variance is a law of its own (A3).
-            ENode::Reduce { header, children } => {
-                child(children[0]).without(Variance::from_var(header.fold().binder().var()))
-            }
+            // is not free in the result. Its value bounds are read outside
+            // that binding (L3), so what they read is free in the fold,
+            // unmasked (L4).
+            ENode::Reduce { header, children } => children[1..].iter().fold(
+                child(children[0]).without(Variance::from_var(header.fold().binder().var())),
+                |acc, &bound| acc.union(child(bound)),
+            ),
         }
-    }
-}
-
-/// The variance of a `Var` leaf: its own bit.
-///
-/// 0→X, 1→Y, 2 and 3 the retired axes, then the reduction index slots up to
-/// [`Variance::VARIABLES`]. An index past them is not a variable the bitset
-/// can name, so it is conservatively [`Variance::ALL`] — an answer that can
-/// only decline an invariance, never claim one.
-fn var_variance(v: u8) -> Variance {
-    if v < Variance::VARIABLES {
-        Variance::from_var(v)
-    } else {
-        Variance::ALL
     }
 }
 
@@ -684,8 +683,9 @@ mod tests {
         );
     }
 
-    /// The coordinates and every reduction slot get a bit each; past the
-    /// word the analysis gives up and says everything.
+    /// The coordinates and every reduction slot get a bit each; a placeholder
+    /// (an enclosing fold's index before its slot is chosen) is none; past the
+    /// placeholders the analysis gives up and says everything.
     #[test]
     fn a_var_leaf_names_its_own_bit() {
         let leaf = |v: u8| ENode::Var(v).variance(no_unit, |_| Variance::ALL);
@@ -699,7 +699,10 @@ mod tests {
             leaf(Variance::VARIABLES - 1),
             Variance::from_var(Variance::VARIABLES - 1)
         );
-        assert_eq!(leaf(Variance::VARIABLES), Variance::ALL);
+        // A placeholder is a binder-to-be, never a coordinate (`Variance::of_var`).
+        assert_eq!(leaf(Variance::VARIABLES), Variance::CONST);
+        assert_eq!(leaf(127), Variance::CONST);
+        assert_eq!(leaf(128), Variance::ALL);
     }
 
     fn sum(binder_slot: u8) -> Fold {
@@ -707,16 +710,37 @@ mod tests {
         Fold::new(pixelflow_ir::fold::Monoid::SUM, binder)
     }
 
-    /// A value bound is refused by name, from the one constructor of a fold in
-    /// the graph, until A3 lifts the refusal in `FoldHeader::new`.
+    /// A value bound is a child after the body, lent by the slice
+    /// canonicalization rewrites, and the node's range is not known.
     #[test]
-    #[should_panic(expected = "a fold bound that is a value")]
-    fn a_fold_node_refuses_a_value_bound_by_name() {
-        let _ = ENode::reduce(
+    fn a_fold_node_holds_a_value_bound_after_its_body() {
+        let fold = sum(0);
+        let node = ENode::reduce(fold, Bound::Lit(0), Bound::Value(EClassId(2)), EClassId(1));
+        assert_eq!(node.children_slice(), [EClassId(1), EClassId(2)]);
+        assert_eq!(
+            node.as_reduce(),
+            Some((fold, Bound::Lit(0), Bound::Value(EClassId(2)), EClassId(1)))
+        );
+        assert_eq!(node.known_range(), None);
+    }
+
+    /// L4: a fold varies with its body less its own index, and with what its
+    /// value bounds read, unmasked: a bound reading an enclosing fold's index
+    /// leaves that index free in the fold.
+    #[test]
+    fn a_folds_variance_is_its_bodys_less_its_index_and_its_bounds() {
+        let node = ENode::reduce(
             sum(0),
             Bound::Lit(0),
             Bound::Value(EClassId(2)),
             EClassId(1),
+        );
+        let body = Variance::X.union(Variance::from_var(4));
+        let bound = Variance::from_var(5);
+        let child = |class: EClassId| if class == EClassId(1) { body } else { bound };
+        assert_eq!(
+            node.variance(no_unit, child),
+            Variance::X.union(Variance::from_var(5))
         );
     }
 

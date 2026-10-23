@@ -1,11 +1,22 @@
-//! The decompositions of a bounded fold, and factoring, as e-graph rewrites.
+//! The decompositions of a bounded fold, factoring, and the discovery of a
+//! range, as e-graph rewrites.
 //!
 //! ```text
 //! ⊕_{[lo,hi) step s} f  =  f(lo) ⊕ ⊕_{[lo+s,hi) step s} f              (peel)
 //! ⊕_{[lo,hi) step s} f  =  ⊕_{[lo,hi) step 2s} (f ⊕ f[binder:=binder+s]) (halve)
 //! ⊕_{[lo,lo) step s} f  =  identity(⊕)                                  (empty)
 //! ⊕_i (c₁ ⊗ … ⊗ cₖ ⊗ f) =  (c₁ ⊗ … ⊗ cₖ) ⊗ ⊕_i f,   i ∉ var(cⱼ)       (factor)
+//! ⊕_{[lo,hi)} f         =  ⊕_{[n,m)} f,   lo ≡ n, hi ≡ m              (discover)
 //! ```
+//!
+//! **A range is known when both its bounds are literals, and peel, halve and
+//! empty read only a known range** (L6 of
+//! docs/language/2026-10-20-a-bound-is-a-value.md). A bound that is a value is
+//! a class, and a class gains a literal member when a rule reaches it: peel
+//! substituting `i := k` into an inner `0..i` is how one does. Discovery is
+//! the rule that notices — [`KnownBound`] puts the fold over the literals in
+//! the fold's class, and the three rules above then see it. Nothing declared
+//! the range known.
 //!
 //! Peel and empty are the rules the encoding used to make unstatable. While a
 //! fold's algebra, binder and range were `Const` children, a rewrite that
@@ -322,6 +333,12 @@ pub struct PeelFold;
 /// rule exists: a 34,993-term glyph fold unrolled one term per application
 /// was burning that many rule applications against a budget denominated in
 /// them (CLAUDE.md, "A kernel built differently on two machines?").
+///
+/// A nested fold whose value bound reads the binder is shifted with it: the
+/// copy's bound is `i + s`, bound arithmetic that only the rules make
+/// (docs/language/2026-10-20-a-bound-is-a-value.md §1.4). It stays inside the
+/// known range being halved, which ends at or before 2²⁴, so it is exact, and
+/// `EGraph::add` accepts it: it reads the outer index and nothing else (L3).
 pub struct HalveFold;
 
 /// `⊕_{[lo,lo)} f = identity(⊕)` — whatever the body says.
@@ -352,10 +369,21 @@ pub struct EmptyFold;
 /// factor but cannot take a binder-dependent one. The body class's every
 /// `⊗` spelling is tried, and the first with an invariant operand wins.
 ///
-/// **An empty fold declines.** `Σ_∅ (c·f) = 0` but `c·Σ_∅ f = c·0`, which is
-/// NaN for an infinite `c`; `min_∅ (c+f) = +∞ = c + ∞` holds for every `c`
-/// but `−∞`, and the rule does not need the case — [`EmptyFold`] closes an
-/// empty fold outright.
+/// **A fold known to be empty declines.** `Σ_∅ (c·f) = 0` but `c·Σ_∅ f = c·0`,
+/// which is NaN for an infinite `c`, and `min_∅ (c+f) = +∞ = c + ∞` for every
+/// `c` but `−∞`; [`EmptyFold`] closes a known empty fold outright.
+///
+/// **A fold whose range is not known factors**, accepting that edge at a
+/// runtime empty range under "edge-case IEEE conformance is not on offer"
+/// (CLAUDE.md; decision 5 of docs/language/2026-10-20-a-bound-is-a-value.md):
+/// declining would lose `c·Σ f` for every per-call count. At a runtime `n = 0`
+/// the factored form is `c ⊗ identity`, and that differs from the fold's own
+/// identity for:
+///
+/// - an infinite `c`;
+/// - a NaN `c`, where `NaN·0` is NaN;
+/// - a negative `c`, where `c·(+0)` is `-0.0`;
+/// - for `MIN` and `MAX`, a NaN `c`.
 ///
 /// **Floating point.** Min and max with `Add` are exact: `fl(c + f)` is
 /// monotone in `f`, so `min_i fl(c + f_i) = fl(c + min_i f_i)` bit for bit,
@@ -377,6 +405,35 @@ pub struct EmptyFold;
 /// [`RuleSet::production`](super::RuleSet::production), holds no fold rule,
 /// so a `kernel!` fold is factored where it is unrolled, at bake time.
 pub struct FactorFold;
+
+/// `⊕_{[lo,hi)} f = ⊕_{[n_lo, n_hi)} f` where the fold's value bounds' classes
+/// hold literals naming counts: **L8, discovery**, the one normalizing rule
+/// (docs/language/2026-10-20-a-bound-is-a-value.md §3.2). A value bound whose
+/// class gains a `Const` member — `PeelFold` substituting `i := k` into an
+/// inner `0..i` is how one does — is that count, and the fold over it joins the
+/// fold's class. The known form is the one `PeelFold`, `HalveFold` and
+/// `EmptyFold` read (L6), so the inner fold becomes unrollable; nothing
+/// declared it.
+///
+/// It fires only when the read makes the whole range known: a fold with one
+/// bound known and one a value is no more unrollable or priceable than before,
+/// and would spend a minted id and an application on a node no rule reads. A
+/// literal naming no count — a fraction, a negative, past 2²⁴ — is no count,
+/// and a mask is no count of any sort: the rule declines on both (L5: such a
+/// fold is NaN, by the guard codegen will emit). A pair it makes known runs
+/// forwards (L2: `[k, j)` with `k > j` is the empty range at `k`), which
+/// [`EmptyFold`] then closes.
+///
+/// The member is found by scan, as `math::algebra`'s `constant_of` finds one,
+/// not through the class's constant fact.
+///
+/// **Match depth 1**, inside `DIRTY_TRACKING_MAX_DEPTH`: it reads the members
+/// of the fold's bound classes. A `Const` joins a bound class by a union, a
+/// content change to that class, which the dirty tracker watches.
+///
+/// Last in [`fold_rules`], so every rule before it keeps its `RuleIdx`, and
+/// inert on a fold over literals: it declines before reading the graph.
+pub struct KnownBound;
 
 impl Rewrite for PeelFold {
     fn name(&self) -> &str {
@@ -494,9 +551,10 @@ impl Rewrite for FactorFold {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let (fold, lo, hi, body) = node.as_reduce()?;
-        // Only a range known to be non-empty: an empty fold is `EmptyFold`'s,
-        // and one that is not known is not known to have a term to factor from.
-        if node.known_range().is_none_or(KnownRange::is_empty) {
+        // A range known to be empty is `EmptyFold`'s. One that is not known
+        // factors: at a runtime empty range the factored form is
+        // `c ⊗ identity`, the edge decision 5 accepts (doc above).
+        if node.known_range().is_some_and(KnownRange::is_empty) {
             return None;
         }
         let distributor = distributor(fold.monoid())?;
@@ -515,6 +573,31 @@ impl Rewrite for FactorFold {
         );
         let root = plan.op(distributor, alloc::vec![HeadRef::Class(factor), folded]);
         Some(RewriteAction::Plan(plan.finish(root)))
+    }
+}
+
+impl Rewrite for KnownBound {
+    fn name(&self) -> &str {
+        "known-bound"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
+    }
+
+    fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
+        // A fold over literals has nothing to discover: declined on its
+        // header alone.
+        if !matches!(node, ENode::Reduce { header, .. } if header.arity() > 1) {
+            return None;
+        }
+        let (fold, lo, hi, body) = node.as_reduce()?;
+        let literal = |class: EClassId| egraph.nodes(class).find_map(ENode::literal);
+        let (lo, hi) = Bound::discover(lo, hi, literal).ok()?;
+        let (Bound::Lit(_), Bound::Lit(_)) = (lo, hi) else {
+            return None;
+        };
+        Some(RewriteAction::Create(ENode::reduce(fold, lo, hi, body)))
     }
 }
 
@@ -568,8 +651,10 @@ fn distributor(monoid: Monoid) -> Option<OpKind> {
 /// The fold rules: [`HalveFold`] for the bulk of a trip count, [`PeelFold`]
 /// as its odd-remainder epilogue (and a fold
 /// [`KnownRange::halve`](pixelflow_ir::KnownRange::halve) declines on
-/// outright), [`EmptyFold`] to close out, and [`FactorFold`] to move an
-/// invariant factor out of the body. Inert for a kernel with no folds in it.
+/// outright), [`EmptyFold`] to close out, [`FactorFold`] to move an
+/// invariant factor out of the body, and [`KnownBound`] to make a range known
+/// when the graph discovers a bound's constant (L8). Inert for a kernel with
+/// no folds in it.
 #[must_use]
 pub fn fold_rules() -> Vec<Box<dyn Rewrite>> {
     alloc::vec![
@@ -577,6 +662,7 @@ pub fn fold_rules() -> Vec<Box<dyn Rewrite>> {
         Box::new(PeelFold) as Box<dyn Rewrite>,
         Box::new(EmptyFold),
         Box::new(FactorFold),
+        Box::new(KnownBound),
     ]
 }
 
@@ -617,13 +703,15 @@ fn named(class: EClassId) -> Done {
 /// One plan node, over already-planned children.
 fn rebuild(node: &ENode, kids: &[Done]) -> Option<HeadNode> {
     match node {
-        // A nested fold reached here binds a slot other than the one being
-        // substituted, so the substitution passes through its body. One
-        // that rebinds the substituted slot is never reached: it shadows the
-        // slot, so its class's variance excludes it and `substitute` names
-        // the class before descending. "`lowest_free_binder` never reissues
-        // a live slot" is not what makes that safe — it is false across a
-        // `Ref`, which `Kernel::over` does not see through.
+        // A nested fold reached here does not rebind the slot being
+        // substituted, so the substitution passes through its body and its
+        // value bounds alike (L7). One that rebinds the slot is never
+        // reached: its class's variance is `(var(body) \ slot) ∪ var(lo) ∪
+        // var(hi)` (L4), and no bound reads its own fold's slot (L3), so the
+        // fact lacks the slot and `substitute` names the class before
+        // descending. "`lowest_free_binder` never reissues a live slot" is
+        // not what makes that safe — it is false across a `Ref`, which
+        // `Kernel::over` does not see through.
         ENode::Reduce { header, .. } => {
             // `substitute` plans every child of the node, so `kids` is the
             // body and then each value bound.
@@ -657,13 +745,48 @@ fn rebuild(node: &ENode, kids: &[Done]) -> Option<HeadNode> {
 mod tests {
     use super::*;
     use crate::egraph::saturate::SaturationConfig;
+    use crate::egraph::{CostModel, extract};
     use crate::egraph::{RuleSet, Saturation};
     use crate::egraph::{Vocabulary, insert};
+    use pixelflow_ir::arena::{UniformDecl, UniformIdentity};
     use pixelflow_ir::fold::KNOWN_RANGE;
-    use pixelflow_ir::{ExprArena, OpKind};
+    use pixelflow_ir::variance::compute_arena_variance;
+    use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind, Variance};
 
     fn binder(slot: u8) -> Binder {
         Binder::from_slot(slot).expect("a live binder")
+    }
+
+    /// `Σ_{i<n} Σ_{j<i} X·j`, built with `push_reduce`: the inner `sum(0)`
+    /// runs over `0..i`, a value bound reading the outer `sum(1)`'s index (L3:
+    /// an enclosing binder is a bound's to read), and the outer over `0..n`.
+    fn tri(n: u64) -> (ExprArena, ExprId) {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let j = a.push_var(binder(0).var());
+        let i = a.push_var(binder(1).var());
+        let body = a.push_binary(OpKind::Mul, x, j);
+        let inner = a.push_reduce(
+            Fold::new(Monoid::SUM, binder(0)),
+            Bound::Lit(0),
+            Bound::Value(i),
+            body,
+        );
+        let outer = a.push_reduce(
+            Fold::new(Monoid::SUM, binder(1)),
+            Bound::Lit(0),
+            Bound::Lit(n),
+            inner,
+        );
+        (a, outer)
+    }
+
+    /// A uniform leaf: one number for the whole lattice, any fold's to count by.
+    fn a_uniform(eg: &mut EGraph) -> EClassId {
+        eg.add(ENode::Uniform(UniformDecl {
+            id: UniformIdentity::mint(),
+            default: 6.0,
+        }))
     }
 
     /// The range of `node`, when it is a fold.
@@ -1160,8 +1283,9 @@ mod tests {
         assert_eq!(operands(&f), None);
     }
 
-    /// **An empty fold declines.** `Σ_∅ (Y·f) = 0`, while `Y · Σ_∅ f = Y·0`
-    /// is NaN at an infinite `Y`; `EmptyFold` closes it instead.
+    /// **A fold known to be empty declines.** `Σ_∅ (Y·f) = 0`, while
+    /// `Y · Σ_∅ f = Y·0` is NaN at an infinite `Y`; `EmptyFold` closes it
+    /// instead.
     #[test]
     fn factor_fold_declines_an_empty_fold() {
         let f = folded(factor_only(), over(Monoid::SUM, 3..3), |eg, i| {
@@ -1330,6 +1454,384 @@ mod tests {
             eg.add(ENode::apply(OpKind::Mul, &[y, x]))
         });
         assert_eq!(operands(&f), parts);
+    }
+
+    /// **A fold under a value bound factors** (decision 5 of the plan).
+    /// `Σ_{i<u} (Y·sin(X·0.1 + i))` takes `Y` out and keeps the bound `u`, a
+    /// class, in the factored fold: the range is not known, and the rule does
+    /// not need it to be.
+    #[test]
+    fn factor_fold_factors_under_a_value_bound() {
+        let fold = Fold::new(Monoid::SUM, binder(0));
+        let mut eg = Saturation::over(RuleSet::new(factor_only()));
+        let i = eg.add(ENode::Var(fold.binder().var()));
+        let y = eg.add(ENode::Var(1));
+        let w = wave(&mut eg, i);
+        let body = eg.add(ENode::apply(OpKind::Mul, &[y, w]));
+        let u = a_uniform(&mut eg);
+        let node = ENode::reduce(fold, Bound::Lit(0), Bound::Value(u), body);
+        let class = eg.add(node);
+        let mut f = Factorable { eg, class, node };
+
+        assert_eq!(f.node.known_range(), None, "precondition");
+        let fired = factoring(&f).expect("Y is invariant, and the range need not be known");
+        assert_eq!(f.eg.find(fired.factor), y);
+        assert_eq!(f.eg.find(fired.rest), w);
+        assert_eq!(
+            (fired.lo, fired.hi),
+            (Bound::Lit(0), Bound::Value(u)),
+            "the factored fold keeps the node's own bounds"
+        );
+        SaturationConfig::compatibility(1).run(&mut f.eg);
+        assert!(
+            holds(&f.eg, f.class, &fired),
+            "the fold's class must hold Y · Σ_{{i<u}} sin(X·0.1 + i)"
+        );
+    }
+
+    /// **A peel substitutes into a nested fold's bound** (L7). `Σ_{i<3} Σ_{j<i}
+    /// X·j` peels to the sum of `Σ_{i<2} …` and the last term, whose inner
+    /// fold's bound is the peeled index: `Σ_{j<2} X·j`, the body (which never
+    /// reads `i`) named.
+    #[test]
+    fn a_peel_substitutes_into_a_nested_folds_bound() {
+        let (a, root) = tri(3);
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
+        let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
+        let outer = *eg.nodes(class).next().expect("a fold");
+
+        let Some(RewriteAction::Plan(plan)) = PeelFold.apply(&eg, class, &outer) else {
+            panic!("a fold over 0..3 peels");
+        };
+        let inner = plan.nodes.iter().find_map(|node| match node {
+            HeadNode::Reduce { fold, lo, hi, body }
+                if *fold == Fold::new(Monoid::SUM, binder(0)) =>
+            {
+                Some((*lo, *hi, *body))
+            }
+            _ => None,
+        });
+        let Some((Bound::Lit(0), Bound::Value(HeadRef::Plan(k)), HeadRef::Class(_))) = inner else {
+            panic!("the inner fold keeps its slot, its lower bound and its body: {plan:?}");
+        };
+        assert!(
+            matches!(plan.nodes[k as usize], HeadNode::Const(Lit::Real(last)) if last == 2.0),
+            "the bound is the peeled index, 2: {plan:?}"
+        );
+    }
+
+    /// **A peel names a rebinding fold with a value bound** instead of
+    /// entering it (L7). `Σ_{i<3} (max_{i<u} i·X + i)`: the inner fold rebinds
+    /// slot 0 inside a sum over slot 0, and its bound is a uniform. Its fact is
+    /// its body's less its own index, unioned with the bound's (L4), so it lacks
+    /// the slot the peel substitutes, and the walk names its class.
+    #[test]
+    fn a_peel_names_a_rebinding_fold_with_a_value_bound() {
+        let mut shadowing = None;
+        let inner = Fold::new(Monoid::MAX, binder(0));
+        let f = folded(fold_rules(), over(Monoid::SUM, 0..3), |eg, i| {
+            let x = eg.add(ENode::Var(0));
+            let ix = eg.add(ENode::apply(OpKind::Mul, &[i, x]));
+            let u = a_uniform(eg);
+            let max = eg.add(ENode::reduce(inner, Bound::Lit(0), Bound::Value(u), ix));
+            shadowing = Some(max);
+            eg.add(ENode::apply(OpKind::Add, &[max, i]))
+        });
+        let shadowing = f.eg.find(shadowing.expect("built"));
+        let Some(RewriteAction::Plan(plan)) = PeelFold.apply(&f.eg, f.class, &f.node) else {
+            panic!("a fold over 0..3 peels");
+        };
+        assert!(
+            !plan
+                .nodes
+                .iter()
+                .any(|n| matches!(n, HeadNode::Reduce { fold, .. } if *fold == inner)),
+            "the inner fold must be named, not rebuilt: {plan:?}"
+        );
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|n| matches!(n, HeadNode::Op { children, .. }
+                if children.contains(&HeadRef::Class(shadowing)))),
+            "the peeled term reads the inner fold's own class: {plan:?}"
+        );
+    }
+
+    /// **A range becomes known by discovery** (L8). After one peel of
+    /// `Σ_{i<3} Σ_{j<i} X·j` the peeled head holds `Σ_{j<k} X·j` with `k` the
+    /// class of the literal 2; `KnownBound` puts the fold over `0..2` in its
+    /// class, where `PeelFold`, `HalveFold` and `EmptyFold` can read it.
+    #[test]
+    fn a_peel_makes_an_inner_bound_known() {
+        let (a, root) = tri(3);
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
+        insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
+        SaturationConfig::compatibility(2).run(&mut eg);
+
+        let inner = Fold::new(Monoid::SUM, binder(0));
+        let known = eg.class_ids().any(|class| {
+            let bounds: Vec<_> = eg
+                .nodes(class)
+                .filter_map(ENode::as_reduce)
+                .filter(|&(fold, ..)| fold == inner)
+                .map(|(_, lo, hi, _)| (lo, hi))
+                .collect();
+            bounds.iter().any(|&(_, hi)| matches!(hi, Bound::Value(_)))
+                && bounds.contains(&(Bound::Lit(0), Bound::Lit(2)))
+        });
+        assert!(
+            known,
+            "a class holds the peeled head both as a value bound and over 0..2"
+        );
+    }
+
+    /// **A literal joining a bound's class wakes the rule.** `Σ_{j<u}` with `u`
+    /// a uniform is left alone; once the graph learns `u = 4` (a union, which
+    /// is a content change to `u`'s class, one level below the fold's), the
+    /// next round puts the fold over `0..4` in the fold's class. Dirty tracking
+    /// reads the change through the fold's child: the rule's match depth is 1.
+    #[test]
+    fn a_literal_joining_a_bound_class_makes_the_range_known() {
+        let fold = Fold::new(Monoid::SUM, binder(0));
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
+        let x = eg.add(ENode::Var(0));
+        let j = eg.add(ENode::Var(fold.binder().var()));
+        let body = eg.add(ENode::apply(OpKind::Mul, &[x, j]));
+        let u = a_uniform(&mut eg);
+        let class = eg.add(ENode::reduce(fold, Bound::Lit(0), Bound::Value(u), body));
+        let known = |eg: &Saturation| {
+            eg.nodes(class)
+                .filter_map(ENode::as_reduce)
+                .any(|(_, lo, hi, _)| (lo, hi) == (Bound::Lit(0), Bound::Lit(4)))
+        };
+
+        SaturationConfig::compatibility(2).run(&mut eg);
+        assert!(!known(&eg), "nothing is known of u yet");
+
+        let four = eg.add(ENode::constant(4.0));
+        eg.union(u, four);
+        eg.rebuild();
+        SaturationConfig::compatibility(1).run(&mut eg);
+        assert!(known(&eg), "u = 4 makes the fold's range 0..4");
+    }
+
+    /// A fold whose bound classes are `lo` and `hi`, over `X·j`, for
+    /// `KnownBound` to be asked of.
+    fn bounded_by(lo: Option<Lit>, hi: Lit) -> (Saturation, ENode, EClassId) {
+        let fold = Fold::new(Monoid::SUM, binder(0));
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
+        let x = eg.add(ENode::Var(0));
+        let j = eg.add(ENode::Var(fold.binder().var()));
+        let body = eg.add(ENode::apply(OpKind::Mul, &[x, j]));
+        let lo = lo.map_or(Bound::Lit(0), |lit| Bound::Value(eg.add(ENode::Const(lit))));
+        let hi = Bound::Value(eg.add(ENode::Const(hi)));
+        let node = ENode::reduce(fold, lo, hi, body);
+        let class = eg.add(node);
+        (eg, node, class)
+    }
+
+    /// `KnownBound` declines a fold over literals on its header alone.
+    #[test]
+    fn known_bound_declines_a_literal_fold() {
+        let f = folded(fold_rules(), over(Monoid::SUM, 0..4), |eg, i| {
+            let x = eg.add(ENode::Var(0));
+            eg.add(ENode::apply(OpKind::Mul, &[x, i]))
+        });
+        assert!(KnownBound.apply(&f.eg, f.class, &f.node).is_none());
+    }
+
+    /// **A bound whose class holds a count makes the range known.** `Σ_{j<k}`
+    /// over a `k` whose class holds the literal 2 is the fold over `0..2`.
+    #[test]
+    fn known_bound_makes_a_range_known_from_a_class_holding_a_count() {
+        let (eg, node, class) = bounded_by(None, Lit::Real(2.0));
+        let (fold, _, _, body) = node.as_reduce().expect("a fold");
+        match KnownBound.apply(&eg, class, &node) {
+            Some(RewriteAction::Create(twin)) => assert_eq!(
+                twin,
+                ENode::reduce(fold, Bound::Lit(0), Bound::Lit(2), body)
+            ),
+            other => panic!("expected the fold over 0..2, got {other:?}"),
+        }
+    }
+
+    /// A literal that is no count is no count: a fraction, and a count past the
+    /// domain, decline (L5: such a fold is NaN, by the guard codegen will emit).
+    #[test]
+    fn known_bound_declines_a_count_out_of_domain() {
+        for no_count in [2.5, 16_777_218.0] {
+            let (eg, node, class) = bounded_by(None, Lit::Real(no_count));
+            assert!(
+                KnownBound.apply(&eg, class, &node).is_none(),
+                "{no_count} names no count"
+            );
+        }
+    }
+
+    /// A mask is no count of any sort.
+    #[test]
+    fn known_bound_declines_a_mask() {
+        let (eg, node, class) = bounded_by(None, Lit::Mask(true));
+        assert!(KnownBound.apply(&eg, class, &node).is_none());
+    }
+
+    /// **A pair the read makes known runs forwards** (L2): `[5, 3)` is the
+    /// empty range at 5, which `EmptyFold` then closes.
+    #[test]
+    fn known_bound_runs_a_discovered_pair_forwards() {
+        let (eg, node, class) = bounded_by(Some(Lit::Real(5.0)), Lit::Real(3.0));
+        let (fold, _, _, body) = node.as_reduce().expect("a fold");
+        let Some(RewriteAction::Create(twin)) = KnownBound.apply(&eg, class, &node) else {
+            panic!("a pair of counts makes the range known");
+        };
+        assert_eq!(
+            twin,
+            ENode::reduce(fold, Bound::Lit(5), Bound::Lit(5), body)
+        );
+        assert!(matches!(
+            EmptyFold.apply(&eg, class, &twin),
+            Some(RewriteAction::Create(ENode::Const(_)))
+        ));
+    }
+
+    /// **A range that is not known is not unrolled** (L6): `PeelFold`,
+    /// `HalveFold` and `EmptyFold` decline a fold whose bound is a uniform.
+    #[test]
+    fn an_unknown_range_is_not_unrolled() {
+        let fold = Fold::new(Monoid::SUM, binder(0));
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
+        let x = eg.add(ENode::Var(0));
+        let j = eg.add(ENode::Var(fold.binder().var()));
+        let body = eg.add(ENode::apply(OpKind::Mul, &[x, j]));
+        let u = a_uniform(&mut eg);
+        let node = ENode::reduce(fold, Bound::Lit(0), Bound::Value(u), body);
+        let class = eg.add(node);
+        for rule in [&PeelFold as &dyn Rewrite, &HalveFold, &EmptyFold] {
+            assert!(
+                rule.apply(&eg, class, &node).is_none(),
+                "{} read a range the fold does not have",
+                rule.name()
+            );
+        }
+        assert!(KnownBound.apply(&eg, class, &node).is_none());
+    }
+
+    /// **The gate's `HalveFold` pin: a triangular fold halves with a bound the
+    /// rule made.** `Σ_{i<4} Σ_{j<i} X·j` halves to a stride-2 sum over `i` of
+    /// `Σ_{j<i} X·j + Σ_{j<i+1} X·j`: the shifted copy's bound is `i + 1`, an
+    /// expression no caller wrote (L7 reaches the nested bound, and `add`'s
+    /// backstop accepts it: it reads the outer index and nothing else). The
+    /// graph saturates, and extraction gives back a closed term.
+    ///
+    /// The expected term, with no `ConstantFold` here, is the triangular fold
+    /// itself. Only the peel's `i := 0` gives an inner bound that is a literal
+    /// (the empty fold `0..0`); a rule-made `0 + 1` stays the arithmetic it is,
+    /// so the other inner folds stay loops priced at the estimate and the
+    /// unrolling is no cheaper. So the term holds an inner fold (slot 0) whose
+    /// bound is a value reading the outer binder alone, or a literal where a
+    /// peel did make one known.
+    #[test]
+    fn a_triangular_fold_halves_with_a_rule_made_bound() {
+        let (a, root) = tri(4);
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
+        let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
+        let outer = *eg.nodes(class).next().expect("a fold");
+        let i = eg.add(ENode::Var(binder(1).var()));
+
+        let Some(RewriteAction::Plan(plan)) = HalveFold.apply(&eg, class, &outer) else {
+            panic!("a fold over 0..4 halves");
+        };
+        let inner = Fold::new(Monoid::SUM, binder(0));
+        let bound = plan.nodes.iter().find_map(|node| match node {
+            HeadNode::Reduce {
+                fold,
+                hi: Bound::Value(HeadRef::Plan(k)),
+                ..
+            } if *fold == inner => Some(*k),
+            _ => None,
+        });
+        let Some(k) = bound else {
+            panic!("the shifted inner fold's bound is a planned value: {plan:?}");
+        };
+        let HeadNode::Op {
+            op: OpKind::Add,
+            children,
+        } = &plan.nodes[k as usize]
+        else {
+            panic!("the bound is the outer index plus the stride: {plan:?}");
+        };
+        let [HeadRef::Class(index), HeadRef::Plan(s)] = children[..] else {
+            panic!("the bound adds a planned stride to a class: {plan:?}");
+        };
+        assert_eq!(eg.find(index), eg.find(i), "the class of the outer index");
+        assert!(
+            matches!(plan.nodes[s as usize], HeadNode::Const(Lit::Real(stride)) if stride == 1.0),
+            "the stride is 1: {plan:?}"
+        );
+
+        SaturationConfig::compatibility(50).run(&mut eg);
+        let (out, out_root, _) = extract(&eg, class, &CostModel::latency_prior());
+
+        let variance = compute_arena_variance(&out);
+        let outer_index = Variance::from_var(binder(1).var());
+        let mut inner_bounds = Vec::new();
+        let (mut seen, mut stack) = (BTreeSet::new(), alloc::vec![out_root]);
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let ExprNode::Reduce { fold, hi, .. } = out.node(id)
+                && fold == inner
+            {
+                inner_bounds.push(hi);
+            }
+            stack.extend(out.children(id));
+        }
+        assert!(
+            !inner_bounds.is_empty(),
+            "the extracted term holds an inner fold: {}",
+            out.display(out_root)
+        );
+        for hi in inner_bounds {
+            match hi {
+                Bound::Lit(_) => {}
+                Bound::Value(bound) => assert!(
+                    variance[bound.0 as usize].without(outer_index).is_const(),
+                    "an inner bound reads the outer index and nothing else: {}",
+                    out.display(out_root)
+                ),
+            }
+        }
+        assert_eq!(
+            out.free_index(out_root),
+            None,
+            "the term is closed: every index it reads is bound"
+        );
+    }
+
+    /// `KnownBound` is appended last, so every rule before it keeps its
+    /// position in the runtime set, and with it the `RuleIdx` a recorded
+    /// application names.
+    #[test]
+    fn known_bound_is_the_last_fold_rule() {
+        let rules = fold_rules();
+        assert_eq!(rules.last().expect("fold rules").name(), "known-bound");
+
+        let mut before = crate::egraph::all_rules();
+        before.extend([
+            Box::new(HalveFold) as Box<dyn Rewrite>,
+            Box::new(PeelFold),
+            Box::new(EmptyFold),
+            Box::new(FactorFold),
+        ]);
+        let before = RuleSet::new(before);
+        let runtime = RuleSet::runtime();
+        assert_eq!(runtime.len(), before.len() + 1);
+        assert_eq!(&runtime.ids()[..before.len()], before.ids());
+        assert_eq!(
+            runtime.id_of(before.len()),
+            Some(crate::egraph::RuleId::of(&KnownBound))
+        );
     }
 }
 

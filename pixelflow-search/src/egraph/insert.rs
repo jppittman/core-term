@@ -9,8 +9,8 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::fold::FoldHeader;
-use pixelflow_ir::{Children, Ir, Shape};
+use pixelflow_ir::fold::{Bound, FoldHeader};
+use pixelflow_ir::{Children, Ir, Lit, Shape};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -170,7 +170,13 @@ pub fn insert<I: Ir>(
                     // No vocabulary check: a fold is not an op, so there is
                     // nothing for a vocabulary to admit or refuse. It enters
                     // as itself, under either.
-                    Shape::Reduce { body, lo, hi, .. } => {
+                    Shape::Reduce { fold, body, lo, hi } => {
+                        // Constness discovered as `push_reduce` discovers it: a
+                        // value bound whose term is a literal naming a count
+                        // is the node's data, neither visited nor made a
+                        // class. Refused before anything is built.
+                        let (lo, hi) = Bound::discover(lo, hi, |r| literal(term, r))
+                            .unwrap_or_else(|refusal| panic!("{refusal}: {fold:?}"));
                         tasks.push(Task::Complete(r));
                         // Reverse, so children pop in `children()` order: the
                         // body, then `lo`'s, then `hi`'s.
@@ -209,8 +215,10 @@ pub fn insert<I: Ir>(
                         }
                     },
                     Shape::Reduce { fold, lo, hi, .. } => {
-                        // The header refuses a value bound by name before
-                        // `built` is touched.
+                        let (lo, hi) = Bound::discover(lo, hi, |r| literal(term, r))
+                            .expect("a fold's bounds were discovered when it was visited");
+                        // The header refuses a value bound its fold cannot
+                        // take before `built` is touched.
                         let header = FoldHeader::new(fold, lo.erased(), hi.erased());
                         let start = built.len() - header.arity();
                         let (lo, hi) = header.attach(built[start + 1..].iter().copied());
@@ -227,6 +235,15 @@ pub fn insert<I: Ir>(
     }
 
     Ok(built.pop().expect("insert: root produced no e-class"))
+}
+
+/// The literal `r` is in `term`, if it is one: how a fold's value bound is read
+/// for the count it may name (`Bound::discover`).
+fn literal<I: Ir>(term: &I, r: I::Ref) -> Option<Lit> {
+    match term.project(r) {
+        Shape::Const(lit) => Some(lit),
+        _ => None,
+    }
 }
 
 /// The classes [`insert`] makes from `root`, without making them — the size
@@ -260,9 +277,12 @@ pub fn inserted_class_count<I: Ir>(term: &I, root: I::Ref) -> usize {
                     }
                 }
             },
-            // A value bound's class counts, as `insert` makes it.
+            // A value bound's class counts, as `insert` makes it; one read as
+            // a literal makes none. A mask, which `insert` refuses, counts as
+            // the class it would be: this is a measure, not a check.
             Shape::Reduce { body, lo, hi, .. } => {
                 stack.push(body);
+                let (lo, hi) = Bound::discover(lo, hi, |r| literal(term, r)).unwrap_or((lo, hi));
                 stack.extend(lo.value());
                 stack.extend(hi.value());
             }
@@ -276,6 +296,7 @@ pub fn inserted_class_count<I: Ir>(term: &I, root: I::Ref) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_ir::arena::{UniformDecl, UniformIdentity};
     use pixelflow_ir::fold::{Binder, Fold, Monoid};
     use pixelflow_ir::{
         Bound, ExprArena, ExprId, Kernel, KernelKey, KernelStore, Lit, OpKind, Variance,
@@ -517,9 +538,15 @@ mod tests {
         EGraph::new().admit_unit(key, Variance::Y.union(Variance::BINDERS));
     }
 
-    /// A fold whose `lo` is a term (the constant `2`'s): the arena cannot build
-    /// one before A3, so the term is a test's own.
-    struct ValueBounded;
+    /// A fold whose `lo` is a term, the one at ref 2: a constant, a uniform or
+    /// a mask. The arena reads a constant bound into the fold when it pushes
+    /// it and refuses a mask, so a term whose bound is still a constant is a
+    /// test's own, as another representation's might be.
+    enum ValueBounded {
+        Constant,
+        Uniform(UniformDecl),
+        Mask,
+    }
 
     impl Ir for ValueBounded {
         type Ref = u8;
@@ -528,7 +555,11 @@ mod tests {
             let binder = Binder::from_slot(0).expect("a binder");
             match r {
                 0 => Shape::Var(0),
-                2 => Shape::Const(Lit::Real(1.0)),
+                2 => match self {
+                    Self::Constant => Shape::Const(Lit::Real(1.0)),
+                    Self::Uniform(decl) => Shape::Uniform(*decl),
+                    Self::Mask => Shape::Const(Lit::Mask(true)),
+                },
                 _ => Shape::Reduce {
                     fold: Fold::new(Monoid::SUM, binder),
                     lo: Bound::Value(2),
@@ -543,19 +574,67 @@ mod tests {
         }
     }
 
-    /// A value bound reaches the graph's one fold constructor and is refused
-    /// there by name, as in the arena, until A3 lifts it.
-    #[test]
-    #[should_panic(expected = "a fold bound that is a value")]
-    fn insert_refuses_a_value_bound_by_name() {
-        let _ = insert(&ValueBounded, 1, &mut EGraph::new(), Vocabulary::Runtime);
+    fn a_uniform() -> ValueBounded {
+        ValueBounded::Uniform(UniformDecl {
+            id: UniformIdentity::mint(),
+            default: 3.0,
+        })
     }
 
-    /// A value bound's class is one `insert` would make, so the measure the
-    /// budgets key on counts it: the fold, its body, and its `lo`'s constant.
+    /// The fold `class` holds, and the class of its body.
+    fn the_fold(eg: &EGraph, class: EClassId) -> (ENode, EClassId) {
+        let node = eg
+            .nodes(class)
+            .find(|node| node.as_reduce().is_some())
+            .expect("the class holds a fold");
+        let (_, _, _, body) = node.as_reduce().expect("a fold");
+        (*node, body)
+    }
+
+    /// Constness is discovered at the fold, as the arena's `push_reduce`
+    /// discovers it: a value bound whose term is a literal naming a count is
+    /// the node's data, and no class is made for it. One that is not a literal
+    /// stays a child, and its class counts.
     #[test]
-    fn a_value_bounds_class_is_counted() {
-        assert_eq!(inserted_class_count(&ValueBounded, 1), 3);
+    fn insert_reads_a_literal_bound_into_the_node() {
+        let fold = Fold::new(Monoid::SUM, Binder::from_slot(0).expect("a binder"));
+
+        let mut eg = EGraph::new();
+        let class = insert(&ValueBounded::Constant, 1, &mut eg, Vocabulary::Runtime)
+            .expect("a fold inserts");
+        let (node, body) = the_fold(&eg, class);
+        assert_eq!(
+            node,
+            ENode::reduce(fold, Bound::Lit(1), Bound::Lit(4), body),
+            "the fold over the literal, as the arena builds it"
+        );
+        assert_eq!(inserted_class_count(&ValueBounded::Constant, 1), 2);
+        assert_eq!(eg.num_classes(), 2, "the fold and its body");
+
+        let uniform = a_uniform();
+        let mut eg = EGraph::new();
+        let class = insert(&uniform, 1, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
+        let (node, body) = the_fold(&eg, class);
+        let (_, lo, hi, _) = node.as_reduce().expect("a fold");
+        assert!(matches!(lo, Bound::Value(_)), "a uniform is no literal");
+        assert_eq!(hi, Bound::Lit(4));
+        assert_eq!(node.children_slice().len(), 2);
+        assert_ne!(node.children_slice()[1], body);
+        assert_eq!(inserted_class_count(&uniform, 1), 3);
+        assert_eq!(eg.num_classes(), 3, "the fold, its body and its bound");
+    }
+
+    /// A mask names no count, whatever the fold: refused before anything is
+    /// built, as `push_reduce` refuses one.
+    #[test]
+    #[should_panic(expected = "BoundSort")]
+    fn insert_refuses_a_mask_bound() {
+        let _ = insert(
+            &ValueBounded::Mask,
+            1,
+            &mut EGraph::new(),
+            Vocabulary::Runtime,
+        );
     }
 
     /// A key names one referent, so it has one variance: admitting it again
