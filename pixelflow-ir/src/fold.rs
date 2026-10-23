@@ -442,15 +442,19 @@ pub enum BoundRefusal {
     /// keeps such a literal as a value bound, whose guard makes the fold NaN
     /// (`passes::legalize`'s guard), so a literal a rule made never panics.
     BoundOutOfDomain { end: BoundEnd, literal: f32 },
-    /// A bound of a sort the fold cannot take (§1.4): a mask literal, which
-    /// names no count, under any fold; or any value bound under `ANY`, `ALL`
-    /// or `SEQ`, whose sorts have no out-of-domain answer (decision 8) or whose
-    /// ranges stay constant (the lattice's). The fold is in the panic's
+    /// A bound of a sort the fold cannot take (§1.4): a mask, which names no
+    /// count, at either end under any fold; or any value bound under `ANY`,
+    /// `ALL` or `SEQ`, whose sorts have no out-of-domain answer (decision 8) or
+    /// whose ranges stay constant (the lattice's). The fold is in the panic's
     /// context, not here: the mask case has no algebra to blame.
     ///
-    /// The sort is read off the term as written: a mask *literal* is refused, a
-    /// computed bound that is a mask is not a literal and is admitted. The
-    /// arena gives a bound a sort (T6) and closes that.
+    /// The sort is read off the term as written where a fold is built: a mask
+    /// *literal* is refused there, and a computed bound that is a mask is not a
+    /// literal and is admitted. Lowering refuses it by this same variant once
+    /// the emitter holds it as one (`ScheduledOp::is_mask`: a comparison, or a
+    /// bitwise and/or of two such), on every tier; a select between two masks
+    /// is read as a float. The arena giving a bound a sort (T6) closes the
+    /// rest.
     BoundSort { end: BoundEnd },
     /// A bound that varies with a coordinate or with its own fold's binder
     /// (L3): `reads` is what it varies with.

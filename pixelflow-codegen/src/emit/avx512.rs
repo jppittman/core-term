@@ -624,14 +624,15 @@ mod tests {
         in_opmask == scheduled.is_mask(|value| value == ValueId(0))
     }
 
-    /// Lowering refuses a fold's bound that is a mask (`ScheduledOp::is_mask`)
-    /// because the opmask file is where this tier keeps one, and a loop's
-    /// parameter cannot be there. The two answer one question: this selects
-    /// every op that reads a lane over a mask and a number in every operand
-    /// position (unary, shift, compare, binary, mul-add, the select, gather and
-    /// broadcast), and asks the file each result lands in. A constant, the
-    /// lane iota and a uniform read no lane, so they have no operand to make a
-    /// mask.
+    /// Lowering refuses a fold's bound that is a mask (`ScheduledOp::is_mask`),
+    /// which names no count; on this tier a mask `lo` would also panic in
+    /// selection, since the opmask file is where it is kept and a loop's seed,
+    /// a head parameter, cannot be there. The two answer one question: this
+    /// selects every op that reads a lane over a mask and a number in every
+    /// operand position (unary, shift, compare, binary, mul-add, the select,
+    /// gather and broadcast), and asks the file each result lands in. A
+    /// constant, the lane iota and a uniform read no lane, so they have no
+    /// operand to make a mask.
     #[test]
     fn a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask() {
         let (mut b, entry) = Builder::<Avx512>::new();

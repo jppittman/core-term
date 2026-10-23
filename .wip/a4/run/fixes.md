@@ -213,3 +213,114 @@ unfixed `local.rs`, passes after, on both tiers).
 - Reduce-site checklist: UNCLASSIFIED 0, STALE 0. check-intent, check-doc-paths,
   check-cfg-encapsulation, check-emit-boundary, check-bin-declarations: exit 0. Every `intent.md`
   within 80 lines. Added lines hold no `.wip` path, ruling label or model name. LFS count 68.
+
+# A4 closing fixes, round 1 (TAG=a4-close1)
+
+Base of this round: 4954553 (`.wip/a4/run/r3-open.json`: open_blocking 4, nonblocking 8). Every item was
+checked against the code first; all twelve were real except the `.wip` spec item, which the task said
+to ignore. Mutation evidence is in `.wip/a4/run/r5/mutation-run.log`.
+
+## Blocking
+
+- **1. A value `lo` outside the domain beside a literal `hi` is unpinned** (semantics): real. The arm
+  `(Some(term), _) | (None, Some(term)) => in_domain(arena, term)` (`passes/guard.rs`) had no test with a
+  lone value `lo`; every out-of-domain JIT test varied `hi`. New tests:
+  - `value_bounds_jit.rs`: `a_value_lo_outside_the_domain_is_nan_and_never_hangs`
+    (`Σ_{k∈[lo, 9)} (X + k)` through `both`/`within`, so as written and optimized, with the 60 s
+    watchdog) and `a_pair_with_one_value_outside_the_domain_is_nan` (two values, `[out, 9)` with
+    `lo = count(out)`, `hi = count(9)`, and the mirror `[3, out)`). Both run over one shared const,
+    `OUTSIDE`: `2^24 + 2`, NaN, 2.5, -1, +inf, -inf, 1e30 (the finding's six plus the 1e30 the existing
+    `hi` test already had; that test now reads the same const, so the three share one list).
+  - `guard.rs`: `a_value_lo_beside_a_literal_hi_has_the_domain_test_of_lo`, beside
+    `a_literal_bound_adds_no_domain_test`: `[u, Lit(8))` has a `dom` that reaches `u` (two `Le`, one
+    `Floor`, one `Eq`, two `BitAnd`), `runs` is `Lt(u, Const 8)`.
+  - Mutation (the reviewer's, `r4/mutation.diff.txt`, applied in the tree and reverted byte for byte,
+    `cmp` against a copy taken before): a lone value `lo` gets `Lit::Mask(true)` as its domain.
+    Under it, the guard unit test FAILS (`guard.rs:272`) and
+    `a_value_lo_outside_the_domain_is_nan_and_never_hangs` FAILS on avx2 and avx512
+    (`[16777218, 9) (as written) at (1, 2): got 0 (0x00000000), want NaN (0x7fc00000)`). At head all
+    three pass (11 guard tests; 27 `value_bounds_jit` tests per tier). The pair test passes under this
+    mutation, as it must: two value bounds take the first arm, which the mutation leaves alone, so it
+    pins that arm (a mutation making the pair test only `hi`, or only `lo`, is what it catches), not the
+    lone-`lo` arm.
+- **2. `a_bound_on_a_lattice_binder_fails_loudly`'s reason is false for `row`** (semantics): real
+  (`passes/lattice.rs:66-72`: `(x0 + col)` and `Add(Uniform(y0), Var(row))` are lane-uniform). The test's
+  doc now says L3's reason: a bound is fixed before the lattice is traversed; only the lane binder would
+  vary a guard's mask within a batch, `row` and `col` between batches, refused all the same.
+  `assert_off_the_lattice`'s doc is aligned (one value for the call; the lane binder within a batch, the
+  other two between batches).
+- **3. The totality doc is false since A4** (conformance): real (`every_count_is_one_program` pins one
+  `Arc`-equal program for four counts; `Kernel::over_values` is `pub`). `:110-112` now says every face is
+  fixed before the lattice is traversed, a fold's count is a literal or a value known per call (linked to
+  the plan), and the other three faces stay static until B1 makes extents values; the table's column is
+  "Fixed before the traversal" and its reduction-binder row says `|D|` is a literal or a value known per
+  call. The plan's section 5 row for that range now credits A4 for `:110-112` and the reduction-binder
+  row, B1 for the extents row.
+- **4. The mask-bound docs give the AVX-512 panic as the reason for both ends** (craft): real. Selection
+  reads `lo` as the loop's seed, a head parameter (`select.rs` `seeds`, `param_lane` is
+  `param.typed::<Vector>()`), and reads `hi` only as the latch compare's operand, which AVX-512 widens
+  (`Compare` calls `.vector(b)` on both). So the law is the sort, a mask names no count (`BoundSort`), at
+  either end; the AVX-512 opmask panic is the tier divergence that made it urgent, and it is `lo`'s alone.
+  Reworded to that, in: the plan (the lowering bullet and the Done line), `lower.rs` (`arena_to_schedule`'s
+  `# Panics`, the comment at the `is_mask` assert, the test doc), `pipeline.rs` (`emit::compile`'s
+  `# Panics`), `jit_cache.rs` (`compile`'s `# Panics`), `emit/avx512.rs` (the agreement test's doc),
+  `program/mod.rs` (`ScheduledOp::is_mask`'s doc: "where no head parameter can be"), and
+  `tests/value_bounds_jit.rs` (`a_bound_that_is_a_mask_is_refused_by_name`). CLAUDE.md and the emit module
+  docs carry no such justification (checked by grep for `opmask`, `seed`, `BoundSort`, `names no count`
+  across every file A4 touched), so there was nothing to change there. The unit test
+  `a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask` now runs every case at both ends
+  (`for at in [Lo, Hi]`), so it covers the end the seed argument is about; the lowering of `lo` is
+  refused by name and the number cases lower at `lo` too.
+
+## Non-blocking, applied
+
+- **`BoundRefusal::BoundSort`'s doc is stale** (craft): real. It said a computed mask bound is admitted
+  and only T6 closes it. Now: a mask literal is refused where a fold is built; a computed bound that is a
+  mask is admitted there and refused by lowering with this variant once the emitter holds it as one
+  (`ScheduledOp::is_mask`), on every tier; a select between two masks is read as a float. The same
+  sentence in `ExprArena::push_reduce`'s doc said "admitted"; it now says "admitted here", and that
+  lowering refuses one the emitter holds as a mask.
+- **CLAUDE.md:180's domain sentence reads backwards** (craft): real ("a bound that is no count, an
+  integer in `0..=2²⁴`, makes the fold NaN" defines the negation). Now: "a count is an integer in
+  `0..=2²⁴`, and a fold with a bound that is not one is NaN". The same construction in
+  `pixelflow-core/README.md` and `.claude/agents/algebraist.md` is fixed alike; no other copy exists
+  (grep).
+- **`emit/mod.rs` loop-nest paragraph** (craft): real. Where the guarded fold reads a coordinate the
+  guard's arm tests are the column fold's and run in every batch (an opmask is reloaded in each); where
+  it reads none the guard and the loop are call-invariant and run once per call, in the body
+  (`a_fold_that_reads_no_coordinate_is_guarded_once_per_call` pins it). "Batches of the fold they guard"
+  is gone: the guarded fold has trips.
+- **`passes.rs` module doc** (craft): real. The guard has an identity fast path (a kernel with all-literal
+  bounds leaves it untouched, `a_kernel_with_no_value_bound_moves_back_untouched`); only idempotence is
+  what it lacks. The sentence is now two: every pass but the guard is idempotent, and the guard wraps
+  every value-bounded fold it meets, its own output's included, so `legalize` runs it once; every pass
+  has an identity fast path.
+- **`lower.rs`'s test fixture was built twice** (craft): real. `a_fold_bounded_by` and
+  `a_guarded_fold_over_a_count` are now one helper, `a_guarded_fold(at: BoundEnd, end)`, returning
+  `(arena, count, fold, root)`; the old helper's seven callers pass `(BoundEnd::Hi, the_count)`, and the
+  refusal helpers (`refusal_of_the_end`, `is_refused_as_a_mask`) take the end too.
+- **`cell_grid.rs`'s dump tests write a fixed temp name** (craft): real, and the integration twin in
+  `pixelflow-graphics/tests/production_glyph_arena_dump.rs` did the same. Both paths now carry
+  `std::process::id()`, as `training/corpus.rs`'s `unique_tmp` does.
+- **`regalloc/local.rs`'s comment on the saturating sum does not parse** (craft): real. Now: the sum
+  saturates; a read weighs its nest's trips, `u64::MAX` for a nest priced past `u64`, so adding two such
+  reads would overflow; a value read that deep weighs the most a weight can and compiles.
+- **`.wip/a4/spec.md` is stale** (conformance): ignored, as the task said; the rulings are authoritative.
+
+## Verification (TAG=a4-close1; outputs in .wip/a4/run/r5/ and .wip/gates/out/*.a4-close1.*)
+
+- Gates 1 (both tiers, 127 lines each), 1b (29), 2 (29), 2x (29): all exit 0, IDENTICAL to base.
+  `git status --short pixelflow-graphics` shows only the two files edited above (never
+  `program/tests.rs`).
+- `cargo test -p pixelflow-ir` 397 passed (guard 11); `-p pixelflow-codegen`, PIXELFLOW_ISA=avx2 and
+  =avx512: all green (`--lib` 102, `tests/value_bounds_jit.rs` 27 each); `-p pixelflow-graphics` 121 lib +
+  integration tests, 0 failed (3 ignored lib, as before).
+- `cargo +1.99.0 clippy --workspace --all-targets --all-features -- -D warnings`
+  (`CARGO_TARGET_DIR=/home/user/scratch/a3-close1/t199`): exit 0. `cargo fmt --all -- --check`: clean.
+  `RUSTDOCFLAGS="-D warnings" cargo doc -p pixelflow-codegen --document-private-items`: ok; rustdoc
+  comparison against the a747770 bases: ir 38/38, search 28/28, codegen 0/0, NEW 0.
+- Reduce-site checklist: UNCLASSIFIED 0, STALE 0. check-intent, check-doc-paths,
+  check-cfg-encapsulation, check-emit-boundary, check-bin-declarations: exit 0. Every `intent.md` within
+  80 lines. Added lines hold no `.wip` path, ruling label or model name. LFS count 68.
+- Not rerun: `check-feature-matrix.sh` (no feature, cfg or dependency changed in this round: tests and
+  doc comments only) and `measure.sh` (no emitted code changed; gates 1, 1b, 2, 2x are identical).

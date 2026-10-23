@@ -63,8 +63,8 @@ The `Kernel` surface:
 
 A reduction's bounds are values: a literal, a per-call count (`Kernel::over_values` with a
 `Uniform`), or an enclosing reduction's index, and none may be a function of a coordinate or of a
-lattice binder. One compiled program serves every count, and a bound that is no count (an integer in
-`0..=2²⁴`) makes the reduction NaN. General unbounded recursion is intentionally outside the
+lattice binder. One compiled program serves every count; a count is an integer in `0..=2²⁴`, and a
+reduction with a bound that is not one is NaN. General unbounded recursion is intentionally outside the
 language: **the language is a DAG**, and the fold is its one binder ([a bound is a
 value](../docs/language/2026-10-20-a-bound-is-a-value.md)).
 

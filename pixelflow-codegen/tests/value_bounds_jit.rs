@@ -49,6 +49,19 @@ const HANG: Duration = Duration::from_secs(60);
 /// integer.
 const TOP: f32 = 16_777_216.0;
 
+/// One value of each kind that names no count: past `2^24`, NaN, a fraction, a
+/// negative, both infinities and a huge finite one. No subnormal: whether one
+/// reads as 0 depends on the thread's denormal mode, not on the guard.
+const OUTSIDE: [f32; 7] = [
+    TOP + 2.0,
+    f32::NAN,
+    2.5,
+    -1.0,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    1e30,
+];
+
 /// A per-call count: a uniform holding `v`.
 fn count(v: f32) -> Kernel {
     Uniform::new(v).kernel()
@@ -236,20 +249,45 @@ fn a_count_at_the_exact_bound_runs_every_trip() {
 /// satisfies an ordered compare. The watchdog turns a hang into a failure.
 #[test]
 fn a_count_outside_the_domain_is_nan_and_never_hangs() {
-    // No subnormal: whether one reads as 0 depends on the thread's denormal
-    // mode, not on the guard.
-    let outside = [
-        TOP + 2.0,
-        f32::NAN,
-        2.5,
-        -1.0,
-        f32::INFINITY,
-        f32::NEG_INFINITY,
-        1e30,
-    ];
-    for n in outside {
+    for n in OUTSIDE {
         let planes = both(SHAPE, move || sum_of_x_plus_k(n));
         assert_plane(SHAPE, planes, &format!("n = {n}"), |_, _| f32::NAN);
+    }
+}
+
+/// A value `lo` outside the domain beside a literal `hi` is NaN too, and the
+/// loop is not entered: the guard tests `lo` although `hi` is a count already.
+/// `-∞` is the case that hangs unguarded, for `-∞ + 1` never reaches `9`.
+#[test]
+fn a_value_lo_outside_the_domain_is_nan_and_never_hangs() {
+    for lo in OUTSIDE {
+        let planes = both(SHAPE, move || {
+            Kernel::over_values(Monoid::SUM, &count(lo), &Kernel::constant(9.0), |k| {
+                Kernel::x().add(k)
+            })
+        });
+        assert_plane(SHAPE, planes, &format!("[{lo}, 9)"), |_, _| f32::NAN);
+    }
+}
+
+/// A pair of two values, one outside the domain and the other in it, is NaN
+/// whichever end is outside: each end is tested, not only the nearer one.
+#[test]
+fn a_pair_with_one_value_outside_the_domain_is_nan() {
+    for outside in OUTSIDE {
+        let planes = both(SHAPE, move || {
+            Kernel::over_values(Monoid::SUM, &count(outside), &count(9.0), |k| {
+                Kernel::x().add(k)
+            })
+        });
+        assert_plane(SHAPE, planes, &format!("[{outside}, 9)"), |_, _| f32::NAN);
+
+        let planes = both(SHAPE, move || {
+            Kernel::over_values(Monoid::SUM, &count(3.0), &count(outside), |k| {
+                Kernel::x().add(k)
+            })
+        });
+        assert_plane(SHAPE, planes, &format!("[3, {outside})"), |_, _| f32::NAN);
     }
 }
 
@@ -778,7 +816,9 @@ fn a_fold_that_starts_at_a_mask() -> (ExprArena, ExprId) {
 }
 
 /// A bound the emitter holds as a mask is refused by name, on every tier
-/// alike: AVX-512 holds one in an opmask, which no loop parameter may be.
+/// alike: a mask names no count. A mask `lo` is the end AVX-512 would panic on
+/// in selection, holding it in an opmask where the loop's seed, a head
+/// parameter, cannot be, while AVX2 and NEON would read its bits as a float.
 #[test]
 #[should_panic(expected = "BoundSort")]
 fn a_bound_that_is_a_mask_is_refused_by_name() {

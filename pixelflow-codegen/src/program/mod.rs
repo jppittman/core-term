@@ -423,13 +423,13 @@ impl ScheduledOp {
     /// (lowering maps it to its operand), so it keeps its operand's answer.
     ///
     /// A mask is a bit pattern, not a number, and a target may hold it in a
-    /// file of its own (AVX-512's opmasks, which no vector instruction reads
-    /// as a head's parameter), so what a position that needs a number may
-    /// take is asked here, before any target is chosen. The bitwise rule is
-    /// the selector's own (`on_masks`); that a comparison is a mask, and that
-    /// nothing else is, is the selector's choice of file restated, and the
-    /// AVX-512 test `a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask`
-    /// holds the two equal.
+    /// file of its own (AVX-512's opmasks, where no head parameter can be), so
+    /// what a position that needs a number may take is asked here, before any
+    /// target is chosen. The bitwise rule is the selector's own (`on_masks`);
+    /// that a comparison is a mask, and that nothing else is, is the selector's
+    /// choice of file restated, and the AVX-512 test
+    /// `a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask` holds the
+    /// two equal.
     pub(crate) fn is_mask(&self, operand_is_mask: impl Fn(ValueId) -> bool) -> bool {
         match self {
             Self::Compare(..) => true,

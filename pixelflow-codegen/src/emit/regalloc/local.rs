@@ -427,8 +427,9 @@ fn plan_carries(live: &Liveness, reads: &[usize], budget: Budget) -> Vec<Vec<u64
             if covered {
                 continue;
             }
-            // A weight tops out rather than wraps: a nest priced at `u64::MAX`
-            // reads twice is the sum of two of them.
+            // The sum saturates. A read weighs its nest's trips, `u64::MAX` for
+            // a nest priced past `u64`, so adding two such reads would overflow;
+            // a value read that deep weighs the most a weight can and compiles.
             let reloads = own[from..to]
                 .iter()
                 .map(|&p| trips_at[p])

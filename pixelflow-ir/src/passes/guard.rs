@@ -258,6 +258,31 @@ mod tests {
         assert_eq!(count_of(&arena, domain, OpKind::BitAnd), 2);
     }
 
+    /// The same for a value `lo` beside a literal `hi`: `[u, 8)` has the domain
+    /// test of `u` alone, so that a `u` outside the domain is NaN though the end
+    /// is a count already.
+    #[test]
+    fn a_value_lo_beside_a_literal_hi_has_the_domain_test_of_lo() {
+        let mut arena = ExprArena::new();
+        let u = uniform(&mut arena, 3.0);
+        let fold = counted(Monoid::SUM, &mut arena, Bound::Value(u), Bound::Lit(8));
+        let (arena, root) = guard_value_bounds_owned(arena, fold);
+        let guard = Guard::of(&arena, root);
+        assert!(
+            reachable(&arena, guard.domain).contains(&u),
+            "the domain reads u"
+        );
+        assert_eq!(count_of(&arena, guard.domain, OpKind::Le), 2);
+        assert_eq!(count_of(&arena, guard.domain, OpKind::Floor), 1);
+        assert_eq!(count_of(&arena, guard.domain, OpKind::Eq), 1);
+        assert_eq!(count_of(&arena, guard.domain, OpKind::BitAnd), 2);
+        let ExprNode::Binary(OpKind::Lt, start, end) = arena.node(guard.runs) else {
+            panic!("the arm runs while lo < hi");
+        };
+        assert_eq!(start, u);
+        assert_eq!(arena.node(end), ExprNode::Const(Lit::Real(8.0)));
+    }
+
     /// Each value bound is tested, once however often it is read: `[m, n)` tests
     /// both and joins the tests, `[u, u)` tests the one.
     #[test]

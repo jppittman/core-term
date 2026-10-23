@@ -204,7 +204,12 @@ fn the_dump_writes_a_value_bounds_child() {
         Kernel::x().mul(i)
     });
     let (arena, root) = kernel.parts();
-    let path = std::env::temp_dir().join("production_glyph_arena_dump_a_value_bounds_child.arena");
+    // Per-process, as the corpus tests' paths are: two test processes at once
+    // must not write and remove one file between them.
+    let path = std::env::temp_dir().join(format!(
+        "production_glyph_arena_dump_a_value_bounds_child_{}.arena",
+        std::process::id()
+    ));
     dump_arena(arena, root, "value-bound", &path);
     let text = std::fs::read_to_string(&path).expect("read the dump back");
     std::fs::remove_file(&path).expect("remove the dump");

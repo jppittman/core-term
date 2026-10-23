@@ -35,9 +35,11 @@
 //! fraction, NaN and an infinity are none). The latch's compare reads two
 //! registers, so `hi` is one the allocator carries across the loop or reloads
 //! at each latch, where a literal end is a constant placed again at its read.
-//! The guard's masks are the call's when the bounds are, and the arm tests that
-//! read them run in every batch of the fold they guard, so a mask the register
-//! file cannot keep (an opmask, on AVX-512) is reloaded in each.
+//! The guard's masks are the call's when the bounds are. Where the guarded fold
+//! reads a coordinate, the guard's arm tests are the column fold's and run in
+//! every batch of it, so a mask the register file cannot keep across batches
+//! (an opmask, on AVX-512) is reloaded in each. Where the fold reads none, the
+//! guard and the loop are call-invariant and run once per call, in the body.
 //!
 //! ## Spilling
 //!

@@ -126,8 +126,10 @@ impl Pass for Lower {
 /// axis; this one names the axis. Also panics on a zero extent, which has
 /// no sample to compute. A fold whose bound the emitter holds as a mask (a
 /// comparison, or a bitwise and/or of two such: `ScheduledOp::is_mask`) is
-/// refused too, by name (`BoundSort`) and on every tier alike: AVX-512 holds
-/// one in an opmask, where a loop's seed cannot be.
+/// refused too, by name (`BoundSort`), at either end and on every tier alike: a
+/// mask names no count. For `lo` the tiers would also disagree, since the
+/// loop's seed is a head parameter, which AVX-512 would hold in an opmask and
+/// panic on in selection, where AVX2 and NEON would read its bits as a float.
 pub fn compile(
     arena: &ExprArena,
     root: ExprId,

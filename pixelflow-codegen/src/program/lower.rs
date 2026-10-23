@@ -155,10 +155,13 @@ impl ValueFolds {
 
 /// L3 after collapse: a fold's bound varies with no binder of the lattice.
 ///
+/// A bound is fixed before the lattice is traversed: one value for the call.
 /// `collapse` picks the lattice's binder slots from those no reachable `Var`
-/// or fold uses, so this cannot fail on a legalized arena; it is what makes
-/// every lane of a guard's mask and of a latch's compare hold one value, so
-/// that no batch runs a guard's arm on some of its lanes.
+/// or fold uses, so this cannot fail on a legalized arena. It is also what
+/// keeps every lane of a guard's mask and of a latch's compare at one value:
+/// the lane binder would vary them within a batch, and a guard's arm would run
+/// on some of its lanes; the row and column binders would vary them between
+/// batches, which the law forbids all the same.
 fn assert_off_the_lattice(end: BoundEnd, reads: Variance, lattice: Variance) {
     let shared = reads.intersection(lattice);
     assert!(
@@ -258,8 +261,10 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
 /// once, as an `If`'s true arm: an arena that was not legalized, a pipeline
 /// bug and not a kernel's. A bound the emitter holds as a mask
 /// (`ScheduledOp::is_mask`: a comparison, or a bitwise and/or of two such) is
-/// refused by name (`BoundSort`) on every tier alike, since AVX-512 holds one in
-/// an opmask, where a loop's seed cannot be.
+/// refused by name (`BoundSort`), at either end and on every tier alike: a mask
+/// names no count. For `lo` the tiers would also disagree, since the loop's
+/// seed is a head parameter, which AVX-512 would hold in an opmask and panic on
+/// in selection, where AVX2 and NEON would read its bits as a float.
 pub(crate) fn arena_to_schedule(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -518,11 +523,12 @@ pub(crate) fn arena_to_schedule(
                         panic!("arena_to_schedule: {refusal}");
                     }
                     assert_off_the_lattice(end, reads, lattice);
-                    // A mask is what a target may hold in a file of its own,
-                    // where a head's parameter cannot be: AVX-512 panics
-                    // there, and the other tiers would read its bits as a
-                    // count. `is_mask` asks, before selection, which file
-                    // AVX-512 will pick.
+                    // A mask names no count, at either end. A mask `lo` is
+                    // also the loop's seed, a head parameter, which a target
+                    // that holds a mask in a file of its own cannot take:
+                    // AVX-512 panics there, and the other tiers would read
+                    // its bits as a float. `is_mask` asks, before selection,
+                    // which file AVX-512 will pick.
                     assert!(
                         !masks.is_mask(&schedule, map_child(term)),
                         "arena_to_schedule: {}: the bound is a mask (a comparison, or a \
@@ -648,24 +654,36 @@ mod tests {
     /// that the count is not read as an origin axis.
     const AFTER_ONE_UNIFORM: [UniformId; 2] = [UniformId(1), UniformId(2)];
 
-    /// A count, a fold over it, and its guard: `If(Lt(0, count), Σ_{i<count}
-    /// i, 0)`, the shape `passes::legalize` leaves a value-bounded fold in,
-    /// as `(arena, count, fold, root)`.
+    /// The bound that is the count itself.
+    fn the_count(_: &mut ExprArena, count: ExprId) -> ExprId {
+        count
+    }
+
+    /// The literal at the end of a range a test bounds by a value at the other.
+    const OTHER_END: u64 = 8;
+
+    /// A count, a fold bounded at `at` by `end(count)`, and its guard:
+    /// `If(Lt(0, count), Σ_i i, 0)`, the shape `passes::legalize` leaves a
+    /// value-bounded fold in, as `(arena, count, fold, root)`. The fold's other
+    /// bound is a literal: `0` below, [`OTHER_END`] above.
     ///
     /// The body is the binder's own `Var`, not `X`: a coordinate is a
     /// survivor refused first, and would answer for the bound.
-    fn a_guarded_fold_over_a_count() -> (ExprArena, ExprId, ExprId, ExprId) {
+    fn a_guarded_fold(
+        at: BoundEnd,
+        end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId,
+    ) -> (ExprArena, ExprId, ExprId, ExprId) {
         let mut a = ExprArena::new();
         let slot = a.declare_uniform(pixelflow_ir::Uniform::new(3.0).decl());
         let count = a.push_uniform(slot);
+        let end = Bound::Value(end(&mut a, count));
+        let (lo, hi) = match at {
+            BoundEnd::Lo => (end, Bound::Lit(OTHER_END)),
+            BoundEnd::Hi => (Bound::Lit(0), end),
+        };
         let binder = Binder::from_slot(0).expect("slot 0 exists");
         let i = a.push_var(binder.var());
-        let fold = a.push_reduce(
-            Fold::new(Monoid::SUM, binder),
-            Bound::Lit(0),
-            Bound::Value(count),
-            i,
-        );
+        let fold = a.push_reduce(Fold::new(Monoid::SUM, binder), lo, hi, i);
         let zero = a.push_const(0.0);
         let runs = a.push_binary(OpKind::Lt, zero, count);
         let root = a.push_ternary(OpKind::If, runs, fold, zero);
@@ -676,7 +694,7 @@ mod tests {
     /// ownership and the closure check see it as a read of the `Reduce`.
     #[test]
     fn a_value_bound_is_an_operand_of_its_fold() {
-        let (a, _, _, root) = a_guarded_fold_over_a_count();
+        let (a, _, _, root) = a_guarded_fold(BoundEnd::Hi, the_count);
         let schedule = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
 
         let reduce = schedule
@@ -706,7 +724,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "other than as an If's true arm")]
     fn an_unguarded_value_bounded_fold_fails_loudly() {
-        let (mut a, _, fold, _) = a_guarded_fold_over_a_count();
+        let (mut a, _, fold, _) = a_guarded_fold(BoundEnd::Hi, the_count);
         let one = a.push_const(1.0);
         let root = a.push_binary(OpKind::Add, fold, one);
         let _ = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
@@ -717,7 +735,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "other than as an If's true arm")]
     fn a_value_bounded_fold_in_the_false_arm_fails_loudly() {
-        let (mut a, count, fold, _) = a_guarded_fold_over_a_count();
+        let (mut a, count, fold, _) = a_guarded_fold(BoundEnd::Hi, the_count);
         let zero = a.push_const(0.0);
         let runs = a.push_binary(OpKind::Lt, zero, count);
         let root = a.push_ternary(OpKind::If, runs, zero, fold);
@@ -732,7 +750,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "and by")]
     fn a_value_bounded_fold_with_two_guards_fails_loudly() {
-        let (mut a, count, fold, guarded) = a_guarded_fold_over_a_count();
+        let (mut a, count, fold, guarded) = a_guarded_fold(BoundEnd::Hi, the_count);
         let one = a.push_const(1.0);
         let runs = a.push_binary(OpKind::Lt, one, count);
         let other = a.push_ternary(OpKind::If, runs, fold, one);
@@ -744,7 +762,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "is read by nothing")]
     fn a_value_bounded_fold_nothing_reads_fails_loudly() {
-        let (a, _, fold, _) = a_guarded_fold_over_a_count();
+        let (a, _, fold, _) = a_guarded_fold(BoundEnd::Hi, the_count);
         let _ = arena_to_schedule(&a, fold, AFTER_ONE_UNIFORM);
     }
 
@@ -753,15 +771,17 @@ mod tests {
     /// the nodes it replaced). Only reachable readers count.
     #[test]
     fn a_reader_that_is_not_reachable_is_not_a_reader() {
-        let (mut a, _, fold, guarded) = a_guarded_fold_over_a_count();
+        let (mut a, _, fold, guarded) = a_guarded_fold(BoundEnd::Hi, the_count);
         let one = a.push_const(1.0);
         let _stale = a.push_binary(OpKind::Add, fold, one);
         let _ = arena_to_schedule(&a, guarded, AFTER_ONE_UNIFORM);
     }
 
-    /// L3 after collapse: a bound that reads a binder of the lattice would
-    /// make a guard's mask vary by lane. `collapse` picks its binders from
-    /// slots nothing else uses, so no pipeline builds this; it is built by
+    /// L3 after collapse: a bound is fixed before the lattice is traversed, so
+    /// it reads none of the lattice's binders. Only the lane binder would vary
+    /// a guard's mask within a batch; `row` and `col` would vary it between
+    /// batches, which is refused all the same. `collapse` picks its binders
+    /// from slots nothing else uses, so no pipeline builds this; it is built by
     /// hand, through the term vocabulary, because the arena's own `push_write`
     /// is not for a crate that is not the IR.
     ///
@@ -800,33 +820,13 @@ mod tests {
         let _ = arena_to_schedule(&a, root, RAW_ORIGIN);
     }
 
-    /// A fold bounded by `end(count)`, guarded as the pipeline guards one, as
-    /// `(arena, root)`.
-    fn a_fold_bounded_by(
+    /// What lowering a fold bounded at `at` by `end(count)` panics with, or
+    /// `None` if it lowers.
+    fn refusal_of_the_end(
+        at: BoundEnd,
         end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId,
-    ) -> (ExprArena, ExprId) {
-        let mut a = ExprArena::new();
-        let slot = a.declare_uniform(pixelflow_ir::Uniform::new(3.0).decl());
-        let count = a.push_uniform(slot);
-        let end = end(&mut a, count);
-        let binder = Binder::from_slot(0).expect("slot 0 exists");
-        let i = a.push_var(binder.var());
-        let fold = a.push_reduce(
-            Fold::new(Monoid::SUM, binder),
-            Bound::Lit(0),
-            Bound::Value(end),
-            i,
-        );
-        let zero = a.push_const(0.0);
-        let runs = a.push_binary(OpKind::Lt, zero, count);
-        let root = a.push_ternary(OpKind::If, runs, fold, zero);
-        (a, root)
-    }
-
-    /// What lowering a fold bounded by `end(count)` panics with, or `None` if
-    /// it lowers.
-    fn refusal_of_the_end(end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId) -> Option<String> {
-        let (a, root) = a_fold_bounded_by(end);
+    ) -> Option<String> {
+        let (a, _, _, root) = a_guarded_fold(at, end);
         let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
         }))
@@ -840,17 +840,22 @@ mod tests {
         Some(message)
     }
 
-    /// Whether lowering refuses a fold bounded by `end(count)` by name, as a
-    /// mask, and not for some other reason.
-    fn is_refused_as_a_mask(end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId) -> bool {
-        refusal_of_the_end(end).is_some_and(|message| message.contains("BoundSort"))
+    /// Whether lowering refuses a fold bounded at `at` by `end(count)` by
+    /// name, as a mask, and not for some other reason.
+    fn is_refused_as_a_mask(
+        at: BoundEnd,
+        end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId,
+    ) -> bool {
+        refusal_of_the_end(at, end).is_some_and(|message| message.contains("BoundSort"))
     }
 
-    /// A target may hold a mask where a loop's seed cannot be (AVX-512's
-    /// opmask file), so a bound the emitter holds as one is refused on every
-    /// tier alike, by `ScheduledOp::is_mask`, which AVX-512's selector is held
-    /// to: a comparison, a bitwise op on two masks, a reinterpretation of
-    /// either. A bitwise op on a mask and a number is a number, and a count.
+    /// A mask names no count, so a bound the emitter holds as one is refused
+    /// at either end and on every tier alike, by `ScheduledOp::is_mask`, which
+    /// AVX-512's selector is held to: a comparison, a bitwise op on two masks, a
+    /// reinterpretation of either. A bitwise op on a mask and a number is a
+    /// number, and a count. `lo` is the end AVX-512 would panic on in selection
+    /// (the loop's seed is a head parameter, and none is in the opmask file);
+    /// `hi` is read only by the latch's compare, which reads either file.
     #[test]
     fn a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask() {
         let lt = |a: &mut ExprArena, c| {
@@ -861,55 +866,61 @@ mod tests {
             let one = a.push_const(1.0);
             a.push_binary(OpKind::Gt, c, one)
         };
-        assert!(is_refused_as_a_mask(lt), "a comparison is a mask");
-        assert!(
-            is_refused_as_a_mask(|a, c| {
-                let (x, y) = (lt(a, c), gt(a, c));
-                a.push_binary(OpKind::BitAnd, x, y)
-            }),
-            "a bitwise and of two masks is a mask"
-        );
-        assert!(
-            is_refused_as_a_mask(|a, c| {
-                let (x, y) = (lt(a, c), gt(a, c));
-                let both = a.push_binary(OpKind::BitOr, x, y);
-                let wider = a.push_binary(OpKind::BitAnd, both, y);
-                a.push_binary(OpKind::BitOr, wider, x)
-            }),
-            "a bitwise op on masks is a mask, however deep"
-        );
-        assert!(
-            is_refused_as_a_mask(|a, c| {
-                let mask = lt(a, c);
-                a.push_unary(OpKind::Bits, mask)
-            }),
-            "a reinterpretation defines no value: it is its operand, a mask"
-        );
-        assert_eq!(
-            refusal_of_the_end(|a, c| {
-                let mask = lt(a, c);
-                let three = a.push_const(3.0);
-                a.push_binary(OpKind::BitAnd, mask, three)
-            }),
-            None,
-            "a mask and a number is a number: 3 where it holds, 0 where it does not"
-        );
-        assert_eq!(
-            refusal_of_the_end(|a, c| {
-                let one = a.push_const(1.0);
-                a.push_binary(OpKind::Add, c, one)
-            }),
-            None,
-            "arithmetic is a number"
-        );
-        assert_eq!(refusal_of_the_end(|_, c| c), None, "a uniform is a number");
+        for at in [BoundEnd::Lo, BoundEnd::Hi] {
+            assert!(is_refused_as_a_mask(at, lt), "{at}: a comparison is a mask");
+            assert!(
+                is_refused_as_a_mask(at, |a, c| {
+                    let (x, y) = (lt(a, c), gt(a, c));
+                    a.push_binary(OpKind::BitAnd, x, y)
+                }),
+                "{at}: a bitwise and of two masks is a mask"
+            );
+            assert!(
+                is_refused_as_a_mask(at, |a, c| {
+                    let (x, y) = (lt(a, c), gt(a, c));
+                    let both = a.push_binary(OpKind::BitOr, x, y);
+                    let wider = a.push_binary(OpKind::BitAnd, both, y);
+                    a.push_binary(OpKind::BitOr, wider, x)
+                }),
+                "{at}: a bitwise op on masks is a mask, however deep"
+            );
+            assert!(
+                is_refused_as_a_mask(at, |a, c| {
+                    let mask = lt(a, c);
+                    a.push_unary(OpKind::Bits, mask)
+                }),
+                "{at}: a reinterpretation defines no value: it is its operand, a mask"
+            );
+            assert_eq!(
+                refusal_of_the_end(at, |a, c| {
+                    let mask = lt(a, c);
+                    let three = a.push_const(3.0);
+                    a.push_binary(OpKind::BitAnd, mask, three)
+                }),
+                None,
+                "{at}: a mask and a number is a number: 3 where it holds, 0 where it does not"
+            );
+            assert_eq!(
+                refusal_of_the_end(at, |a, c| {
+                    let one = a.push_const(1.0);
+                    a.push_binary(OpKind::Add, c, one)
+                }),
+                None,
+                "{at}: arithmetic is a number"
+            );
+            assert_eq!(
+                refusal_of_the_end(at, the_count),
+                None,
+                "{at}: a uniform is a number"
+            );
+        }
     }
 
     /// The refusal names the law: a mask names no count.
     #[test]
     #[should_panic(expected = "BoundSort")]
     fn a_bound_that_is_a_mask_fails_by_name() {
-        let (a, root) = a_fold_bounded_by(|a, count| {
+        let (a, _, _, root) = a_guarded_fold(BoundEnd::Hi, |a, count| {
             let zero = a.push_const(0.0);
             a.push_binary(OpKind::Lt, zero, count)
         });

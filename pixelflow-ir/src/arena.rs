@@ -984,9 +984,10 @@ impl ExprArena {
     ///
     /// The sort of a value bound is checked of its term as written: a mask
     /// *literal* is refused, and a computed bound that is a mask (only a
-    /// hand-built call makes one; `over_values` takes a leaf) is admitted. If the
-    /// folder turns it into a mask literal, materializing it panics with the
-    /// same refusal, loudly. Giving a bound a sort (T6) closes the hole.
+    /// hand-built call makes one; `over_values` takes a leaf) is admitted here.
+    /// If the folder turns it into a mask literal, materializing it panics with
+    /// the same refusal, loudly, and lowering refuses one the emitter holds as a
+    /// mask by that refusal too. Giving a bound a sort (T6) closes the rest.
     ///
     /// # Panics
     ///
