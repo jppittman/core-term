@@ -1,0 +1,4 @@
+*.lock
+gates/out/cg.*.out
+# *.jsonl is an LFS pattern at the root, and this branch pushes no LFS objects; gate2.TAG.txt and gate2x.TAG.txt carry what the gates compare.
+*.jsonl
