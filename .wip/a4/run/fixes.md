@@ -109,7 +109,8 @@ unfixed `local.rs`, passes after, on both tiers).
   13 and 14 of `Kernel::over_values` nests with n = 1, and one `FRAME` (1920x1080) nest, `both` paths
   (as written, optimized). Unfixed it panics "attempt to add with overflow" at `local.rs:430`
   (`own[..].iter().map(..).sum()`) on avx2 and avx512; `reloads + latch_stores` (`:437`) is the second
-  unchecked add and needs a nest the frame's trips make deeper still.
+  unchecked add, reached first on avx2 at 1920x1080 by the reviewer's probe (not separately reproduced
+  here; the frame case in the test covers both sites).
   Fixed: the reads' weights add with `usize::saturating_add` and `reloads.saturating_add(latch_stores)`.
   Where nothing overflows the result is today's `+`, and every kernel that compiled in debug has no
   overflow, so no byte moves (gates 1, 1b, 2, 2x identical; total Ir +0.09 percent, measure.sh). The
