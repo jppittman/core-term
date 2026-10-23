@@ -1,0 +1,275 @@
+
+### 1. grep -rn 'VALUE_BOUND' --include=*.rs . (expect nothing)
+[hits: 0]
+
+### 2. KNOWN_RANGE: grep -rn 'KNOWN_RANGE' --include=*.rs pixelflow-* | grep -v '/tests/|mod tests|#[test]' (spec text; hits then classified by file offset against the first '#[cfg(test)]' module)
+pixelflow-codegen/src/program/lower.rs:12:use pixelflow_ir::fold::{Binder, Bound, BoundEnd, BoundRefusal, KNOWN_RANGE, KnownRange};
+pixelflow-codegen/src/program/lower.rs:500:                    lanes: u32::try_from(arena.known_range(expr_id).expect(KNOWN_RANGE).len())
+pixelflow-compiler/src/lower.rs:1062:    use pixelflow_ir::fold::KNOWN_RANGE;
+pixelflow-compiler/src/lower.rs:1185:                    match holes.range_of(arena.known_range(id).expect(KNOWN_RANGE)) {
+pixelflow-compiler/src/lower.rs:1216:        let _unreachable = Holes::default().range_of(stray.known_range().expect(KNOWN_RANGE));
+pixelflow-compiler/src/lower.rs:1237:            let range = known.known_range().expect(KNOWN_RANGE);
+pixelflow-compiler/src/lower.rs:1355:        assert_eq!(arena.known_range(root).expect(KNOWN_RANGE).range(), 2..6);
+pixelflow-compiler/src/lower.rs:1442:            arena.known_range(root).expect(KNOWN_RANGE).range(),
+pixelflow-ir/src/fold.rs:1150:pub const KNOWN_RANGE: &str = "this fold's bounds are literals: a lattice's fold, a production \
+pixelflow-ir/src/fold.rs:1677:        let range = wide.known_range().expect(KNOWN_RANGE);
+pixelflow-ir/src/fold.rs:1707:        let range = strided.known_range().expect(KNOWN_RANGE);
+pixelflow-ir/src/fold.rs:1907:        let range = halved.known_range().expect(KNOWN_RANGE);
+pixelflow-ir/src/fold.rs:1913:        let range = back.known_range().expect(KNOWN_RANGE);
+pixelflow-ir/src/passes.rs:1531:    use crate::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
+pixelflow-ir/src/passes.rs:1609:        assert_eq!(a.known_range(red).expect(KNOWN_RANGE).len(), 4);
+pixelflow-ir/src/passes.rs:1951:    use crate::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
+pixelflow-ir/src/passes.rs:2028:            legalized.known_range(new_root).expect(KNOWN_RANGE).range(),
+pixelflow-ir/src/passes.rs:2035:                && legalized.known_range(id).expect(KNOWN_RANGE).range() == range
+pixelflow-ir/src/passes.rs:2057:    use crate::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
+pixelflow-ir/src/passes.rs:2114:            let range = legalized.known_range(fold).expect(KNOWN_RANGE);
+pixelflow-ir/src/passes/lattice.rs:31:use crate::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
+pixelflow-ir/src/passes/lattice.rs:222:        .expect(KNOWN_RANGE)
+pixelflow-ir/src/passes/lattice.rs:227:        .expect(KNOWN_RANGE)
+pixelflow-ir/src/passes/lattice.rs:342:        arena.known_range(row_id).expect(KNOWN_RANGE).range().start,
+pixelflow-ir/src/passes/lattice.rs:347:        arena.known_range(col_id).expect(KNOWN_RANGE).range().start,
+pixelflow-ir/src/passes/lattice.rs:352:        arena.known_range(lane_id).expect(KNOWN_RANGE).range(),
+pixelflow-ir/src/passes/lattice.rs:399:        arena.known_range(id).expect(KNOWN_RANGE)
+pixelflow-pipeline/examples/glyph_phase_split.rs:45:use pixelflow_ir::fold::KNOWN_RANGE;
+pixelflow-pipeline/examples/glyph_phase_split.rs:80:            // bound a fold by a value (`KNOWN_RANGE` names this reason).
+pixelflow-pipeline/examples/glyph_phase_split.rs:81:            trips.push(arena.known_range(id).expect(KNOWN_RANGE).len());
+pixelflow-search/src/egraph/fold_rules.rs:885:    use pixelflow_ir::fold::KNOWN_RANGE;
+pixelflow-search/src/egraph/fold_rules.rs:947:        matches!(node, ENode::Reduce { .. }).then(|| node.known_range().expect(KNOWN_RANGE))
+pixelflow-search/src/egraph/fold_rules.rs:1450:            f.node.known_range().expect(KNOWN_RANGE).is_empty(),
+
+### 2b. KNOWN_RANGE hits classified: test-module offset (line >= first #[cfg(test)] line of the file) or not
+NON-TEST	pixelflow-codegen/src/program/lower.rs:12	use pixelflow_ir::fold::{Binder, Bound, BoundEnd, BoundRefusal, KNOWN_RANGE, KnownRange};
+NON-TEST	pixelflow-codegen/src/program/lower.rs:500	lanes: u32::try_from(arena.known_range(expr_id).expect(KNOWN_RANGE).len())
+NON-TEST	pixelflow-ir/src/fold.rs:1150	pub const KNOWN_RANGE: &str = "this fold's bounds are literals: a lattice's fold, a production \
+NON-TEST	pixelflow-ir/src/passes/lattice.rs:31	use crate::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
+NON-TEST	pixelflow-ir/src/passes/lattice.rs:222	.expect(KNOWN_RANGE)
+NON-TEST	pixelflow-ir/src/passes/lattice.rs:227	.expect(KNOWN_RANGE)
+NON-TEST	pixelflow-ir/src/passes/lattice.rs:342	arena.known_range(row_id).expect(KNOWN_RANGE).range().start,
+NON-TEST	pixelflow-ir/src/passes/lattice.rs:347	arena.known_range(col_id).expect(KNOWN_RANGE).range().start,
+NON-TEST	pixelflow-ir/src/passes/lattice.rs:352	arena.known_range(lane_id).expect(KNOWN_RANGE).range(),
+NON-TEST	pixelflow-pipeline/examples/glyph_phase_split.rs:45	use pixelflow_ir::fold::KNOWN_RANGE;
+NON-TEST	pixelflow-pipeline/examples/glyph_phase_split.rs:80	// bound a fold by a value (`KNOWN_RANGE` names this reason).
+NON-TEST	pixelflow-pipeline/examples/glyph_phase_split.rs:81	trips.push(arena.known_range(id).expect(KNOWN_RANGE).len());
+count ('pixelflow-codegen/src/program/lower.rs', 'non-test') 2
+count ('pixelflow-compiler/src/lower.rs', 'test') 6
+count ('pixelflow-ir/src/fold.rs', 'non-test') 1
+count ('pixelflow-ir/src/fold.rs', 'test') 4
+count ('pixelflow-ir/src/passes.rs', 'test') 7
+count ('pixelflow-ir/src/passes/lattice.rs', 'non-test') 6
+count ('pixelflow-ir/src/passes/lattice.rs', 'test') 1
+count ('pixelflow-pipeline/examples/glyph_phase_split.rs', 'non-test') 3
+count ('pixelflow-search/src/egraph/fold_rules.rs', 'test') 3
+
+### 2c. none in emit/select.rs or pixelflow-compiler/src/emit.rs
+[hits: 0]
+
+### 3a. C4 amended: the deleted helper plus the expect forms, codegen/src (expect: lower.rs lane fold only)
+pixelflow-codegen/src/program/lower.rs:500:                    lanes: u32::try_from(arena.known_range(expr_id).expect(KNOWN_RANGE).len())
+
+### 3b. the deleted helper alone: fn known(bound (expect nothing)
+[hits: 0]
+
+### 3c. unanchored known( in codegen/src (C4 alternative: traffic.rs is an expected hit, Trips::known)
+pixelflow-codegen/src/emit/traffic.rs:126:    pub fn known(self) -> Option<u64> {
+pixelflow-codegen/src/emit/traffic.rs:238:            .map(|(s, trips)| Some(s.memory_ops() * trips.known()?))
+pixelflow-codegen/src/emit/traffic.rs:350:        assert_eq!(nested.known(), None);
+
+### 3d. the spec's literal -E line, as typed (\| inside -E)
+[hits: 0]
+
+### 4a. grep -rnwE 'A4' --include=*.rs pixelflow-* (expect nothing)
+[hits: 0]
+
+### 4b. grep -rnw 'A4' --include=intent.md . (expect nothing)
+[hits: 0]
+
+### 4c. 'A4' as a word in tracked md/rs/toml/sh outside .wip (information; every hit must be true after A4, nothing 'until A4')
+docs/BACKLOG.md:32:| [a bound is a value](language/2026-10-20-a-bound-is-a-value.md) | A0 ([baseline](results/2026-10-20-production-glyph-baseline.md)), A1 (the rule, in the docs §5 marks A1), A2a (one reader of a fold's range), A2b (bounds in the node, constants only), its header stored in 32 bits (measured; JP), A3 (value bounds in the IR and the e-graph), A4 (value bounds in codegen, and the key) | A1's the-language-is-kernel rows after #1323; **A5** (`<const N>` deleted); A6, A7; B1–B5 after typed-arena T3 and item 2 | A fold's bounds become operands placed by variance (any variance but a coordinate's); an index is a discrete kernel; one program per font at a tile extent. Ruling 6 (one program per font) lands with B2. |
+docs/BACKLOG.md:152:| **E8** | **Extraction picks one member per class, and a value bound's pick is unconstrained.** A class read as a fold's value bound whose cheapest member reads a coordinate the class does not vary with is materialized through that member, and `ExprArena::push_reduce` refuses the fold with `BoundVaries`, loudly (`fold_rules.rs` pins both the class with no lawful member and the class with a dearer lawful one). A4 decided to leave it loud: constraining the pick trades this failure for another, since a class read as a bound by some candidate with no member that keeps L3 never settles and every other user of the class fails with it, and the coordinate-reading member has to be the class's cheapest, which spells `X` with a cancellation and so carries extra operations; no kernel or profile shows one winning. Revisit with T6 (a bound gets a sort) or a kernel that hits it. | [a-bound-is-a-value](language/2026-10-20-a-bound-is-a-value.md) §6, A4 |
+docs/BACKLOG.md:165:| **C8** | ~~**A fold's index is exact only to 2²⁴, and only `kernel!` refuses past it.**~~ **Done** (the-language-is-kernel B5): `RangeFold::admits` is the one statement of a range's contract, `RangeFold::EXACT_BOUND` its bound (`Fold::admits` and `Fold::EXACT_BOUND` since `RangeFold` folded back into `Fold` with the integral's deletion; `KnownRange::admits` since a fold's bounds became its node's, a-bound-is-a-value A2b); the constructors panic past it beside the reversed range, `FoldHeader::from_bits` refuses it, and lowering asks it and explains the refusal, so `Kernel::over` is covered by the refusal `kernel!` had. The index is an `f32` lane — the binder's `Var`, and the JIT's counter steps by `1.0` against the end loaded as an `f32` — so past 2²⁴ neighbouring indices round together (measured through `kernel!` before its refusal: `(16777100..16777300).map(\|i\| ((i as f32) - 16777000.0) * X).sum()` gave 39890 at `X = 1`, rustc 39900). Since a-bound-is-a-value A4 a bound that is a value is not refused at construction, where its count is not known: unless it is a count, an integer in `0..=2²⁴`, its fold is NaN in the language (L5, the guard `passes::legalize` ends with), and a host-written count is refused at its write in A6. | [the-language-is-kernel](language/2026-09-25-the-language-is-kernel.md), appendix |
+docs/archive/plans/2026-08-17-cost-model-domain.md:80:| A4 | fixing `set_rule` (9 params, worst offender) | Belongs to `RuleFeatures`, which is DELETE-shaped (superseded by `encode_rule_from_arena`). The sharpest argument-count violation in the corpus is resolved by subtraction, not a struct. |
+docs/archive/plans/2026-09-02-phase3-forward-port.md:420:| A4 `egraph/anytime.rs` | `feat: the anytime curve, on Budget::Applications and dag_cost` | Shrank: the `AnytimeStepper` trait, `UnguidedStepper`, `AnytimeStep` and `run_anytime_curve_with` all collapse into one function over `&mut Optimizer`. |
+docs/archive/plans/2026-10-08-selection-is-a-phase.md:1239:| H17 | `DecomposedMulAdd`, `c_deferred` (`mod.rs:700-705`) | An instruction choice made by residency | `MulAdd` always fuses | A4 |
+docs/archive/plans/2026-10-08-selection-is-a-phase.md:1266:**A4.**
+docs/archive/plans/2026-10-08-selection-is-a-phase.md:1447:#### A4: `MulAdd` always fuses
+docs/archive/plans/2026-10-08-selection-is-a-phase.md:1450:- **Change:** delete the decomposed form (§4.1, A4). The fused form already fits: `a` and `b` reload into the two reload reservations, and `c` reloads into the destination (`operand_sources`, `mod.rs:833-882`).
+docs/archive/plans/2026-10-08-selection-is-a-phase.md:1912:| A4 | Visibility widens | **Adopted.** `pub(in crate::emit)` throughout |
+docs/archive/plans/2026-10-08-selection-is-a-phase.md:1922:| C S3 | Delete two more tests | **Adopted** (A4) |
+docs/language/2026-09-24-one-pipeline.md:212:  cache under the same key (§3.7, A4).
+docs/language/2026-09-24-one-pipeline.md:757:- **A4.** `unsafe fn jit_cache::preload(kernel, shape, isa, bytes)`.
+docs/language/2026-09-24-one-pipeline.md:845:**CL3: the law.** A7, with A4, and A5 for a test crate. Four checks:
+docs/language/2026-09-24-one-pipeline.md:1020:  - `unsafe jit_cache::preload` (A4);
+docs/language/2026-09-25-the-language-is-kernel.md:105:1, 3 and 6): a count is to have any variance but a coordinate's (its A4), and a font at a
+docs/language/2026-09-25-the-language-is-kernel.md:717:- **A4. The uniform chain at 64 bits:** `UniformId`, `dense_slot`,
+docs/language/2026-09-25-the-language-is-kernel.md:727:  Likewise the caps A4 leaves beside the uniform chain, so the remaining
+docs/language/2026-09-25-the-language-is-kernel.md:1169:    16k (A4). (Answered 2026-10-09, §1.7: a glyph's block is its box, then
+docs/language/2026-10-20-a-bound-is-a-value.md:292:  `pub(crate)` in A3, public in A4 (decision 7).
+docs/language/2026-10-20-a-bound-is-a-value.md:302:- `canonical` (A4): tag 10 and the header, a `Lit` pair at today's `to_bits` positions (both fit:
+docs/language/2026-10-20-a-bound-is-a-value.md:398:  (`examples/byte_probe.rs:306-307`) is unchanged and A4's gate compares like with like.
+docs/language/2026-10-20-a-bound-is-a-value.md:417:same arena) work unchanged through A2–A4.
+docs/language/2026-10-20-a-bound-is-a-value.md:474:a pointer here; A4 states value bounds as built; B1/B2 state the extent off the key and
+docs/language/2026-10-20-a-bound-is-a-value.md:479:| `CLAUDE.md:175`, `pixelflow-core/README.md:63-65` | no iteration binder; counts unrolled at construction; a changing count recompiles | the fold is the one binder; bounds are values placed by variance, never a function of a coordinate; unrolling is extraction's, on known constants | A1 rule, A4 as built | none (#1431's is `CLAUDE.md:62-72`) |
+docs/language/2026-10-20-a-bound-is-a-value.md:481:| `docs/DENOTATION.md:60-66`, `:173` | no data-dependent trip count; cost a closed-form function of static extents; "the budget decides" | no coordinate-dependent trip count; cost closed-form in values known before traversal; no step evaluates it per call, and the static model prices with an estimate (§1.5) | A1 rule, A4 cost | none |
+docs/language/2026-10-20-a-bound-is-a-value.md:482:| `docs/DENOTATION.md:123-125`, `:140-142` | "Loop bounds, extents and ranges are never uniforms"; "the range is a static natural" | §1.1–§1.2 | A4 | none |
+docs/language/2026-10-20-a-bound-is-a-value.md:485:| totality doc `:107-118` (the `:111` row), `:214` | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; per-call values, not literals | A1 rule, `:111` B1, `:214` A4 | none |
+docs/language/2026-10-20-a-bound-is-a-value.md:486:| totality doc `:191-200` | "only dynamic *bounds* die … static max + early-out … cost is the static worst case `N`" | a per-call bound is a value, not a static max; the cost model's estimate is §1.5's | A4 | none |
+docs/language/2026-10-20-a-bound-is-a-value.md:495:| BACKLOG C8 (`:163`) | 2²⁴ refused at construction | §1.4: refused at construction for a literal, at the host write for a count, NaN in the language | A4 (NaN), A6 (host write) | none |
+docs/language/2026-10-20-a-bound-is-a-value.md:497:| ontology `language.md`: "Binding time" `:116`, "Structural parameter" `:144`, "Range (trip count)" `:497` | ranges constant; structural a binding time; a range value "proposed and unbuilt" (`:509`) | §1.1–§1.2; the range value is decision 9 | A4; "Structural parameter" A5 | none |
+docs/language/2026-10-20-a-bound-is-a-value.md:498:| ontology "Fold (Reduce)" `:417` | "its body is its only child" (`:423`); "Is not: Dynamically bounded" (`:437`); "costs `len × body`" (`:450`) | bounds are values; §1.5's cost | A4 | none |
+docs/language/2026-10-20-a-bound-is-a-value.md:500:| ontology "Totality" `:896` | "Ranges are constant, and uniforms are never extents" (`:905`) | §1.5 | A4 | none |
+docs/language/2026-10-20-a-bound-is-a-value.md:525:shares files with A2–A4 but no hunk. #1427 rewrites the compiler's `ast`/`parser`/`sema`/
+docs/language/2026-10-20-a-bound-is-a-value.md:535:lines still conflict, each resolved by keeping both sides. A2b–A4 rebase onto #1431 once
+docs/language/2026-10-20-a-bound-is-a-value.md:537:"whichever lands second rebases". A5–A7 go after #1323 and #1427, with a cut-over: when A4
+docs/language/2026-10-20-a-bound-is-a-value.md:629:  until A4 gave it a marker.
+docs/language/2026-10-20-a-bound-is-a-value.md:642:- **A4. Value bounds in codegen.** `Bound::Value`, the operand and carve change, the
+docs/language/2026-10-20-a-bound-is-a-value.md:656:  `BoundVaries`, loudly, and A4 leaves it so: constraining a bound's pick would trade that
+docs/language/2026-10-20-a-bound-is-a-value.md:762:   `loop_blinn::run` and `Glyph::bake`, and adding `Kernel::over_values` (public from A4):
+[hits: 40]
+
+### 4d. future/pending phrasing around A4 in tracked non-.wip files: until|before|pending|waits for|lands with|will .* A4
+docs/language/2026-10-20-a-bound-is-a-value.md:537:"whichever lands second rebases". A5–A7 go after #1323 and #1427, with a cut-over: when A4
+docs/language/2026-10-20-a-bound-is-a-value.md:629:  until A4 gave it a marker.
+
+### 5. expect(dead_code, reason = "pub(crate) until A4 (expect nothing) and any 'until A4' in tracked rs/md outside .wip and docs/archive
+[hits: 0]
+docs/language/2026-10-20-a-bound-is-a-value.md:629:  until A4 gave it a marker.
+[until A4 hits: 1]
+
+### 6. grep -rn 'iter::empty()' pixelflow-pipeline pixelflow-graphics pixelflow-compiler/src (expect: the compiler's literal branch only)
+pixelflow-compiler/src/emit.rs:605:                        [] => quote! { ::core::iter::empty() },
+
+### 7. grep -rn 'fold_header(id).to_bits()' --include=*.rs . (each hit writes the value children too)
+./pixelflow-graphics/src/test_support.rs:37:            ExprNode::Reduce { .. } => (7, None, arena.fold_header(id).to_bits()),
+./pixelflow-graphics/src/render/cell_grid.rs:1219:                        arena.fold_header(id).to_bits(),
+./pixelflow-graphics/tests/production_glyph_arena_dump.rs:178:                    arena.fold_header(id).to_bits(),
+./pixelflow-ir/src/key.rs:461:                    .extend_from_slice(&self.arena.fold_header(id).to_bits().to_le_bytes());
+./pixelflow-pipeline/src/training/corpus.rs:416:            w.write_all(&arena.fold_header(id).to_bits().to_le_bytes())?;
+./pixelflow-pipeline/src/collapse_bench/corpus.rs:291:                    arena.fold_header(id).to_bits(),
+
+### 7b. C12: header-writer sites the literal grep misses (any .to_bits() on a header receiver)
+./pixelflow-graphics/src/test_support.rs:37:            ExprNode::Reduce { .. } => (7, None, arena.fold_header(id).to_bits()),
+./pixelflow-graphics/src/render/cell_grid.rs:1219:                        arena.fold_header(id).to_bits(),
+./pixelflow-graphics/tests/production_glyph_arena_dump.rs:178:                    arena.fold_header(id).to_bits(),
+./pixelflow-ir/src/key.rs:461:                    .extend_from_slice(&self.arena.fold_header(id).to_bits().to_le_bytes());
+./pixelflow-pipeline/src/training/corpus.rs:416:            w.write_all(&arena.fold_header(id).to_bits().to_le_bytes())?;
+./pixelflow-pipeline/src/collapse_bench/corpus.rs:291:                    arena.fold_header(id).to_bits(),
+./pixelflow-pipeline/src/bin/corpus_gaps.rs:509:                    Key::Reduce(header.to_bits(), ids),
+./pixelflow-compiler/src/emit.rs:582:            let bits = header.to_bits();
+
+### 8. grep -rn 'FoldHeader::from_bits' --include=*.rs pixelflow-pipeline pixelflow-compiler
+pixelflow-pipeline/src/training/corpus.rs:612:            let header = FoldHeader::from_bits(bits).ok_or_else(|| {
+pixelflow-pipeline/src/collapse_bench/corpus.rs:516:                let header = FoldHeader::from_bits(bits)
+pixelflow-compiler/src/emit.rs:585:                ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
+pixelflow-compiler/src/emit.rs:735:                monoid: ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
+
+### 8b. FoldHeader::from_bits everywhere in pixelflow-*
+pixelflow-compiler/src/emit.rs:585:                ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
+pixelflow-compiler/src/emit.rs:735:                monoid: ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
+pixelflow-ir/src/fold.rs:654:    /// `FoldHeader::from_bits`) and a literal beside a value bound
+pixelflow-ir/src/fold.rs:765:/// `KnownRange::new` holds, and [`FoldHeader::from_bits`] refuses bits that
+pixelflow-ir/src/fold.rs:871:    /// [`FoldHeader::from_bits`]'s) have.
+pixelflow-ir/src/fold.rs:972:    /// This header as opaque bits, and [`FoldHeader::from_bits`] back.
+pixelflow-ir/src/fold.rs:1074:/// whose range [`FoldHeader::from_bits`] checks.
+pixelflow-ir/src/fold.rs:1085:/// [`FoldHeader::from_bits`] refuses where it fails, and `with_a_value` panics
+pixelflow-ir/src/fold.rs:1098:/// zero, and [`FoldHeader::from_bits`] refuses bits that say otherwise.
+pixelflow-ir/src/fold.rs:1184:    /// [`FoldHeader::from_bits`] both rely on.
+pixelflow-ir/src/fold.rs:1228:    /// fails, [`FoldHeader::from_bits`] refuses where it fails, and a front end
+pixelflow-ir/src/fold.rs:1628:        assert_eq!(FoldHeader::from_bits(past), None);
+pixelflow-ir/src/fold.rs:1630:        assert!(FoldHeader::from_bits(at).is_some());
+pixelflow-ir/src/fold.rs:1643:            FoldHeader::from_bits(hi_ones),
+pixelflow-ir/src/fold.rs:1649:            FoldHeader::from_bits(lo_ones),
+pixelflow-ir/src/fold.rs:1682:        let back = FoldHeader::from_bits(wide.to_bits()).expect("a header's own bits name it");
+pixelflow-ir/src/fold.rs:1697:        let back = FoldHeader::from_bits(seq.to_bits()).expect("a SEQ fold round-trips");
+pixelflow-ir/src/fold.rs:1715:        let back = FoldHeader::from_bits(strided.to_bits()).expect("a strided header's own bits");
+pixelflow-ir/src/fold.rs:1757:        assert!(FoldHeader::from_bits(stride(Fold::EXACT_BOUND)).is_some());
+pixelflow-ir/src/fold.rs:1758:        assert_eq!(FoldHeader::from_bits(stride(Fold::EXACT_BOUND + 1)), None);
+pixelflow-ir/src/fold.rs:1911:        let back = FoldHeader::from_bits(halved.to_bits()).expect("a header's own bits name it");
+pixelflow-ir/src/fold.rs:1928:        assert_eq!(FoldHeader::from_bits(bits), None);
+pixelflow-ir/src/fold.rs:1944:        assert_eq!(FoldHeader::from_bits(literal), Some(want));
+pixelflow-ir/src/fold.rs:1948:                FoldHeader::from_bits(literal | 1u128 << bit),
+pixelflow-ir/src/fold.rs:1963:        assert_eq!(FoldHeader::from_bits(marked), Some(want));
+pixelflow-ir/src/fold.rs:1967:        assert_eq!(FoldHeader::from_bits(lo_marked), Some(want));
+pixelflow-ir/src/fold.rs:1979:        assert_eq!(FoldHeader::from_bits(literal), Some(want));
+pixelflow-ir/src/fold.rs:2200:            assert_eq!(FoldHeader::from_bits(bits), Some(value), "{value}");
+pixelflow-ir/src/fold.rs:2224:            FoldHeader::from_bits(fold)
+pixelflow-ir/src/fold.rs:2312:                    FoldHeader::from_bits(value.to_bits()),
+pixelflow-pipeline/src/training/corpus.rs:612:            let header = FoldHeader::from_bits(bits).ok_or_else(|| {
+pixelflow-pipeline/src/collapse_bench/corpus.rs:516:                let header = FoldHeader::from_bits(bits)
+
+### 9. grep -rn 'trips' pixelflow-codegen/src/emit
+pixelflow-codegen/src/emit/traffic.rs:94:    /// The trips of a fold whose range is `range` (`None` when a bound is a
+pixelflow-codegen/src/emit/traffic.rs:103:    /// These trips of a loop inside `parent`: their product, an estimate if
+pixelflow-codegen/src/emit/traffic.rs:156:    pub trips: Vec<Trips>,
+pixelflow-codegen/src/emit/traffic.rs:192:        let mut trips = alloc::vec![Trips::ONCE; scopes.len()];
+pixelflow-codegen/src/emit/traffic.rs:206:                trips[scope_ix(block.scope)] = looped.trips;
+pixelflow-codegen/src/emit/traffic.rs:211:            trips,
+pixelflow-codegen/src/emit/traffic.rs:227:    /// many times the call runs it. `None` when any scope's trips are an
+pixelflow-codegen/src/emit/traffic.rs:237:            .zip(&self.trips)
+pixelflow-codegen/src/emit/traffic.rs:238:            .map(|(s, trips)| Some(s.memory_ops() * trips.known()?))
+pixelflow-codegen/src/emit/traffic.rs:290:            trips: alloc::vec![Trips::Known(1), Trips::Known(6), Trips::Known(42)],
+pixelflow-codegen/src/emit/traffic.rs:297:    /// A scope whose trips are an estimate has no count of memory operations,
+pixelflow-codegen/src/emit/traffic.rs:308:            trips: alloc::vec![Trips::Known(1), Trips::Estimated(32)],
+pixelflow-codegen/src/emit/traffic.rs:315:    /// `byte_probe` prints `trips={trips}` and `constant_traffic` a `{:>8}`
+pixelflow-codegen/src/emit/traffic.rs:344:    /// A product of literal trips past `u64` is not a count: it prices at the
+pixelflow-codegen/src/emit/select.rs:279:    /// trips; the counter and the end stay `f32` lanes, and no count becomes
+pixelflow-codegen/src/emit/select.rs:305:        let (parent_loop, parent_trips) = match self.loops.last() {
+pixelflow-codegen/src/emit/select.rs:306:            Some(&(index, trips)) => (Some(index), trips),
+pixelflow-codegen/src/emit/select.rs:309:        let trips = Trips::of(range).nested_in(parent_trips);
+pixelflow-codegen/src/emit/select.rs:310:        let index = self.b.open_loop(head.label(), parent_loop, trips);
+pixelflow-codegen/src/emit/select.rs:322:        self.loops.push((index, trips));
+pixelflow-codegen/src/emit/build.rs:323:    pub(super) fn open_loop(&mut self, head: Label, parent: Option<usize>, trips: Trips) -> usize {
+pixelflow-codegen/src/emit/build.rs:327:            trips,
+pixelflow-codegen/src/emit/mod.rs:528:    /// fold's range is not known: its own trips nested in its parent's.
+pixelflow-codegen/src/emit/mod.rs:529:    trips: Trips,
+pixelflow-codegen/src/emit/mod.rs:1362:        /// The fold's trips, which no lattice loop shares at a point.
+pixelflow-codegen/src/emit/regalloc/local.rs:134:    trips: u64,
+pixelflow-codegen/src/emit/regalloc/local.rs:202:                    trips: l.trips.weight(),
+pixelflow-codegen/src/emit/regalloc/local.rs:385:    // What one read costs, by position: the trips of the innermost loop it is
+pixelflow-codegen/src/emit/regalloc/local.rs:387:    let mut trips_at = alloc::vec![1usize; live.positions];
+pixelflow-codegen/src/emit/regalloc/local.rs:389:        let trips = usize::try_from(facts.trips).unwrap_or(usize::MAX);
+pixelflow-codegen/src/emit/regalloc/local.rs:390:        trips_at[facts.head..=facts.latch].fill(trips);
+pixelflow-codegen/src/emit/regalloc/local.rs:434:                .map(|&p| trips_at[p])
+pixelflow-codegen/src/emit/regalloc/local.rs:437:                true => usize::try_from(facts.trips).unwrap_or(usize::MAX),
+pixelflow-codegen/src/emit/aarch64.rs:1425:        // Every valid imm8 should encode a value that round-trips
+
+### 10. grep -rn 'dynamic_memory_ops' --include=*.rs .
+./pixelflow-codegen/src/emit/traffic.rs:234:    pub fn dynamic_memory_ops(&self) -> Option<u64> {
+./pixelflow-codegen/src/emit/traffic.rs:273:    fn dynamic_memory_ops_weights_each_scope_by_its_trip_count() {
+./pixelflow-codegen/src/emit/traffic.rs:294:        assert_eq!(traffic.dynamic_memory_ops(), Some(1 + 3 * 6 + 5 * 42));
+./pixelflow-codegen/src/emit/traffic.rs:301:    fn dynamic_memory_ops_is_no_count_over_an_estimate() {
+./pixelflow-codegen/src/emit/traffic.rs:312:        assert_eq!(traffic.dynamic_memory_ops(), None);
+./pixelflow-codegen/src/emit/traffic.rs:345:    /// most the allocator can weigh, and `dynamic_memory_ops` does not report it.
+./pixelflow-codegen/tests/value_bounds_jit.rs:476:        assert_eq!(traffic.dynamic_memory_ops(), None);
+./pixelflow-graphics/examples/constant_traffic.rs:50:        t.dynamic_memory_ops()
+./pixelflow-pipeline/src/collapse_bench/mod.rs:341:        dyn_memory_ops: t.dynamic_memory_ops().expect(LITERAL_FOLDS),
+
+### 11. old texts: exact old text 'has no bits")' (C3) and the spec's loose alternation
+[exact 'has no bits")' hits: 0]
+./pixelflow-codegen/src/program/lower.rs:204:             0..{}) — a 32-bit lane has no bits there, and the targets disagree \
+./pixelflow-ir/src/kernel.rs:1294:    /// has no bits there.
+
+### 12. .wip citations outside .wip (rs and md)
+[hits: 0]
+
+### 14. git lfs ls-files | grep -c .
+68
+
+### 13. added lines of the A4 diff in tracked non-.wip files: .wip paths, model names, ruling labels
+-- .wip path/word:
+[count: 0]
+-- model names (case-insensitive: claude|sonnet|opus|haiku|anthropic|gpt|gemini|fable):
+2703:+//! none of which is in CLAUDE.md's table of what differs by target, so NaN, ±∞
+[count: 1]
+-- ruling labels (F#, C#, E#, N#, J#, B#, R# followed by digits as a word; P1/P2 in code docs counted separately):
+19:+  count, chosen by the count, a structural parameter (C1, 2026-10-09); the
+45:+  goes (B2).
+57:+| [a bound is a value](language/2026-10-20-a-bound-is-a-value.md) | A0 ([baseline](results/2026-10-20-production-glyph-baseline.md)), A1 (the rule, in the docs §5 marks A1), A2a (one reader of a fold's range), A2b (bounds in the node, constants only), its header stored in 32 bits (measured; JP), A3 (value bounds in the IR and the e-graph), A4 (value bounds in codegen, and the key) | A1's the-language-is-kernel rows after #1323; **A5** (`<const N>` deleted); A6, A7; B1–B5 after typed-arena T3 and item 2 | A fold's bounds become operands placed by variance (any variance but a coordinate's); an index is a discrete kernel; one program per font at a tile extent. Ruling 6 (one program per font) lands with B2. |
+58:+| **E8** | **Extraction picks one member per class, and a value bound's pick is unconstrained.** A class read as a fold's value bound whose cheapest member reads a coordinate the class does not vary with is materialized through that member, and `ExprArena::push_reduce` refuses the fold with `BoundVaries`, loudly (`fold_rules.rs` pins both the class with no lawful member and the class with a dearer lawful one). A4 decided to leave it loud: constraining the pick trades this failure for another, since a class read as a bound by some candidate with no member that keeps L3 never settles and every other user of the class fails with it, and the coordinate-reading member has to be the class's cheapest, which spells `X` with a cancellation and so carries extra operations; no kernel or profile shows one winning. Revisit with T6 (a bound gets a sort) or a kernel that hits it. | [a-bound-is-a-value](language/2026-10-20-a-bound-is-a-value.md) §6, A4 |
+59:+| **C8** | ~~**A fold's index is exact only to 2²⁴, and only `kernel!` refuses past it.**~~ **Done** (the-language-is-kernel B5): `RangeFold::admits` is the one statement of a range's contract, `RangeFold::EXACT_BOUND` its bound (`Fold::admits` and `Fold::EXACT_BOUND` since `RangeFold` folded back into `Fold` with the integral's deletion; `KnownRange::admits` since a fold's bounds became its node's, a-bound-is-a-value A2b); the constructors panic past it beside the reversed range, `FoldHeader::from_bits` refuses it, and lowering asks it and explains the refusal, so `Kernel::over` is covered by the refusal `kernel!` had. The index is an `f32` lane — the binder's `Var`, and the JIT's counter steps by `1.0` against the end loaded as an `f32` — so past 2²⁴ neighbouring indices round together (measured through `kernel!` before its refusal: `(16777100..16777300).map(\|i\| ((i as f32) - 16777000.0) * X).sum()` gave 39890 at `X = 1`, rustc 39900). Since a-bound-is-a-value A4 a bound that is a value is not refused at construction, where its count is not known: unless it is a count, an integer in `0..=2²⁴`, its fold is NaN in the language (L5, the guard `passes::legalize` ends with), and a host-written count is refused at its write in A6. | [the-language-is-kernel](language/2026-09-25-the-language-is-kernel.md), appendix |
+2309:+/// bounds only), a production glyph's before B2, or a test's own literal fold.
+2312:+     glyph's before B2, or a test's (docs/language/2026-10-20-a-bound-is-a-value.md)";
+3384:+     are production glyphs and the synthetic families, every bound a literal, until B2 measures a \
+[count: 8]
+-- 'ruling' / 'Ruling' words:
+57:+| [a bound is a value](language/2026-10-20-a-bound-is-a-value.md) | A0 ([baseline](results/2026-10-20-production-glyph-baseline.md)), A1 (the rule, in the docs §5 marks A1), A2a (one reader of a fold's range), A2b (bounds in the node, constants only), its header stored in 32 bits (measured; JP), A3 (value bounds in the IR and the e-graph), A4 (value bounds in codegen, and the key) | A1's the-language-is-kernel rows after #1323; **A5** (`<const N>` deleted); A6, A7; B1–B5 after typed-arena T3 and item 2 | A fold's bounds become operands placed by variance (any variance but a coordinate's); an index is a discrete kernel; one program per font at a tile extent. Ruling 6 (one program per font) lands with B2. |
+[count: 1]
