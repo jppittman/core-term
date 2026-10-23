@@ -257,9 +257,11 @@ its edge.
   bound as `Value`. It keeps a non-integer or out-of-domain `Const` as a `Value` bound,
   whose guard makes the fold NaN (L5), so a literal a rule or the folder made never panics
   at extraction; `BoundOutOfDomain` (today's `admits` as a predicate on one count) is
-  refused at the user surfaces only: `over_values`, `Kernel::over`'s literal range and
-  `kernel!` (A6). It refuses, by name: a `Lit::Mask` bound (`BoundSort`: a mask is not a
-  count); L3 (`BoundVaries`); a value bound on `ANY`, `ALL` or `SEQ` (`BoundSort`, §1.4).
+  refused at the user surfaces only: `over_values` and `kernel!` (A6). `Kernel::over`'s
+  literal range is refused past 2²⁴ with `KnownRange::new`'s message (a fold's range ends
+  at most at 16777216 (2^24)), as it is today. It refuses, by name: a `Lit::Mask` bound
+  (`BoundSort`: a mask is not a count); L3 (`BoundVaries`); a value bound on `ANY`, `ALL`
+  or `SEQ` (`BoundSort`, §1.4).
   `BoundArithmetic` (§1.4) is not among them: it is refused at the user surfaces,
   `over_values` and `kernel!`'s sema, because rules make exact bound arithmetic that
   extraction rebuilds through `push_reduce`.
@@ -386,8 +388,9 @@ in `self.structural`, `sema.rs:1851`): `Count::Structural`, `StructuralRange`,
 `instantiated_range`, `FoldRange`, `Holes`, `OPEN_RANGE`, `HOLE_STRIDE`,
 `ExpansionFold::Hole`, and the lowering's use of `Param` as a structural hole (`lower.rs`
 `count`). Until then a hole's `0..0` stays a `Lit` pair in the node, so `range_of`
-(`lower.rs:343`) and `emit.rs`'s hole filling (`:576-598`, `fold_at` at `:687-704`) work
-unchanged through A2–A4.
+(`lower.rs:343`) and `emit.rs`'s hole filling (`:576-598`, and `fold_terms` at `:697-728`,
+which emits a `FoldTerms` value since A3 where `fold_at` emitted a closure, and builds the
+same arena) work unchanged through A2–A4.
 
 ### 3.5 The glyph (`pixelflow-graphics`)
 
@@ -592,7 +595,7 @@ A5's deletion, which removes code #1427 only re-scopes.
   whose outer fold `HalveFold` halves (the rule-made `0..(i + s)` accepted). **Done:**
   byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and `=avx2`; the 29 font
   programs' keys, digests and saturation telemetry, the extraction fields included,
-  unchanged. A placeholder's variance is `CONST` (it is a binder-to-be, never a coordinate,
+  unchanged on every pinned kernel. A placeholder's variance is `CONST` (it is a binder-to-be, never a coordinate,
   and L3 is checked again when `close_over` renames it into a slot), so a triangular fold
   built through the builder passes L3. A value bound is priced by its class's chosen
   literal through the fold's literal twin, and the key refuses a value bound until A4.
@@ -602,6 +605,12 @@ A5's deletion, which removes code #1427 only re-scopes.
   which the triangular pin must allow. `Saturation::total_evals` rises on every kernel
   with a fold, because `KnownBound` is evaluated on every `Reduce`; no gate reads it, but
   the anytime curves and the Guide research bins do, so a moved curve is not a regression.
+  A stop reason moves in one corner, and only as a label: a sweep checks the class budget
+  before each rule's scan, so `KnownBound` adds a check after `FactorFold`, and when the
+  last allowed iteration's `FactorFold` commits past the budget (its growth prediction can
+  under-count) the run reports `class_cap` where it reported `iteration_ceiling`. The
+  graph, the applications, the iterations and the extraction are the same, and no pinned
+  kernel reaches the corner.
 - **A4. Value bounds in codegen.** `Bound::Value`, the operand and carve change, the
   legalized guard, the post-collapse assert, `Trips` and its `Display`, `EmitTraffic`;
   `over_values` public. The key: a `Value` marker in `FoldHeader::to_bits`'s count field

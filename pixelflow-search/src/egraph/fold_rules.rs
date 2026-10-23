@@ -433,6 +433,14 @@ pub struct FactorFold;
 ///
 /// Last in [`fold_rules`], so every rule before it keeps its `RuleIdx`, and
 /// inert on a fold over literals: it declines before reading the graph.
+///
+/// Inert is not absent. A sweep checks the class budget before each rule's
+/// scan, so this rule adds one check, after [`FactorFold`]. A run over
+/// literals differs from one without the rule in a single label: when the last
+/// allowed iteration's `FactorFold` commits past the budget (its growth
+/// prediction can under-count, `EGraph::predicted_growth`), the run reports
+/// `class_cap` where it reported `iteration_ceiling`. The graph, the
+/// applications, the iterations and the extraction are the same.
 pub struct KnownBound;
 
 impl Rewrite for PeelFold {

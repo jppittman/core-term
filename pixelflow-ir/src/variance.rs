@@ -953,7 +953,7 @@ mod tests {
         (0..arena.len()).all(|i| variance_from(arena, ExprId(i as u32)) == forward[i])
     }
 
-    /// N1: the rooted walk and the forward pass are one transfer function in two
+    /// The rooted walk and the forward pass are one transfer function in two
     /// traversal orders, so they agree at every node: a fold with a value bound,
     /// a store, nested binders, and a name.
     #[test]

@@ -3060,7 +3060,9 @@ mod tests {
         ));
         let whole = own_share + 40 * body_cost;
 
-        let build = |literal_twin: bool| {
+        // The fold whose bound is the class of the literal 40, with no fold
+        // over that literal beside it.
+        let value_twin_only = || {
             let mut egraph = EGraph::new();
             let x = egraph.add(ENode::Var(0));
             let j = egraph.add(ENode::Var(binder.var()));
@@ -3073,15 +3075,19 @@ mod tests {
                 Bound::Value(forty),
                 body,
             ));
-            if literal_twin {
-                let literal = egraph.add(ENode::reduce(fold, Bound::Lit(0), Bound::Lit(40), body));
-                egraph.union(value, literal);
-            }
+            egraph.rebuild();
+            (egraph, value, body)
+        };
+        // The same, with the fold over the literal 40 joined to its class.
+        let both_twins = || {
+            let (mut egraph, value, body) = value_twin_only();
+            let literal = egraph.add(ENode::reduce(fold, Bound::Lit(0), Bound::Lit(40), body));
+            egraph.union(value, literal);
             egraph.rebuild();
             (egraph, value)
         };
 
-        let (egraph, class) = build(true);
+        let (egraph, class) = both_twins();
         let class = egraph.find(class);
         let frozen = Frozen::new(egraph.as_frozen(), class);
         let mut tree = Dp::new(&costs, LatticeShape::POINT, Insertion, Prices::default());
@@ -3112,7 +3118,7 @@ mod tests {
             "the DP's claim is the price of the term it names"
         );
 
-        let (alone, value) = build(false);
+        let (alone, value, _) = value_twin_only();
         assert_eq!(extract_dag(&alone, value, &costs).total_cost, whole);
 
         // The arena holds the twin the price was read off: `embed` reads the

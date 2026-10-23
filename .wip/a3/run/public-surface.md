@@ -31,6 +31,12 @@ are reached through `pixelflow_ir::fold`, `pixelflow_ir::arena` and `pixelflow_i
 | `variance::compute_arena_variance(arena)` | signature unchanged; L4 (a fold unions its value bounds) and a placeholder `Var` is `CONST` |
 | `arena::ExprArena::free_index(root)` | signature unchanged; a fold's value bounds are free in it, unmasked |
 | `fold::VALUE_BOUND`, `fold::KNOWN_RANGE` | texts only |
+| `kernel::Kernel::over(monoid, range, body)` | signature unchanged; the closure became a `FoldTerms` value handed to `close_over`; the reversed-range and past-2^24 refusals are raised from `push_reduce` / `FoldHeader::new` after the body is copied, with the messages they had (`KnownRange::new`'s, not `BoundOutOfDomain`); the doc's static-range paragraph is replaced |
+| `arena::ExprArena::known_range(id)` | doc only, as `ENode::known_range`'s: `None` for a fold with a value bound |
+| `arena::ExprArena::substitute_vars_with(root, subs)` | doc states its precondition (`subs` names no slot a fold inside `root` rebinds); behavior unchanged; not the plan's L7 |
+| `fold::FoldHeader::to_bits`, `fold::FoldHeader::from_bits` | `to_bits`: doc text only (a value bound has no bits until A4 gives it a marker), still panics with `VALUE_BOUND`; `from_bits`: the stride test is written through the private `Fold::is_exact`, the same predicate |
+| `fold::KnownRange::admits` | the same predicate, written through `Fold::is_exact`, the one function `Fold::count` shares |
+| `arena::ExprArena::nodes`, `dag::Dag::iter`, `dag::Rooted::entries` | `#[must_use]` added in fix round 1 (clippy 1.97 `must_use_candidate`, workspace lint under `-D warnings`); signatures and behavior unchanged |
 
 ### New, not public (listed so a reviewer can see none leaked)
 
@@ -61,6 +67,9 @@ is untouched, so `KnownBound` is reached as `egraph::fold_rules::KnownBound`, th
 |---|---|
 | `egraph::cost::CostModel::fold_cost(&self, fold: Fold, trips: u64, body: usize)` | the second argument was `range: KnownRange`; the only callers are `node_op_cost` and the tests, all in `cost.rs` |
 | `egraph::cost::CostModel::node_op_cost` / `CostFunction::node_cost` | a fold whose range is not known prices at `FoldHeader::priced_trips()` (the estimate) instead of panicking on `KNOWN_RANGE`; a literal fold is priced exactly as before |
+| `egraph::FactorFold` | declines only a fold whose range is known to be empty (it declined any range not known to be non-empty), so it factors under a value bound and accepts decision 5's runtime `n = 0` edges, listed in its doc; a literal fold's range is always known, so its answer is the one it had |
+| `egraph::HalveFold` | doc only: a nested fold's value bound is shifted with the binder, bound arithmetic only the rules make |
+| `egraph::ENode` | the `Reduce` variant's doc only (for a value bound the shift's reason is reversed) |
 | `egraph::fold_rules::fold_rules()` | returns five rules, `KnownBound` last; `RuleSet::runtime()` gains one index at the end and a new fingerprint (every earlier `RuleIdx` is kept; `SaturationKey` and the in-process cache change with it) |
 | `egraph::ENode::reduce` | accepts a value bound on `SUM`/`PRODUCT`/`MIN`/`MAX` at stride 1; panics as `FoldHeader::new` |
 | `egraph::ENode::known_range` | `None` for a fold with a value bound (doc only; signature unchanged) |

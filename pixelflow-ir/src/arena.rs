@@ -969,8 +969,10 @@ impl ExprArena {
     /// extraction's `embed` — holds a known bound as data. A `Const` naming no
     /// count (not an integer, or outside `0..=Fold::EXACT_BOUND`) stays a value
     /// bound, whose guard makes the fold NaN (L5, A4): a literal a rule or the
-    /// folder made never panics here. The user surfaces refuse one by name
-    /// ([`BoundRefusal::BoundOutOfDomain`](crate::fold::BoundRefusal::BoundOutOfDomain)).
+    /// folder made never panics here. `Kernel::over_values` refuses one by name
+    /// ([`BoundRefusal::BoundOutOfDomain`](crate::fold::BoundRefusal::BoundOutOfDomain)),
+    /// and `Kernel::over` refuses a literal range past 2²⁴ in
+    /// `KnownRange::new`'s words.
     ///
     /// [`Fold`] is the metadata: which algebra, which index, which step.
     /// Every one of those was an assertion here — a combiner that is a
@@ -1139,6 +1141,7 @@ impl ExprArena {
     /// this file names an offset, which is why there is no `nodes_raw`/
     /// `nary_children_raw` pair here any more).
     #[inline]
+    #[must_use]
     pub fn nodes(&self) -> impl DoubleEndedIterator<Item = (ExprId, ExprNode)> + '_ {
         (0..self.builder.dag().len() as u32).map(move |i| {
             let id = ExprId(i);
@@ -2869,7 +2872,8 @@ mod tests {
     }
 
     /// The sort is refused before the variance: a mask fold with a value bound
-    /// that also reads X is a sort error (§1.2), the cheap check first.
+    /// that also reads X is a sort error (the plan's §1.4), not a variance
+    /// error, because `push_reduce` makes the cheap check first.
     #[test]
     #[should_panic(expected = "BoundSort")]
     fn the_sort_is_refused_before_the_variance() {
