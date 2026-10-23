@@ -1,0 +1,1573 @@
+[
+ {
+  "file": "pixelflow-codegen/src/emit/select.rs",
+  "fn": "definition",
+  "text": "| ScheduledOp::Reduce { .. }",
+  "count": 1,
+  "class": "A4",
+  "reason": "the schedule: lowering refuses a value bound (`known`, VALUE_BOUND) before selection sees one",
+  "lines": [
+   147
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/emit/select.rs",
+  "fn": "definition",
+  "text": "ScheduledOp::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "A4",
+  "reason": "the schedule: lowering refuses a value bound (`known`, VALUE_BOUND) before selection sees one",
+  "lines": [
+   171
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/lower.rs",
+  "fn": "is_empty_fold",
+  "text": "matches!(arena.node(id), pixelflow_ir::arena::ExprNode::Reduce { .. })",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`is_empty_fold`: a range that is not known is not known to be empty (`is_some_and`)",
+  "lines": [
+   58
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/lower.rs",
+  "fn": "arena_to_schedule",
+  "text": "ExprNode::Reduce { fold, .. } if is_empty_fold(arena, expr_id) => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "the identity arm fires on a known empty range only",
+  "lines": [
+   312
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/lower.rs",
+  "fn": "arena_to_schedule",
+  "text": "ExprNode::Reduce { fold, body, .. } if matches!(arena.node(body), ExprNode::Write { lane, .. } if lane == fold.binder()) =>",
+  "count": 1,
+  "class": "left",
+  "reason": "the lane fold is `collapse`'s SEQ fold, which `BoundSort` keeps literal",
+  "lines": [
+   317
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/lower.rs",
+  "fn": "arena_to_schedule",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => ScheduledOp::Reduce {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "comment only (\"none can be built until A3\"); `known` keeps refusing by name (A4)",
+  "lines": [
+   340
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/mod.rs",
+  "fn": "enum ScheduledOp",
+  "text": "Reduce {",
+  "count": 1,
+  "class": "A4",
+  "reason": "`ScheduledOp::Reduce`, `operands`, `structural_children`: A4 yields the value bounds",
+  "lines": [
+   148
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/mod.rs",
+  "fn": "operands",
+  "text": "| ScheduledOp::Reduce { .. }",
+  "count": 1,
+  "class": "A4",
+  "reason": "`ScheduledOp::Reduce`, `operands`, `structural_children`: A4 yields the value bounds",
+  "lines": [
+   398
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/mod.rs",
+  "fn": "structural_children",
+  "text": "ScheduledOp::Reduce { body, .. } => [Some(*body), None],",
+  "count": 1,
+  "class": "A4",
+  "reason": "`ScheduledOp::Reduce`, `operands`, `structural_children`: A4 yields the value bounds",
+  "lines": [
+   438
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/scopes.rs",
+  "fn": "extract_folds_bound_by",
+  "text": "let ScheduledOp::Reduce {",
+  "count": 1,
+  "class": "A4",
+  "reason": "the carve: A4 adds the value bounds to placement (plan §3.3)",
+  "lines": [
+   213
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/scopes.rs",
+  "fn": "extract_folds_bound_by",
+  "text": "let is_fold = |v: ValueId| matches!(op_of(v), Some(ScheduledOp::Reduce { .. }));",
+  "count": 1,
+  "class": "A4",
+  "reason": "the carve: A4 adds the value bounds to placement (plan §3.3)",
+  "lines": [
+   250
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/src/program/scopes.rs",
+  "fn": "extract_folds_bound_by",
+  "text": "if matches!(op, ScheduledOp::Reduce { .. }) {",
+  "count": 1,
+  "class": "A4",
+  "reason": "the carve: A4 adds the value bounds to placement (plan §3.3)",
+  "lines": [
+   268
+  ]
+ },
+ {
+  "file": "pixelflow-codegen/tests/halve_fold_jit.rs",
+  "fn": "node_cost",
+  "text": "ENode::Reduce { .. } => own.saturating_add(LOOP_PENALTY),",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test",
+  "lines": [
+   59
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/src/emit.rs",
+  "fn": "node",
+  "text": "ExprNode::Reduce { body, .. } => {",
+  "count": 1,
+  "class": "A4",
+  "reason": "`arena_to_tokens` writes header bits; `to_bits` refuses a value bound by name, and `kernel!` builds none before A6",
+  "lines": [
+   581
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/src/lower.rs",
+  "fn": "a_structural_parameter_leaves_the_template_open",
+  "text": "ExprNode::Reduce { fold, .. } => {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lowering unit tests (module from :1054)",
+  "lines": [
+   1182
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/src/lower.rs",
+  "fn": "a_fold_lowers_to_one_reduce_and_leaves_nothing_behind",
+  "text": "let ExprNode::Reduce { fold, body, .. } = arena.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lowering unit tests (module from :1054)",
+  "lines": [
+   1350
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/src/lower.rs",
+  "fn": "nested_folds_take_distinct_slots_inside_out",
+  "text": "let ExprNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lowering unit tests (module from :1054)",
+  "lines": [
+   1376
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/src/lower.rs",
+  "fn": "nested_folds_take_distinct_slots_inside_out",
+  "text": "let ExprNode::Reduce { fold: inner, .. } = arena.node(body) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lowering unit tests (module from :1054)",
+  "lines": [
+   1382
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/src/lower.rs",
+  "fn": "a_bound_past_the_exact_index_is_refused",
+  "text": "let ExprNode::Reduce { .. } = arena.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lowering unit tests (module from :1054)",
+  "lines": [
+   1436
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/src/lower.rs",
+  "fn": "folds_nest_as_deep_as_the_ir_has_binders",
+  "text": "let ExprNode::Reduce { fold: outer, .. } = arena.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lowering unit tests (module from :1054)",
+  "lines": [
+   1454
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/tests/fold_is_kernel_over.rs",
+  "fn": "binders",
+  "text": "if let ExprNode::Reduce { fold, .. } = arena.node(id) {",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test",
+  "lines": [
+   208
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/tests/kernel_typed_parameters.rs",
+  "fn": "the_fold_around_an_application_binds_past_the_arguments",
+  "text": "let ExprNode::Reduce { fold: outer, .. } = arena.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test",
+  "lines": [
+   202
+  ]
+ },
+ {
+  "file": "pixelflow-compiler/tests/kernel_typed_parameters.rs",
+  "fn": "the_fold_around_an_application_binds_past_the_arguments",
+  "text": "let ExprNode::Reduce { fold: inner, .. } = k_arena.node(k_root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test",
+  "lines": [
+   206
+  ]
+ },
+ {
+  "file": "pixelflow-core/tests/fold_factoring.rs",
+  "fn": "assert_extracts_factored",
+  "text": "let is_fold = |id: ExprId| matches!(arena.node(id), ExprNode::Reduce { fold, .. } if fold.monoid() == monoid);",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test",
+  "lines": [
+   148
+  ]
+ },
+ {
+  "file": "pixelflow-core/tests/kernel_by_reference.rs",
+  "fn": "a_fold_around_a_unit_that_rebinds_its_slot",
+  "text": "pixelflow_ir::ExprNode::Reduce { fold, .. } => fold.binder(),",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test",
+  "lines": [
+   191
+  ]
+ },
+ {
+  "file": "pixelflow-core/tests/reduce_binder_reads_bound_buffer.rs",
+  "fn": "legalize_keeps_a_bare_reduce_and_its_size_does_not_track_the_extent",
+  "text": "if let pixelflow_ir::arena::ExprNode::Reduce { fold, .. } = legalized.node(id)",
+  "count": 1,
+  "class": "tests",
+  "reason": "integration test",
+  "lines": [
+   240
+  ]
+ },
+ {
+  "file": "pixelflow-graphics/examples/glyph_saturation_cost.rs",
+  "fn": "has_fold",
+  "text": "if matches!(arena.node(id), ExprNode::Reduce { .. }) {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`has_fold` flags a fold and walks `children()`",
+  "lines": [
+   49
+  ]
+ },
+ {
+  "file": "pixelflow-graphics/src/render/cell_grid.rs",
+  "fn": "dump_arena",
+  "text": "ExprNode::Reduce { body, .. } => {",
+  "count": 1,
+  "class": "A4",
+  "reason": "test-module `dump_arena`: header bits, `to_bits` refuses by name",
+  "lines": [
+   1169
+  ]
+ },
+ {
+  "file": "pixelflow-graphics/src/test_support.rs",
+  "fn": "program_digest",
+  "text": "ExprNode::Reduce { .. } => (7, None, arena.fold_header(id).to_bits()),",
+  "count": 1,
+  "class": "A4",
+  "reason": "`program_digest`: header bits, `to_bits` refuses by name",
+  "lines": [
+   37
+  ]
+ },
+ {
+  "file": "pixelflow-graphics/tests/production_glyph_arena_dump.rs",
+  "fn": "dump_arena",
+  "text": "ExprNode::Reduce { body, .. } => {",
+  "count": 1,
+  "class": "A4",
+  "reason": "`dump_arena` (:171 writes `to_bits`), on N8's serializer list",
+  "lines": [
+   167
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "enum ExprNode",
+  "text": "Reduce {",
+  "count": 1,
+  "class": "n/a",
+  "reason": "the `ExprNode::Reduce` definition",
+  "lines": [
+   432
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "free_index",
+  "text": "ExprNode::Reduce { fold, body, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`free_index`: `(free(body) \\ b) ∪ free(lo) ∪ free(hi)` (§3.3)",
+  "lines": [
+   781
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "node",
+  "text": "ExprNode::Reduce {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`node` attaches the value children (`FoldHeader::attach`)",
+  "lines": [
+   1128
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "depth",
+  "text": "ExprNode::Reduce { .. } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`depth` pushes `children()`",
+  "lines": [
+   1330
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "has_var",
+  "text": "ExprNode::Reduce { .. } => stack.extend(self.children(id)),",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`has_var`, `has_degenerate`, `node_count_subtree` extend by `children()`",
+  "lines": [
+   1372
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "has_degenerate",
+  "text": "ExprNode::Reduce { .. } => stack.extend(self.children(id)),",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`has_var`, `has_degenerate`, `node_count_subtree` extend by `children()`",
+  "lines": [
+   1424
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "node_count_subtree",
+  "text": "ExprNode::Reduce { .. } => stack.extend(self.children(id)),",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`has_var`, `has_degenerate`, `node_count_subtree` extend by `children()`",
+  "lines": [
+   1468
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "splice_with",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`splice_with` maps both bounds into `push_reduce`",
+  "lines": [
+   1594
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "lowest_free_binder",
+  "text": "if let ExprNode::Reduce { fold, .. } = self.node(id) {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`lowest_free_binder(roots)`: scans the value bounds and marks binder `Var` reads (§3.5, J8)",
+  "lines": [
+   1757
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "substitute_vars_with",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`substitute_vars_with` maps both bounds; A3 states its precondition (N5, §3.4)",
+  "lines": [
+   1834
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "relink",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`relink` maps both bounds",
+  "lines": [
+   1990
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "fmt_expr",
+  "text": "ExprNode::Reduce { lo, hi, body, .. } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`fmt_expr` prints each value bound after the body",
+  "lines": [
+   2069
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "subtree_eq",
+  "text": "ExprNode::Reduce {",
+  "count": 2,
+  "class": "already-correct",
+  "reason": "`subtree_eq` compares the erased bounds and pushes the value pairs",
+  "lines": [
+   2186,
+   2192
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "close_over_binds_the_lowest_free_binder_and_renames_the_placeholder",
+  "text": "let ExprNode::Reduce { fold, body, .. } = closed.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "arena unit tests",
+  "lines": [
+   2321
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "a_fold_carries_its_own_metadata",
+  "text": "assert!(matches!(arena.node(red), ExprNode::Reduce { fold: f, .. } if f == fold));",
+  "count": 1,
+  "class": "tests",
+  "reason": "arena unit tests",
+  "lines": [
+   2552
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "a_literal_bound_is_the_nodes_data",
+  "text": "ExprNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "arena unit tests",
+  "lines": [
+   2573
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/arena.rs",
+  "fn": "a_fold_opened_and_closed_is_close_overs_and_leaves_nothing_behind",
+  "text": "let ExprNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "arena unit tests",
+  "lines": [
+   2813
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/expr.rs",
+  "fn": "from_arena_roots",
+  "text": "ExprNode::Reduce { .. } => b.push_reduce(arena.fold_header(id), &child_ids),",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`from_arena_roots` pushes the header with every child",
+  "lines": [
+   327
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/fold.rs",
+  "fn": "<top>",
+  "text": "/// `⟦Reduce { fold, lo, hi, body }⟧ = ⊕_{k ∈ lo, lo+s, lo+2s, …, hi-s} ⟦body⟧[fold.binder() := k]`",
+  "count": 1,
+  "class": "n/a",
+  "reason": "the denotation in `Fold`'s doc",
+  "lines": [
+   343
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/kernel.rs",
+  "fn": "a_fold_is_laid_out_as_the_builder_always_laid_it_out",
+  "text": "ExprNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "kernel unit tests",
+  "lines": [
+   1292
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/kernel.rs",
+  "fn": "a_literal_equal_to_a_bound_lands_after_its_fold",
+  "text": ".find_map(|(id, node)| matches!(node, ExprNode::Reduce { .. }).then_some(id))",
+  "count": 1,
+  "class": "tests",
+  "reason": "kernel unit tests",
+  "lines": [
+   1325
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/kernel.rs",
+  "fn": "an_argument_admitted_before_a_fold_is_applied_inside_it",
+  "text": "assert!(matches!(arena.node(fold), ExprNode::Reduce { .. }));",
+  "count": 1,
+  "class": "tests",
+  "reason": "kernel unit tests",
+  "lines": [
+   1570
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/key.rs",
+  "fn": "encode",
+  "text": "ExprNode::Reduce { lo, hi, body, .. } => {",
+  "count": 1,
+  "class": "A4",
+  "reason": "`canonical`: keys the value children already; `to_bits` refuses a value bound by name until A4's marker",
+  "lines": [
+   454
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/key.rs",
+  "fn": "folds",
+  "text": "ExprNode::Reduce { .. } => Some(id),",
+  "count": 1,
+  "class": "tests",
+  "reason": "key test helper",
+  "lines": [
+   657
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/kind.rs",
+  "fn": "<top>",
+  "text": "/// `ExprNode::Reduce { fold, lo, hi, body }`, whose children are `body`,",
+  "count": 1,
+  "class": "n/a",
+  "reason": "doc of `OpKind::Reduce`'s variant name",
+  "lines": [
+   204
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes.rs",
+  "fn": "copy_node",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`copy_node` maps both bounds into `push_reduce`",
+  "lines": [
+   238
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes.rs",
+  "fn": "push_deriv_children",
+  "text": "ExprNode::Reduce { .. } => {}",
+  "count": 1,
+  "class": "left",
+  "reason": "`lower_dwrt` has no derivative of a fold: it neither walks nor differentiates one (`Err`)",
+  "lines": [
+   705
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes.rs",
+  "fn": "diff_node",
+  "text": "ExprNode::Reduce { .. } => Err(\"lower_dwrt: no derivative rule for a bounded fold\"),",
+  "count": 1,
+  "class": "left",
+  "reason": "`lower_dwrt` has no derivative of a fold: it neither walks nor differentiates one (`Err`)",
+  "lines": [
+   949
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes.rs",
+  "fn": "an_extent_is_not_an_expression",
+  "text": "let ExprNode::Reduce { .. } = a.node(red) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "`an_extent_is_not_an_expression`; its doc is reworded (B1) and a sibling added (T-IR-14)",
+  "lines": [
+   1595
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes.rs",
+  "fn": "reachable_reduces",
+  "text": "if matches!(arena.node(id), ExprNode::Reduce { .. }) {",
+  "count": 1,
+  "class": "tests",
+  "reason": "legalize tests",
+  "lines": [
+   1933
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes.rs",
+  "fn": "legalize_leaves_a_nested_reduce_standing_inside_the_lattices_folds",
+  "text": "let ExprNode::Reduce { fold, .. } = legalized.node(new_root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "legalize tests",
+  "lines": [
+   1994
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes.rs",
+  "fn": "legalize_leaves_a_nested_reduce_standing_inside_the_lattices_folds",
+  "text": "matches!(legalized.node(id), ExprNode::Reduce { .. })",
+  "count": 1,
+  "class": "tests",
+  "reason": "legalize tests",
+  "lines": [
+   2005
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes.rs",
+  "fn": "legalize_leaves_a_nested_reduce_standing_inside_the_lattices_folds",
+  "text": "let ExprNode::Reduce { body, .. } = legalized.node(outer) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "legalize tests",
+  "lines": [
+   2012
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "reachable_taken_binders",
+  "text": "ExprNode::Reduce { fold, .. } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`reachable_taken_binders` walks `children()` and marks binder `Var` reads",
+  "lines": [
+   184
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "collapse_shape",
+  "text": "let ExprNode::Reduce {",
+  "count": 3,
+  "class": "left",
+  "reason": "`collapse_shape`: the lattice's SEQ folds, which keep literal ranges (`BoundSort`, plan §4 \"Deferred\")",
+  "lines": [
+   296,
+   305,
+   314
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "collapse_wraps_a_kernel_in_three_seq_folds_around_one_write",
+  "text": "let ExprNode::Reduce {",
+  "count": 3,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   452,
+   463,
+   474
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "collapse_takes_the_slots_the_kernel_leaves_free",
+  "text": "let ExprNode::Reduce { fold, .. } = arena.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   542
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "pack_strip_mines_an_exact_multiple_with_no_remainder",
+  "text": "let ExprNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   695
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "pack_strip_mines_an_exact_multiple_with_no_remainder",
+  "text": "let ExprNode::Reduce { body: lane_id, .. } = arena.node(row_body) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   706
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "pack_strip_mines_an_exact_multiple_with_no_remainder",
+  "text": "let ExprNode::Reduce { body: write, .. } = arena.node(lane_id) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   714
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "pack_sequences_the_remainder_after_the_main_fold",
+  "text": "let ExprNode::Reduce { body: row_body, .. } = arena.node(packed) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   742
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "pack_sequences_the_remainder_after_the_main_fold",
+  "text": "let ExprNode::Reduce {",
+  "count": 4,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   751,
+   759,
+   767,
+   775
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "pack_of_a_row_narrower_than_a_batch_is_all_remainder",
+  "text": "let ExprNode::Reduce { body: row_body, .. } = arena.node(packed) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   808
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "pack_of_a_row_narrower_than_a_batch_is_all_remainder",
+  "text": "let ExprNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   812
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/passes/lattice.rs",
+  "fn": "pack_of_a_row_narrower_than_a_batch_is_all_remainder",
+  "text": "let ExprNode::Reduce { .. } = arena.node(rem_lane_id) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "lattice pass tests",
+  "lines": [
+   819
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/term.rs",
+  "fn": "enum Shape",
+  "text": "Reduce {",
+  "count": 1,
+  "class": "n/a",
+  "reason": "the `Shape::Reduce` definition",
+  "lines": [
+   134
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/term_arena.rs",
+  "fn": "project",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => Shape::Reduce { fold, lo, hi, body },",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`project` carries both bounds",
+  "lines": [
+   42
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/term_arena.rs",
+  "fn": "embed",
+  "text": "Shape::Reduce { fold, lo, hi, body } => self.push_reduce(fold, lo, hi, body),",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`embed` is `push_reduce`, which discovers and checks",
+  "lines": [
+   85
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/term_arena.rs",
+  "fn": "rebuild_into",
+  "text": "Shape::Reduce { lo, hi, body, .. } => [Some(body), lo.value(), hi.value()]",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`rebuild_into` visits and maps body, `lo`, `hi`",
+  "lines": [
+   148
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/term_arena.rs",
+  "fn": "rebuild_into",
+  "text": "Shape::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`rebuild_into` visits and maps body, `lo`, `hi`",
+  "lines": [
+   180
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/term_arena.rs",
+  "fn": "rebuild_into",
+  "text": "out.embed(Shape::Reduce {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`rebuild_into` visits and maps body, `lo`, `hi`",
+  "lines": [
+   184
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/variance.rs",
+  "fn": "compute_arena_variance",
+  "text": "ExprNode::Reduce { .. } if arena.known_range(id).is_some_and(KnownRange::is_empty) => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "L4 in the per-node transfer function (§3.2)",
+  "lines": [
+   355
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/variance.rs",
+  "fn": "compute_arena_variance",
+  "text": "ExprNode::Reduce { fold, body, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "L4 in the per-node transfer function (§3.2)",
+  "lines": [
+   364
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/variance.rs",
+  "fn": "binder_index_is_a_variable_like_any_other",
+  "text": "let ExprNode::Reduce { body, .. } = arena.node(root) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "variance unit tests",
+  "lines": [
+   689
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/variance.rs",
+  "fn": "six_nested_binders_each_take_a_slot",
+  "text": "ExprNode::Reduce { fold, .. } => Some(fold.binder().slot()),",
+  "count": 1,
+  "class": "tests",
+  "reason": "variance unit tests",
+  "lines": [
+   781
+  ]
+ },
+ {
+  "file": "pixelflow-ir/src/variance.rs",
+  "fn": "six_nested_binders_each_take_a_slot",
+  "text": "let ExprNode::Reduce { fold, body, .. } = arena.node(id) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "variance unit tests",
+  "lines": [
+   798
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/examples/glyph_phase_split.rs",
+  "fn": "trip_counts",
+  "text": "if let ExprNode::Reduce { .. } = arena.node(id) {",
+  "count": 1,
+  "class": "left",
+  "reason": "production glyph folds are literal until B2: `KNOWN_RANGE`'s reason (N9)",
+  "lines": [
+   78
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/src/bin/corpus_gaps.rs",
+  "fn": "hash_cons",
+  "text": "ExprNode::Reduce { body, .. } => {",
+  "count": 1,
+  "class": "A4",
+  "reason": "`hash_cons` keys on header bits; `to_bits` refuses by name",
+  "lines": [
+   493
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/src/bin/extraction_witnesses.rs",
+  "fn": "node_label",
+  "text": "ENode::Reduce { header, children } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "prints every child class",
+  "lines": [
+   442
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/src/bin/phase3_at_budget_eval.rs",
+  "fn": "non_leaf_op",
+  "text": "ExprNode::Reduce { .. } => Some(OpKind::Reduce),",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "an op-kind classifier; reads no child",
+  "lines": [
+   443
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/src/bin/strict_label_output_class_recount.rs",
+  "fn": "render_chosen",
+  "text": "ENode::Reduce { header, children } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "renders every child class",
+  "lines": [
+   169
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/src/collapse_bench/corpus.rs",
+  "fn": "encode",
+  "text": "ExprNode::Reduce { body, .. } => {",
+  "count": 1,
+  "class": "A4",
+  "reason": "serializer of header bits; `to_bits` refuses by name",
+  "lines": [
+   272
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/src/training/corpus.rs",
+  "fn": "reachable_subtree",
+  "text": "ExprNode::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`reachable_subtree` maps both bounds",
+  "lines": [
+   275
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/src/training/corpus.rs",
+  "fn": "write_node",
+  "text": "ExprNode::Reduce { lo, hi, body, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "message reworded to \"before A4's format version\" (B1); the refusal is A4's",
+  "lines": [
+   404
+  ]
+ },
+ {
+  "file": "pixelflow-pipeline/src/training/factored.rs",
+  "fn": "arena_to_kernel_code",
+  "text": "ExprNode::Reduce { .. } => panic!(",
+  "count": 1,
+  "class": "left",
+  "reason": "`arena_to_kernel_code`: kernel code has no binder, refuses every fold",
+  "lines": [
+   623
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/cost.rs",
+  "fn": "node_op_cost",
+  "text": "ENode::Reduce { header, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`node_op_cost`: `fold_cost(fold, header.priced_trips(), 0)` (§7)",
+  "lines": [
+   399
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/extract.rs",
+  "fn": "to_arena",
+  "text": "ENode::Reduce { header, .. } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`Selection::to_arena` attaches the value operands; `embed` discovers a chosen literal",
+  "lines": [
+   971
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/extract.rs",
+  "fn": "to_arena",
+  "text": "Shape::Reduce {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`Selection::to_arena` attaches the value operands; `embed` discovers a chosen literal",
+  "lines": [
+   973
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/extract.rs",
+  "fn": "below",
+  "text": "ENode::Reduce { .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`below` and `TreePricer::price`: the priced form (§7)",
+  "lines": [
+   1684
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/extract.rs",
+  "fn": "price",
+  "text": "ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`below` and `TreePricer::price`: the priced form (§7)",
+  "lines": [
+   2101
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/extract.rs",
+  "fn": "dense_reference_pass",
+  "text": "ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => {",
+  "count": 1,
+  "class": "tests",
+  "reason": "extraction tests (`dense_reference_pass` changes mechanically)",
+  "lines": [
+   2758
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/extract.rs",
+  "fn": "node_cost",
+  "text": "ENode::Op { .. } | ENode::Shift { .. } | ENode::Reduce { .. } => 1,",
+  "count": 2,
+  "class": "tests",
+  "reason": "extraction tests (`dense_reference_pass` changes mechanically)",
+  "lines": [
+   3503,
+   4116
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "enum HeadNode",
+  "text": "Reduce {",
+  "count": 1,
+  "class": "n/a",
+  "reason": "the `HeadNode::Reduce` definition",
+  "lines": [
+   99
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "reduce",
+  "text": "self.push(HeadNode::Reduce { fold, lo, hi, body })",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`PlanBuilder::reduce` carries both bounds",
+  "lines": [
+   165
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "apply",
+  "text": "let ENode::Reduce { header, .. } = node else {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`EmptyFold` fires on a known empty range only (L6)",
+  "lines": [
+   477
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "rebuild",
+  "text": "ENode::Reduce { header, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`rebuild`: comment rewritten on L3 and L4 (§6.8); the code already attaches the value bounds",
+  "lines": [
+   627
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "rebuild",
+  "text": "Some(HeadNode::Reduce {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`rebuild`: comment rewritten on L3 and L4 (§6.8); the code already attaches the value bounds",
+  "lines": [
+   632
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "reduce_range",
+  "text": "matches!(node, ENode::Reduce { .. }).then(|| node.known_range().expect(KNOWN_RANGE))",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   671
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_peel_shares_the_body_it_folds",
+  "text": "Some(node @ ENode::Reduce { .. }) => eg.find(body_of(node)),",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   699
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_peel_shares_the_body_it_folds",
+  "text": "Some(node @ ENode::Reduce { .. }) => body_of(node),",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   728
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "halve_doubles_the_body_sharing_it_when_the_binder_is_unused",
+  "text": "Some(node @ ENode::Reduce { .. }) => eg.find(body_of(node)),",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   799
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "halve_doubles_the_body_sharing_it_when_the_binder_is_unused",
+  "text": "ENode::Reduce { .. } => reduce_range(n)",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   815
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "decode",
+  "text": "let HeadNode::Reduce { fold, lo, hi, body } = planned(*folded) else {",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   1021
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "a_peel_stops_at_a_fold_that_rebinds_its_slot",
+  "text": ".any(|n| matches!(n, HeadNode::Reduce { fold, .. } if *fold == inner)),",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   1283
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "node_cost",
+  "text": "ENode::Reduce { .. } => own.saturating_add(LOOP_PENALTY),",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   1373
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/fold_rules.rs",
+  "fn": "has_fold",
+  "text": ".any(|(_, n)| matches!(n, ExprNode::Reduce { .. }))",
+  "count": 1,
+  "class": "tests",
+  "reason": "fold rule tests",
+  "lines": [
+   1382
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/graph.rs",
+  "fn": "plan_shape",
+  "text": "HeadNode::Reduce { fold, lo, hi, body } => sink.make(ENode::reduce(",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`plan_shape` resolves both bounds into `ENode::reduce`",
+  "lines": [
+   1626
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/graph.rs",
+  "fn": "derivative_shape",
+  "text": "ENode::Reduce { .. } | ENode::Shift { .. } => {",
+  "count": 1,
+  "class": "left",
+  "reason": "`derivative_shape`: no derivative rule for a fold; the `Dwrt` is kept",
+  "lines": [
+   1695
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/insert.rs",
+  "fn": "insert",
+  "text": "Shape::Reduce { body, lo, hi, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`insert` discovers a literal bound; `inserted_class_count` mirrors it (§6.3)",
+  "lines": [
+   173
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/insert.rs",
+  "fn": "insert",
+  "text": "Shape::Reduce { fold, lo, hi, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`insert` discovers a literal bound; `inserted_class_count` mirrors it (§6.3)",
+  "lines": [
+   211
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/insert.rs",
+  "fn": "inserted_class_count",
+  "text": "Shape::Reduce { body, lo, hi, .. } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`insert` discovers a literal bound; `inserted_class_count` mirrors it (§6.3)",
+  "lines": [
+   264
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/insert.rs",
+  "fn": "project",
+  "text": "_ => Shape::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "the `ValueBounded` test term",
+  "lines": [
+   532
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "enum ENode",
+  "text": "Reduce {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "doc: a rule reaching a value bound is how a range becomes known (L8)",
+  "lines": [
+   311
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "reduce",
+  "text": "ENode::Reduce {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`ENode::reduce`: doc drops \"until A3\"; panics as `FoldHeader::new`",
+  "lines": [
+   399
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "as_reduce",
+  "text": "let ENode::Reduce { header, children } = self else {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`as_reduce`, `shape`, `children_slice(_mut)` carry every child",
+  "lines": [
+   410
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "shape",
+  "text": "ENode::Reduce { .. } => Some(OpKind::Reduce),",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`as_reduce`, `shape`, `children_slice(_mut)` carry every child",
+  "lines": [
+   440
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "known_range",
+  "text": "ENode::Reduce { header, .. } => header.known_range(),",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "`known_range`: doc (\"every bound is a constant today\") rewritten",
+  "lines": [
+   460
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "children_slice",
+  "text": "ENode::Op { children, .. } | ENode::Reduce { children, .. } => children,",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`as_reduce`, `shape`, `children_slice(_mut)` carry every child",
+  "lines": [
+   485
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "children_slice_mut",
+  "text": "ENode::Op { children, .. } | ENode::Reduce { children, .. } => children,",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`as_reduce`, `shape`, `children_slice(_mut)` carry every child",
+  "lines": [
+   500
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/node.rs",
+  "fn": "variance",
+  "text": "ENode::Reduce { header, children } => {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "L4 in `ENode::variance` (§6.1)",
+  "lines": [
+   552
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/witness.rs",
+  "fn": "induce",
+  "text": "ENode::Reduce { .. } => *node,",
+  "count": 1,
+  "class": "left",
+  "reason": "research: a fold keyed as stored, for the measured miss counts' continuity",
+  "lines": [
+   356
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/witness.rs",
+  "fn": "induce",
+  "text": "Shape::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`induce` builds and visits body, `lo`, `hi`",
+  "lines": [
+   421
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/witness.rs",
+  "fn": "post_order_term",
+  "text": "Shape::Reduce { body, lo, hi, .. } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`induce` builds and visits body, `lo`, `hi`",
+  "lines": [
+   505
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/extraction_gap.rs",
+  "fn": "build",
+  "text": "folds[graph.slot(at)] = matches!(node, ENode::Reduce { .. });",
+  "count": 1,
+  "class": "left",
+  "reason": "research: the harness prices a fold's row as empty (its own documented model)",
+  "lines": [
+   187
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/math/pict_rewrite_tests.rs",
+  "fn": "expr_to_egraph",
+  "text": "ExprNode::Reduce { .. } => panic!(\"a bounded fold reached the pict rewrite tests\"),",
+  "count": 1,
+  "class": "tests",
+  "reason": "a test file's converter that refuses folds",
+  "lines": [
+   120
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/nnue/mod.rs",
+  "fn": "pattern_match_arena",
+  "text": "ExprNode::Reduce { .. } => return None,",
+  "count": 1,
+  "class": "left",
+  "reason": "templates hold no fold: no match, and a refusal",
+  "lines": [
+   166
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/nnue/mod.rs",
+  "fn": "substitute_template_arena",
+  "text": "ExprNode::Reduce { .. } => panic!(",
+  "count": 1,
+  "class": "left",
+  "reason": "templates hold no fold: no match, and a refusal",
+  "lines": [
+   239
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/nnue/mod.rs",
+  "fn": "junkify_arena_pass",
+  "text": "Shape::Reduce { fold, lo, hi, body } => {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`junkify` maps both bounds",
+  "lines": [
+   888
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/nnue/mod.rs",
+  "fn": "junkify_arena_pass",
+  "text": "self.arena.embed(Shape::Reduce {",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`junkify` maps both bounds",
+  "lines": [
+   890
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/runtime.rs",
+  "fn": "a_fold_reads",
+  "text": "ExprNode::Reduce { body, .. } => reaches(body),",
+  "count": 1,
+  "class": "tests",
+  "reason": "runtime tier tests",
+  "lines": [
+   1137
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/runtime.rs",
+  "fn": "arena_cost",
+  "text": "ExprNode::Reduce { .. } => Some(OpKind::Reduce),",
+  "count": 1,
+  "class": "tests",
+  "reason": "runtime tier tests",
+  "lines": [
+   2335
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/telemetry.rs",
+  "fn": "latency_prior_cost",
+  "text": "ExprNode::Reduce { .. } => Some(pixelflow_ir::OpKind::Reduce),",
+  "count": 1,
+  "class": "already-correct",
+  "reason": "`latency_prior_cost` walks `children()`",
+  "lines": [
+   265
+  ]
+ }
+]
