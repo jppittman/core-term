@@ -52,3 +52,7 @@ Base: main a747770 (A3, #1447). `spec.md`'s file:line references are at a747770.
 - **Byte-identical on today's kernels.** Every bound is a literal: byte_probe on both tiers, the 29 font programs' nodes, keys and digests, and saturation telemetry including the extraction fields. Total Ir within +0.5% of the a747770 base.
 - **Clippy is CI's.** Run `cargo +1.99.0 clippy` (1.99 is installed beside the default 1.97). For `check-feature-matrix.sh`, put `/home/user/scratch/cargo-hack-root/bin` on PATH.
 - **Docs and labels.** Every intent.md stays within 80 lines. No tracked file outside `.wip` cites a `.wip` path, a ruling label or a model name. The plan's A4 Done line states facts.
+
+## CI (NEON) on 1c8c8c7
+
+- **N1.** `a_guard_computed_once_per_call_is_read_again_in_every_batch` asserted the opmask reload on every tier; NEON keeps the masks resident (column loads 0 against 0, instructions 7 against 5). Fixed in fa31236: every tier asserts the arm tests read the masks (instructions); the reload and the frame growth are asserted on AVX-512 only. Any traffic pin is per tier where the register file decides it; the NEON leg runs only in CI, so read every pin as NEON would.
