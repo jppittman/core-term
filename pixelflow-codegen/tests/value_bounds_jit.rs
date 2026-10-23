@@ -26,6 +26,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 use pixelflow_codegen::emit::{self, EmitTraffic, Trips};
+use pixelflow_codegen::isa::{self, Isa};
 use pixelflow_codegen::jit_cache;
 use pixelflow_ir::fold::{Binder, Bound, Fold, Monoid};
 use pixelflow_ir::{ExprArena, ExprId, Kernel, LatticeShape, OpKind, Uniform};
@@ -571,9 +572,10 @@ fn a_bound_that_is_not_carried_is_reloaded_at_every_latch() {
 
 /// A guard whose masks are the call's but whose fold is the column's: its two
 /// masks are computed once, live across every batch, and are read again by
-/// the arm tests in each. The opmask file (AVX-512) has no register to keep
-/// them in, so each batch reloads them, and the frame grows by the slots the
-/// masks live in, narrow ones among them.
+/// the arm tests in each, on every tier. Where they live between batches is
+/// the tier's: the opmask file (AVX-512) has no register to keep them in, so
+/// each batch reloads them and the frame grows by the slots they live in,
+/// narrow ones among them; NEON's vector file keeps them resident.
 #[test]
 fn a_guard_computed_once_per_call_is_read_again_in_every_batch() {
     let over = |hi: Option<f32>| match hi {
@@ -584,14 +586,23 @@ fn a_guard_computed_once_per_call_is_read_again_in_every_batch() {
     let (literal, literal_frame) = traffic_of(&over(None));
     let column = |t: &EmitTraffic| t.scopes[2];
     assert!(
+        column(&value).instructions > column(&literal).instructions,
+        "each batch's arm tests read the masks: {:?} against {:?}",
+        column(&value),
+        column(&literal)
+    );
+    if isa::detect() != Isa::Avx512 {
+        return;
+    }
+    assert!(
         column(&value).loads > column(&literal).loads,
-        "each batch reads the masks back: {:?} against {:?}",
+        "each batch reads the opmasks back: {:?} against {:?}",
         column(&value),
         column(&literal)
     );
     assert!(
         value_frame > literal_frame,
-        "the masks are slots in the frame: {value_frame} against {literal_frame}"
+        "the opmasks are slots in the frame: {value_frame} against {literal_frame}"
     );
 }
 
