@@ -360,3 +360,101 @@ callers, to `node.rs` made it a call per candidate priced. `#[inline]` on `ENode
 to +0.247 percent. Throwaway tags `a3-close1-inline` and `a3-close1-b` hold those two measurements in `gates/out/`.
 
 Outputs: `../../gates/out/*.a3-close1.*`; this directory's `*-close1*` files.
+
+# A3 closing fixes, round 2 (TAG=a3-close2)
+
+Code base `3bfdaded`; HEAD at the start of the round `1301e5a` (the round-1 closing gates; no tracked file outside `.wip/` differs from `e84979c`'s tree).
+Rulings: `rulings.md` rounds 1-4, unchanged; F1-F5 stay authoritative. Reviewer's scratch crate: `/home/user/scratch/a3-close-review` (copied, not edited, to
+`/home/user/scratch/a3-close2/probe`). The A3 diff is `git diff 3bfdaded -- . ':!.wip'`.
+
+## Gate failures
+
+None were listed.
+
+## Blocking finding: F2 is incomplete (soundness; `fold_rules.rs:214`)
+
+**Real. Fixed.** Verified before changing anything: the three scratch cases reproduce at HEAD from a fresh build of the probe copy, each with the
+backtrace the finding names (`refuse_a_varying_bound <- EGraph::add <- NodeSink::make <- plan_shape <- apply_action`):
+
+| case | rule set | result at HEAD |
+|---|---|---|
+| `stale-halve2` (`P = ((i + X) − X) + 1`, `(i + X) − X = i`, `P = ((i + X) + 1) − X`; nested bound `i`) | `HalveFold` alone, n = 4 | `BoundVaries ... Variance{X,i5}` |
+| `stale-peel` (`P = (X − X) + 1`, `X − X = 0`; nested bound `i + 1`) | `PeelFold` alone, n = 1 | `BoundVaries ... Variance{X}` |
+| `stale-halve3` (both spellings of `P`'s sum before `K = i`) | `RuleSet::runtime()`, n = 2, 4, 8 | `BoundVaries ... Variance{X,i5}`; also at **one** iteration |
+
+The mechanism is as stated. `var_fact` is seeded at birth and never repaired upward (`columns.rs`, "Never repaired upward"); `rebuild` re-keys a node it
+processes and leaves its parents' facts alone; a rebuilt bound `i + 1` / `0 + 1` hash-conses into that class, and `add`'s backstop reads the class's fact.
+Three docs claimed otherwise and are corrected (below). Nothing else in the finding was wrong; the "no arena-only trigger" claim I re-ran (below).
+
+**The fix** (`pixelflow-search/src/egraph/graph.rs`, with `fold_rules.rs` docs and `rewrite.rs`'s doc):
+- `NodeSink` gains `refuses(&self, node) -> bool`: whether `make(node)` would panic on it. `EGraph`'s answers after the same canonicalization and memo lookup `add` makes, then
+  the backstop; `GrowthPredictor`'s after the memo and `pending` lookups, reading the fact of a class it minted off the node it minted it for (`ENode::variance` over the
+  children's facts, exactly what `add` seeds; `GrowthPredictor::fact`). A fold over literals returns on its arity before anything is read (`has_a_value_bound`).
+- `plan_shape` asks `sink.refuses(&node)` before making a `Reduce` and returns `None`; `apply_action`'s `Plan` arm unions nothing on `None` (0), and the prediction, which runs
+  the same function, counts the classes built before the refusal, as the applier builds them. So the exactness `apply_measured` asserts holds for a declined plan.
+- The backstop is one definition, `varying_bound(node, fact)`, asked by `add` (through `refuse_a_varying_bound`, out of line as before) of the graph's facts and by the predictor of the
+  facts `add` would seed. The panic text is unchanged (`BoundVaries: ...: Fold {..}`; `VaryingBound`'s `Display`).
+- The check is exactly the condition under which `add` would have panicked, asked at the same point of the sequence, so **a run that did not panic does no different thing**: the
+  reviewer's 456 generated arenas and 160 swept ones, `RuleSet::runtime()` at `compatibility(12)`, give byte-identical extracted terms to the reviewer's pre-fix outputs
+  (`sweep-close2.gen-0..3.txt`, `sweep-close2.sweep.txt`: `cmp` equal; the sweep file differs only by the reviewer's own trailing `exit 0` line), 0 panics. And the gates below.
+
+**Rejected alternatives** (spec J27 has the long form):
+1. *Planner-side memo replay* (the finding's second way): `substitute` resolving the bound's nodes to the classes they will land in and returning `None`. It mints nothing on a decline,
+   but it predicts where `add` lands at scan time, and a commit earlier in the same batch changes what a node canonicalizes to (a union merging a child), so `add` could still reach
+   the panic. Deciding at the call that would panic cannot be raced. Cost accepted: a declined plan leaves the nodes it built before the refusal (orphans), which cost classes,
+   never soundness, and only on a plan that used to panic.
+2. *Refresh a class's fact on a memo hit*: sound by the law, but it adds work to every `add` of a literal kernel.
+3. *Loosen the backstop to "some member keeps L3"*: wrong one level down (a bound `W + 1` whose child `W` is stale has one member and no lawful one) and it weakens the one check that catches a rule bug.
+
+**Performance, and a draft that was rejected for it.** The first draft made `add` a thin wrapper over `try_add -> Result<EClassId, VaryingBound>` and `NodeSink::try_make`
+(one definition of `add`). Gate 5 read total Ir +0.506 percent against base (limit +0.5; round 1 was +0.247): the `Result` return and the moved panic formatting cost +16 M Ir in `add`,
+the predictor's `make` and their callers on the 29 programs (`add` is the hottest call in the crate). A second draft (`add` calling an inlined `refusal`) was worse, +0.664, because it
+changed LLVM's inlining of `Columns::push`, `absorb`, `merge_kinds` and `write_back`. The shipped shape keeps `add` and `make` and their return types exactly: `add`'s guard is spelled as in
+round 1 (`if let ENode::Reduce { header, .. } = &node && header.arity() > 1` then the out-of-line `refuse_a_varying_bound`); spelling the same predicate through `has_a_value_bound` measured
++0.308 (4.5 M Ir more in `add` alone; the rest is noise-sized), so the comment above the guard says why it is in place. Final: total Ir **+0.193** percent (limit +0.5; below round 1's +0.247),
+`Saturation::saturate` inclusive -0.131, `extract_dag_over` inclusive +1.274 (round 1: +1.713), median peak RSS +1.289 (5 runs; round 1 +0.415; the experiments of this round read
++0.427 to +1.289 on the same code shape, so it is run noise; reported only). Experiments' outputs: `gates/out/measure.a3-close2-{b,c,d,e,f}.*`, profiles `cg.a3-close2-*.out`.
+
+**Docs corrected** (the three the finding names, and the sentences that depended on them):
+- `PlanBuilder::substitute`'s doc: "the member's variance judged before the substitution is the law's answer after it" is replaced. The substitution adds no refused bit, so a node the plan
+  *mints* is as lawful as the member it was read from; where a node *lands* is the graph's to say, and the graph declines (`plan_shape`) before `add`'s backstop could panic.
+- `HalveFold`'s doc: "`EGraph::add` accepts it because the rule builds it only through a member ... that already keeps L3" now says the member choice is half of it and the graph declines the
+  other half. The module doc's "A representative suffices" bullet gains the same sentence.
+- The plan's L7 (`docs/language/2026-10-20-a-bound-is-a-value.md`): the rebuilt bound is a term the graph hash-conses; it can land in a class seeded wider than the term; the rewrite declines then too;
+  `EGraph::add` panics only for a caller that is not a plan. The A3 bullet's pin list gains "a rule-made bound that lands in a class whose fact fails L3 (declined, not built)".
+- `EGraph::add`'s doc: the "never becomes illegal" paragraph lists the second exception (a stale class) and says why a rule's plan does not reach it. `RewriteAction::Plan`'s doc says a plan can be declined.
+- `.wip/a3/spec.md` §1.1 (L7 row), §6.7, §6.8 (the false sentence is quoted and corrected), §13 J27; `run/public-surface.md`; `gen/classes.json`.
+
+**Tests added** (all fail with the check removed: `plan_shape` reverted to `sink.make` for the `Reduce` arm, each with the `BoundVaries` panic; restored):
+- `pixelflow-search`, `egraph::fold_rules::tests::a_rebuilt_bound_that_lands_in_a_stale_class_is_declined`: the two single-rule cases, `HalveFold` at n = 4 and `PeelFold` at n = 1, each over its
+  hand-made unions, with premises asserted (the landing class's fact reads X, a member of it keeps L3, the rule still plans), a control with no stale class where the same rule builds the
+  nested fold (2 value-bounded inner folds), and the declined run building none (1), every bound in the graph keeping L3.
+- `egraph::fold_rules::tests::the_runtime_rules_saturate_a_graph_with_a_stale_bound_class`: `stale_halve3` under `RuleSet::runtime()` at n = 2, 4, 8, `compatibility(6)` (the panic was at iteration 1;
+  twelve iterations cost 8 s in a debug build, six cost tens of milliseconds), extracting a closed term whose bounds read the outer index alone.
+- `egraph::graph::variance_fact_tests::a_plan_whose_bound_lands_in_a_varying_class_is_declined_and_predicted_so`: three plans built by hand over one body (a bound that lands in the stale class, a bound
+  this plan mints that reads X, a constant): the first two are declined (`apply_action` returns 0, no fold made) and the third is built; for each, `predicted_growth` equals the classes actually built.
+  The second case is what exercises `GrowthPredictor::fact` on a class the prediction minted.
+
+## Gates after this round (TAG=a3-close2), on the final tree
+
+| gate | result |
+|---|---|
+| 1 `byteprobe.sh a3-close2` | exit 0; avx512 and avx2 IDENTICAL to base |
+| 1b `gate1b.sh a3-close2` | exit 0; 29 lines IDENTICAL; self-check n=2 `22ad8819798461a6`, n=40 `e95137a9d464391e` equal the pins |
+| 2 `gate2.sh a3-close2` | exit 0; IDENTICAL to base (29 records) |
+| 2x `gate2x.sh a3-close2` | exit 0; IDENTICAL to base (extraction fields) |
+| 5 `measure.sh a3-close2` | total Ir 6,308,131,681 (+0.193 percent; limit +0.5: PASS); saturate inclusive -0.131; extraction inclusive +1.274; median peak RSS +1.289 (reported only) |
+| `cargo test -p pixelflow-search` / `--all-features` / `--features saturation-telemetry` | 432 / 435 / 435 passed, 0 failed (ignored 15 each); 3 more than round 1 (429 / 432 / 432); 0 compiler warnings (`tests-close2.*`) |
+| `cargo +1.99.0 clippy -p pixelflow-search --all-targets --all-features -- -D warnings` (CI's toolchain; `CARGO_TARGET_DIR=/home/user/scratch/a3-close1/t199`) | exit 0, no warning (`clippy-close2-199.txt`) |
+| clippy 1.97 plain, same command without `-D` | the three base `must_use_candidate` reports in `pixelflow-ir` (R1) and nothing else |
+| `cargo fmt --all -- --check` | exit 0 |
+| `RUSTFLAGS="-D warnings" cargo check -p pixelflow-search --no-default-features` | exit 0 |
+| `RUSTDOCFLAGS="-D warnings" cargo doc -p pixelflow-codegen --no-deps --document-private-items` | exit 0 |
+| rustdoc C4 (`rustdoc_norm.py --compare`), pixelflow-search | base 28, head 28, NEW 0, GONE 0 |
+| `scripts/check-intent.sh`, `check-doc-paths.sh`, `check-cfg-encapsulation.sh` | exit 0, exit 0, exit 0 |
+| checklist (`python3 -I .wip/a3/gen/checklist.py`) | 172 sites, 0 UNCLASSIFIED, 0 STALE (already-correct 38, changed-by-A3 25, left 13, tests 76, n/a 5, A4 15, A5 0). Rows: `add`'s guard (changed-by-A3), `has_a_value_bound` and `varying_bound` (new, changed-by-A3), `plan_shape`'s `Reduce` arm (text changed), `a_sum_to_the_bound_built_by` (new test) |
+| B1 greps (`A3` in `pixelflow-*` `.rs` and `pixelflow-ir/intent.md`), no tracked file outside `.wip` citing `.wip`, no ruling or J/N/C/S/T label in the added tracked lines, no model names | empty / empty / pass / pass / pass |
+| `git status --short pixelflow-graphics` after the gates; `git lfs ls-files \| grep -c .` | empty; 68 |
+
+`pixelflow-ir` and `pixelflow-codegen` are untouched this round (no tracked file of either differs from the previous commit), so their tests were not re-run; both were built by the gates.
+Outputs: `../../gates/out/*.a3-close2*`; this directory's `*-close2*` files.

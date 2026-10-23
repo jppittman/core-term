@@ -1431,23 +1431,45 @@
  {
   "file": "pixelflow-search/src/egraph/graph.rs",
   "fn": "add",
-  "text": "if let ENode::Reduce { header, children } = &node",
+  "text": "if let ENode::Reduce { header, .. } = &node",
   "count": 1,
   "class": "changed-by-A3",
   "reason": "`EGraph::add`'s L3 backstop: a fold with a value bound has each bound's class checked (`refuse_a_varying_bound`); a literal fold is skipped on its arity",
   "lines": [
-   385
+   400
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/graph.rs",
+  "fn": "has_a_value_bound",
+  "text": "matches!(node, ENode::Reduce { header, .. } if header.arity() > 1)",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "the test the sinks' `refuses` make before reading anything: only a fold with a value bound has a class to read for L3",
+  "lines": [
+   1299
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/graph.rs",
+  "fn": "varying_bound",
+  "text": "let ENode::Reduce { header, children } = node else {",
+  "count": 1,
+  "class": "changed-by-A3",
+  "reason": "L3 over classes, stated once: `EGraph::add` (through `try_add`) asks it of the graph's facts and the growth predictor of the facts `add` would seed; a literal fold returns on its arity before any class is read",
+  "lines": [
+   1302
   ]
  },
  {
   "file": "pixelflow-search/src/egraph/graph.rs",
   "fn": "plan_shape",
-  "text": "HeadNode::Reduce { fold, lo, hi, body } => sink.make(ENode::reduce(",
+  "text": "HeadNode::Reduce { fold, lo, hi, body } => {",
   "count": 1,
-  "class": "already-correct",
-  "reason": "`plan_shape` resolves both bounds into `ENode::reduce`",
+  "class": "changed-by-A3",
+  "reason": "`plan_shape` resolves both bounds into `ENode::reduce` and asks the sink whether it `refuses` the fold (a bound that lands in a class failing L3) before making it: a refusal declines the plan (`None`)",
   "lines": [
-   1668
+   1790
   ]
  },
  {
@@ -1459,6 +1481,17 @@
   "reason": "`derivative_shape`: no derivative rule for a fold; the `Dwrt` is kept",
   "lines": [
    1737
+  ]
+ },
+ {
+  "file": "pixelflow-search/src/egraph/graph.rs",
+  "fn": "a_sum_to_the_bound_built_by",
+  "text": "HeadNode::Reduce {",
+  "count": 1,
+  "class": "tests",
+  "reason": "a hand-built plan of one bound node and the sum over it, for the decline-and-predict pin",
+  "lines": [
+   3688
   ]
  },
  {

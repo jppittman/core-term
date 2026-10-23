@@ -84,7 +84,7 @@ within +0.5% of base. §10 lists the pins; §11 the order and the greps.
 | L3 (plan:180-188) | `ExprArena::push_reduce` (every arena construction) and `EGraph::add` (backstop) | `Fold::admits_bound(end, reads)`: `reads ∩ (COORDS ∪ {b}) = ∅`. In the arena `reads` is `variance_from(arena, term)`, the per-node transfer function run from the bound and memoized (N1); in the e-graph, the bound class's fact | `BoundRefusal::BoundVaries { end, reads }` | panic in both |
 | L4 (plan:189) | `variance.rs`'s `transfer` (both drivers) and `ENode::variance` (`node.rs:528-556`) | `(var(body) \ b) ∪ var(lo) ∪ var(hi)`; a literal bound contributes nothing; a known empty range is `CONST` (arena only, as today) | — | — |
 | L6 (plan:192-195) | `PeelFold` (`fold_rules.rs:393`), `HalveFold` (`:435`), `EmptyFold` (`:480-481`): already gated at `3bfdaded`. `FactorFold` (`:499`) changes to decline a known empty range only (decision 5) | the rule reads `node.known_range()` | — | decline |
-| L7 (plan:196-198) | `PlanBuilder::substitute` (`fold_rules.rs`) through L4's class fact; arena side, `close_over`'s rename. `ExprArena::substitute_vars_with` is **not** L7 (N5, §3.4) | substitutes into a nested fold's bounds always, and into its body unless the fold rebinds the slot. A class reached as a nested fold's value bound (a `Site::Bound`) is rebuilt through its first member whose own variance, over its children's facts, `Fold::admits_bound` accepts, and so is every class under it; the plan declines when a class under a bound has none (round 4, F2, §6.8). Bodies keep the first member. | — | the rule declines (`None`) |
+| L7 (plan:196-198) | `PlanBuilder::substitute` (`fold_rules.rs`) through L4's class fact; arena side, `close_over`'s rename. `ExprArena::substitute_vars_with` is **not** L7 (N5, §3.4) | substitutes into a nested fold's bounds always, and into its body unless the fold rebinds the slot. A class reached as a nested fold's value bound (a `Site::Bound`) is rebuilt through its first member whose own variance, over its children's facts, `Fold::admits_bound` accepts, and so is every class under it; the plan declines when a class under a bound has none (round 4, F2, §6.8). Bodies keep the first member. The rebuilt bound is judged again where it lands: `plan_shape` asks the sink whether it `refuses` a fold before making it, and a bound that hash-conses into a class whose fact fails L3 declines the plan (closing round 2, J27). | — | the rule declines (`None`) |
 | L8 (plan:199-202) | `KnownBound` (new rule, `fold_rules.rs`, last in `fold_rules()`) | the value bounds' classes hold literals naming counts, so the fold over those counts is added to the class | — | decline otherwise |
 
 ### 1.2 Refusal order
@@ -1531,8 +1531,8 @@ pins the declines on a uniform-bounded fold.
 `binder := binder + s` through `substitute`, which enters an inner fold's value bounds (L7), so an inner `0..i` becomes `0..(i + s)`: a plan
 `HeadNode::Op { op: Add, children: [Class(i), Plan(s)] }` as the inner `HeadNode::Reduce`'s `hi`.
 `plan_shape` (`graph.rs:1626-1631`) builds it through `ENode::reduce` (a value bound under the
-inner fold's own monoid, stride 1: accepted) and `add` (its fact is `{i}`, the outer binder:
-accepted). It is bound arithmetic, which only the user surfaces refuse (plan §1.4): it stays
+inner fold's own monoid, stride 1: accepted) and `add` (a new node's fact is `{i}`, the outer binder:
+accepted; a node that hash-conses into an existing class is judged on that class's fact, J27). It is bound arithmetic, which only the user surfaces refuse (plan §1.4): it stays
 inside the outer fold's known range, which ends at or before 2²⁴, so it is exact. `PeelFold` plans
 `hi − s` as a literal (`KnownRange::peel_back`), on a known range only. T-S-6 pins it.
 
@@ -1556,10 +1556,13 @@ panicking inside saturation (`.wip/a3/run/scratch-r4-run1.txt`: `Σ_{i<8} ( Σ_{
 
 The substitution's own effect needs no accounting in the check: a leaf becomes a literal or the
 substituted binder plus its stride, and that binder is neither a coordinate nor the nested fold's
-own (a fold that rebinds it is named before it is entered, L4), so the refused set never contains it
-and a member's variance before the substitution is the law's answer after it. By induction over the
-rebuilt bound's classes, every class `add` sees under the bound has a fact within what the nested
-fold's L3 admits. Pins: `a_nested_bound_is_rebuilt_through_the_member_that_keeps_l3` (HalveFold at
+own (a fold that rebinds it is named before it is entered, L4), so the refused set never contains it.
+By induction over the rebuilt bound's classes, every class the plan *mints* under the bound has a
+fact within what the nested fold's L3 admits. A node that hash-conses into a class the graph already
+holds is judged on that class's fact, which is seeded wider than the term when a union has since
+shown a coordinate does not matter and is never repaired upward; the walk cannot know which classes
+are stale, and the graph answers instead (J27). The version of this paragraph that claimed "a
+member's variance before the substitution is the law's answer after it" was false for that reason. Pins: `a_nested_bound_is_rebuilt_through_the_member_that_keeps_l3` (HalveFold at
 n=4 and PeelFold at n=1, each alone, over a hand-made union; both **plan** through the lawful member
 `i + 1` rather than decline, because the class has one), `a_nested_bound_with_no_member_that_keeps_l3_declines`
 (`i + X` beside `i + Y`: the class reads neither, no member keeps L3, both rules decline), and
@@ -2562,6 +2565,43 @@ built (plan:437-458).
   bound declines (`None`): its body would need the refused set lifted by its own binder, and no
   builder makes one. Rejected: a `refused: Variance` set carried down and lifted at a nested fold,
   which is the same decision with a bitset and a case no builder reaches.
+- **J27. The graph declines a plan whose bound lands in a class that fails L3 (closing round 2).**
+  A rebuilt bound is a term, `plan_shape` adds it, and the e-graph is hash-consed: the node can
+  already be in the memo, in a class whose fact was seeded wider than the node and is never repaired
+  upward (`var_fact`'s law; `rebuild` re-keys a node it processes and leaves its parents' facts
+  alone). `EGraph::add`'s backstop reads exactly that fact, so a lawful term panicked with
+  `BoundVaries`. Three hand-made-union cases, each an equation the algebra derives
+  (`a_rebuilt_bound_that_lands_in_a_stale_class_is_declined`, the runtime-set pin): `P = ((i + X) − X)
+  + 1` with `(i + X) − X = i` and `P = ((i + X) + 1) − X` puts the halved copy's `i + 1` into `P`
+  (`HalveFold` alone at n=4); `P = (X − X) + 1` with `X − X = 0` puts the peeled copy's `0 + 1` into
+  `P` (`PeelFold` alone at n=1); and `P` holding both spellings of its sum first leaves no fresh `i +
+  1` or `1 + i` for the full runtime set (`commutativity`, `ConstantFold`) to mint as a lawful twin,
+  which panicked at n = 2, 4 and 8. No arena built a trigger (616 kernels under `RuleSet::runtime()`,
+  `compatibility(12)`, spellings of the index through X, Y and j, constants 1, 2, 4, junk in the outer
+  or nested body, bound `i` or `i + 1`, n from 1 to 16): the hand-made union is the same standard as
+  the round-4 pins.
+  The decision: `NodeSink::refuses(&node)` asks, before `plan_shape` makes a `Reduce`, whether `make`
+  would panic on it (`EGraph::add`'s backstop: the same `varying_bound`, asked after the same memo
+  lookup); `plan_shape` returns `None` on a refusal, whence `apply_action` makes no union (0). The
+  growth predictor declines at the same node, reading the fact of a class it minted off the node it
+  minted it for (`ENode::variance` over its children's facts, exactly what `add` seeds), so a declined
+  plan's prediction is the classes built before the refusal, as the applier builds them. `add` and
+  `make` keep their shape and their return type. The first draft returned a `Result` from `add`
+  (`try_add`, `NodeSink::try_make`): one definition of `add`, but the measured cost was +0.26 percent
+  of total Ir on the 29 programs (`add` is the hot call), over the +0.5 limit with the round-1 +0.25,
+  and the hot path is not where a refusal is wanted. The check is a function of the node and the facts
+  alone, asked after the memo lookup as `add` asks it, so a run that did not panic does no different
+  thing: byte-identical on every pinned kernel, and a fold over literals returns on its arity before
+  any class is read (`has_a_value_bound`).
+  Rejected: (a) a planner-side memo replay (`substitute` resolving the bound's nodes, declining at
+  scan time) which mints nothing on a decline but is a prediction of where `add` will land, and a
+  commit earlier in the same batch can change the answer (a union that merges a child changes what
+  the node canonicalizes to), so `add` could still panic; (b) refreshing a class's fact on a memo hit
+  (sound by the law, but it touches every `add` of a literal kernel); (c) loosening the backstop to
+  "some member keeps L3", which is wrong one level down (a bound `W + 1` whose child `W` is stale has
+  one member and no lawful one). The orphans a declined plan leaves (its nodes before the `Reduce`)
+  are terms the graph may hold; they cost classes, never soundness, and only on a plan that
+  panicked before.
 - **J26. One `ENode::literal_twin` (round 4, F3).** `KnownBound::apply` and the three price sites
   call the same `pub(crate)` method on `ENode`, so a fold's literal form is one definition and
   neither the rule's doc nor the extractor's asserts that two agree. Rejected: keeping the two

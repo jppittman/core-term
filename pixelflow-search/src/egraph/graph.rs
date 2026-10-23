@@ -2,13 +2,13 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
-use super::node::{EClassId, ENode, Operands};
+use super::node::{EClassId, ENode};
 use super::ops;
 use super::provenance::{ENodeId, Provenance};
 use super::rewrite::{RewriteAction, RootShapes};
 use alloc::collections::BTreeMap;
 use columns::{Birth, Columns, Kept, SaturationColumns, Slot};
-use pixelflow_ir::fold::{Bound, BoundEnd, FoldHeader};
+use pixelflow_ir::fold::{Bound, BoundEnd, BoundRefusal, Fold};
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::{KernelKey, Lit, Variance};
 
@@ -375,29 +375,36 @@ impl EGraph {
     /// A class's fact is the meet of its members' variances, and a member's is
     /// computed from its children's facts, so a bound class inserted from an
     /// arena that passed `push_reduce`'s L3 passes here, and a merge only
-    /// shrinks a fact, so a node the graph holds never becomes illegal. One
-    /// exception: the arena types a fold over a known empty range `CONST` and
+    /// shrinks a fact, so a node the graph holds never becomes illegal. Two
+    /// exceptions. The arena types a fold over a known empty range `CONST` and
     /// `ENode::variance` has no such arm, so a hand-built bound holding such a
-    /// fold, which `push_reduce` admitted, may be refused here.
+    /// fold, which `push_reduce` admitted, may be refused here. And a fact is
+    /// never repaired upward, so a bound term that is lawful can hash-cons into
+    /// a class seeded wider than the term (`var_fact`'s law), and the class's
+    /// fact is what is read. A rule's plan does not reach this panic by the
+    /// second road: the graph asks whether it would refuse a plan's fold
+    /// before making it (`NodeSink::refuses`), and the rewrite is declined.
     pub fn add(&mut self, node: ENode) -> EClassId {
         let node = self.canonical_node(node);
         if let Some(&id) = self.memo.get(&node) {
             return self.find(id);
         }
         // L3's backstop (docs/language/2026-10-20-a-bound-is-a-value.md §3.2):
-        // a bound read off the classes it is made of, as `push_reduce` reads
-        // one off its term, for a node a rule or a caller built. A fold whose
-        // bounds are both literals has none and is not looked at. Read before
-        // the graph changes: a refusal leaves it as it was.
-        if let ENode::Reduce { header, children } = &node
+        // a value bound read off the classes it is made of, as `push_reduce`
+        // reads one off its term, for a node a rule or a caller built. A fold
+        // whose bounds are both literals has none and is not looked at. Read
+        // before the graph changes: a refusal leaves it as it was. The test is
+        // `has_a_value_bound`, spelled in place: through the helper this hot
+        // call measured 4.5 M more instructions on the 29 programs, for the same
+        // predicate.
+        if let ENode::Reduce { header, .. } = &node
             && header.arity() > 1
         {
-            self.refuse_a_varying_bound(header, children);
+            self.refuse_a_varying_bound(&node);
         }
         // `node` is canonical, so each child is already its class's root; the
         // walk is the identity here and only hands the fact column the `Root`
-        // it is indexed by. Read before the graph changes: a refusal leaves
-        // it as it was.
+        // it is indexed by. Read before the graph changes.
         let variance = node.variance(
             |key| self.ref_variance(key),
             |child| self.graph.columns.var_fact[self.graph.columns.root(child)],
@@ -421,20 +428,14 @@ impl EGraph {
         id
     }
 
-    /// Panic unless each value bound of the fold `header` and `children` name
-    /// varies with neither a coordinate nor the fold's own binder (L3 of
-    /// docs/language/2026-10-20-a-bound-is-a-value.md, through
-    /// `Fold::admits_bound`), read off the bound classes' facts.
-    fn refuse_a_varying_bound(&self, header: &FoldHeader, children: &Operands) {
-        let fold = header.fold();
-        let (lo, hi) = header.attach(children[1..].iter().copied());
-        for (end, bound) in [(BoundEnd::Lo, lo), (BoundEnd::Hi, hi)] {
-            let Bound::Value(class) = bound else {
-                continue;
-            };
-            if let Err(refusal) = fold.admits_bound(end, self.variance(class)) {
-                panic!("{refusal}: {fold:?}");
-            }
+    /// Panic unless the value bounds of `node`, canonical and not in the memo,
+    /// vary with neither a coordinate nor the fold's own binder (L3), read off
+    /// the bound classes' facts. Out of line: `add` is the hottest call in the
+    /// crate, and the message is formatted here.
+    #[inline(never)]
+    fn refuse_a_varying_bound(&self, node: &ENode) {
+        if let Some(refused) = varying_bound(node, |class| self.variance(class)) {
+            panic!("{refused}");
         }
     }
 
@@ -1100,6 +1101,8 @@ impl EGraph {
                 derivative_shape(s, inner, *var);
             }),
             RewriteAction::Plan(plan) => self.predict(pending, |s| {
+                // A declined plan has minted what came before the refusal,
+                // which is what the count reads.
                 plan_shape(s, plan);
             }),
         }
@@ -1265,12 +1268,61 @@ impl EGraph {
                 let deriv_id = derivative_shape(self, &inner, var);
                 self.union_counted(class_id, deriv_id)
             }
-            RewriteAction::Plan(plan) => {
-                let built = plan_shape(self, &plan);
-                self.union_counted(class_id, built)
-            }
+            RewriteAction::Plan(plan) => match plan_shape(self, &plan) {
+                Some(built) => self.union_counted(class_id, built),
+                None => 0,
+            },
         }
     }
+}
+
+/// A fold node the graph will not hold: a value bound of it varies with a
+/// coordinate or with the fold's own binder (L3 of
+/// docs/language/2026-10-20-a-bound-is-a-value.md), judged on the class the
+/// bound lands in. Displays as the panic [`EGraph::add`] raises.
+#[derive(Debug)]
+struct VaryingBound {
+    fold: Fold,
+    refusal: BoundRefusal,
+}
+
+impl core::fmt::Display for VaryingBound {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}: {:?}", self.refusal, self.fold)
+    }
+}
+
+/// Whether `node` is a fold with a value bound: the only node L3 reads a class
+/// for. A fold over literals has no bound to read and is not looked at.
+#[inline]
+fn has_a_value_bound(node: &ENode) -> bool {
+    matches!(node, ENode::Reduce { header, .. } if header.arity() > 1)
+}
+
+/// The first value bound of the fold `node` that varies with a coordinate or
+/// with the fold's own binder (L3), read off `fact`, the variance fact of the
+/// class a bound is. `None` for a node that is not a fold with a value bound.
+///
+/// The one place the e-graph states the law over classes: [`EGraph::add`] asks
+/// it of the graph's own facts, and the growth predictor of the facts `add`
+/// would have seeded, so a prediction declines exactly the node an `add` would
+/// refuse.
+#[inline(never)]
+fn varying_bound(node: &ENode, fact: impl Fn(EClassId) -> Variance) -> Option<VaryingBound> {
+    let ENode::Reduce { header, children } = node else {
+        return None;
+    };
+    let fold = header.fold();
+    let (lo, hi) = header.attach(children[1..].iter().copied());
+    [(BoundEnd::Lo, lo), (BoundEnd::Hi, hi)]
+        .into_iter()
+        .find_map(|(end, bound)| {
+            let Bound::Value(class) = bound else {
+                return None;
+            };
+            let refusal = fold.admits_bound(end, fact(class)).err()?;
+            Some(VaryingBound { fold, refusal })
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,6 +1348,14 @@ impl EGraph {
 trait NodeSink {
     fn make(&mut self, node: ENode) -> EClassId;
 
+    /// Whether `make(node)` would refuse it: a fold whose value bound lands in
+    /// a class that varies with a coordinate or with the fold's own binder (L3
+    /// of docs/language/2026-10-20-a-bound-is-a-value.md), which
+    /// [`EGraph::add`] panics on. Asked of a plan's fold before it is made, and
+    /// answered after the memo lookup `add` makes first, so a node the graph
+    /// already holds is never refused. Reads nothing for a fold over literals.
+    fn refuses(&self, node: &ENode) -> bool;
+
     /// The graph the nodes land in, for the facts a shape is conditioned on.
     fn graph(&self) -> &EGraph;
 }
@@ -1303,6 +1363,15 @@ trait NodeSink {
 impl NodeSink for EGraph {
     fn make(&mut self, node: ENode) -> EClassId {
         self.add(node)
+    }
+
+    fn refuses(&self, node: &ENode) -> bool {
+        if !has_a_value_bound(node) {
+            return false;
+        }
+        let node = self.canonical_node(*node);
+        !self.memo.contains_key(&node)
+            && varying_bound(&node, |class| self.variance(class)).is_some()
     }
 
     fn graph(&self) -> &EGraph {
@@ -1346,6 +1415,28 @@ impl GrowthPredictor<'_> {
             }
         }
     }
+
+    /// The variance fact `class` holds, or would hold: the graph's own for a
+    /// class that exists, and for one this prediction minted the fact
+    /// [`EGraph::add`] would have seeded it with, the node's transfer over its
+    /// children's facts.
+    ///
+    /// Asked only of a fold's value bound (`varying_bound`), so a fold over
+    /// literals never pays the search for the node a `pending` id names.
+    fn fact(&self, class: EClassId) -> Variance {
+        if class.index() < self.egraph.num_classes() {
+            return self.egraph.variance(class);
+        }
+        let minted = self
+            .pending
+            .iter()
+            .find_map(|(node, &id)| (id == class).then_some(node))
+            .expect("a pending class is one this prediction minted");
+        minted.variance(
+            |key| self.egraph.ref_variance(key),
+            |child| self.fact(child),
+        )
+    }
 }
 
 impl NodeSink for GrowthPredictor<'_> {
@@ -1360,6 +1451,19 @@ impl NodeSink for GrowthPredictor<'_> {
         let id = EClassId::from_index(self.egraph.num_classes() + self.pending.len());
         self.pending.insert(node, id);
         id
+    }
+
+    fn refuses(&self, node: &ENode) -> bool {
+        if !has_a_value_bound(node) {
+            return false;
+        }
+        let mut node = *node;
+        self.canonicalize(&mut node);
+        // The lookups first, as `EGraph::add` orders them: a node the graph
+        // holds was admitted when it was added.
+        !self.egraph.memo.contains_key(&node)
+            && !self.pending.contains_key(&node)
+            && varying_bound(&node, |class| self.fact(class)).is_some()
     }
 
     fn graph(&self) -> &EGraph {
@@ -1658,7 +1762,17 @@ fn instantiate_template<S: NodeSink>(
 /// the graph (walking a body's classes to substitute a binder, recognizing an
 /// integrand), which a [`NodeSink`] cannot do; the rule does that half and
 /// this replays it, node by node in build order.
-fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> EClassId {
+///
+/// `None` when a fold of the plan has a value bound that lands in a class
+/// varying with a coordinate or with the fold's own binder (L3 of
+/// docs/language/2026-10-20-a-bound-is-a-value.md), where [`EGraph::add`] would
+/// panic. The rule chose the bound's members by their own variance, and that is
+/// the bound as a term; where it lands is the graph's to say, because
+/// hash-consing can resolve a lawful term to a class seeded wider than it
+/// (`var_fact` is never repaired upward). The nodes built before the refusal
+/// stay, as any `add` leaves them, and the caller makes no union. A prediction
+/// declines at the same node, so it counts the same classes.
+fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> Option<EClassId> {
     use super::fold_rules::{HeadNode, HeadRef};
     let mut planned: Vec<EClassId> = Vec::with_capacity(plan.nodes.len());
     let resolve = |r: HeadRef, planned: &[EClassId]| match r {
@@ -1673,12 +1787,18 @@ fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> ECla
                     children.iter().map(|c| resolve(*c, &planned)).collect();
                 sink.make(ENode::apply(*op, &operands))
             }
-            HeadNode::Reduce { fold, lo, hi, body } => sink.make(ENode::reduce(
-                *fold,
-                lo.map(|h| resolve(h, &planned)),
-                hi.map(|h| resolve(h, &planned)),
-                resolve(*body, &planned),
-            )),
+            HeadNode::Reduce { fold, lo, hi, body } => {
+                let node = ENode::reduce(
+                    *fold,
+                    lo.map(|h| resolve(h, &planned)),
+                    hi.map(|h| resolve(h, &planned)),
+                    resolve(*body, &planned),
+                );
+                if sink.refuses(&node) {
+                    return None;
+                }
+                sink.make(node)
+            }
             HeadNode::Shift {
                 direction,
                 count,
@@ -1691,7 +1811,7 @@ fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> ECla
         };
         planned.push(id);
     }
-    resolve(plan.root, &planned)
+    Some(resolve(plan.root, &planned))
 }
 
 /// Build the e-class of the derivative of `inner` with respect to variable
@@ -3456,6 +3576,7 @@ mod tests {
 #[cfg(test)]
 mod variance_fact_tests {
     use super::*;
+    use crate::egraph::fold_rules::{HeadNode, HeadRef, Plan};
     use pixelflow_ir::{Binder, Bound, Fold, Monoid};
 
     /// **Free of what any member is free of.** `X − X` is seeded `{X}` from
@@ -3580,6 +3701,102 @@ mod variance_fact_tests {
             eg.variance(class),
             Variance::from_var(Binder::from_slot(1).expect("a live binder").var())
         );
+    }
+
+    /// A plan of one bound node, `bound`, and the sum `Σ_{j < bound} j`, whose
+    /// bound is that node.
+    fn a_sum_to_the_bound_built_by(bound: HeadNode, body: EClassId) -> Plan {
+        let fold = Fold::new(Monoid::SUM, Binder::from_slot(0).expect("a live binder"));
+        Plan {
+            nodes: alloc::vec![
+                bound,
+                HeadNode::Reduce {
+                    fold,
+                    lo: Bound::Lit(0),
+                    hi: Bound::Value(HeadRef::Plan(0)),
+                    body: HeadRef::Class(body),
+                },
+            ],
+            root: HeadRef::Plan(1),
+        }
+    }
+
+    /// **A plan whose bound lands in a varying class is declined, by the graph
+    /// and by its prediction alike** (L3 of
+    /// docs/language/2026-10-20-a-bound-is-a-value.md). A fact is seeded at
+    /// birth and never repaired upward, so `(X − X) + 1`, once `X − X` is joined
+    /// to `0`, is a class holding the node `0 + 1` whose fact still reads `X`.
+    /// A plan that builds `0 + 1` as a bound hash-conses into it, and `add`
+    /// would panic on a bound that is, as a term, a constant. The plan builder
+    /// asks `refuses` first: it declines, nothing is unioned, the nodes built
+    /// before the refusal stay, and the prediction counts exactly those.
+    ///
+    /// Three bounds, each over the one body `j`: one that lands in the stale
+    /// class (nothing is built), one this plan mints that reads `X` (the minted
+    /// node stays, and the prediction reads its fact off the node it minted),
+    /// and a constant (the fold is built).
+    #[test]
+    fn a_plan_whose_bound_lands_in_a_varying_class_is_declined_and_predicted_so() {
+        let binder = Binder::from_slot(0).expect("a live binder");
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let one = eg.add(ENode::constant(1.0));
+        let j = eg.add(ENode::Var(binder.var()));
+        let x_minus_x = eg.add(ENode::apply(OpKind::Sub, &[x, x]));
+        let stale = eg.add(ENode::apply(OpKind::Add, &[x_minus_x, one]));
+        // `x_minus_x` is the older class, so it survives the union and the stale
+        // class's node is already in its canonical form: a lookup of `0 + 1`
+        // finds it.
+        let zero = eg.add(ENode::constant(0.0));
+        eg.union(x_minus_x, zero);
+        eg.rebuild();
+        assert!(
+            eg.variance(stale).depends_on_x(),
+            "the premise: the class is `0 + 1` and its fact still reads X"
+        );
+
+        let landing = a_sum_to_the_bound_built_by(
+            HeadNode::Op {
+                op: OpKind::Add,
+                children: alloc::vec![HeadRef::Class(zero), HeadRef::Class(one)],
+            },
+            j,
+        );
+        let minted = a_sum_to_the_bound_built_by(
+            HeadNode::Op {
+                op: OpKind::Add,
+                children: alloc::vec![HeadRef::Class(x), HeadRef::Class(one)],
+            },
+            j,
+        );
+        let constant = a_sum_to_the_bound_built_by(
+            HeadNode::Op {
+                op: OpKind::Add,
+                children: alloc::vec![HeadRef::Class(one), HeadRef::Class(one)],
+            },
+            j,
+        );
+
+        let mut scratch = HashMap::default();
+        for (name, plan, built, declined) in [
+            ("a bound that lands in the stale class", landing, 0, true),
+            ("a bound this plan mints reading X", minted, 1, true),
+            ("a constant bound", constant, 2, false),
+        ] {
+            let predicted = eg.predicted_growth(&RewriteAction::Plan(plan.clone()), &mut scratch);
+            let classes = eg.num_classes();
+            if declined {
+                assert_eq!(
+                    eg.apply_action(x, RewriteAction::Plan(plan)),
+                    0,
+                    "{name}: a declined plan unions nothing"
+                );
+            } else {
+                assert!(plan_shape(&mut eg, &plan).is_some(), "{name}: built");
+            }
+            assert_eq!(eg.num_classes() - classes, built, "{name}: classes built");
+            assert_eq!(predicted, built, "{name}: the prediction counts the same");
+        }
     }
 
     /// **A cycle does not certify invariance.** Once `X + 0` is merged with
