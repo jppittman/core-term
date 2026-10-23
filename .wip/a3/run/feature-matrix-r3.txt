@@ -1,0 +1,2 @@
+OK: every crate's every feature builds in isolation
+feature-matrix exit 0 in 10s

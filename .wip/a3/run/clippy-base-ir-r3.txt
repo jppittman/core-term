@@ -1,0 +1,47 @@
+    Checking pixelflow-ir v0.1.0 (/home/user/scratch/a3-r2/base-src/pixelflow-ir)
+error: this method could have a `#[must_use]` attribute
+    --> pixelflow-ir/src/arena.rs:1067:12
+     |
+1067 |     pub fn nodes(&self) -> impl DoubleEndedIterator<Item = (ExprId, ExprNode)> + '_ {
+     |            ^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+     = note: `-D clippy::must-use-candidate` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::must_use_candidate)]`
+help: add the attribute
+     |
+1067 ~     #[must_use]
+1068 ~     pub fn nodes(&self) -> impl DoubleEndedIterator<Item = (ExprId, ExprNode)> + '_ {
+     |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ir/src/dag.rs:226:12
+    |
+226 |     pub fn iter(&self) -> impl DoubleEndedIterator<Item = Node<'_, T>> + '_ {
+    |            ^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+226 ~     #[must_use]
+227 ~     pub fn iter(&self) -> impl DoubleEndedIterator<Item = Node<'_, T>> + '_ {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ir/src/dag.rs:579:12
+    |
+579 |     pub fn entries(&self) -> impl ExactSizeIterator<Item = Node<'_, T>> + '_ {
+    |            ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+579 ~     #[must_use]
+580 ~     pub fn entries(&self) -> impl ExactSizeIterator<Item = Node<'_, T>> + '_ {
+    |
+
+error: could not compile `pixelflow-ir` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `pixelflow-ir` (lib) due to 3 previous errors
+error: could not compile `pixelflow-ir` (lib test) due to 3 previous errors
+base clippy exit 101
