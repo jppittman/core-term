@@ -62,8 +62,10 @@ the ir-level share of them.
 - Docs (§2.10): `store`, `to_bits`'s `# Panics`; `VALUE_BOUND` and `KNOWN_RANGE` texts (§2.11) with
   the doc paragraphs the spec gives. `VALUE_BOUND` is now expected only by the `to_bits` test and by
   T-IR-26 (C15's list).
-- B1: every A3 mention in `fold.rs` is reworded; the five tests §2.12 names are rewritten
-  (`a_value_bound_has_no_bits_until_a4`, `a_value_bound_is_not_the_literal_zero` with its new doc).
+- B1: every A3 mention in `fold.rs` is reworded; the three tests §2.12 names are rewritten
+  (`a_value_bound_is_refused_by_name_until_a3` is replaced by T-IR-5 to 7,
+  `a_value_bound_has_no_bits_until_a3` is `a_value_bound_has_no_bits_until_a4`, and
+  `a_value_bound_is_not_the_literal_zero` builds with `FoldHeader::new` under its new doc).
 
 ### `variance.rs` (§3.1, §3.2)
 
@@ -166,8 +168,8 @@ rows moved within a file; no row changed class except by the edits above.
 
 ## Departures from the spec or the rulings
 
-- Only the three above that change an observable string or fixture: judgement calls 1, 2, 3, and C3's
-  sign test (a ruling, not a departure). No ruling is unmet in ir.
+- Judgement calls 1, 2 and 3 above are the only places a test's fixture, expected text or name is not
+  the spec's. C3's sign test follows a ruling. No ruling is unmet in ir.
 - Not done here, by scope (they are implementers 2 and 3's): S2's note at `EGraph::add`'s claim (the
   spec's §6.2 sentence, in `pixelflow-search`), S3, S6 and the rest of C15 (search docs), C16 and the
   plan text, `pixelflow-ir`-adjacent greps outside ir (`node.rs`, `insert.rs`, `program/lower.rs`,
