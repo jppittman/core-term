@@ -716,7 +716,7 @@ impl Kernel {
     /// captures it, which no check sees (docs/BACKLOG.md C10). An index that
     /// has escaped and is not captured is open, and `ExprArena::free_index`
     /// says so. `range` is the literal spelling of a known
-    /// range; a bound that is a value is `Kernel::over_values`'. Either way
+    /// range; a bound that is a value is [`Kernel::over_values`]'s. Either way
     /// every bound is known before the lattice is traversed, which is what keeps
     /// the language total and its cost closed-form — `|D|·cost(body) +
     /// (|D|−1)·cost(⊕)` (docs/language/2026-10-20-a-bound-is-a-value.md §1.5).
@@ -785,6 +785,13 @@ impl Kernel {
     /// triangular `Σ_i Σ_{j<i}`), or a constant
     /// (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
     ///
+    /// A bound that is a value is read per call: `n` a [`Uniform`] is one
+    /// compiled program for every `n`, and the fold runs `n` trips. Outside
+    /// `[0, 2²⁴]` at run time — a uniform set to `2.5`, `−1`, NaN or `2²⁴ + 2`
+    /// — the fold is NaN (L5), and a pair that runs backwards at run time is the
+    /// identity, up to the factoring edge `FactorFold` accepts at a
+    /// runtime-empty range (decision 5).
+    ///
     /// Constness is discovered, not declared: a bound that is a constant naming
     /// a count is the fold's data, so `over_values(⊕, 0, 4, f)` is
     /// `over(⊕, 0..4, f)` node for node, and a pair of constants running
@@ -803,17 +810,23 @@ impl Kernel {
     /// bound can round into the domain, §1.4); on one that is not a number
     /// ([`BoundRefusal::BoundNotANumber`]: a `Param`, a `Buffer`); on a constant
     /// naming no count ([`BoundRefusal::BoundOutOfDomain`]) or a mask
-    /// ([`BoundRefusal::BoundSort`]); and, from the fold
-    /// [`ExprArena::close_over`] builds, on a bound reading a coordinate
-    /// ([`BoundRefusal::BoundVaries`], L3), on a value bound under `ANY`, `ALL`
-    /// or `SEQ` ([`BoundRefusal::BoundSort`]), and when the body binds every
-    /// slot.
+    /// ([`BoundRefusal::BoundSort`]); and, from the fold `close_over` builds, on
+    /// a bound reading a coordinate ([`BoundRefusal::BoundVaries`], L3), on a
+    /// value bound under `ANY`, `ALL` or `SEQ` ([`BoundRefusal::BoundSort`]), and
+    /// when the body binds every slot.
+    ///
+    /// ```
+    /// use pixelflow_ir::{Kernel, Monoid, Uniform};
+    ///
+    /// let n = Uniform::new(8.0);
+    /// // Σ_{i < n} X·i, one program for every n.
+    /// let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &n.kernel(), |i| {
+    ///     Kernel::x().mul(i)
+    /// });
+    /// assert_eq!(sum.uniforms().len(), 1);
+    /// ```
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "pub(crate) until A4 makes it public (decision 7)")
-    )]
-    pub(crate) fn over_values(
+    pub fn over_values(
         monoid: Monoid,
         lo: &Kernel,
         hi: &Kernel,
@@ -862,10 +875,6 @@ impl Kernel {
     /// Whether `bound`, the fold's `end` bound as a user wrote it, is one
     /// `over_values` takes: a leaf naming a number — a constant naming a count,
     /// a uniform, an index — and nothing computed (§1.4, until T6).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "pub(crate) until A4 makes it public (decision 7)")
-    )]
     fn user_bound(end: BoundEnd, bound: &Kernel) -> Result<(), BoundRefusal> {
         match *bound.root() {
             ExprData::Var(_) | ExprData::Uniform(_) => Ok(()),

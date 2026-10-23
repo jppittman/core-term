@@ -968,8 +968,9 @@ impl ExprArena {
     /// ([`Bound::discover`]), so every constructor — a builder, a copier,
     /// extraction's `embed` — holds a known bound as data. A `Const` naming no
     /// count (not an integer, or outside `0..=Fold::EXACT_BOUND`) stays a value
-    /// bound, whose guard makes the fold NaN (L5, A4): a literal a rule or the
-    /// folder made never panics here. `Kernel::over_values` refuses one by name
+    /// bound, whose guard makes the fold NaN (L5: the guard `passes::legalize`
+    /// ends with): a literal a rule or the folder made never panics here.
+    /// `Kernel::over_values` refuses one by name
     /// ([`BoundRefusal::BoundOutOfDomain`](crate::fold::BoundRefusal::BoundOutOfDomain)),
     /// and `Kernel::over` refuses a literal range past 2²⁴ in
     /// `KnownRange::new`'s words.
