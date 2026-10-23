@@ -146,13 +146,14 @@ Decided in: `archive/plans/2026-09-06-lattice-is-the-index.md`,
 
 `⊕` is a monoid (`+`, `×`, `min`, `max`, `∧`, `∨`); each bound is a literal,
 which the node holds, or a term, a child after the body, fixed before the
-lattice is traversed and reading no coordinate and no lattice binder; outside
-`[0, 2²⁴]` a fold over `+`, `×`, `min` or `max` is NaN, and `∧`, `∨` take
-literal bounds only; the monoid, the binder and the literal bounds are the
-node's identity, so hash-consing is on exactly the fold's meaning. `⊕` over
-a set has no accumulator and no order: that absence is what lets the
-e-graph reassociate it, and iteration is introduced by lowering, never by
-the term.
+lattice is traversed and reading no coordinate and no lattice binder; the
+equation holds where every bound is a count, an integer in `0..=2²⁴`, and a
+fold over `+`, `×`, `min` or `max` with a bound that is none (a fraction, a
+negative, NaN, an infinity) is NaN, while `∧`, `∨` take literal bounds only;
+the monoid, the binder and the literal bounds are the node's identity, so
+hash-consing is on exactly the fold's meaning. `⊕` over a set has no
+accumulator and no order: that absence is what lets the e-graph reassociate
+it, and iteration is introduced by lowering, never by the term.
 
 ```
 ⊕_{[lo,hi)} f = ⊕_{[lo,hi−1)} f ⊕ f(hi−1)                 peel

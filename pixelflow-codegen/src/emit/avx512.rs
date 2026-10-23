@@ -627,11 +627,14 @@ mod tests {
     /// Lowering refuses a fold's bound that is a mask (`ScheduledOp::is_mask`)
     /// because the opmask file is where this tier keeps one, and a loop's
     /// parameter cannot be there. The two answer one question: this selects
-    /// every op of every kind over a mask and a number in every operand
-    /// position, and asks the file each result lands in.
+    /// every op that reads a lane over a mask and a number in every operand
+    /// position (unary, shift, compare, binary, mul-add, the select, gather and
+    /// broadcast), and asks the file each result lands in. A constant, the
+    /// lane iota and a uniform read no lane, so they have no operand to make a
+    /// mask.
     #[test]
     fn a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask() {
-        let (mut b, _) = Builder::<Avx512>::new();
+        let (mut b, entry) = Builder::<Avx512>::new();
         <Avx512 as IsaBackend>::enter(&mut b);
         let number = <Avx512 as X86>::lane(&mut b, LaneOp::Const(1.0)).expect("a constant selects");
         let compared = LaneOp::Compare(CompareOp::Lt, number, number);
@@ -656,6 +659,23 @@ mod tests {
                     ScheduledOp::ShiftImm(*op, x_id, 3),
                 );
             }
+            // The base is a pointer, the context's; the schedule names it by an
+            // id no lane can be.
+            let base = ValueId(2);
+            every(
+                LaneOp::Gather {
+                    base: entry.ctx,
+                    index: x,
+                },
+                ScheduledOp::Gather(x_id, base),
+            );
+            every(
+                LaneOp::Broadcast {
+                    base: entry.ctx,
+                    index: x,
+                },
+                ScheduledOp::Broadcast(x_id, base),
+            );
             for &(y, y_id) in &operands {
                 for op in CompareOp::ALL {
                     every(

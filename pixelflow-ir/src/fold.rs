@@ -1083,7 +1083,8 @@ fn field_bound(field: u32) -> Bound<()> {
 /// monoid takes one (`Monoid::takes_a_value_bound`), its stride is 1, and a
 /// literal beside it is one an `f32` counter holds ([`Fold::is_exact`]).
 /// [`FoldHeader::from_bits`] refuses where it fails, and `with_a_value` panics
-/// there naming which part, as [`KnownRange::admits`] is to `KnownRange::new`.
+/// there naming which part; `new_panics_exactly_where_the_predicate_refuses`
+/// holds the two equal.
 fn admits_a_value(fold: Fold, lo: Bound<()>, hi: Bound<()>) -> bool {
     fold.monoid.takes_a_value_bound()
         && fold.stride == 1

@@ -522,6 +522,50 @@ fn a_bound_read_only_by_the_loop_reaches_its_latch() {
     }
 }
 
+/// The depth at which a nest of per-call counts, each priced at
+/// [`Fold::ESTIMATED_TRIPS`], is priced past `u64`.
+const PAST_U64: usize = (u64::BITS / Fold::ESTIMATED_TRIPS.ilog2()) as usize + 1;
+
+/// `depth` folds, each `Σ_{i<n}` over one per-call count, around `X + Σ i`.
+fn nested_counts(depth: usize, n: &Uniform, acc: Kernel) -> Kernel {
+    if depth == 0 {
+        return Kernel::x().add(&acc);
+    }
+    let again = *n;
+    Kernel::over_values(Monoid::SUM, &zero(), &n.kernel(), move |i| {
+        nested_counts(depth - 1, &again, acc.add(i))
+    })
+}
+
+/// A frame, wide and tall enough that a nest a few levels shallower than
+/// [`PAST_U64`] is priced past `u64` once the row and column folds are in.
+const FRAME: LatticeShape = LatticeShape::new([1920, 1080]);
+
+/// A nest priced past `u64` compiles: the allocator weighs a read by the nest's
+/// price and adds the weights of a value's reads, so the sum saturates where it
+/// would otherwise overflow. Every count is `1`, so the nest runs each body
+/// once and the answer is `X`.
+#[test]
+fn a_nest_priced_past_u64_still_compiles() {
+    let shapes_and_depths = [
+        (LatticeShape::POINT, PAST_U64 - 1),
+        (LatticeShape::POINT, PAST_U64),
+        (LatticeShape::POINT, PAST_U64 + 1),
+        (FRAME, PAST_U64 - 2),
+    ];
+    for (shape, depth) in shapes_and_depths {
+        let planes = both(shape, move || {
+            nested_counts(depth, &Uniform::new(1.0), Kernel::constant(0.0))
+        });
+        assert_plane(
+            shape,
+            planes,
+            &format!("{depth} nested counts of 1 at {:?}", shape.extent()),
+            |x, _| x,
+        );
+    }
+}
+
 /// What the compile counted for `kernel` as written at [`SHAPE`], and the
 /// frame it needed.
 fn traffic_of(kernel: &Kernel) -> (EmitTraffic, u64) {
@@ -713,12 +757,9 @@ fn a_mask_and_a_number_is_a_count_on_every_tier() {
     }
 }
 
-/// A mask is refused as a bound by name, on every tier alike: AVX-512 holds
-/// one in an opmask, which no loop parameter may be, and the others would
-/// read its bits as a count.
-#[test]
-#[should_panic(expected = "BoundSort")]
-fn a_bound_that_is_a_mask_is_refused_by_name() {
+/// `Σ_{k ∈ [0 < u, 3)} (X + k)`, written by hand: the low bound is the mask
+/// `0 < u`, which `Kernel::over_values` takes no spelling of.
+fn a_fold_that_starts_at_a_mask() -> (ExprArena, ExprId) {
     let mut a = ExprArena::new();
     let slot = a.declare_uniform(Uniform::new(5.0).decl());
     let uniform = a.push_uniform(slot);
@@ -733,5 +774,56 @@ fn a_bound_that_is_a_mask_is_refused_by_name() {
         Bound::Lit(3),
         body,
     );
+    (a, root)
+}
+
+/// A bound the emitter holds as a mask is refused by name, on every tier
+/// alike: AVX-512 holds one in an opmask, which no loop parameter may be.
+#[test]
+#[should_panic(expected = "BoundSort")]
+fn a_bound_that_is_a_mask_is_refused_by_name() {
+    let (a, root) = a_fold_that_starts_at_a_mask();
     let _refused = emit::compile(&a, root, SHAPE);
+}
+
+/// The cache's entry reaches the same refusal: `Kernel::over_values` takes no
+/// computed bound, but `Kernel::from_parts` adopts any arena.
+#[test]
+#[should_panic(expected = "BoundSort")]
+fn a_mask_bound_adopted_whole_is_refused_by_name_through_the_cache() {
+    let (a, root) = a_fold_that_starts_at_a_mask();
+    let _refused = jit_cache::compile(&Kernel::from_parts(a, root), SHAPE);
+}
+
+/// A select between two masks is a mask in value, but no emitter holds it as
+/// one, so it is not refused: until a bound is typed, its bits are read as a
+/// float on every tier alike. All ones is a NaN, which makes the fold NaN, and
+/// all zeros is the count `0`, the identity.
+#[test]
+fn a_select_between_masks_is_read_as_a_float_on_every_tier() {
+    for (u, want) in [(5.0f32, f32::NAN), (-1.0, 0.0)] {
+        let mut a = ExprArena::new();
+        let slot = a.declare_uniform(Uniform::new(u).decl());
+        let uniform = a.push_uniform(slot);
+        let (zero, one) = (a.push_const(0.0), a.push_const(1.0));
+        let positive = a.push_binary(OpKind::Lt, zero, uniform);
+        let above_one = a.push_binary(OpKind::Lt, one, uniform);
+        let hi = a.push_ternary(OpKind::If, positive, positive, above_one);
+        let binder = Binder::from_slot(0).expect("slot 0 exists");
+        let (x, k) = (a.push_var(0), a.push_var(binder.var()));
+        let body = a.push_binary(OpKind::Add, x, k);
+        let root = a.push_reduce(
+            Fold::new(Monoid::SUM, binder),
+            Bound::Lit(0),
+            Bound::Value(hi),
+            body,
+        );
+        let (plane, _) = within(move || run_arena(&a, root, SHAPE, &[u]));
+        assert_plane(
+            SHAPE,
+            [("as written", plane)],
+            &format!("u = {u}"),
+            |_, _| want,
+        );
+    }
 }

@@ -786,11 +786,12 @@ impl Kernel {
     /// (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
     ///
     /// A bound that is a value is read per call: `n` a [`Uniform`] is one
-    /// compiled program for every `n`, and the fold runs `n` trips. Outside
-    /// `[0, 2²⁴]` at run time — a uniform set to `2.5`, `−1`, NaN or `2²⁴ + 2`
-    /// — the fold is NaN (L5), and a pair that runs backwards at run time is the
-    /// identity, up to the factoring edge `FactorFold` accepts at a
-    /// runtime-empty range (decision 5).
+    /// compiled program for every `n`, and the fold runs `n` trips. A bound that
+    /// is no count at run time — a count is an integer in `0..=2²⁴`; a uniform
+    /// set to `2.5`, `−1`, NaN or `2²⁴ + 2` is none — makes the fold NaN (L5),
+    /// and a pair that runs backwards at run time is the identity, up to the
+    /// factoring edge `FactorFold` accepts at a runtime-empty range
+    /// (decision 5).
     ///
     /// Constness is discovered, not declared: a bound that is a constant naming
     /// a count is the fold's data, so `over_values(⊕, 0, 4, f)` is
@@ -810,10 +811,11 @@ impl Kernel {
     /// bound can round into the domain, §1.4); on one that is not a number
     /// ([`BoundRefusal::BoundNotANumber`]: a `Param`, a `Buffer`); on a constant
     /// naming no count ([`BoundRefusal::BoundOutOfDomain`]) or a mask
-    /// ([`BoundRefusal::BoundSort`]); and, from the fold `close_over` builds, on
-    /// a bound reading a coordinate ([`BoundRefusal::BoundVaries`], L3), on a
-    /// value bound under `ANY`, `ALL` or `SEQ` ([`BoundRefusal::BoundSort`]), and
-    /// when the body binds every slot.
+    /// ([`BoundRefusal::BoundSort`]); and, from the fold
+    /// [`ExprArena::close_over`] builds, on a bound reading a coordinate
+    /// ([`BoundRefusal::BoundVaries`], L3), on a value bound under `ANY`, `ALL`
+    /// or `SEQ` ([`BoundRefusal::BoundSort`]), and when the body binds every
+    /// slot.
     ///
     /// ```
     /// use pixelflow_ir::{Kernel, Monoid, Uniform};

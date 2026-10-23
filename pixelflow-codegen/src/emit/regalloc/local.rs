@@ -427,14 +427,19 @@ fn plan_carries(live: &Liveness, reads: &[usize], budget: Budget) -> Vec<Vec<u64
             if covered {
                 continue;
             }
-            let reloads: usize = own[from..to].iter().map(|&p| trips_at[p]).sum();
+            // A weight tops out rather than wraps: a nest priced at `u64::MAX`
+            // reads twice is the sum of two of them.
+            let reloads = own[from..to]
+                .iter()
+                .map(|&p| trips_at[p])
+                .fold(0, usize::saturating_add);
             let latch_stores = match param {
                 true => usize::try_from(facts.trips).unwrap_or(usize::MAX),
                 false => 0,
             };
             chosen.push(l);
             candidates.push(Candidate {
-                weight: reloads + latch_stores,
+                weight: reloads.saturating_add(latch_stores),
                 class: file,
                 live_across: inside[l].clone(),
                 root: (id as u64, l),

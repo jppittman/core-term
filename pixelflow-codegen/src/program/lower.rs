@@ -132,6 +132,8 @@ impl ValueFolds {
         }
     }
 
+    /// Check, after the walk, that every value-bounded fold found a reader.
+    ///
     /// # Panics
     ///
     /// If a fold was read by nothing: it is the root, or its readers were not
@@ -254,9 +256,10 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
 /// It also panics, for a fold whose bound is a value, when a bound reads a
 /// binder of the lattice (L3 after collapse) or the fold is read other than
 /// once, as an `If`'s true arm: an arena that was not legalized, a pipeline
-/// bug and not a kernel's. A bound that computes a mask is refused by name
-/// (`BoundSort`) on every tier alike, since a target may hold a mask where a
-/// loop's seed cannot be.
+/// bug and not a kernel's. A bound the emitter holds as a mask
+/// (`ScheduledOp::is_mask`: a comparison, or a bitwise and/or of two such) is
+/// refused by name (`BoundSort`) on every tier alike, since AVX-512 holds one in
+/// an opmask, where a loop's seed cannot be.
 pub(crate) fn arena_to_schedule(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -522,7 +525,7 @@ pub(crate) fn arena_to_schedule(
                     // AVX-512 will pick.
                     assert!(
                         !masks.is_mask(&schedule, map_child(term)),
-                        "arena_to_schedule: {}: the bound computes a mask (a comparison, or a \
+                        "arena_to_schedule: {}: the bound is a mask (a comparison, or a \
                          bitwise op on masks), which names no count; until a bound is typed \
                          (T6 of docs/language/2026-10-17-the-arena-is-typed.md) it is refused \
                          here, on every tier",
@@ -820,22 +823,36 @@ mod tests {
         (a, root)
     }
 
-    /// Whether a fold bounded by `end(count)` lowers.
-    fn lowers_with_the_end(end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId) -> bool {
+    /// What lowering a fold bounded by `end(count)` panics with, or `None` if
+    /// it lowers.
+    fn refusal_of_the_end(end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId) -> Option<String> {
         let (a, root) = a_fold_bounded_by(end);
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
         }))
-        .is_ok()
+        .err()?;
+        let message = match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => payload
+                .downcast_ref::<&str>()
+                .map_or_else(String::new, |message| (*message).to_owned()),
+        };
+        Some(message)
+    }
+
+    /// Whether lowering refuses a fold bounded by `end(count)` by name, as a
+    /// mask, and not for some other reason.
+    fn is_refused_as_a_mask(end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId) -> bool {
+        refusal_of_the_end(end).is_some_and(|message| message.contains("BoundSort"))
     }
 
     /// A target may hold a mask where a loop's seed cannot be (AVX-512's
-    /// opmask file), so a bound that computes one is refused on every tier
-    /// alike, by `ScheduledOp::is_mask`, which AVX-512's selector is held to:
-    /// a comparison, a bitwise op on two masks, a reinterpretation of either.
-    /// A bitwise op on a mask and a number is a number, and a count.
+    /// opmask file), so a bound the emitter holds as one is refused on every
+    /// tier alike, by `ScheduledOp::is_mask`, which AVX-512's selector is held
+    /// to: a comparison, a bitwise op on two masks, a reinterpretation of
+    /// either. A bitwise op on a mask and a number is a number, and a count.
     #[test]
-    fn a_bound_is_refused_exactly_when_it_computes_a_mask() {
+    fn a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask() {
         let lt = |a: &mut ExprArena, c| {
             let zero = a.push_const(0.0);
             a.push_binary(OpKind::Lt, zero, c)
@@ -844,16 +861,16 @@ mod tests {
             let one = a.push_const(1.0);
             a.push_binary(OpKind::Gt, c, one)
         };
-        assert!(!lowers_with_the_end(lt), "a comparison is a mask");
+        assert!(is_refused_as_a_mask(lt), "a comparison is a mask");
         assert!(
-            !lowers_with_the_end(|a, c| {
+            is_refused_as_a_mask(|a, c| {
                 let (x, y) = (lt(a, c), gt(a, c));
                 a.push_binary(OpKind::BitAnd, x, y)
             }),
             "a bitwise and of two masks is a mask"
         );
         assert!(
-            !lowers_with_the_end(|a, c| {
+            is_refused_as_a_mask(|a, c| {
                 let (x, y) = (lt(a, c), gt(a, c));
                 let both = a.push_binary(OpKind::BitOr, x, y);
                 let wider = a.push_binary(OpKind::BitAnd, both, y);
@@ -862,28 +879,30 @@ mod tests {
             "a bitwise op on masks is a mask, however deep"
         );
         assert!(
-            !lowers_with_the_end(|a, c| {
+            is_refused_as_a_mask(|a, c| {
                 let mask = lt(a, c);
                 a.push_unary(OpKind::Bits, mask)
             }),
             "a reinterpretation defines no value: it is its operand, a mask"
         );
-        assert!(
-            lowers_with_the_end(|a, c| {
+        assert_eq!(
+            refusal_of_the_end(|a, c| {
                 let mask = lt(a, c);
                 let three = a.push_const(3.0);
                 a.push_binary(OpKind::BitAnd, mask, three)
             }),
+            None,
             "a mask and a number is a number: 3 where it holds, 0 where it does not"
         );
-        assert!(
-            lowers_with_the_end(|a, c| {
+        assert_eq!(
+            refusal_of_the_end(|a, c| {
                 let one = a.push_const(1.0);
                 a.push_binary(OpKind::Add, c, one)
             }),
+            None,
             "arithmetic is a number"
         );
-        assert!(lowers_with_the_end(|_, c| c), "a uniform is a number");
+        assert_eq!(refusal_of_the_end(|_, c| c), None, "a uniform is a number");
     }
 
     /// The refusal names the law: a mask names no count.

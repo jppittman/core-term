@@ -11,11 +11,11 @@ except for the process-global store a `Ref` names into.
   dense `ExprId`, the identity tables, and what reachability means. Nothing
   else may depend on how a node is stored.
 - The meaning of a fold (`Fold`: monoid, binder, stride; `Bound`: a literal or a
-  child; NaN outside `[0, 2²⁴]` by `passes::legalize`'s guard), of a constant
-  (`Lit`: a real by its bits or a mask by its truth, never a lane whose bits
-  mean one or the other by convention), of a reinterpretation (`Bits`/`Float`:
-  the same bits read as the other sort, compiling to nothing), of the bitwise
-  domain (`is_bitwise_domain`), and of a name (`KernelKey`, `Ref`).
+  child; NaN unless each bound is a count in `0..=2²⁴`), of a constant (`Lit`: a
+  real by its bits or a mask by its truth, never a lane whose bits mean one or
+  the other by convention), of a reinterpretation (`Bits`/`Float`: the same bits
+  read as the other sort, compiling to nothing), of the bitwise domain
+  (`is_bitwise_domain`), and of a name (`KernelKey`, `Ref`).
 - Composition: `Kernel::at` as substitution into `Var` leaves, `by_ref` and
   the linker. Composition substitutes and links; it never evaluates or
   optimizes.

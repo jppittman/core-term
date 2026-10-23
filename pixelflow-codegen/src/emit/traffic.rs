@@ -81,8 +81,9 @@ impl ScopeTraffic {
 pub enum Trips {
     /// Every bound is a literal: the body runs exactly this many times.
     Known(u64),
-    /// A bound is a value, here or in an enclosing fold: the body is priced as
-    /// running this many times, whatever the call decides.
+    /// A bound is a value, here or in an enclosing fold, or the nest's product
+    /// passes `u64`: the body is priced as running this many times, and no
+    /// count is claimed.
     Estimated(u64),
 }
 
@@ -101,7 +102,8 @@ impl Trips {
 
     /// These trips of a loop inside `parent`: their product, an estimate if
     /// either is. A product past `u64` is a weight, not a count to report, so
-    /// it is an estimate at `u64::MAX`.
+    /// it is an estimate at `u64::MAX`; a weight is a price to add up, and the
+    /// allocator's sums of them saturate.
     pub(in crate::emit) fn nested_in(self, parent: Self) -> Self {
         let product = parent.weight().checked_mul(self.weight());
         match (self, parent, product) {
@@ -111,7 +113,8 @@ impl Trips {
     }
 
     /// The number the allocator weighs a read in the loop by: the count, or
-    /// the estimate's price.
+    /// the estimate's price. A price, not a count: the allocator adds these up
+    /// and its sums saturate.
     pub(in crate::emit) fn weight(self) -> u64 {
         match self {
             Self::Known(n) | Self::Estimated(n) => n,

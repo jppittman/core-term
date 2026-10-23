@@ -381,16 +381,19 @@ its edge.
   the `Write`s' binders) and that a value-bounded fold has exactly one reader, an `If` whose
   true arm is the fold: the single-reader property placement rests on (pipeline-bug
   panics). `FoldHeader::new` already refuses a stride other than 1 beside a value bound, so
-  no stride assert is added. A value bound that computes a mask is refused by name on every
-  tier, by `ScheduledOp::is_mask`: AVX2 and NEON would read its bits as a float, and AVX-512
-  would panic in selection. The predicate and the AVX-512 selector share the bitwise rule
-  (`BinaryOp::on_masks`), and a test selects every op over a mask and a number and holds
-  the opmask file to the predicate's answer.
+  no stride assert is added. A value bound the emitter holds as a mask (a comparison, or a
+  bitwise and/or of two such) is refused by name on every tier, by `ScheduledOp::is_mask`:
+  AVX-512 would hold it in an opmask and panic in selection. Any other bound whose value is
+  a mask, a select between two masks, is a lane read as a float on every tier alike, which
+  the guard turns into NaN or a count. The predicate and the AVX-512 selector share the
+  bitwise rule (`BinaryOp::on_masks`), and a test selects every op that reads a lane over a
+  mask and a number and holds the opmask file to the predicate's answer.
 - `Trips::{Known(u64), Estimated(u64)}` from selection, a nested fold's trips the product
   of its parent's (an estimate at `u64::MAX` when the product passes `u64`); the allocator
-  reads the number through `Trips::weight`.
-  `EmitTraffic.trips` carries the type, and `dynamic_memory_ops` is `None` over an
-  estimate, so no measurement shows an estimate as a count. `Display` prints a known count
+  reads the number through `Trips::weight`, and its sums of weights saturate, so a deep
+  nest is priced at the most it can weigh and still compiles. `EmitTraffic.trips` carries
+  the type, and `dynamic_memory_ops` is `None` over an estimate, so no measurement shows
+  an estimate as a count. `Display` prints a known count
   as the bare number and an estimate as `~n`, so byte_probe's `trips=` text
   (`examples/byte_probe.rs:306-307`) is unchanged and A4's gate compares like with like.
 
@@ -666,11 +669,11 @@ A5's deletion, which removes code #1427 only re-scopes.
   saturation telemetry, the extraction fields included, unchanged. The guard is
   `pixelflow_ir::passes::legalize`'s last pass (`passes/guard.rs`); lowering asserts after
   collapse that a value bound reads no lattice binder and that a value-bounded fold is read
-  only as its guard's true arm, and refuses a value bound that computes a mask by name on
-  every tier; `FoldHeader::new` already refuses a stride other than 1 beside a value, so no
-  stride assert is added. A value bound is an operand of its fold: `lo` seeds the loop and
-  `hi` is read at the latch, live there by the allocator's own rule. `Trips::{Known,
-  Estimated}` each carry a number, an estimate printed `~n`, and
+  only as its guard's true arm, and refuses a value bound the emitter holds as a mask by
+  name on every tier; `FoldHeader::new` already refuses a stride other than 1 beside a
+  value, so no stride assert is added. A value bound is an operand of its fold: `lo` seeds
+  the loop and `hi` is read at the latch, live there by the allocator's own rule.
+  `Trips::{Known, Estimated}` each carry a number, an estimate printed `~n`, and
   `EmitTraffic::dynamic_memory_ops` is `None` over an estimate. The key's marker is a count
   field of all ones; the collapse corpus is v5 and the training corpus's schema names the
   marker; the arena dumps stay v1, because no reader parses an `R` line. The JIT tests are

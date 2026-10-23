@@ -67,7 +67,8 @@ struct Selector<'s, B: IsaBackend> {
     /// `Var`, and a store's row and column, find their lane.
     binders: Vec<(Binder, B::Lane)>,
     /// Each open loop's index in the function's loops, and how many times its
-    /// body runs per call.
+    /// body runs per call, or an estimate's price where a fold's range is not
+    /// known.
     loops: Vec<(usize, Trips)>,
     /// Scheduled ops selected, per scope.
     scheduled: Vec<u64>,

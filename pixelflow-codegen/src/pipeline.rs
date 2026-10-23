@@ -110,7 +110,9 @@ impl Pass for Lower {
 ///
 /// A fold's bound may be a value rather than a literal: the fold is then
 /// compiled inside its guard (`passes::legalize`), computing its fold or NaN
-/// on every tier.
+/// on every tier. A bound is read as a number: a select between two masks is a
+/// mask in value but no emitter holds it as one, so its bits are read as a
+/// float, on every tier alike, which the guard turns into NaN or a count.
 ///
 /// # Panics
 ///
@@ -122,9 +124,10 @@ impl Pass for Lower {
 /// `X` and `Y`, so a retired axis would survive into the schedule as a `Var`
 /// no fold binds, and the allocator's refusal there names a binder, not an
 /// axis; this one names the axis. Also panics on a zero extent, which has
-/// no sample to compute. A fold whose bound computes a mask is refused too,
-/// by name (`BoundSort`) and on every tier alike: a target may hold a mask
-/// where a loop's seed cannot be.
+/// no sample to compute. A fold whose bound the emitter holds as a mask (a
+/// comparison, or a bitwise and/or of two such: `ScheduledOp::is_mask`) is
+/// refused too, by name (`BoundSort`) and on every tier alike: AVX-512 holds
+/// one in an opmask, where a loop's seed cannot be.
 pub fn compile(
     arena: &ExprArena,
     root: ExprId,

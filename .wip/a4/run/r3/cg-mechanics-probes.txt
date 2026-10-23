@@ -1,0 +1,65 @@
+# r3 codegen-mechanics review: probe evidence (scratch crate /home/user/scratch/a4-r3-cg-probe, tests/probe.rs)
+
+## F4 seed path: copy_of callers in an_inner_fold_starting_at_the_outer_index (gdb, breakpoint on Scan::copy_of)
+avx512 (detected):
+#0  pixelflow_codegen::emit::regalloc::local::Scan<pixelflow_codegen::emit::avx512::Avx512>::copy_of<pixelflow_codegen::emit::avx512::Avx512
+#1  0x000055555580efcb in pixelflow_codegen::emit::regalloc::local::Scan<pixelflow_codegen::emit::avx512::Avx512>::home<pixelflow_codegen::e
+#2  0x000055555580fa10 in pixelflow_codegen::emit::regalloc::local::Scan<pixelflow_codegen::emit::avx512::Avx512>::pass<pixelflow_codegen::e
+#10 0x000055555598654d in pixelflow_codegen::pipeline::compile 
+#11 0x0000555555719ad3 in value_bounds_jit::run_arena 
+#12 0x0000555555719a26 in value_bounds_jit::run_raw 
+#13 0x0000555555710888 in value_bounds_jit::both::{closure#0}<value_bounds_jit::an_inner_fold_starting_at_the_outer_index::{closure_env#0}> 
+avx2 (PIXELFLOW_ISA=avx2):
+#1  0x000055555580543b in pixelflow_codegen::emit::regalloc::local::Scan<pixelflow_codegen::emit::avx2::Avx2>::home<pixelflow_codegen::emit:
+#11 0x0000555555719ad3 in value_bounds_jit::run_arena 
+#12 0x0000555555719a26 in value_bounds_jit::run_raw 
+
+## probes, PIXELFLOW_ISA=avx512
+test c_fold_result_hi ... ok
+test d_value_fold_result_hi ... ok
+test b_computed_hi ... ok
+test a_same_value_both_ends ... ok
+test g_siblings_share_a_count ... ok
+test i_inner_hi_outer_index_lo_uniform ... ok
+test f_under_a_user_select ... ok
+test j_end_is_a_sibling_value_fold_in_the_outer_scope ... ok
+test k_lo_read_by_the_body_and_hi_offset ... ok
+test h_copy_under_pressure ... ok
+test e_triple_nest ... ok
+L: panicked: Some("arena_to_schedule: BoundSort: a fold's lo bound has a sort the fold cannot take: a mask names no count, and an ANY, ALL or SEQ fold takes literal bounds only (§1.4 and decision 8 of docs/language/2026-10-20-a-bound-is-a-value.md): the bound computes a mask (a comparison, or a bitwise op on masks), which names no count; until a bound is typed (T6 of docs/language/2026-10-17-the-arena-is-typed.md) it is refused here, on every tier")
+test z_sanity_hand_built_fails - should panic ... ok
+test z_sanity_wrong_oracle_fails - should panic ...  ok 
+M as_bound=false: ValueId(0) is read as a lane before any scope defines it
+test m_buffer_bound ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+## probes, PIXELFLOW_ISA=avx2
+test c_fold_result_hi ... ok
+test d_value_fold_result_hi ... ok
+test b_computed_hi ... ok
+test a_same_value_both_ends ... ok
+test f_under_a_user_select ... ok
+test g_siblings_share_a_count ... ok
+test j_end_is_a_sibling_value_fold_in_the_outer_scope ... ok
+test k_lo_read_by_the_body_and_hi_offset ... ok
+test i_inner_hi_outer_index_lo_uniform ... ok
+test h_copy_under_pressure ... ok
+test e_triple_nest ... ok
+L: panicked: 
+test l_mask_bound_through_jit_cache ... ok
+M as_bound=true: ValueId(0) is read as a lane before any scope defines it
+M as_bound=false: ValueId(0) is read as a lane before any scope defines it
+test m_buffer_bound ... ok
+test z_sanity_hand_built_fails - should panic ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+
+## Note
+The empty "L: panicked:" line in the avx2 block is stderr interleaving between parallel tests; rerun alone
+(PIXELFLOW_ISA=avx2 cargo test --test probe -- l_mask --nocapture) it panics at program/lower.rs:523 with
+"arena_to_schedule: BoundSort: ..." exactly as on avx512.
+
+## Finding from probe L
+jit_cache::compile (public) panics with BoundSort on a kernel built by the public Kernel::from_parts whose lo is
+Lt(0, u). Its `# Panics` section (pixelflow-codegen/src/jit_cache.rs:93) lists only the retired axis and the zero
+extent; public-surface.md:67 says the panic is "not reachable here ... so no new panic".

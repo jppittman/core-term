@@ -21,13 +21,13 @@
 //! **How many programs.** A fold's trip count is read off its node's bounds
 //! (`ExprArena::known_range`, through the node's `FoldHeader`), and a literal
 //! bound is part of the header bits (`FoldHeader::to_bits`, a `u128`) that the
-//! `KernelKey` the JIT cache keys on writes for the node, so *a different
-//! trip count is a different program* — that is the language's premise, not
-//! an accident (CLAUDE.md: "a trip count that must change is a recompile").
-//! One program for the whole font therefore needs every glyph padded to the
-//! font-wide maximum, and every glyph then pays the worst glyph's work at
-//! every pixel, because a constant trip count cannot exit early and an `If`
-//! computes both arms.
+//! `KernelKey` the JIT cache keys on writes for the node, so a different literal
+//! trip count is a different program. One program for the whole font therefore
+//! needs every glyph padded to the font-wide maximum, and every glyph then pays
+//! the worst glyph's work at every pixel, because a constant trip count cannot
+//! exit early and an `If` computes both arms. A count that is a value is one
+//! program for every count (docs/language/2026-10-20-a-bound-is-a-value.md); a
+//! production glyph's counts are literals until it moves them there.
 //!
 //! So this counts the **distinct trip counts**, which is the number of
 //! programs a font actually needs, and what bucketing them to a power of two

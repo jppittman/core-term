@@ -31,11 +31,12 @@ Rust type tree. Key properties:
 1. **Contravariance**: `Kernel::at` is `contramap`. Scaling coordinates by 2x shrinks the
    image by 2x — the direction reverses.
 2. **Pull-based**: nothing computes until a `Lattice` demands it.
-3. **The language is a DAG**: the fold is its one binder, and no fold's bound is a function
-   of a coordinate or of a lattice binder. A bound is a value placed by its variance: a
-   per-call count is a uniform, so one program serves every count, and outside `[0, 2²⁴]` the
-   fold is NaN; whether a constant fold is unrolled is the e-graph's and extraction's choice
-   (`PeelFold`, `HalveFold`). See `docs/language/2026-10-20-a-bound-is-a-value.md`.
+3. **The language is a DAG**: the fold is its one binder, and no fold's bound is a function of a
+   coordinate or of a lattice binder. A bound is a value placed by its variance: a per-call
+   count is a uniform, so one program serves every count, and a bound that is no count (an
+   integer in `0..=2²⁴`) makes the fold NaN; whether a constant fold is unrolled is the
+   e-graph's and extraction's choice (`PeelFold`, `HalveFold`). See
+   `docs/language/2026-10-20-a-bound-is-a-value.md`.
 
 ### Core operations
 

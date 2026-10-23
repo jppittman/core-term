@@ -1,0 +1,17 @@
+[package]
+name = "a4-rt-review"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+pixelflow-ir = { path = "/home/user/pixelflow/pixelflow-ir" }
+pixelflow-codegen = { path = "/home/user/pixelflow/pixelflow-codegen" }
+
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 1

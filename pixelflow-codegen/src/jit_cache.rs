@@ -94,9 +94,12 @@ pub struct Linked {
 ///
 /// Panics if the arena — as handed in, or as saturation leaves it — names a
 /// retired coordinate axis (`Var(2)`/`Var(3)`, the old Z and W), or if `shape`
-/// has a zero extent, which has no sample to compute. The assertions live one
-/// layer down, in [`emit::compile`], because that is the boundary every route
-/// to machine code passes through and this is only one of them.
+/// has a zero extent, which has no sample to compute, or if a fold's bound is
+/// a mask an emitter holds as one, which is refused by name (`BoundSort`) on
+/// every tier: `Kernel::over_values` takes no such bound, but a kernel adopted
+/// with `Kernel::from_parts` can carry one. The assertions live one layer
+/// down, in [`emit::compile`], because that is the boundary every route to
+/// machine code passes through and this is only one of them.
 pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Linked, CompileError> {
     let (arena, root) = kernel.parts();
     // The link tables, and the key, are read off the kernel with every

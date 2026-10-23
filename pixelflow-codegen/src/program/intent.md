@@ -34,12 +34,13 @@ for (§4); that is the input of `select` (§10).
   `arena_to_schedule` panics, as does an op outside `UnaryOp`, `BinaryOp`,
   `CompareOp` and `ShiftOp`, a value bound that reads a lattice binder, and a
   value-bounded fold read other than once, as an `If`'s true arm: a bypassed
-  pipeline, not a refused kernel. A bound that computes a mask
+  pipeline, not a refused kernel. A bound the emitter holds as a mask
   (`ScheduledOp::is_mask`) is refused by name, `BoundSort`, on every tier.
 
 ## Contract
 `mod.rs` defines what `emit/` reads: `ValueId`, `Def`, `ScheduledOp` (with
-`UnaryOp`, `BinaryOp`, `CompareOp`, `ShiftOp`, `Legal`, `legal`), `Scope`,
+`UnaryOp`, `BinaryOp` and its `on_masks` and `MaskOp`, `CompareOp`, `ShiftOp`,
+`Legal`, `legal`), `Scope`,
 `ScopedSchedule`/`ScopeRegion`/`ScopeFold`, `Flow`/`Item`/`ArmBlock`/`IfArm`,
 `operands`, `pointer_operand`, `all_operands`; and the stages `arena_to_schedule`
 (`lower.rs`), `Nest` (`scopes.rs`), `Own` (`ownership.rs`), `Layout` (`layout.rs`).
@@ -51,7 +52,7 @@ for (§4); that is the input of `select` (§10).
 - `scripts/check-emit-boundary.sh` (CI job "Emit boundary"; rules P and E).
 - `ScopedSchedule::assert_closed`, run by `Own` on every scope; desloppify `phases-in-order`.
 - Tests: the `*_fails_loudly` tests in `lower.rs` and
-  `a_bound_is_refused_exactly_when_it_computes_a_mask`; the carve in
+  `a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask`; the carve in
   `pipeline.rs`; through the emitter `pixelflow-codegen/tests/shared_arm_value.rs`,
   `tests/collapse_paths.rs` and `tests/value_bounds_jit.rs`.
 

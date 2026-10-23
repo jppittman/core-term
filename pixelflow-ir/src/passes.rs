@@ -11,7 +11,7 @@
 //! | [`lattice::pack`] | `collapse`'s degenerate `[0,1)` lane fold | the same folds strip-mined to the target's lane width |
 //! | [`expand_gather`] | `Gather` | index arithmetic + `RawGather` |
 //! | [`expand_transcendentals`] | `Sin`..`Pow` | arithmetic + bit-manip atoms |
-//! | `guard` (crate-private, `passes/guard.rs`) | a `Reduce` with a value bound | `If(dom, If(Lt(lo, hi), Reduce, identity), NaN)`: NaN outside `[0, 2²⁴]`, the identity over an empty range (L5, L2) |
+//! | `guard` (crate-private, `passes/guard.rs`) | a `Reduce` with a value bound | `If(dom, If(Lt(lo, hi), Reduce, identity), NaN)`: NaN unless every value bound is a count, an integer in `0..=2²⁴`, and the identity over an empty range (L5, L2) |
 //!
 //! The order in that table is the order they must run: differentiating a `sin`
 //! produces a `cos`, so `lower_dwrt` has to go before the pass that expands
@@ -83,8 +83,8 @@ mod guard;
 /// that can be forgotten.
 ///
 /// A fold whose bound is a value comes back inside its guard: NaN where a
-/// bound is not a count in `[0, 2²⁴]`, and the monoid's identity where the
-/// range is empty.
+/// bound is not a count (an integer in `0..=2²⁴`), and the monoid's identity
+/// where the range is empty.
 ///
 /// # Errors
 ///

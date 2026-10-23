@@ -524,8 +524,8 @@ struct Loop {
     head: Label,
     /// The enclosing loop, as an index into [`Function::loops`].
     parent: Option<usize>,
-    /// How many times its body runs per call: its own trips nested in its
-    /// parent's.
+    /// How many times its body runs per call, or an estimate's price where a
+    /// fold's range is not known: its own trips nested in its parent's.
     trips: Trips,
 }
 
@@ -1615,13 +1615,16 @@ mod tests {
         use pixelflow_ir::fold::Monoid;
         use pixelflow_ir::{Kernel, Uniform};
 
+        // More values live at once than any tier's vector file holds.
+        const WALL: u32 = 48;
+
         let (zero, eight) = (Kernel::constant(0.0), Kernel::constant(8.0));
         let count = || Uniform::new(7.0).kernel();
         let from_the_outer_index = Kernel::sum_over(8, |i| {
             Kernel::over_values(Monoid::SUM, i, &eight, |j| Kernel::x().add(j))
         });
         let a_wall = Kernel::over_values(Monoid::SUM, &zero, &count(), |k| {
-            let terms: Vec<Kernel> = (1..=48)
+            let terms: Vec<Kernel> = (1..=WALL)
                 .map(|m| Kernel::x().add(k).mul(&Kernel::constant(m as f32)))
                 .collect();
             let up = terms[1..]
@@ -1631,7 +1634,7 @@ mod tests {
                 .iter()
                 .rev()
                 .skip(1)
-                .fold(terms[47].clone(), |acc, t| acc.add(t));
+                .fold(terms[WALL as usize - 1].clone(), |acc, t| acc.add(t));
             up.add(&down)
         });
         let ragged = Kernel::over_values(Monoid::SUM, &zero, &count(), |k| Kernel::x().add(k));

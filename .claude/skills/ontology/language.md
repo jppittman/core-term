@@ -150,13 +150,13 @@
   are expressions over literals and structural parameters.
 - **Is not:** a type for a count ("A count of things is not a type. It is
   how many instances the host composed"). Not a uniform. Not variable at run
-  time. JP may later allow "uniform iterations", which are "no where near
-  the docket".
-- **Follows:** every range is constant, so every read point's range is known
-  at construction, so a new tile extent or zoom recompiles and is cached by
-  key. A font's glyphs are drawn by one program per piece count, chosen by
-  the count, a structural parameter (C1, 2026-10-09); the id tree whose
-  threshold `k` raised "structural or uniform" is superseded.
+  time. "Uniform iterations", once "no where near the docket", are a bound
+  that is a value (`Kernel::over_values`), not a structural parameter.
+- **Follows:** every structural range is constant, so every read point's
+  range is known at construction, so a new tile extent or zoom recompiles
+  and is cached by key. A font's glyphs are drawn by one program per piece
+  count, chosen by the count, a structural parameter (C1, 2026-10-09); the
+  id tree whose threshold `k` raised "structural or uniform" is superseded.
 - **Lives:** the-language-is-kernel §1.4–§1.5, §1.7, O2; one-pipeline
   decisions (JP, 2026-09-25). In code, a structural parameter read as a value
   (`N as f32`) is lowered to a `Param(k)` hole the host function fills
@@ -451,9 +451,9 @@
     (`arena_to_schedule`).
   - Peel and halve are e-graph rules, so unrolling is extraction's choice.
   - A fold costs `n·body + (n−1)·combine` plus its value bounds once, `n` its
-    known length or `Fold::ESTIMATED_TRIPS`; outside `[0, 2²⁴]` a value-bounded
-    fold is NaN, by the guard `passes::legalize` ends with, which is an `If`
-    whose arm holds the loop.
+    known length or `Fold::ESTIMATED_TRIPS`; unless every value bound is a count
+    (an integer in `0..=2²⁴`) the fold is NaN, by the guard `passes::legalize`
+    ends with, which is an `If` whose arm holds the loop.
   - `Dwrt` through a fold is linearity, which holds for Σ only.
   - Nested folds are nested loops.
   - A fold invariant in its enclosing binder is hoisted and runs once.
