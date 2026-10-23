@@ -1,0 +1,10 @@
+test-codegen.log: 160 passed, 0 failed, 0 ignored; warnings=0
+test-compiler.log: 304 passed, 0 failed, 6 ignored; warnings=0
+test-core.log: 136 passed, 0 failed, 1 ignored; warnings=0
+test-graphics.log: 236 passed, 0 failed, 15 ignored; warnings=0
+test-ir.log: 375 passed, 0 failed, 2 ignored; warnings=0
+test-pipeline.log: 221 passed, 0 failed, 2 ignored; warnings=0
+test-runtime.log: 152 passed, 0 failed, 6 ignored; warnings=0
+test-search-allfeat.log: 427 passed, 0 failed, 15 ignored; warnings=0
+test-search-telem.log: 427 passed, 0 failed, 15 ignored; warnings=0
+test-search.log: 424 passed, 0 failed, 15 ignored; warnings=0
