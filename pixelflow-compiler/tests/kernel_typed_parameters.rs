@@ -107,6 +107,11 @@ kernel! {
         (0..ONE).map(|i| k(X, Y + (i as f32))).sum::<f32>() / (ONE as f32)
     }
 
+    /// A count beside a kernel: a fold's range per call, around an application.
+    pub fn columns_to(k: impl Fn(f32, f32) -> f32, n: usize) -> f32 {
+        (0..n).map(|i| k(X + (i as f32), Y)).sum()
+    }
+
     /// An argument that is never applied: its uniforms are declared all the
     /// same, so a positional binding does not shift when one goes unread.
     pub fn first(a: impl Fn(f32, f32) -> f32, b: impl Fn(f32, f32) -> f32) -> f32 {
@@ -276,6 +281,37 @@ fn a_fold_over_a_usize_const_applies_its_argument() {
     // (8 + 9 + 10 + 11) / 4.
     assert_eq!(bake(&mean_down(&k)), 9.5);
     assert_eq!(bake(&mean_down_one(&k)), 8.0);
+}
+
+/// A staged entry's host function refuses a count past 2²⁴ before it builds
+/// anything, as one that takes no kernel does.
+#[test]
+#[should_panic(expected = "past 16777216 (2^24)")]
+fn a_staged_entry_refuses_a_count_past_the_domain() {
+    let k = kernel!(|s: f32| X * s)(2.0);
+    drop(columns_to(&k, 16_777_217));
+}
+
+/// An entry that takes a kernel and a count is built when its host function is
+/// called, and is one program for every count, as one that takes no kernel is:
+/// the count is the composed program's own uniform, declared first.
+#[test]
+fn a_count_beside_a_kernel_is_one_program_for_every_count() {
+    let k = kernel!(|s: f32| X * s)(2.0);
+    let (three, five) = (columns_to(&k, 3), columns_to(&k, 5));
+    let ((three_arena, three_root), (five_arena, five_root)) = (three.parts(), five.parts());
+    assert_eq!(
+        canonical(three_arena, three_root).key,
+        canonical(five_arena, five_root).key
+    );
+    let defaults: Vec<f32> = three.uniforms().iter().map(|u| u.default).collect();
+    assert_eq!(
+        defaults,
+        [3.0, 2.0],
+        "the entry's count first, then the argument's"
+    );
+    // Σ_{i<3} 2·(X + i) at X = 3: 2 · (3 + 4 + 5).
+    assert_eq!(bake(&three), 24.0);
 }
 
 // ─────────────────────────── binding ───────────────────────────

@@ -131,11 +131,11 @@ row). What a fold with a bound outside the domain denotes depends on its sort:
 After T6 an `Int`-sorted fold has no NaN either and falls under decision 8.
 
 A count the host writes is refused where it is written, by `KnownRange::admits` turned into a
-predicate on one count value: at `kernel!`'s `Args` write for a per-call count, in
-whichever spelling decision 2 picks (A6), and at bind for a discrete-kernel argument's
-extent (B1). `2²⁴ + 1` can be refused only there: no `f32` names it, and a uniform
-written as `16777217.0` is `2²⁴`, which is in the domain. The NaN is the in-language
-backstop.
+predicate on one count value: at `kernel!`'s host write of a per-call count, an entry's
+`n: usize` (decision 2), by its host function and, if it has one, by its `Args` record's
+`write_into` (A6), and at bind for a discrete-kernel argument's extent (B1). `2²⁴ + 1` can be refused
+only there: no `f32` names it, and a uniform written as `16777217.0` is `2²⁴`, which is in
+the domain. The NaN is the in-language backstop.
 
 **Exact only for leaves until bounds are `Int`.** The guard sees the value the lane
 holds. A leaf bound (a `Const`, a uniform, a binder, an `Extent`, an application of a
@@ -406,18 +406,21 @@ its edge.
 
 ### 3.4 `kernel!` (`pixelflow-compiler`)
 
-A bound is a `Ty::Usize` expression typed in the enclosing scope (`type_of_fold`
-already types bounds before pushing the fold's scope): a literal, a `usize` const, an
-enclosing index, and a per-call count entry parameter in the spelling decision 2 picks.
+A bound is a `Ty::Usize` expression typed in the enclosing scope (`type_of_fold` types
+its names before it pushes the fold's scope): a literal, a `usize` const, an enclosing
+index, or an entry parameter `n: usize` of the items form (decision 2), a uniform.
 An argument's extent arrives with B5's surface. X and Y are `Ty::F32` with no `as usize`,
-so sema refuses L3 by type, the IR's `BoundVaries` behind it; a non-leaf bound
-(`0..i + 1`) is refused until T6 (§1.4). `lower_fold` lowers `lo`/`hi` before
-`open_fold`; `Site::close_fold` hands them to the IR. A known bound keeps the
-expansion-time checks it has (reversed, past 2²⁴). The structural path went with
-`<const N: usize>`, its only producer, in A5: `Count::Structural`, `StructuralRange`,
-`instantiated_range`, `FoldRange`, `Holes`, `OPEN_RANGE`, `HOLE_STRIDE`, `ExpansionFold`,
-the lowering's `Param` hole and the macro tier's template exemption are deleted, and
-`kernel!` refuses a generic on any `fn`.
+so sema refuses L3 by type, the IR's `BoundVaries` behind it; every name in a bound is
+typed before its arithmetic is judged, and a non-leaf value bound (`0..i + 1`) is refused
+until T6 (§1.4). `lower_fold` resolves `lo`/`hi` before `open_fold`, which takes them,
+and `Site::close_fold` hands them to the IR. A known bound keeps the expansion-time
+checks it has (reversed, past 2²⁴), and a known end beside a value is checked alone
+against 2²⁴. A count the host writes is refused past 2²⁴ by the entry's host function and,
+if it has one, its `Args` record (§1.4); a helper and the closure form take no count. The structural
+path went with `<const N: usize>`, its only producer, in A5: `Count::Structural`,
+`StructuralRange`, `instantiated_range`, `FoldRange`, `Holes`, `OPEN_RANGE`,
+`HOLE_STRIDE`, `ExpansionFold`, the lowering's `Param` hole and the macro tier's
+template exemption are deleted, and `kernel!` refuses a generic on any `fn`.
 
 ### 3.5 The glyph (`pixelflow-graphics`)
 
@@ -489,7 +492,7 @@ one program per font. "Hunk" names an open PR whose diff touches or abuts the li
 | totality doc `:191-200` | "only dynamic *bounds* die … static max + early-out … cost is the static worst case `N`" | a per-call bound is a value, not a static max; the cost model's estimate is §1.5's | A4 | none |
 | `2026-10-15-kernels-evaluate-kernels.md:175` | "applying a discrete kernel over the wrong extent is a bake-time refusal by name" | a bind-time refusal | B1 | none |
 | the-language-is-kernel `:78-81`, §1.4 structural row, §1.5, §1.7, §1.6 `:296-314` | ranges constant; one program per piece count (2026-10-09); the host chooses a program by its piece count | a reversal note pointing here | A1 | none |
-| the-language-is-kernel §1.3 `:179` | `usize` is "a fold binder or a structural count" | a fold binder or a count (built from literals and `usize` consts with `+ - * /`) | A5 (literals and `usize` consts), A6 (a per-call count) | none |
+| the-language-is-kernel §1.3 `:179` | `usize` is "a fold binder or a structural count" | a fold binder or a count (built from literals and `usize` consts with `+ - * /`, or an entry's per-call `n: usize`) | A5 (literals and `usize` consts), A6 (a per-call count) | none |
 | the-language-is-kernel §1.3 `:186` | a count "is how many instances the host composed" | a count is a value | A5 (A1's, after #1431) | none |
 | the-language-is-kernel D1 `:643`, D3 `:645`, D9 `:651` | structural binding time; "a count is how many instances the host composed"; "one per piece count" | a reversal note pointing here | A1, after #1323 | #1323 `:644-650` holds `:645`; `:643`, `:651` abut it |
 | `2026-10-17-the-arena-is-typed.md` §1.1 `Reduce` row, §4 T6 | `Reduce`: `⊕ : S × S → S`, body `: S`; T6 types the binder only | `Reduce` with value bounds `Real × Real × S → S`, `Int × Int × S → S` at T6; T6 retypes the bounds with the binder, lifts `BoundArithmetic`, measured. A known bound is node data, so T6 re-keys no bound literal | A3 | none |
@@ -706,10 +709,26 @@ A5's deletion, which removes code #1427 only re-scopes.
   deleted. byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and
   `=avx2`; the 29 font programs' keys, digests and saturation telemetry, the extraction fields
   included, unchanged (gates compared to the base verified at main 7e9531e).
-- **A6. `kernel!` bounds are typed expressions** (§3.4). Waits on decision 2, the spelling;
-  decision 1 is B5's. Gate: `tests/rustc_is_the_oracle.rs` gains a triangular case and a
-  per-call count case (`fn rust_sum(n: usize, x: f32)`, in decision 2's spelling); the
-  `Args` write refuses `2²⁴ + 1`; `tests/fold_is_kernel_over.rs` green; byte_probe empty.
+- **A6. `kernel!` bounds are typed expressions** (§3.4). Decision 2's spelling, an
+  `n: usize` entry parameter; decision 1 is B5's. Gate: `tests/rustc_is_the_oracle.rs`
+  gains a triangular case and a per-call count case (`fn rust_sum(n: usize, x: f32)`, in
+  decision 2's spelling); the `Args` write refuses `2²⁴ + 1`;
+  `tests/fold_is_kernel_over.rs` green; byte_probe empty.
+  **Done:** a bound's names are typed where the fold is written: a literal or a `usize`
+  const (`+ - * /` over them), an enclosing fold's index (a triangular `0..i`), or an
+  entry parameter `n: usize` of the items form, a uniform declared in parameter order as
+  `n as f32` and read as a bound or by `n as f32`; one program for every `n`. Refused at
+  expansion: `X` or `Y` (L3), any other name that is not a `usize` (by type), arithmetic
+  on a bound that is a value (`BoundArithmetic`, until T6), a value bound under `any` or
+  `all` (decision 8), a known end past 2²⁴, and a `usize` parameter of a helper or of the
+  closure form. The host function panics on a count past 2²⁴, and `Args::write_into`
+  panics on one before writing anything; a raw block write that names no count makes the
+  fold NaN by the guard, up to the optimizer's algebraic rules, which are not sound at NaN
+  (BACKLOG E9). `rustc_is_the_oracle.rs` has the
+  triangular and per-call cases, and `fold_is_kernel_over.rs` the same two against
+  `over_values`. byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and
+  `=avx2`; the 29 font programs' keys, digests and saturation telemetry, the extraction
+  fields included, unchanged.
 - **A7. Folded into A5.** The exemption (`emit.rs:154-156` at `7e9531e`) was
   `if !entry.structural.is_empty()`, a condition on the field A5 deletes, so A5 deleted it.
   It exempted only test templates, which A5 rewrote over `usize` consts, stripped of a

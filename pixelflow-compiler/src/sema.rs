@@ -16,19 +16,22 @@
 //!    keeps its lanes — a `bool` is a mask lane — so the type lives here and
 //!    nowhere downstream; what it buys is that `X.select(Y, 7.0)`, which
 //!    blended a number as a mask, is a type error rather than plausible
-//!    pixels. A third type, `usize`, is a count: a fold's index or a `usize`
-//!    const. It is never the type of an expression — a body names one only to
-//!    convert it, `i as f32` — because nothing in the language computes with
-//!    an index (docs/language/2026-09-25-the-language-is-kernel.md §1.3,
-//!    §1.6). A fourth, a record, is a name for its `f32` fields: written by
-//!    name, read by field, and never computed (Phase D, D7).
+//!    pixels. A third type, `usize`, is a count: a fold's index, a `usize`
+//!    const or an entry's count parameter `n: usize`. It is never the type
+//!    of an expression — a body names one only to convert it, `i as f32` —
+//!    because nothing in the language computes with an index
+//!    (docs/language/2026-09-25-the-language-is-kernel.md §1.3, §1.6). A
+//!    fourth, a record, is a name for its `f32` fields: written by name,
+//!    read by field, and never computed (Phase D, D7).
 //! 4. **Calls**: a helper is called at its arity with arguments of its
 //!    parameters' types; an entry is not callable; recursion is refused.
-//! 5. **Folds**: a fold's bounds are constant and run forwards
-//!    ([`range_bounds`]), and its body is a term of its monoid, an `f32` or
-//!    a `bool`, in a scope where the closure's parameter is the index.
-//! 6. **Binding times** (plan §1.4): every `f32` and record parameter of an
-//!    entry is a uniform, and a kernel-typed one is a kernel (item 8) —
+//! 5. **Folds**: a fold's bounds are `usize`s typed where the fold is
+//!    written — known at expansion, or a name the program binds, alone,
+//!    reading no coordinate — and a known pair runs forwards
+//!    ([`range_bounds`]); its body is a term of its monoid, an `f32` or a
+//!    `bool`, in a scope where the closure's parameter is the index.
+//! 6. **Binding times** (plan §1.4): every `f32`, count and record parameter
+//!    of an entry is a uniform, and a kernel-typed one is a kernel (item 8) —
 //!    [`AnalyzedKernel::parameters`] is the uniforms' order of declaration.
 //! 7. **Tuple `let`s** (D7's front half): a tuple `let` types every
 //!    expression before it binds any name.
@@ -45,7 +48,8 @@
 //! An identifier resolves to the innermost binding of its name in scope:
 //! 1. a `let`-bound local → a shared arena id, or a record's fields
 //! 2. a declared parameter → an entry's is a uniform, one per field of a
-//!    record, bound per call; a helper's is the argument at the call
+//!    record, bound per call; a count parameter `n: usize` is one too; a
+//!    helper's is the argument at the call
 //! 3. a fold's index → the fold's binder, a `usize`, visible in the fold's
 //!    body and nowhere else
 //! 4. a `const` → its value
@@ -65,7 +69,6 @@
 //! The semantic phase produces an [`AnalyzedKernel`]: the AST, validated,
 //! and the value of every `const`.
 
-use crate::PLAN;
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ConstItem, Expr, FieldExpr, FnItem,
     FoldExpr, FunctionType, IfExpr, KernelDef, LetStmt, MethodCallExpr, Param, RangeExpr,
@@ -73,10 +76,10 @@ use crate::ast::{
 };
 use crate::lower::{LIBRARY_METHODS, Projection};
 use crate::symbol::{SymbolKind, SymbolTable};
+use crate::{BOUND_PLAN, PLAN};
 use pixelflow_ir::{OpKind, known_method_names};
 use proc_macro2::Span;
 use std::collections::HashMap;
-use std::ops::Range;
 use syn::{Ident, Type};
 
 /// The type of a name or an expression in a kernel body.
@@ -88,10 +91,11 @@ use syn::{Ident, Type};
 /// a number used as a mask blends bit patterns.
 ///
 /// The third, `usize`, is a count and not a value. A fold's index is one,
-/// and so is a `usize` const. A name of this type is refused wherever a value
-/// is expected, and converted only by `i as f32`: the index is an `f32` lane
-/// already, so the conversion lowers to nothing, but writing it is what keeps
-/// index arithmetic out of the language.
+/// and so are a `usize` const and an entry's count parameter. A name of this
+/// type is refused wherever a value is expected, and converted only by
+/// `i as f32`: the index is an `f32` lane already, so the conversion lowers to
+/// nothing, but writing it is what keeps index arithmetic out of the
+/// language.
 ///
 /// The fourth, a record, is its `f32` fields under one name (§1.3). It has
 /// no lane of its own: lowering flattens it, so a record is written only by
@@ -111,7 +115,7 @@ pub enum Ty {
     /// A mask: a comparison produces it, `&` and `|` combine it, an `if`
     /// chooses by it.
     Bool,
-    /// A count: a fold's index or a `usize` const.
+    /// A count: a fold's index, a `usize` const or an entry's count parameter.
     /// 64 bits, as `usize` is on every target the language compiles for.
     Usize,
     /// One of the block's records.
@@ -155,8 +159,9 @@ impl Ty {
                 format!(
                     "{what} an `f32` or a `bool`\n\
                      \n\
-                     note: a `usize` is a count, not a value: a fold's index or a `usize` \
-                     const, which a body converts by `i as f32`"
+                     note: a `usize` is a count, not a value: a fold's index, a `usize` \
+                     const or an entry's count parameter, which a body converts by \
+                     `i as f32`"
                 ),
             )),
             Some(Ty::Record(_) | Ty::Kernel) | None => Err(syn::Error::new_spanned(
@@ -240,22 +245,36 @@ pub struct AnalyzedKernel {
     pub consts: HashMap<String, ConstValue>,
 }
 
-/// An entry's parameter as its program sees it (plan §1.4): a uniform
-/// scalar, or a record of them.
+/// An entry's parameter as its program sees it (plan §1.4).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Parameter<'a> {
     pub name: &'a Ident,
-    /// The record it is, with that record's fields, or `None` for an `f32`.
-    pub record: Option<(RecordId, &'a [RecordField])>,
+    pub kind: ParameterKind<'a>,
 }
 
-/// One uniform scalar of an entry: a parameter, or one field of a record
-/// parameter — what the host function's argument `param` or `param.field`
-/// is, for this call.
+/// What an entry's parameter is to its program: each is uniform scalars,
+/// declared in parameter order.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Scalar<'a> {
-    pub param: &'a Ident,
-    pub field: Option<&'a Ident>,
+pub(crate) enum ParameterKind<'a> {
+    /// An `f32`: one uniform, the argument.
+    Value,
+    /// `n: usize`: one uniform holding `n as f32`, read as a fold's bound or
+    /// by `n as f32`; the host refuses a count past 2²⁴ before writing it.
+    Count,
+    /// One of the block's records: one uniform per field, in field order.
+    Record(RecordId, &'a [RecordField]),
+}
+
+/// One uniform scalar of an entry, as host code spells this call's value of
+/// it: the default its declaration takes, and what `write_into` writes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Scalar<'a> {
+    /// An `f32` parameter: `param`.
+    Value(&'a Ident),
+    /// A count parameter: `param as f32`.
+    Count(&'a Ident),
+    /// One field of a record parameter: `param.field`.
+    Field(&'a Ident, &'a Ident),
 }
 
 impl<'a> Parameter<'a> {
@@ -263,27 +282,28 @@ impl<'a> Parameter<'a> {
     /// parameter itself, or its record's fields in field order.
     pub fn scalars(self) -> impl Iterator<Item = Scalar<'a>> {
         let param = self.name;
-        let (whole, fields): (Option<Scalar<'a>>, &'a [RecordField]) = match self.record {
-            None => (Some(Scalar { param, field: None }), &[]),
-            Some((_, fields)) => (None, fields),
+        let (whole, fields): (Option<Scalar<'a>>, &'a [RecordField]) = match self.kind {
+            ParameterKind::Value => (Some(Scalar::Value(param)), &[]),
+            ParameterKind::Count => (Some(Scalar::Count(param)), &[]),
+            ParameterKind::Record(_, fields) => (None, fields),
         };
-        whole
-            .into_iter()
-            .chain(fields.iter().map(move |field| Scalar {
-                param,
-                field: Some(&field.name),
-            }))
+        whole.into_iter().chain(
+            fields
+                .iter()
+                .map(move |field| Scalar::Field(param, &field.name)),
+        )
     }
 }
 
 impl AnalyzedKernel {
     /// An entry's uniform parameters in declaration order: an `f32` is one
-    /// uniform, a record one per field (plan §1.4). The one definition of
-    /// the order a program declares its own uniforms in — lowering declares
-    /// them by it, and the host function and its `Args` record supply them
-    /// by it — so a positional binding cannot disagree with the program it
-    /// binds. A kernel-typed parameter is not among them: its uniforms are
-    /// the argument's, declared after these ([`Self::kernel_parameters`]).
+    /// uniform, a count one holding `n as f32`, a record one per field (plan
+    /// §1.4). The one definition of the order a program declares its own
+    /// uniforms in — lowering declares them by it, and the host function and
+    /// its `Args` record supply them by it — so a positional binding cannot
+    /// disagree with the program it binds. A kernel-typed parameter is not
+    /// among them: its uniforms are the argument's, declared after these
+    /// ([`Self::kernel_parameters`]).
     pub(crate) fn parameters<'a>(&'a self, entry: &'a FnItem) -> Vec<Parameter<'a>> {
         entry
             .params
@@ -291,12 +311,21 @@ impl AnalyzedKernel {
             .filter(|param| !param.is_kernel())
             .map(|param| Parameter {
                 name: &param.name,
-                record: self
-                    .def
-                    .record_named(&param.ty)
-                    .map(|id| (id, self.def.record(id).fields.as_slice())),
+                kind: self.parameter_kind(param),
             })
             .collect()
+    }
+
+    /// What `param`, one of an entry's, is to its program: by the block's
+    /// records first, then by its declared type (sema refused any other).
+    fn parameter_kind<'a>(&'a self, param: &Param) -> ParameterKind<'a> {
+        if let Some(id) = self.def.record_named(&param.ty) {
+            return ParameterKind::Record(id, self.def.record(id).fields.as_slice());
+        }
+        match Ty::from_syn(&param.ty) {
+            Some(Ty::Usize) => ParameterKind::Count,
+            _ => ParameterKind::Value,
+        }
     }
 
     /// An entry's kernel-typed parameters in declaration order: the order
@@ -550,8 +579,8 @@ impl<'a> Items<'a> {
     }
 
     /// A `fn`'s parameter and return types. An entry's parameters are its
-    /// uniforms: `f32`s, and records of them. A helper's may be `bool`s too —
-    /// a mask is an ordinary argument at an inlined call.
+    /// uniforms: `f32`s, counts, and records of `f32`s. A helper's may be
+    /// `bool`s too — a mask is an ordinary argument at an inlined call.
     fn signature(&self, f: &FnItem) -> syn::Result<Signature> {
         let role = f.role();
         let mut params = Vec::with_capacity(f.params.len());
@@ -625,28 +654,69 @@ impl<'a> Items<'a> {
             return Err(syn::Error::new_spanned(
                 &param.ty,
                 format!(
-                    "a kernel parameter is an `f32` or a `bool`, or one of this block's \
-                     records, and `{name}` is none of them\n\
+                    "a kernel parameter is an `f32` or a `bool`, an entry's count \
+                     `n: usize`, or one of this block's records, and `{name}` is none of them\n\
                      \n\
                      note: a block sees only its own items: a record declared in another \
                      `kernel!` block, or a Rust struct, is not in scope (D6 of {PLAN})"
                 ),
             ));
         }
+        if Ty::from_syn(&param.ty) == Some(Ty::Usize) {
+            return self.count_parameter(param, role);
+        }
         let ty = Ty::of_a_value(&param.ty, "a kernel parameter is")?;
         match (role, ty) {
             (Role::Entry, Ty::Bool) => Err(syn::Error::new_spanned(
                 &param.ty,
-                "an entry's parameter is an `f32` or a record\n\
+                "an entry's parameter is an `f32`, a count `n: usize` or a record\n\
                  \n\
                  note: an entry's parameters are its uniforms, bound per call: an `f32` is one, \
-                 a record is one per field, and a uniform is a number\n\
+                 a count is one, a record is one per field, and a uniform is a number\n\
                  help: take the mask's operands as parameters and compare them in the body",
             )),
             _ => Ok(ty),
         }
     }
+
+    /// `n: usize`: a count that changes per call, an entry's in the items
+    /// form (decision 2 of the bound plan), whose host function and, if it has
+    /// one, `Args` record refuse a count past 2²⁴ where the host writes it
+    /// (§1.4 of the bound plan). A helper is inlined and takes a count's value as an
+    /// argument, and the closure form's program is rebound by position with
+    /// `f32`s, so neither takes one.
+    fn count_parameter(&self, param: &Param, role: Role) -> syn::Result<Ty> {
+        match (role, self.def.spelling) {
+            (Role::Entry, Spelling::Items) => Ok(Ty::Usize),
+            (Role::Entry, Spelling::Closure) => Err(syn::Error::new_spanned(
+                &param.ty,
+                format!(
+                    "the closure form's parameter is an `f32`\n\
+                     \n\
+                     note: a count parameter `n: usize` is an entry's in the items form, whose \
+                     host function refuses a count past 2^24 where the host writes it \
+                     (§1.4 of {BOUND_PLAN}); the closure form's program is rebound by \
+                     position, with `f32`s, which cannot refuse one\n\
+                     help: {WRITE_AN_ENTRY}"
+                ),
+            )),
+            (Role::Helper, _) => Err(syn::Error::new_spanned(
+                &param.ty,
+                format!(
+                    "a helper's parameter is an `f32`, a `bool`, a record or a kernel\n\
+                     \n\
+                     note: a count parameter `n: usize` is an entry's: the host writes its value \
+                     per call and refuses one past 2^24 there (§1.4 of {BOUND_PLAN}); a helper is \
+                     inlined, and takes a count's value as an argument, `n as f32`"
+                ),
+            )),
+        }
+    }
 }
+
+/// How an author spells a count that changes per call, for a refusal that
+/// cannot take one where it stands to point at.
+const WRITE_AN_ENTRY: &str = "write an entry: `kernel! { pub fn f(n: usize) -> f32 { … } }`";
 
 /// The analysis of one `fn` body: its symbols, and the block's items.
 struct FnAnalyzer<'a> {
@@ -873,20 +943,30 @@ impl<'a> FnAnalyzer<'a> {
         ))
     }
 
-    /// The bounds a fold's range may name: the block's `usize` consts.
+    /// The `const`s a fold's bound is evaluated over; any other name in it is
+    /// the program's ([`Count::Name`]).
     fn range_scope(&self) -> RangeScope<'a> {
         RangeScope {
             consts: self.consts,
         }
     }
 
-    /// `(a..b).map(|i| e).sum()` and its siblings: the bounds are constant
-    /// and run forwards, and the body is a term of the fold's monoid, typed
-    /// in a scope of its own where the closure's parameter is the index. The
-    /// body sees every enclosing binding, an enclosing fold's index among
-    /// them, as a Rust closure does.
+    /// `(a..b).map(|i| e).sum()` and its siblings: each bound a `usize` typed
+    /// in the scope the fold is written in (plan §3.4), and the body a term
+    /// of the fold's monoid, typed in a scope of its own where the closure's
+    /// parameter is the index. The bounds are typed before that scope opens,
+    /// so a fold's own index is no name its bound can read (L3), and an
+    /// enclosing fold's is. The body sees every enclosing binding, as a Rust
+    /// closure does.
     fn type_of_fold(&mut self, fold: &FoldExpr) -> syn::Result<Ty> {
-        range_bounds(&fold.range, self.range_scope())?;
+        let names = bound_names(&fold.range.lo)
+            .into_iter()
+            .chain(bound_names(&fold.range.hi));
+        for name in names {
+            self.bound_named(name)?;
+        }
+        let bounds = range_bounds(&fold.range, self.range_scope())?;
+        refuse_a_value_bound_under_a_mask(fold, &bounds)?;
         self.refuse_shadowing_an_item(&fold.binder, "a fold's index")?;
         let (term, what) = term_type(fold.reduction);
         self.symbols.push_scope();
@@ -896,6 +976,52 @@ impl<'a> FnAnalyzer<'a> {
         self.folds_open -= 1;
         self.symbols.pop_scope();
         typed
+    }
+
+    /// A name in a range's bound: a `usize` — a `usize` const, an enclosing
+    /// fold's index, an entry's count parameter — whatever arithmetic joins
+    /// it to others, which [`range_bounds`] judges after. So `0..X + 1`
+    /// breaks L3, not the leaf rule.
+    fn bound_named(&self, name: &Ident) -> syn::Result<()> {
+        let Some(symbol) = self.symbols.lookup(&name.to_string()) else {
+            return Err(self.not_in_scope(name));
+        };
+        match (symbol.kind, symbol.ty) {
+            (_, Ty::Usize) => Ok(()),
+            (SymbolKind::Intrinsic, _) => Err(a_coordinate_bounds_no_fold(name)),
+            (kind, ty) => Err(self.not_a_usize_bound(name, kind, ty)),
+        }
+    }
+
+    /// A name in a range's bound that is in scope and no `usize`. The help is
+    /// by what the name is: an `f32` const's is `const N: usize`; an entry's
+    /// `f32` parameter's is the per-call count `n: usize` (the items form's);
+    /// any other has none.
+    fn not_a_usize_bound(&self, name: &Ident, kind: SymbolKind, ty: Ty) -> syn::Error {
+        let found = self.items.name_of(ty);
+        let help = match (kind, ty, self.role, self.items.def.spelling) {
+            (SymbolKind::Const, Ty::F32, ..) => {
+                format!("\nhelp: declare the count as `const {name}: usize`")
+            }
+            (SymbolKind::Parameter, Ty::F32, Role::Entry, Spelling::Items) => format!(
+                "\nhelp: a count that changes per call is an entry parameter `{name}: usize`"
+            ),
+            (SymbolKind::Parameter, Ty::F32, Role::Entry, Spelling::Closure) => format!(
+                "\nhelp: a count that changes per call is an entry parameter of the items \
+                 form: {WRITE_AN_ENTRY}"
+            ),
+            _ => String::new(),
+        };
+        syn::Error::new(
+            name.span(),
+            format!(
+                "mismatched types: expected `usize`, found `{found}`\n\
+                 \n\
+                 note: `{name}` is a range's bound, and a bound is an integer literal, a \
+                 `usize` const, an enclosing fold's index or an entry's count parameter \
+                 `n: usize` (§3.4 of {BOUND_PLAN}){help}"
+            ),
+        )
     }
 
     /// `i as f32`: a `usize`, named, as a value. Nothing else converts —
@@ -931,8 +1057,8 @@ impl<'a> FnAnalyzer<'a> {
                 "`as f32` converts a `usize`, and this expression's type is `{}`\n\
                  \n\
                  note: {why}\n\
-                 note: a `usize` is a fold's index or a `usize` const, converted by name: \
-                 `i as f32`",
+                 note: a `usize` is a fold's index, a `usize` const or an entry's count \
+                 parameter, converted by name: `i as f32`",
                 self.items.name_of(found)
             ),
         ))
@@ -1018,38 +1144,45 @@ impl<'a> FnAnalyzer<'a> {
     /// `{ { let a = X; a }; a }` compiled.
     fn resolve_ident(&self, ident: &Ident) -> syn::Result<Ty> {
         let name = ident.to_string();
-        if let Some(symbol) = self.symbols.lookup(&name) {
-            if symbol.kind == SymbolKind::Intrinsic && self.role == Role::Helper {
-                return Err(syn::Error::new(
-                    ident.span(),
-                    format!(
-                        "`{name}` in a helper\n\
-                         \n\
-                         note: a coordinate appears only in an entry (a `pub fn`); a helper is \
-                         a function of its arguments, so that applying it to a shifted \
-                         coordinate warps it\n\
-                         help: take the coordinate as a parameter, and pass `{name}` at the call"
-                    ),
-                ));
-            }
-            if symbol.ty == Ty::Usize {
-                return Err(a_count_is_not_a_value(ident));
-            }
-            return Ok(symbol.ty);
-        }
-        if self.items.fns.contains_key(&name) {
+        let Some(symbol) = self.symbols.lookup(&name) else {
+            return Err(self.not_in_scope(ident));
+        };
+        if symbol.kind == SymbolKind::Intrinsic && self.role == Role::Helper {
             return Err(syn::Error::new(
+                ident.span(),
+                format!(
+                    "`{name}` in a helper\n\
+                     \n\
+                     note: a coordinate appears only in an entry (a `pub fn`); a helper is \
+                     a function of its arguments, so that applying it to a shifted \
+                     coordinate warps it\n\
+                     help: take the coordinate as a parameter, and pass `{name}` at the call"
+                ),
+            ));
+        }
+        if symbol.ty == Ty::Usize {
+            return Err(a_count_is_not_a_value(ident));
+        }
+        Ok(symbol.ty)
+    }
+
+    /// The refusal of a name no scope binds: a function, a retired
+    /// coordinate, or nothing at all.
+    fn not_in_scope(&self, ident: &Ident) -> syn::Error {
+        let name = ident.to_string();
+        if self.items.fns.contains_key(&name) {
+            return syn::Error::new(
                 ident.span(),
                 format!(
                     "`{name}` is a function, not a value\n\
                      help: call it: `{name}(…)`"
                 ),
-            ));
+            );
         }
         // `Z` and `W` were coordinate intrinsics until a lattice became two
         // axes; say so, rather than that the name is missing.
         if let Some(axis) = RETIRED_COORDINATES.iter().find(|a| **a == name) {
-            return Err(syn::Error::new(
+            return syn::Error::new(
                 ident.span(),
                 format!(
                     "`{axis}` is no longer a coordinate: a lattice has two axes, X and Y\n\
@@ -1057,9 +1190,9 @@ impl<'a> FnAnalyzer<'a> {
                      help: declare it as a parameter of this kernel: every parameter is a \
                      uniform, bound per call"
                 ),
-            ));
+            );
         }
-        Err(syn::Error::new(
+        syn::Error::new(
             ident.span(),
             format!(
                 "cannot find `{name}` in this kernel body\n\
@@ -1070,7 +1203,7 @@ impl<'a> FnAnalyzer<'a> {
                  help: to use an outside value, declare it as a parameter of this kernel \
                  and pass it at the call site"
             ),
-        ))
+        )
     }
 
     /// Type a method call: the method by name and arity, then its operands
@@ -1607,8 +1740,8 @@ impl<'a> FnAnalyzer<'a> {
     }
 }
 
-/// A `usize` where a value is expected. A `usize` — a fold's index or a
-/// `usize` const — is a value only as `i as f32`:
+/// A `usize` where a value is expected. A `usize` — a fold's index, a `usize`
+/// const or an entry's count parameter — is a value only as `i as f32`:
 /// nothing in the language computes with one, because there is nothing to
 /// index (plan §1.6).
 fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
@@ -1617,11 +1750,45 @@ fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
         format!(
             "mismatched types: `{name}` is a `usize`, where a value is expected\n\
              \n\
-             note: a `usize` (a fold's index or a `usize` const) \
+             note: a `usize` (a fold's index, a `usize` const or an entry's count parameter) \
              becomes a value by an explicit conversion, `{name} as f32`, and by nothing else: \
              there is no arithmetic on a `usize`, no comparison of one, and no table to index \
              (§1.6 of {PLAN})\n\
              help: write `{name} as f32`"
+        ),
+    )
+}
+
+/// A coordinate in a range's bound (L3 of the bound plan).
+fn a_coordinate_bounds_no_fold(name: &Ident) -> syn::Error {
+    syn::Error::new(
+        name.span(),
+        format!(
+            "mismatched types: expected `usize`, found `f32`\n\
+             \n\
+             note: `{name}` is a coordinate, and a range's bound reads no coordinate: every \
+             sample runs the same loop, its trip count the same at every sample \
+             (L3 of {BOUND_PLAN})"
+        ),
+    )
+}
+
+/// Arithmetic on a name the program binds, in a range's bound, spanned at the
+/// operator.
+fn bound_arithmetic(name: &Ident, binary: &BinaryExpr) -> syn::Error {
+    syn::Error::new(
+        binary.span,
+        format!(
+            "arithmetic on `{name}` in a range's bound\n\
+             \n\
+             note: a bound that is a value — an enclosing fold's index, or an entry's count \
+             parameter — stands alone: the program computes a bound in an `f32` lane, where a \
+             sum of two counts can round to another count and the fold run the wrong number \
+             of trips with no NaN to say so, until bounds are typed integers (§1.4 of \
+             {BOUND_PLAN})\n\
+             help: a count known at expansion is a `usize` const, which takes `+ - * /`; one \
+             that changes per call is computed by the host and passed as a parameter of its own; \
+             arithmetic on an index waits for bounds typed as integers"
         ),
     )
 }
@@ -1632,25 +1799,64 @@ fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
 /// evaluator would refuse it.
 type CheckedOp = fn(u64, u64) -> Option<u64>;
 
+/// What a range's bound is (plan §3.4): a count evaluated here, or a name the
+/// program binds — an enclosing fold's index or an entry's count parameter —
+/// whose value is a leaf of the program, read per trip or per call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Count {
+    /// Evaluated at expansion, each operation checked: an integer literal, a
+    /// `usize` const, or `+ - * /` over them.
+    Known(u64),
+    /// A name that is no `usize` const. What it names is the scope's to say: `sema`
+    /// has typed every name in the bound before it is evaluated, and lowering
+    /// resolves it to the term it is bound to.
+    Name(Ident),
+}
+
+impl Count {
+    /// The name, when this bound is one.
+    pub(crate) fn name(&self) -> Option<&Ident> {
+        match self {
+            Count::Known(_) => None,
+            Count::Name(name) => Some(name),
+        }
+    }
+}
+
+impl From<u64> for Count {
+    fn from(count: u64) -> Self {
+        Count::Known(count)
+    }
+}
+
 /// Integer arithmetic over counts: what a `usize` const's initializer and a
 /// fold's bounds are built from. Each operation is checked here, as rustc's
 /// const evaluator checks it, so a count that would wrap is an error rather
 /// than a different count.
 ///
-/// A trait because its scopes differ only in what a name means: a `const`
-/// being evaluated may name another, evaluated on demand; a fold's bound
-/// names a `usize` const, already evaluated. Anything else is not constant.
+/// A trait because its scopes differ in what a name means: a `const` being
+/// evaluated may name another, evaluated on demand; a fold's bound names a
+/// `usize` const, already evaluated, or a name the program binds, which
+/// stands alone ([`Count`]).
 trait UsizeScope {
+    /// What a `usize` expression is here: a number in a `const`'s
+    /// initializer, a [`Count`] in a range's bound.
+    type Output: From<u64>;
+
     /// The value of `name` in a `usize` expression, or why it has none.
-    fn usize_named(&mut self, name: &Ident) -> syn::Result<u64>;
+    fn usize_named(&mut self, name: &Ident) -> syn::Result<Self::Output>;
 
     /// The refusal of something a `usize` expression is not built from.
     fn not_a_count(&self, span: Span) -> syn::Error;
 
+    /// `count` as an operand of `binary`, one of `+ - * /`: its number, or
+    /// the refusal of arithmetic on it.
+    fn operand(&self, count: Self::Output, binary: &BinaryExpr) -> syn::Result<u64>;
+
     /// An integer literal, a name, `+ - * /` and parentheses.
-    fn eval_usize(&mut self, expr: &Expr) -> syn::Result<u64> {
+    fn eval_usize(&mut self, expr: &Expr) -> syn::Result<Self::Output> {
         let binary = match expr {
-            Expr::Literal(literal) => return literal.usize_value(),
+            Expr::Literal(literal) => return literal.usize_value().map(Into::into),
             Expr::Ident(ident) => return self.usize_named(&ident.name),
             Expr::Paren(inner) => return self.eval_usize(inner),
             // Constant, but no count: rustc's refusal of the same tokens.
@@ -1684,13 +1890,18 @@ trait UsizeScope {
             | BinaryOp::BitAnd
             | BinaryOp::BitOr => return Err(self.not_a_count(binary.span)),
         };
+        // Arithmetic is judged after both sides are evaluated and the operator
+        // is one a count takes, so a comparison is `not_a_count`'s, and a
+        // `const`'s errors come in the order they always did.
+        let lhs = self.operand(lhs, binary)?;
+        let rhs = self.operand(rhs, binary)?;
         if binary.op == BinaryOp::Div && rhs == 0 {
             return Err(syn::Error::new(
                 binary.span,
                 format!("attempt to divide `{lhs}_usize` by zero"),
             ));
         }
-        checked(lhs, rhs).ok_or_else(|| {
+        checked(lhs, rhs).map(Into::into).ok_or_else(|| {
             syn::Error::new(
                 binary.span,
                 format!(
@@ -1701,23 +1912,51 @@ trait UsizeScope {
     }
 }
 
-/// A fold's bounds, each a `usize` built from integer literals, `usize`
-/// consts, `+ - * /` and parentheses, running forwards.
+/// The names in a range's bound, in source order: those of the shapes a bound
+/// is built from — names, parentheses, unary and binary operators. Nothing
+/// inside any other expression is one a bound can use, and [`range_bounds`]
+/// refuses the expression. Each stage judges these names in its own scope
+/// before it judges any arithmetic over them.
+pub(crate) fn bound_names(bound: &Expr) -> Vec<&Ident> {
+    match bound {
+        Expr::Ident(ident) => vec![&ident.name],
+        Expr::Paren(inner) => bound_names(inner),
+        Expr::Unary(unary) => bound_names(&unary.operand),
+        Expr::Binary(binary) => {
+            let mut names = bound_names(&binary.lhs);
+            names.extend(bound_names(&binary.rhs));
+            names
+        }
+        Expr::Literal(_)
+        | Expr::MethodCall(_)
+        | Expr::Call(_)
+        | Expr::If(_)
+        | Expr::Fold(_)
+        | Expr::Cast(_)
+        | Expr::Field(_)
+        | Expr::Block(_) => Vec::new(),
+    }
+}
+
+/// A fold's bounds: each a [`Count`], known at expansion — integer literals,
+/// `usize` consts, `+ - * /` and parentheses — or a name the program binds,
+/// which stands alone (§1.4 of the bound plan: until bounds are typed
+/// integers, arithmetic on a value is `f32` arithmetic and can round into the
+/// domain).
 ///
 /// The one evaluation of them: `sema` checks a fold with it, and lowering
 /// reads the bounds it returns, so the two cannot disagree on a range.
 ///
-/// Ranges are constant (plan §1.5): the program's shape is known when it is
-/// compiled. A reversed range is refused rather than read as the empty fold it
-/// would be in Rust: an empty range is written `a..a`, and `b..a` is almost
-/// always a slip (clippy's `reversed_empty_ranges` is deny-by-default for the
-/// same reason), and the IR's own `KnownRange::new` refuses one.
-pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Result<Range<u64>> {
+/// A known pair that runs backwards is refused rather than read as the empty
+/// fold it would be in Rust: an empty range is written `a..a`, and `b..a` is
+/// almost always a slip (clippy's `reversed_empty_ranges` is deny-by-default
+/// for the same reason), and the IR's own `KnownRange::new` refuses one. A
+/// pair with a value is decided at run time (L2).
+pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Result<[Count; 2]> {
     let mut scope = scope;
-    let lo = scope.eval_usize(&range.lo)?;
-    let hi = scope.eval_usize(&range.hi)?;
-    if lo > hi {
-        return Err(syn::Error::new(
+    let bounds = [scope.eval_usize(&range.lo)?, scope.eval_usize(&range.hi)?];
+    match &bounds {
+        [Count::Known(lo), Count::Known(hi)] if lo > hi => Err(syn::Error::new(
             range.span,
             format!(
                 "the range `{lo}..{hi}` runs backwards\n\
@@ -1726,41 +1965,51 @@ pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Res
                  identity; the empty range is written `a..a`, and a reversed one is refused as \
                  the slip it usually is"
             ),
-        ));
+        )),
+        _ => Ok(bounds),
     }
-    Ok(lo..hi)
 }
 
-/// What a fold's bound may name: a `usize` const, already evaluated.
+/// `any` and `all` take bounds known at expansion (decision 8 of the bound
+/// plan): `push_reduce` refuses a value bound under `ANY` or `ALL`
+/// (`BoundSort`), and no stage accepts what a later one refuses.
+fn refuse_a_value_bound_under_a_mask(fold: &FoldExpr, bounds: &[Count; 2]) -> syn::Result<()> {
+    let spelling = match fold.reduction {
+        Reduction::Any => "any",
+        Reduction::All => "all",
+        Reduction::Sum | Reduction::Product | Reduction::Min | Reduction::Max => return Ok(()),
+    };
+    let Some(name) = bounds.iter().find_map(Count::name) else {
+        return Ok(());
+    };
+    Err(syn::Error::new(
+        name.span(),
+        format!(
+            "`{spelling}` over a range bounded by `{name}`, a value\n\
+             \n\
+             note: `any` and `all` take bounds known at expansion: a mask has no NaN to answer \
+             with when a bound is no count (decision 8 of {BOUND_PLAN})"
+        ),
+    ))
+}
+
+/// What a fold's bound may name besides the program's own bindings: a `usize`
+/// const, already evaluated.
 #[derive(Clone, Copy)]
 pub(crate) struct RangeScope<'a> {
     pub consts: &'a HashMap<String, ConstValue>,
 }
 
 impl UsizeScope for RangeScope<'_> {
-    fn usize_named(&mut self, name: &Ident) -> syn::Result<u64> {
+    type Output = Count;
+
+    fn usize_named(&mut self, name: &Ident) -> syn::Result<Count> {
         match self.consts.get(&name.to_string()) {
-            Some(ConstValue::Usize(value)) => Ok(*value),
-            Some(ConstValue::F32(_)) => Err(syn::Error::new(
-                name.span(),
-                format!(
-                    "`{name}` is an `f32` const, and a range's bounds are `usize`s\n\
-                     \n\
-                     help: declare the count as `const {name}: usize`"
-                ),
-            )),
-            None => Err(syn::Error::new(
-                name.span(),
-                format!(
-                    "a range's bounds are constant, and `{name}` is not a `const`\n\
-                     \n\
-                     note: a bound is built from integer literals, `usize` consts, \
-                     `+ - * /` and parentheses; a fold's index, a parameter, a `let` and a \
-                     coordinate are not constant\n\
-                     note: ranges are constant: a program's shape is known when it is \
-                     compiled (§1.5 of {PLAN})"
-                ),
-            )),
+            Some(ConstValue::Usize(value)) => Ok(Count::Known(*value)),
+            // No `usize` const of that name. Both callers have judged every
+            // name in the bound first (an `f32` const among them), so this is
+            // one the program binds, and what it is bound to is theirs to say.
+            Some(ConstValue::F32(_)) | None => Ok(Count::Name(name.clone())),
         }
     }
 
@@ -1768,14 +2017,20 @@ impl UsizeScope for RangeScope<'_> {
         syn::Error::new(
             span,
             format!(
-                "a range's bounds are constant\n\
+                "a range's bound is a count, and this is not one\n\
                  \n\
-                 note: a bound is built from integer literals, `usize` consts, \
-                 `+ - * /` and parentheses\n\
-                 note: ranges are constant: a program's shape is known when it is compiled \
-                 (§1.5 of {PLAN})"
+                 note: a bound is an integer literal, a `usize` const, an enclosing fold's index \
+                 or an entry's count parameter `n: usize`; literals and `usize` consts combine \
+                 by `+ - * /` and parentheses (§3.4 of {BOUND_PLAN})"
             ),
         )
+    }
+
+    fn operand(&self, count: Count, binary: &BinaryExpr) -> syn::Result<u64> {
+        match count {
+            Count::Known(value) => Ok(value),
+            Count::Name(name) => Err(bound_arithmetic(&name, binary)),
+        }
     }
 }
 
@@ -1819,6 +2074,8 @@ struct ConstEvaluator<'a> {
 }
 
 impl UsizeScope for ConstEvaluator<'_> {
+    type Output = u64;
+
     fn usize_named(&mut self, name: &Ident) -> syn::Result<u64> {
         match self.value_of(name)? {
             ConstValue::Usize(value) => Ok(value),
@@ -1835,6 +2092,12 @@ impl UsizeScope for ConstEvaluator<'_> {
 
     fn not_a_count(&self, span: Span) -> syn::Error {
         Self::not_constant(span)
+    }
+
+    /// A `const`'s operands are numbers already: every name in one is a
+    /// `const`, evaluated on demand.
+    fn operand(&self, count: u64, _binary: &BinaryExpr) -> syn::Result<u64> {
+        Ok(count)
     }
 }
 
@@ -1890,7 +2153,6 @@ impl ConstEvaluator<'_> {
         }
     }
 
-    /// The value of the const `name`, evaluating it on first demand.impl ConstEvaluator<'_> {
     /// The value of the const `name`, evaluating it on first demand.
     fn value_of(&mut self, name: &Ident) -> syn::Result<ConstValue> {
         let key = name.to_string();
@@ -2040,7 +2302,7 @@ fn collect_calls(expr: &Expr, fns: &[String], out: &mut Vec<(String, Span)>) {
             collect_block_calls(&choice.then_branch, fns, out);
             collect_calls(&choice.else_branch, fns, out);
         }
-        // A bound is constant, so it calls nothing; a body may.
+        // A bound calls nothing — it is literals and names — and a body may.
         Expr::Fold(fold) => collect_calls(&fold.body, fns, out),
         Expr::Cast(cast) => collect_calls(&cast.operand, fns, out),
         Expr::Field(field) => collect_calls(&field.base, fns, out),
@@ -2602,59 +2864,215 @@ mod tests {
         }
     }
 
-    /// Ranges are constant (plan §1.5): a bound naming a fold's index, a
-    /// parameter, a `let`, a coordinate or an `f32` const, or built from
-    /// anything but integers and `+ - * /`, is refused where it is written.
+    /// A range's bound is a `usize` typed where the fold is written (§3.4 of
+    /// the bound plan): a coordinate is refused by L3, any other name that is
+    /// not a `usize` by type, and a shape no count is built from as such. The
+    /// help is by what the name is: an `f32` const's is `const N: usize`; an
+    /// entry's `f32` parameter's is the per-call count `n: usize` (the items
+    /// form's); any other has none.
     #[test]
-    fn a_range_bound_that_is_not_constant_is_refused() {
-        let cases: [(TokenStream, &str); 9] = [
-            (
-                quote! { |n: f32| (0..n).map(|i| i as f32).sum() },
-                "`n` is not a `const`",
-            ),
+    fn a_range_bound_is_a_usize_and_reads_no_coordinate() {
+        const L3: &str = "L3 of docs/language/2026-10-20-a-bound-is-a-value.md";
+        const TYPED: &str = "§3.4 of docs/language/2026-10-20-a-bound-is-a-value.md";
+        let cases: [(TokenStream, &[&str]); 16] = [
             (
                 quote! { || (0..X).map(|i| i as f32).sum() },
-                "`X` is not a `const`",
+                &["`X` is a coordinate", L3],
+            ),
+            (
+                quote! { || (0..X + 1).map(|i| i as f32).sum() },
+                &["`X` is a coordinate", L3],
+            ),
+            (
+                quote! { || (Y..4).map(|i| i as f32).sum() },
+                &["`Y` is a coordinate"],
+            ),
+            (
+                quote! { pub fn f(n: f32) -> f32 { (0..n).map(|i| i as f32).sum() } },
+                &[
+                    "expected `usize`, found `f32`",
+                    TYPED,
+                    "an entry parameter `n: usize`",
+                ],
+            ),
+            (
+                quote! { |n: f32| (0..n).map(|i| i as f32).sum() },
+                &[
+                    "expected `usize`, found `f32`",
+                    TYPED,
+                    "an entry parameter of the items form: write an entry",
+                ],
+            ),
+            (
+                quote! {
+                    fn h(r: f32) -> f32 { (0..r).map(|i| i as f32).sum() }
+                    pub fn f() -> f32 { h(X) }
+                },
+                &["expected `usize`, found `f32`", TYPED],
             ),
             (
                 quote! { || { let n = 4.0; (0..n).map(|i| i as f32).sum() } },
-                "`n` is not a `const`",
+                &["expected `usize`, found `f32`"],
             ),
             (
-                quote! { || (0..4).map(|i| (0..i).map(|j| j as f32).sum::<f32>()).sum() },
-                "`i` is not a `const`",
+                quote! {
+                    const R: f32 = 4.0;
+                    pub fn f() -> f32 { (0..R).map(|i| i as f32).sum() }
+                },
+                &["found `f32`", "declare the count as `const R: usize`"],
             ),
             (
-                quote! { const R: f32 = 4.0; pub fn f() -> f32 { (0..R).map(|i| i as f32).sum() } },
-                "`R` is an `f32` const",
+                quote! {
+                    pub struct Row { pub x0: f32 }
+                    pub fn f(p: Row) -> f32 { (0..p).map(|i| i as f32).sum() }
+                },
+                &["expected `usize`, found `Row`"],
+            ),
+            (
+                quote! { || (0..nn).map(|i| i as f32).sum() },
+                &["cannot find `nn`"],
             ),
             (
                 quote! { || (0..4.0).map(|i| i as f32).sum() },
-                "expected `usize`, found a float literal",
+                &["expected `usize`, found a float literal"],
             ),
             (
                 quote! { || (0..X.floor()).map(|i| i as f32).sum() },
-                "a range's bounds are constant",
+                &["a range's bound is a count, and this is not one"],
             ),
             (
                 quote! { || (0..(1 < 2)).map(|i| i as f32).sum() },
-                "a range's bounds are constant",
+                &["a range's bound is a count, and this is not one"],
             ),
             (
                 quote! { || (0..-1).map(|i| i as f32).sum() },
-                "cannot apply unary operator `-` to type `usize`",
+                &["cannot apply unary operator `-` to type `usize`"],
+            ),
+            (
+                quote! {
+                    pub fn f(k: impl Fn(f32, f32) -> f32) -> f32 {
+                        (0..k).map(|i| i as f32).sum()
+                    }
+                },
+                &["expected `usize`, found `impl Fn(f32, f32) -> f32`"],
+            ),
+            (
+                quote! { || (0..4).map(|i| (0..j).map(|j| j as f32).sum::<f32>()).sum() },
+                &["cannot find `j`"],
             ),
         ];
         for (input, expected) in cases {
             let err = refusal(input);
-            assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+            for expected in expected {
+                assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+            }
         }
-        let err = refusal(quote! { |n: f32| (0..n).map(|i| i as f32).sum() });
-        assert!(err.contains("ranges are constant"), "got: {err}");
+        // A helper cannot take a count, so its refusal offers none; the
+        // items form's entry is the one the closure form is sent to.
+        let err = refusal(quote! {
+            fn h(r: f32) -> f32 { (0..r).map(|i| i as f32).sum() }
+            pub fn f() -> f32 { h(X) }
+        });
+        assert!(!err.contains("help:"), "got: {err}");
     }
 
-    /// A range runs forwards; a reversed one is refused, saying it would be
-    /// the empty fold. The empty range itself is a fold like any other.
+    /// A bound may be a name the program binds, alone: an enclosing fold's
+    /// index, or an entry's count parameter, at either end or both. A fold's
+    /// index may shadow the count that bounds it, inside its body only, as in
+    /// Rust.
+    #[test]
+    fn a_range_bound_may_be_an_enclosing_index_or_a_count_parameter() {
+        accepted(quote! {
+            || (0..4).map(|i| (0..i).map(|j| (j as f32) * X).sum::<f32>()).sum()
+        });
+        accepted(quote! {
+            || (0..4).map(|i| (i..4).map(|j| j as f32).sum::<f32>()).sum()
+        });
+        accepted(quote! { pub fn f(n: usize) -> f32 { (0..n).map(|i| X * (i as f32)).sum() } });
+        accepted(quote! {
+            pub fn f(n: usize) -> f32 { (n..8).map(|i| i as f32).sum::<f32>() + (n as f32) }
+        });
+        accepted(quote! {
+            pub fn f(lo: usize, hi: usize) -> f32 { (lo..hi).map(|i| i as f32).sum() }
+        });
+        accepted(quote! { pub fn f(n: usize) -> f32 { (0..(n)).map(|n| n as f32).sum() } });
+        accepted(quote! {
+            fn tri(x: f32) -> f32 {
+                (0..4).map(|i| (0..i).map(|j| x * (j as f32)).sum::<f32>()).sum()
+            }
+            pub fn f() -> f32 { tri(X) }
+        });
+        accepted(quote! {
+            pub fn f(k: impl Fn(f32, f32) -> f32, n: usize) -> f32 {
+                (0..n).map(|i| k(X + (i as f32), Y)).sum()
+            }
+        });
+    }
+
+    /// A bound that is a name stands alone: the program computes a bound in
+    /// an `f32` lane, so arithmetic on one is refused until bounds are typed
+    /// integers (§1.4 of the bound plan). Arithmetic over `usize` consts,
+    /// beside a value or not, is known at expansion and is not.
+    #[test]
+    fn arithmetic_on_a_value_bound_is_refused_until_bounds_are_integers() {
+        let cases: [(TokenStream, &str); 4] = [
+            (
+                quote! { || (0..4).map(|i| (0..i + 1).map(|j| j as f32).sum::<f32>()).sum() },
+                "`i`",
+            ),
+            (
+                quote! { pub fn f(n: usize) -> f32 { (0..n - 1).map(|i| i as f32).sum() } },
+                "`n`",
+            ),
+            (
+                quote! {
+                    const LO: usize = 2;
+                    pub fn f(n: usize) -> f32 { (LO + n..n).map(|i| i as f32).sum() }
+                },
+                "`n`",
+            ),
+            (
+                quote! { pub fn f(n: usize) -> f32 { (0..2 * n).map(|i| i as f32).sum() } },
+                "`n`",
+            ),
+        ];
+        for (input, name) in cases {
+            let err = refusal(input);
+            assert!(
+                err.contains(&format!("arithmetic on {name} in a range's bound"))
+                    && err.contains("§1.4 of docs/language/2026-10-20-a-bound-is-a-value.md"),
+                "expected arithmetic on {name}, got: {err}"
+            );
+        }
+        accepted(quote! {
+            const LO: usize = 2;
+            const N: usize = 3;
+            pub fn f(n: usize) -> f32 { (LO + N..n).map(|i| i as f32).sum() }
+        });
+    }
+
+    /// `any` and `all` take bounds known at expansion (decision 8 of the
+    /// bound plan): a mask has no NaN to be outside a count's domain.
+    #[test]
+    fn any_and_all_take_bounds_known_at_expansion() {
+        for input in [
+            quote! { pub fn f(n: usize) -> bool { (0..n).any(|i| X < i as f32) } },
+            quote! { pub fn f(n: usize) -> bool { (n..4).all(|i| X < i as f32) } },
+            quote! {
+                || (0..4).map(|i| if (0..i).any(|j| X < j as f32) { 1.0 } else { 0.0 }).sum()
+            },
+        ] {
+            let err = refusal(input);
+            assert!(
+                err.contains("decision 8 of docs/language/2026-10-20-a-bound-is-a-value.md"),
+                "got: {err}"
+            );
+        }
+    }
+
+    /// A known range runs forwards; a reversed one is refused, saying it
+    /// would be the empty fold. The empty range itself is a fold like any
+    /// other, and so is a pair with a value, which is decided at run time (L2).
     #[test]
     fn a_reversed_range_is_refused_and_an_empty_one_is_not() {
         let err = refusal(quote! { || (5..3).map(|i| i as f32).sum() });
@@ -2663,6 +3081,7 @@ mod tests {
             "got: {err}"
         );
         accepted(quote! { || (3..3).map(|i| i as f32).sum() });
+        accepted(quote! { pub fn f(n: usize) -> f32 { (5..n).map(|i| i as f32).sum() } });
     }
 
     /// A range's bounds are evaluated in `usize`, from `usize` consts, each
@@ -2691,8 +3110,8 @@ mod tests {
             consts: &analyzed.consts,
         };
         assert_eq!(
-            range_bounds(&fold.range, scope).expect("constant"),
-            3..14,
+            range_bounds(&fold.range, scope).expect("known"),
+            [Count::Known(3), Count::Known(14)],
             "`LO..LO + N` is `3..14`"
         );
     }
@@ -2761,10 +3180,11 @@ mod tests {
 
     /// A fold's index is a `usize`, and a `usize` is not a value: arithmetic
     /// on one, a comparison of one, and one where an `f32` is expected are
-    /// type errors at the name, which say `i as f32`. So is a `usize` const.
+    /// type errors at the name, which say `i as f32`. So are a `usize` const
+    /// and an entry's count parameter.
     #[test]
     fn a_usize_where_a_value_is_expected_is_a_type_error() {
-        let cases: [(TokenStream, &str); 9] = [
+        let cases: [(TokenStream, &str); 10] = [
             (quote! { || (0..4).map(|i| X * i).sum() }, "`i`"),
             (quote! { || (0..4).map(|i| (i + 1) as f32).sum() }, "`i`"),
             (quote! { || (0..4).any(|i| i < 2) }, "`i`"),
@@ -2786,6 +3206,7 @@ mod tests {
                 quote! { const N: usize = 4; pub fn f() -> f32 { X * N } },
                 "`N`",
             ),
+            (quote! { pub fn f(n: usize) -> f32 { X * n } }, "`n`"),
         ];
         for (input, name) in cases {
             let err = refusal(input);
@@ -2803,6 +3224,7 @@ mod tests {
     fn as_f32_converts_a_usize_and_nothing_else() {
         accepted(quote! { || (0..4).map(|i| (i) as f32).sum() });
         accepted(quote! { const N: usize = 4; pub fn f() -> f32 { X * (N as f32) } });
+        accepted(quote! { pub fn f(n: usize) -> f32 { X * (n as f32) } });
         let cases: [(TokenStream, &str); 4] = [
             (quote! { || X as f32 }, "this expression's type is `f32`"),
             (quote! { || (X < Y) as f32 }, "a mask"),
@@ -2832,30 +3254,51 @@ mod tests {
         );
     }
 
-    /// A `usize` is a count, not a value: no parameter, `let` or `fn`
-    /// return is declared one.
+    /// A `usize` parameter is a count, an entry's in the items form (decision
+    /// 2 of the bound plan); a helper's and the closure form's are refused,
+    /// and no `let` or `fn` return is a `usize`.
     #[test]
-    fn a_usize_is_not_a_declared_value_type() {
-        let cases: [(TokenStream, &str); 3] = [
-            (
-                quote! { pub fn f(n: usize) -> f32 { X } },
-                "a kernel parameter is an `f32` or a `bool`",
-            ),
+    fn a_usize_parameter_is_an_items_entrys_count() {
+        accepted(quote! { pub fn f(n: usize) -> f32 { X } });
+        let cases: [(TokenStream, &[&str]); 5] = [
             (
                 quote! { pub fn f() -> usize { 4 } },
-                "a kernel `fn` returns an `f32` or a `bool`",
+                &[
+                    "a kernel `fn` returns an `f32` or a `bool`",
+                    "a `usize` is a count",
+                ],
             ),
             (
                 quote! { || { let n: usize = 4; X } },
-                "a `let` in a kernel body is an `f32` or a `bool`",
+                &[
+                    "a `let` in a kernel body is an `f32` or a `bool`",
+                    "a `usize` is a count",
+                ],
+            ),
+            (
+                quote! { fn h(n: usize) -> f32 { n as f32 } pub fn f() -> f32 { X } },
+                &[
+                    "a helper's parameter is",
+                    "§1.4 of docs/language/2026-10-20-a-bound-is-a-value.md",
+                ],
+            ),
+            (
+                quote! { |n: usize| X },
+                &[
+                    "the closure form's parameter is an `f32`",
+                    "§1.4 of docs/language/2026-10-20-a-bound-is-a-value.md",
+                ],
+            ),
+            (
+                quote! { pub fn f(m: bool) -> f32 { X } },
+                &["an entry's parameter is an `f32`, a count `n: usize` or a record"],
             ),
         ];
         for (input, expected) in cases {
             let err = refusal(input);
-            assert!(
-                err.contains(expected) && err.contains("a `usize` is a count"),
-                "expected `{expected}`, got: {err}"
-            );
+            for expected in expected {
+                assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+            }
         }
     }
 
@@ -2868,6 +3311,11 @@ mod tests {
         accepted(quote! { || (0..2).map(|i| (0..3).map(|i| i as f32).sum::<f32>()).sum() });
         let err = refusal(quote! { || (0..4).map(|i| i as f32).sum() + i as f32 });
         assert!(err.contains("cannot find `i`"), "got: {err}");
+        // Its bounds are typed before its scope opens: its own index is not
+        // among the names they read, and an enclosing index is.
+        let err = refusal(quote! { || (0..i).map(|i| i as f32).sum() });
+        assert!(err.contains("cannot find `i`"), "got: {err}");
+        accepted(quote! { || (0..4).map(|i| (0..i).map(|i| i as f32).sum::<f32>()).sum() });
         let err = refusal(quote! { || (0..4).map(|X| X).sum() });
         assert!(
             err.contains("a fold's index `X` shadows the intrinsic"),

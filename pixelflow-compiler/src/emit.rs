@@ -35,14 +35,15 @@
 //! [`ExprArena::apply`]: pixelflow_ir::arena::ExprArena::apply
 //!
 //! **Binding times** (docs/language/2026-09-25-the-language-is-kernel.md §1.4).
-//! A host function takes each `f32` and record parameter by its declared type,
-//! and a kernel-typed one as a `&Kernel`; every `f32` and record one is a
-//! uniform: the kernel it returns declares one
-//! uniform per scalar — a record parameter, one per field — in declaration
-//! order, with the call's value as its default. So the call's values are the
-//! kernel's arguments, never its constants: every call of an entry that
-//! takes no kernel is one program, keyed and compiled once, and a compiled
-//! program is rebound per call from the entry's `Args` record.
+//! A host function takes each `f32`, count and record parameter by its
+//! declared type, and a kernel-typed one as a `&Kernel`; every `f32`, count
+//! and record one is a uniform: the kernel it returns declares one uniform
+//! per scalar — a record parameter, one per field — in declaration order,
+//! with the call's value as its default (a count's as `n as f32`, refused
+//! past 2²⁴ first). So the call's values are the kernel's arguments, never
+//! its constants: every call of an entry that takes no kernel is one
+//! program, keyed and compiled once, and a compiled program is rebound per
+//! call from the entry's `Args` record.
 //!
 //! [`Kernel`]: pixelflow_core::Kernel
 
@@ -53,12 +54,13 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
+use crate::BOUND_PLAN;
 use crate::ast::{ConstItem, FnItem, RecordItem, Role, Spelling};
 use crate::lower::{Expansion, Site, lower_entry};
-use crate::sema::{AnalyzedKernel, ConstValue, Scalar};
+use crate::sema::{AnalyzedKernel, ConstValue, ParameterKind, Scalar};
 use pixelflow_ir::arena::Axis;
 use pixelflow_ir::{Binder, Monoid};
-use std::ops::Range;
+use syn::ext::IdentExt;
 
 /// Emit arena-backend code for an analyzed kernel.
 ///
@@ -74,8 +76,9 @@ use std::ops::Range;
 ///
 /// For the items form: one struct per record, one `const` per `pub const`,
 /// and for each entry its host `fn`, taking its parameters by their declared
-/// types — a kernel-typed one as a `&Kernel` — and its `Args` record. An
-/// entry that takes a kernel is [`Staged`]: lowered when its host function is
+/// types — a kernel-typed one as a `&Kernel` — and its `Args` record,
+/// refusing a count parameter past 2²⁴ before anything is built. An entry
+/// that takes a kernel is [`Staged`]: lowered when its host function is
 /// called.
 ///
 /// `optimizer` rewrites each lowered arena before it is emitted. It is a
@@ -115,7 +118,7 @@ pub fn emit_kernel(
                         }
                     }
                 };
-                items.extend(emit_entry(entry, &body));
+                items.extend(emit_entry(entry, analyzed, &body));
                 items.extend(emit_args(entry, analyzed));
             }
             Ok(items)
@@ -158,13 +161,17 @@ fn entry_arena(
     Ok(arena_to_tokens(&arena, root, &arguments))
 }
 
-/// What a scalar argument is in the host function: `param`, or
-/// `param.field` for a record parameter's field.
+/// What a scalar argument's value is in host code: `param`, `param.field`
+/// for a record parameter's field, or `param as f32` for a count — the `f32`
+/// its uniform holds, which the host has refused past 2²⁴ before this
+/// conversion could make it another count. `write_into` reads each through
+/// `self.`: `as` binds looser than a field access, so `self.n as f32` is
+/// `(self.n) as f32`.
 fn argument(scalar: Scalar<'_>) -> TokenStream {
-    let param = scalar.param;
-    match scalar.field {
-        None => quote!(#param),
-        Some(field) => quote!(#param.#field),
+    match scalar {
+        Scalar::Value(param) => quote!(#param),
+        Scalar::Count(param) => quote!(#param as f32),
+        Scalar::Field(param, field) => quote!(#param.#field),
     }
 }
 
@@ -177,8 +184,9 @@ fn emit_closure(entry: &FnItem, arena_code: &TokenStream) -> TokenStream {
     if entry.params.is_empty() {
         return quote! {{ #body }};
     }
-    // Every parameter is an `f32`: the closure sugar has no records, and
-    // `sema` refuses a `bool` parameter of an entry.
+    // Every parameter is an `f32`: the closure sugar has no records, `sema`
+    // refuses a `bool` parameter of an entry, and a count is an entry's of
+    // the items form.
     let names = entry.params.iter().map(|p| &p.name);
     quote! {
         move | #( #names: f32 ),* | -> ::pixelflow_core::Kernel { #body }
@@ -187,7 +195,9 @@ fn emit_closure(entry: &FnItem, arena_code: &TokenStream) -> TokenStream {
 
 /// An entry's expansion: a host function returning a `Kernel` — `body`,
 /// statements that build it — taking its parameters by their declared types,
-/// with the entry's visibility and doc comments.
+/// with the entry's visibility and doc comments. An entry with a count
+/// parameter refuses one past 2²⁴ before building anything, and says so in a
+/// `# Panics` section.
 ///
 /// A kernel-typed parameter is taken as a `&Kernel`, not a `Kernel`: the
 /// host function only reads it, splicing a copy of its term into the
@@ -196,7 +206,7 @@ fn emit_closure(entry: &FnItem, arena_code: &TokenStream) -> TokenStream {
 /// `Kernel::at` and `Lattice::bake` take theirs. Owning it would buy the
 /// argument's arena only by building on top of it, which would declare its
 /// uniforms before the entry's own.
-fn emit_entry(entry: &FnItem, body: &TokenStream) -> TokenStream {
+fn emit_entry(entry: &FnItem, analyzed: &AnalyzedKernel, body: &TokenStream) -> TokenStream {
     let attrs = &entry.attrs;
     let vis = &entry.vis;
     let name = &entry.name;
@@ -207,18 +217,73 @@ fn emit_entry(entry: &FnItem, body: &TokenStream) -> TokenStream {
             false => quote!(#name: #ty),
         }
     });
+    let counts = count_parameters(entry, analyzed);
+    let refusals = counts.iter().map(|count| {
+        let message = count_refusal(entry, count);
+        quote! {
+            ::core::assert!(
+                ::pixelflow_core::__macro::ir::KnownRange::admits(&(0..#count as u64)),
+                #message,
+                #count
+            );
+        }
+    });
+    let panics = (!counts.is_empty()).then(|| {
+        panics_section(&format!(
+            " If a count argument is past 2^24: {COUNT_DOMAIN} (§1.4 of {BOUND_PLAN})."
+        ))
+    });
     quote! {
         #(#attrs)*
+        #panics
         #[must_use]
         #vis fn #name ( #(#params),* ) -> ::pixelflow_core::Kernel {
+            #(#refusals)*
             #body
         }
     }
 }
 
+/// A `# Panics` section as doc attributes, for a generated item: `text` is
+/// its one paragraph, beginning with a space as a doc comment's text does.
+fn panics_section(text: &str) -> TokenStream {
+    quote! { #[doc = ""] #[doc = " # Panics"] #[doc = ""] #[doc = #text] }
+}
+
+/// An entry's count parameters, in declaration order.
+fn count_parameters<'a>(entry: &'a FnItem, analyzed: &'a AnalyzedKernel) -> Vec<&'a Ident> {
+    analyzed
+        .parameters(entry)
+        .into_iter()
+        .filter(|parameter| matches!(parameter.kind, ParameterKind::Count))
+        .map(|parameter| parameter.name)
+        .collect()
+}
+
+/// Why the host refuses a count past 2²⁴ where it writes one: the domain of
+/// a count. Written as the `f32` its uniform holds, `2^24 + 1` is `2^24`, a
+/// count, and a fold bounded by it would run one trip short with no NaN to
+/// say so, which only the host can refuse (plan §1.4).
+const COUNT_DOMAIN: &str = "a count is an integer in `0..=2^24`; `2^24 + 1` would be written as \
+    `2^24`, a fold bounded by it would run one trip short with no NaN, and a larger count would \
+    name none";
+
+/// The refusal of a count past 2²⁴ where the host writes it, as a format
+/// string with one `{}`, the count.
+fn count_refusal(entry: &FnItem, param: &Ident) -> String {
+    let bound = pixelflow_ir::Fold::EXACT_BOUND;
+    format!(
+        "kernel!: `{entry}`'s count `{param}` is {{}}, past {bound} (2^24): {COUNT_DOMAIN} \
+         (§1.4 of {BOUND_PLAN})",
+        entry = entry.name.unraw(),
+        param = param.unraw(),
+    )
+}
+
 /// An entry's `Args` record (plan §1.4): its parameters as fields, by their
-/// declared types; and `write_into`, which writes them — a record's fields in
-/// field order — into a block by the entry's declaration order
+/// declared types (a count's is `usize`); and `write_into`, which refuses a
+/// count past 2²⁴ and then writes them — a record's fields in field order —
+/// into a block by the entry's declaration order
 /// (`UniformBlock::set_declared`), as an array literal whose length rustc
 /// counts. An entry with no parameters has none, and neither has one that
 /// takes a kernel ([`FnItem::has_args_record`]).
@@ -249,6 +314,23 @@ fn emit_args(entry: &FnItem, analyzed: &AnalyzedKernel) -> TokenStream {
             let value = argument(scalar);
             quote!(self.#value)
         });
+    let counts = count_parameters(entry, analyzed);
+    let refusals = counts.iter().map(|count| {
+        let message = count_refusal(entry, count);
+        quote! {
+            ::core::assert!(
+                ::pixelflow_core::__macro::ir::KnownRange::admits(&(0..self.#count as u64)),
+                #message,
+                self.#count
+            );
+        }
+    });
+    let panics = (!counts.is_empty()).then(|| {
+        panics_section(&format!(
+            " If a count in this record is past 2^24: {COUNT_DOMAIN} (§1.4 of {BOUND_PLAN}). \
+             Nothing is written."
+        ))
+    });
     quote! {
         #[doc = #record_doc]
         #[derive(Clone, Copy, Debug, PartialEq)]
@@ -268,13 +350,15 @@ fn emit_args(entry: &FnItem, analyzed: &AnalyzedKernel) -> TokenStream {
             /// When `block`'s program declares a different number of
             /// arguments — it was compiled from some other kernel, or from
             /// this one composed beside other arguments. Nothing is
-            /// written. The count is all that is checked: a block of
-            /// another program that declares as many arguments takes these
-            /// values by position (plan §1.4).
+            /// written. Of the block, only the number of arguments is
+            /// checked: a block of another program that declares as many
+            /// takes these values by position (plan §1.4).
+            #panics
             #vis fn write_into(
                 &self,
                 block: &mut ::pixelflow_core::UniformBlock,
             ) -> ::core::result::Result<(), ::pixelflow_core::ArityMismatch> {
+                #(#refusals)*
                 block.set_declared([ #(#values),* ])
             }
         }
@@ -598,9 +682,10 @@ impl Staged {
 
     /// The [`FoldTerms`](pixelflow_ir::arena::FoldTerms) an open fold closes
     /// over: its monoid, carried as a header's bits (as [`node`] carries a
-    /// `FoldHeader`), and its known range. The binder is the one `close_fold`
-    /// chooses.
-    fn fold_terms(monoid: Monoid, range: Range<u64>) -> TokenStream {
+    /// `FoldHeader`), and its bounds: a literal, or the variable holding a
+    /// value bound's term, built before the fold opened. The binder is the
+    /// one `close_fold` chooses.
+    fn fold_terms(monoid: Monoid, bounds: [Bound<Ident>; 2]) -> TokenStream {
         let first = Binder::from_slot(0).expect("the IR has a binder");
         let bits = pixelflow_ir::FoldHeader::new(
             pixelflow_ir::Fold::new(monoid, first),
@@ -608,15 +693,18 @@ impl Staged {
             pixelflow_ir::Bound::Lit(0),
         )
         .to_bits();
-        let (lo, hi) = (range.start, range.end);
+        let [lo, hi] = bounds.map(|bound| match bound {
+            Bound::Lit(count) => quote!(::pixelflow_core::__macro::ir::fold::Bound::Lit(#count)),
+            Bound::Value(term) => quote!(::pixelflow_core::__macro::ir::fold::Bound::Value(#term)),
+        });
         quote! {
             ::pixelflow_core::__macro::ir::arena::FoldTerms {
                 monoid: ::pixelflow_core::__macro::ir::fold::FoldHeader::from_bits(#bits)
                     .expect("kernel! emitted a well-formed fold")
                     .fold()
                     .monoid(),
-                lo: ::pixelflow_core::__macro::ir::fold::Bound::Lit(#lo),
-                hi: ::pixelflow_core::__macro::ir::fold::Bound::Lit(#hi),
+                lo: #lo,
+                hi: #hi,
             }
         }
     }
@@ -697,7 +785,7 @@ impl Site for Staged {
         Ok(argument)
     }
 
-    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: Range<u64>) -> Ident {
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, bounds: [Bound<Ident>; 2]) -> Ident {
         let fold = self.fresh("__f");
         let depth = proc_macro2::Literal::usize_unsuffixed(depth);
         self.statements.push(quote! {
@@ -706,7 +794,7 @@ impl Site for Staged {
                 .expect("kernel! refused a fold nested past the binders at expansion");
         });
         self.open
-            .push((fold.clone(), Self::fold_terms(monoid, range)));
+            .push((fold.clone(), Self::fold_terms(monoid, bounds)));
         self.step(quote!(#fold.index()))
     }
 
@@ -945,6 +1033,60 @@ mod tests {
         let mut offered = Offered(0);
         emit_kernel(&analyzed, &mut offered).expect("emits");
         assert_eq!(offered.0, 1, "`plain` alone");
+    }
+
+    /// A count parameter is the host function's declared `usize`, refused past
+    /// 2²⁴ before anything is built; its uniform's default and its `Args`
+    /// value are `n as f32`, and `write_into` refuses before it writes. A
+    /// staged fold closes over its count's term.
+    #[test]
+    fn a_count_parameter_is_refused_on_the_host_and_declared_as_an_f32() {
+        let code = expansion(quote! {
+            pub fn sum_to(n: usize, s: f32) -> f32 {
+                (0..n).map(|i| X * (i as f32)).sum::<f32>() * s
+            }
+            pub fn columns(k: impl Fn(f32, f32) -> f32, n: usize) -> f32 {
+                (0..n).map(|i| k(X + (i as f32), Y)).sum()
+            }
+        });
+        for expected in [
+            "pub fn sum_to (n : usize , s : f32)",
+            "KnownRange :: admits (& (0 .. n as u64))",
+            "past 16777216 (2^24)",
+            "§1.4 of docs/language/2026-10-20-a-bound-is-a-value.md",
+            "# Panics",
+            "default : n as f32",
+            "pub n : usize",
+            "self . n as f32 , self . s",
+            "Bound :: Value (__t",
+        ] {
+            assert!(code.contains(expected), "expected `{expected}`: {code}");
+        }
+        let refused = code
+            .find("KnownRange :: admits (& (0 .. self . n as u64))")
+            .expect("write_into refuses");
+        let written = code
+            .find("block . set_declared")
+            .expect("write_into writes");
+        assert!(
+            refused < written,
+            "refused before anything is written: {code}"
+        );
+        let args = &code[code
+            .find("impl SumToArgs")
+            .expect("the `Args` record's impl")..];
+        let write_into = &args[..args.find("fn write_into").expect("write_into")];
+        assert!(
+            write_into.contains("# Panics")
+                && write_into.contains("a count in this record is past 2^24")
+                && write_into.contains(COUNT_DOMAIN),
+            "write_into documents its panic: {write_into}"
+        );
+        assert!(
+            !code.contains("ColumnsArgs"),
+            "an entry that takes a kernel has no `Args`: {code}"
+        );
+        assert!(!code.contains(":: std ::"), "{code}");
     }
 
     /// `Σ_{k<hi} k` as an arena, the fold's id, and the uniform that is its

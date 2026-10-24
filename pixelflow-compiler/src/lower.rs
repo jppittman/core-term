@@ -26,16 +26,18 @@
 //! `tests/fold_is_kernel_over.rs`, `tests/kernel_typed_parameters.rs`).
 //!
 //! A fold lowers to one `Reduce` node over its [`Fold`], built as
-//! `Kernel::over` builds it: the body against a placeholder, then closed
-//! over it. Nothing here unrolls: that is the e-graph's (`HalveFold`,
-//! `PeelFold`), when the kernel is baked.
+//! `Kernel::over` builds it — or `Kernel::over_values`, for a bound that is a
+//! value, resolved before the fold opens: the body against a placeholder,
+//! then closed over it. Nothing here unrolls: that is the e-graph's
+//! (`HalveFold`, `PeelFold`), when the kernel is baked.
 //!
-//! An entry's `f32` and record parameters are its uniforms
+//! An entry's `f32`, count and record parameters are its uniforms
 //! (docs/language/2026-09-25-the-language-is-kernel.md §1.4): each scalar — an
-//! `f32` parameter, or one field of a record parameter — is declared as a
-//! uniform, in [`AnalyzedKernel::parameters`]' order, and read through its
-//! `Uniform` leaf. Nothing a call passes is a constant of the program, so
-//! every call of an entry that takes no kernel is one program.
+//! `f32` parameter, a count parameter, or one field of a record parameter —
+//! is declared as a uniform, in [`AnalyzedKernel::parameters`]' order, and
+//! read through its `Uniform` leaf; a count is declared as `n as f32`.
+//! Nothing a call passes is a constant of the program, so every call of an
+//! entry that takes no kernel is one program.
 //!
 //! **Where a term is built is a [`Site`]** (Phase D-a). Lowering is one walk,
 //! and there are two places it can build:
@@ -55,13 +57,15 @@
 //! — its [`Site::Argument`] is uninhabited — so no entry that takes one can
 //! be lowered there.
 
-use crate::PLAN;
 use crate::ast::{
     BinaryOp, BlockExpr, CastExpr, Expr, FieldExpr, FnItem, FoldExpr, LetStmt, RecordId, Reduction,
     Role, Stmt, UnaryOp,
 };
-use crate::sema::{AnalyzedKernel, ConstValue, RangeScope, Scalar, range_bounds};
+use crate::sema::{
+    AnalyzedKernel, ConstValue, Count, ParameterKind, RangeScope, Scalar, bound_names, range_bounds,
+};
 use crate::symbol::Scopes;
+use crate::{BOUND_PLAN, PLAN};
 use pixelflow_ir::arena::{
     Axis, ExprArena, ExprId, FoldTerms, IndexSpaceFull, OpenFold, UniformDecl, UniformIdentity,
 };
@@ -170,10 +174,18 @@ pub(crate) trait Site {
     ///
     /// Where there is no argument to admit.
     fn kernel_parameter(&mut self, name: &Ident) -> Result<Self::Argument, String>;
-    /// Open a fold over `range` under `monoid`, `depth` folds being open
-    /// already: its index ([`ExprArena::open_fold`]). Lowering has refused a
-    /// depth past the binders, and a range past the index ([`literal_range`]).
-    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: Range<u64>) -> Self::Term;
+    /// Open a fold under `monoid` between `bounds`, `depth` folds being open
+    /// already: its index ([`ExprArena::open_fold`]). A value bound's term was
+    /// built before the fold opened, so it names the same node in the copy
+    /// the body is built in ([`ExprArena::close_fold`]). Lowering has refused
+    /// a depth past the binders and a literal past the index
+    /// ([`literal_range`], [`literal_bound`]).
+    fn open_fold(
+        &mut self,
+        depth: usize,
+        monoid: Monoid,
+        bounds: [Bound<Self::Term>; 2],
+    ) -> Self::Term;
     /// Close the innermost open fold over `body` ([`ExprArena::close_fold`]).
     ///
     /// # Errors
@@ -190,9 +202,10 @@ enum Binding<T, A> {
     /// A value: a `let`'s node, an entry's parameter's uniform, or a
     /// helper's parameter bound to its argument's node.
     Value(T),
-    /// A fold's index, a `usize`: its placeholder `Var` while the fold's
-    /// body is built. A body reads it only as `i as f32`.
-    Index(T),
+    /// A `usize`: a fold's index — its placeholder `Var` while the fold's body
+    /// is built — or an entry's count parameter — its `Uniform` leaf. A body
+    /// reads one only as `i as f32`, and a fold reads one as a bound.
+    Count(T),
     /// A record: its fields' nodes, in field order — an entry's record
     /// parameter's uniforms, a helper's record argument, or a `let` alias of
     /// either. A record has no node of its own.
@@ -235,6 +248,21 @@ fn literal_range(range: Range<u64>) -> Result<Range<u64>, String> {
              together and the fold would not be the one written (`Fold::EXACT_BOUND`)"
         )
     })
+}
+
+/// A known bound beside a value, if [`KnownRange::admits`] it alone: the
+/// plan's predicate on one count (§1.4), asked so the refusal names the
+/// bound before `FoldHeader::new` would panic on it.
+fn literal_bound(bound: u64) -> Result<u64, String> {
+    Some(bound)
+        .filter(|&end| KnownRange::admits(&(0..end)))
+        .ok_or_else(|| {
+            format!(
+                "the bound `{bound}` reaches past {} (2^24): a fold's index is an `f32` lane, \
+                 which names every integer only that far (`Fold::EXACT_BOUND`)",
+                Fold::EXACT_BOUND
+            )
+        })
 }
 
 /// The default a uniform is declared with here, where no call has supplied
@@ -331,18 +359,13 @@ impl Site for Expansion {
         ))
     }
 
-    fn open_fold(&mut self, depth: usize, monoid: Monoid, range: Range<u64>) -> ExprId {
+    fn open_fold(&mut self, depth: usize, monoid: Monoid, [lo, hi]: [Bound<ExprId>; 2]) -> ExprId {
         let open = self
             .arena
             .open_fold(depth)
             .expect("lowering refuses a fold nested past the binders before it opens one");
         let index = open.index();
-        let terms = FoldTerms {
-            monoid,
-            lo: Bound::Lit(range.start),
-            hi: Bound::Lit(range.end),
-        };
-        self.open.push((open, terms));
+        self.open.push((open, FoldTerms { monoid, lo, hi }));
         index
     }
 
@@ -391,10 +414,16 @@ pub(crate) fn lower_entry<S: Site>(
         .collect();
     let mut locals = Scopes::default();
     for parameter in analyzed.parameters(entry) {
-        let mut uniforms = parameter.scalars().map(|scalar| site.uniform(scalar));
-        let binding = match parameter.record {
-            Some((record, _)) => Binding::Record(record, uniforms.collect()),
-            None => Binding::Value(uniforms.next().expect("a scalar parameter is one uniform")),
+        let binding = match parameter.kind {
+            ParameterKind::Value => Binding::Value(site.uniform(Scalar::Value(parameter.name))),
+            ParameterKind::Count => Binding::Count(site.uniform(Scalar::Count(parameter.name))),
+            ParameterKind::Record(record, _) => Binding::Record(
+                record,
+                parameter
+                    .scalars()
+                    .map(|scalar| site.uniform(scalar))
+                    .collect(),
+            ),
         };
         locals.bind(parameter.name.to_string(), binding);
     }
@@ -599,18 +628,25 @@ impl<S: Site> Lowering<'_, S> {
         Ok(self.site.apply(kernel, [x, y]))
     }
 
-    /// `⊕_{i ∈ [lo, hi)} body` as one `Reduce` over its [`Fold`], its range
-    /// known here.
-    ///
-    /// The body is built against the fold's index, a placeholder, and the
-    /// fold is closed after it, by the IR's one definition of how a binder
-    /// is chosen and a placeholder renamed ([`ExprArena::close_over`]),
-    /// which `Kernel`'s folds are built through too.
+    /// `⊕_{i ∈ [lo, hi)} body` as one `Reduce` over its [`Fold`], built as
+    /// `Kernel::over` builds it, or `Kernel::over_values` for a bound that is
+    /// a value: the bounds are resolved first, in the scope the fold is
+    /// written in, so its own index is none of them (L3); the body is built
+    /// against the fold's index, a placeholder, and the fold is closed after
+    /// it, by the IR's one definition of how a binder is chosen and a
+    /// placeholder renamed ([`ExprArena::close_over`]).
     fn lower_fold(&mut self, fold: &FoldExpr) -> Result<S::Term, String> {
+        let names = bound_names(&fold.range.lo)
+            .into_iter()
+            .chain(bound_names(&fold.range.hi));
+        for name in names {
+            self.refuse_a_bound_that_is_no_count(name)?;
+        }
         let scope = RangeScope {
             consts: &self.program.analyzed.consts,
         };
-        let range = literal_range(range_bounds(&fold.range, scope).map_err(|e| e.to_string())?)?;
+        let counts = range_bounds(&fold.range, scope).map_err(|e| e.to_string())?;
+        let bounds = self.fold_bounds(fold.reduction, counts)?;
         // One placeholder per fold open at once, the `n`th for `n` open, so a
         // nested fold's rename never reaches its enclosing fold's index. No
         // more open than the IR has binders: the refusal names the depth,
@@ -625,11 +661,11 @@ impl<S: Site> Lowering<'_, S> {
         }
         let index = self
             .site
-            .open_fold(self.open_folds, monoid(fold.reduction), range);
+            .open_fold(self.open_folds, monoid(fold.reduction), bounds);
         self.frame.locals.push_scope();
         self.frame
             .locals
-            .bind(fold.binder.to_string(), Binding::Index(index));
+            .bind(fold.binder.to_string(), Binding::Count(index));
         self.open_folds += 1;
         let body = self.lower(&fold.body);
         self.open_folds -= 1;
@@ -637,16 +673,78 @@ impl<S: Site> Lowering<'_, S> {
         self.site.close_fold(body?)
     }
 
-    /// `i as f32`. A fold's index is an `f32` lane already, so its
-    /// conversion is its binder's `Var`; a `usize` const is its value's
-    /// `f32`, rounded as Rust's `as` rounds it.
+    /// A name in a fold's bound is a `usize` const or a count binding in this
+    /// frame — an enclosing fold's index, or an entry's count parameter — and
+    /// nothing else: a coordinate, an `f32`, a record. Asked of every name
+    /// before any arithmetic over them is, as `sema` asks it, so `0..X + 1`
+    /// is a coordinate in a bound and not arithmetic on a value. A const is
+    /// looked up before a binding, where sema looks innermost first; the two
+    /// agree because sema refuses a binding that shadows a const.
+    fn refuse_a_bound_that_is_no_count(&self, name: &Ident) -> Result<(), String> {
+        let consts = &self.program.analyzed.consts;
+        if let Some(ConstValue::Usize(_)) = consts.get(&name.to_string()) {
+            return Ok(());
+        }
+        self.count_term(name)?;
+        Ok(())
+    }
+
+    /// The term a count binding holds: the one name a bound that is a value
+    /// can be.
+    fn count_term(&self, name: &Ident) -> Result<&S::Term, String> {
+        match self.frame.locals.lookup(&name.to_string()) {
+            Some(Binding::Count(term)) => Ok(term),
+            _ => Err(format!(
+                "`{name}` as a range's bound: a bound that is a value is an enclosing fold's index \
+                 or an entry's count parameter, a `usize`"
+            )),
+        }
+    }
+
+    /// A fold's bounds as the IR takes them: a known pair if
+    /// [`KnownRange::admits`] it; otherwise each end a literal checked alone,
+    /// or the term the name is bound to. A value bound under `any` or `all`
+    /// is refused (decision 8). The names and decision 8 are refused here
+    /// without relying on `sema`, which refuses them first; the 2²⁴ checks on a
+    /// known end are lowering's alone.
+    fn fold_bounds(
+        &self,
+        reduction: Reduction,
+        [lo, hi]: [Count; 2],
+    ) -> Result<[Bound<S::Term>; 2], String> {
+        if let (Count::Known(lo), Count::Known(hi)) = (&lo, &hi) {
+            let range = literal_range(*lo..*hi)?;
+            return Ok([Bound::Lit(range.start), Bound::Lit(range.end)]);
+        }
+        if matches!(reduction, Reduction::Any | Reduction::All) {
+            return Err(format!(
+                "`any` or `all` over a range with a bound that is a value: a mask has no NaN for a \
+                 count outside the domain (decision 8 of {BOUND_PLAN})"
+            ));
+        }
+        Ok([self.bound(lo)?, self.bound(hi)?])
+    }
+
+    /// One end of a fold with a bound that is a value: a literal, checked
+    /// alone against the domain, or the term a count binding holds.
+    fn bound(&self, count: Count) -> Result<Bound<S::Term>, String> {
+        match count {
+            Count::Known(literal) => literal_bound(literal).map(Bound::Lit),
+            Count::Name(name) => self.count_term(&name).cloned().map(Bound::Value),
+        }
+    }
+
+    /// `i as f32`. A fold's index is an `f32` lane already, and a count
+    /// parameter's uniform holds `n as f32`, so either converts to its own
+    /// term; a `usize` const is its value's `f32`, rounded as Rust's `as`
+    /// rounds it.
     fn lower_cast(&mut self, cast: &CastExpr) -> Result<S::Term, String> {
         let Some(name) = cast.named() else {
             return Err("`as f32` converts a `usize`, which is a name".to_string());
         };
         if let Some(binding) = self.frame.locals.lookup(&name.to_string()) {
             return match binding {
-                Binding::Index(index) => Ok(index.clone()),
+                Binding::Count(term) => Ok(term.clone()),
                 Binding::Value(_) | Binding::Record(..) => Err(format!(
                     "`{name} as f32`: `{name}` is a value, and `as f32` converts a `usize`"
                 )),
@@ -689,7 +787,7 @@ impl<S: Site> Lowering<'_, S> {
     fn record_named(&self, expr: &Expr) -> Option<RecordFields<S::Term>> {
         match self.frame.locals.lookup(&expr.named()?.to_string())? {
             Binding::Record(record, fields) => Some((*record, Rc::clone(fields))),
-            Binding::Value(_) | Binding::Index(_) | Binding::Kernel(_) => None,
+            Binding::Value(_) | Binding::Count(_) | Binding::Kernel(_) => None,
         }
     }
 
@@ -698,7 +796,7 @@ impl<S: Site> Lowering<'_, S> {
     fn kernel_named(&self, expr: &Expr) -> Option<S::Argument> {
         match self.frame.locals.lookup(&expr.named()?.to_string())? {
             Binding::Kernel(kernel) => Some(kernel.clone()),
-            Binding::Value(_) | Binding::Index(_) | Binding::Record(..) => None,
+            Binding::Value(_) | Binding::Count(_) | Binding::Record(..) => None,
         }
     }
 
@@ -778,9 +876,8 @@ impl<S: Site> Lowering<'_, S> {
         if let Some(binding) = self.frame.locals.lookup(name) {
             return match binding {
                 Binding::Value(id) => Ok(id.clone()),
-                Binding::Index(_) => Err(format!(
-                    "`{name}` is a fold's index, a `usize`, where a value is expected: \
-                     `{name} as f32`"
+                Binding::Count(_) => Err(format!(
+                    "`{name}` is a `usize`, where a value is expected: `{name} as f32`"
                 )),
                 Binding::Record(..) => Err(format!(
                     "`{name}` is a record, where a value is expected: read a field, \
@@ -1130,10 +1227,7 @@ mod tests {
         let Err(err) = lower_unanalyzed(quote! { || (0..4).map(|i| X * i).sum() }) else {
             panic!("`i` is a `usize`");
         };
-        assert!(
-            err.contains("`i` is a fold's index, a `usize`"),
-            "got: {err}"
-        );
+        assert!(err.contains("`i` is a `usize`"), "got: {err}");
         let Err(err) = lower_unanalyzed(quote! {
             const N: usize = 4;
             pub fn f() -> f32 { X * N }
@@ -1141,6 +1235,96 @@ mod tests {
             panic!("`N` is a `usize`");
         };
         assert!(err.contains("`N` is a `usize` const"), "got: {err}");
+        let Err(err) = lower_unanalyzed(quote! { pub fn f(n: usize) -> f32 { X * n } }) else {
+            panic!("`n` is a `usize`");
+        };
+        assert!(err.contains("`n` is a `usize`"), "got: {err}");
+    }
+
+    /// A bound that is a value is a child of its fold: an entry's count its
+    /// `Uniform` leaf, an enclosing fold's index that fold's binder; and the
+    /// fold's range is not known.
+    #[test]
+    fn a_value_bound_is_a_child_of_its_fold() {
+        let (arena, root) = lowered(quote! {
+            pub fn f(n: usize) -> f32 { (0..n).map(|i| X * (i as f32)).sum() }
+        });
+        let ExprNode::Reduce { lo, hi, .. } = arena.node(root) else {
+            panic!("expected a fold, got {}", arena.display(root));
+        };
+        assert_eq!(lo, Bound::Lit(0));
+        let Bound::Value(count) = hi else {
+            panic!("`n` is a value bound");
+        };
+        assert!(matches!(arena.node(count), ExprNode::Uniform(UniformId(0))));
+        assert!(arena.known_range(root).is_none());
+
+        let (arena, root) = lowered(quote! {
+            || (0..4).map(|i| (0..i).map(|j| j as f32).sum::<f32>()).sum()
+        });
+        let ExprNode::Reduce {
+            fold: outer, body, ..
+        } = arena.node(root)
+        else {
+            panic!("expected the outer fold, got {}", arena.display(root));
+        };
+        let ExprNode::Reduce {
+            hi: Bound::Value(index),
+            ..
+        } = arena.node(body)
+        else {
+            panic!(
+                "the inner fold's `hi` is the outer index, got {}",
+                arena.display(body)
+            );
+        };
+        assert!(matches!(arena.node(index), ExprNode::Var(v) if v == outer.binder().var()));
+        assert!(!holds_a_placeholder(&arena));
+    }
+
+    /// Lowering refuses a bound that is no count by itself, as `sema` does for
+    /// the names and decision 8 (the domain is lowering's alone), without
+    /// relying on it: the names first, as `sema` judges them, so a
+    /// coordinate or an `f32` under arithmetic is a name that is no bound and
+    /// not arithmetic on a value.
+    #[test]
+    fn a_bound_that_is_no_count_is_refused_here_too() {
+        let cases: [(proc_macro2::TokenStream, &str); 7] = [
+            (
+                quote! { |n: f32| (0..n).map(|i| i as f32).sum() },
+                "`n` as a range's bound",
+            ),
+            (
+                quote! { || (0..X).map(|i| i as f32).sum() },
+                "`X` as a range's bound",
+            ),
+            (
+                quote! { || (0..X + 1).map(|i| i as f32).sum() },
+                "`X` as a range's bound",
+            ),
+            (
+                quote! { |r: f32| (0..r - 1).map(|i| i as f32).sum() },
+                "`r` as a range's bound",
+            ),
+            (
+                quote! { pub fn f(n: usize) -> bool { (0..n).any(|i| X < i as f32) } },
+                "decision 8",
+            ),
+            (
+                quote! { pub fn f(n: usize) -> f32 { (0..n - 1).map(|i| i as f32).sum() } },
+                "arithmetic on `n`",
+            ),
+            (
+                quote! { pub fn f(n: usize) -> f32 { (16777217..n).map(|i| i as f32).sum() } },
+                "past 16777216 (2^24)",
+            ),
+        ];
+        for (input, expected) in cases {
+            let Err(err) = lower_unanalyzed(input) else {
+                panic!("lowering builds no fold over a bound that is no count");
+            };
+            assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+        }
     }
 
     /// A `usize` const `as f32` is its value's `f32`.

@@ -22,7 +22,7 @@
 //!
 //! FnItem
 //!   ├── vis                           // `pub` makes an entry; private is a helper
-//!   ├── params: [(name, type), ...]   // scalar and record parameters
+//!   ├── params: [(name, type), ...]   // scalar, count and record parameters
 //!   ├── ret: type                     // declared; absent only for the closure sugar
 //!   └── body: Expr
 //!
@@ -229,8 +229,8 @@ impl FnItem {
 pub struct Param {
     /// Parameter name.
     pub name: Ident,
-    /// The declared type (`f32`, a record or `impl Fn(f32, f32) -> f32`;
-    /// `bool` in a helper).
+    /// The declared type (`f32`, a record, `usize` for an entry's count, or
+    /// `impl Fn(f32, f32) -> f32`; `bool` in a helper).
     pub ty: Box<Type>,
 }
 
@@ -376,7 +376,7 @@ pub enum Expr {
     /// The choice: `if c { a } else { b }`.
     If(IfExpr),
 
-    /// A fold over a constant range: `(0..N).map(|i| e).sum()`.
+    /// A fold over a range: `(0..N).map(|i| e).sum()`.
     Fold(FoldExpr),
 
     /// A conversion: `i as f32`.
@@ -618,12 +618,15 @@ pub struct IfExpr {
 
 /// `(lo..hi).map(|i| e).sum()` and its siblings: the fold of `e` over
 /// `i ∈ [lo, hi)` under a monoid, or the monoid's identity when the range is
-/// empty (docs/language/2026-09-25-the-language-is-kernel.md §1.5).
+/// empty (docs/language/2026-09-25-the-language-is-kernel.md §1.5; the
+/// optimizer's edges to this are in `kernel!`'s `# Folds`).
 ///
 /// The closure's parameter is the binder and its body is the fold's body.
-/// The closure is not a value, and has no meaning anywhere else. The bounds
-/// are constant, evaluated by `sema` at expansion, and the binder is a
-/// `usize`, which a body makes a value of only by `i as f32`.
+/// The closure is not a value, and has no meaning anywhere else. Each bound
+/// is a `usize`, known at expansion or a name the program binds (an
+/// enclosing fold's index, an entry's count parameter), typed by `sema`
+/// where the fold is written; the binder is a `usize`, which a body makes a
+/// value of only by `i as f32`.
 #[derive(Debug, Clone)]
 pub struct FoldExpr {
     pub reduction: Reduction,
@@ -664,7 +667,8 @@ pub enum Reduction {
 
 /// `operand as f32`, the language's one conversion. The target is always
 /// `f32` — the parser refuses any other — so it is not stored. `sema`
-/// accepts one operand: a `usize`, by name, a fold's index or a `usize` const.
+/// accepts one operand: a `usize`, by name, a fold's index, a `usize` const or
+/// an entry's count parameter.
 #[derive(Debug, Clone)]
 pub struct CastExpr {
     pub operand: Box<Expr>,
@@ -676,7 +680,7 @@ impl CastExpr {
     /// The name being converted, through any parentheses, or `None` if the
     /// operand is not a name. Only a name can be a `usize`: nothing in a
     /// body computes one (plan §1.6), so a `usize` expression is always a
-    /// fold's index or a `usize` const.
+    /// fold's index, a `usize` const or an entry's count parameter.
     pub fn named(&self) -> Option<&Ident> {
         self.operand.named()
     }
