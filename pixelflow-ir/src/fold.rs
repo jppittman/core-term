@@ -440,17 +440,21 @@ pub enum BoundRefusal {
     /// `0..=Fold::EXACT_BOUND` (L5). Refused at the user surfaces only
     /// (`Kernel::over_values`, and `kernel!` from A6); every other constructor
     /// keeps such a literal as a value bound, whose guard makes the fold NaN
-    /// (A4), so a literal a rule made never panics.
+    /// (`passes::legalize`'s guard), so a literal a rule made never panics.
     BoundOutOfDomain { end: BoundEnd, literal: f32 },
-    /// A bound of a sort the fold cannot take (§1.4): a mask literal, which
-    /// names no count, under any fold; or any value bound under `ANY`, `ALL`
-    /// or `SEQ`, whose sorts have no out-of-domain answer (decision 8) or whose
-    /// ranges stay constant (the lattice's). The fold is in the panic's
+    /// A bound of a sort the fold cannot take (§1.4): a mask, which names no
+    /// count, at either end under any fold; or any value bound under `ANY`,
+    /// `ALL` or `SEQ`, whose sorts have no out-of-domain answer (decision 8) or
+    /// whose ranges stay constant (the lattice's). The fold is in the panic's
     /// context, not here: the mask case has no algebra to blame.
     ///
-    /// The sort is read off the term as written: a mask *literal* is refused, a
-    /// computed bound that is a mask is not a literal and is admitted. The
-    /// arena gives a bound a sort (T6) and closes that.
+    /// The sort is read off the term as written where a fold is built: a mask
+    /// *literal* is refused there, and a computed bound that is a mask is not a
+    /// literal and is admitted. Lowering refuses it by this same variant once
+    /// the emitter holds it as one (`ScheduledOp::is_mask`: a comparison, or a
+    /// bitwise and/or of two such), on every tier; a select between two masks
+    /// is read as a float. The arena giving a bound a sort (T6) closes the
+    /// rest.
     BoundSort { end: BoundEnd },
     /// A bound that varies with a coordinate or with its own fold's binder
     /// (L3): `reads` is what it varies with.
@@ -795,10 +799,10 @@ impl Held {
 /// together; the const assert beside `to_bits` is where a build says so.
 /// [`FoldHeader::fold`], [`FoldHeader::lo`] and [`FoldHeader::hi`] are the
 /// readers. A bound that is a value keeps its count at 0, so that equal bounds
-/// are equal in every field `Eq`, `Hash` and `Ord` read. The fields are
-/// declared in the order `Fold` derived `Ord` while it held the ends —
-/// monoid, binder, `lo`, `hi`, stride — so the derived order on a literal fold
-/// is the old one.
+/// are equal in every field `Eq`, `Hash` and `Ord` read, and writes the all-ones
+/// marker in its bits. The fields are declared in the order `Fold` derived `Ord`
+/// while it held the ends — monoid, binder, `lo`, `hi`, stride — so the derived
+/// order on a literal fold is the old one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct FoldHeader {
     monoid: Monoid,
@@ -867,7 +871,8 @@ impl FoldHeader {
     }
 
     /// The one writer of a header's fields: it checks nothing, and its callers
-    /// ([`FoldHeader::known`], and `FoldHeader::new`'s value arm) have.
+    /// ([`FoldHeader::known`], `FoldHeader::new`'s value arm and
+    /// [`FoldHeader::from_bits`]'s) have.
     fn store(fold: Fold, lo: Bound<()>, hi: Bound<()>) -> Self {
         let ((lo_held, lo), (hi_held, hi)) = (Held::hold(lo), Held::hold(hi));
         Self {
@@ -988,33 +993,33 @@ impl FoldHeader {
     /// lifting it is a key-format change, which widens these fields and
     /// re-keys everything that carries them.
     ///
-    /// # Panics
-    ///
-    /// On a value bound, with [`VALUE_BOUND`]: the layout has no field for a
-    /// child, so none is written until A4 gives it a marker.
+    /// Total. A bound that is a value writes the all-ones count field
+    /// (`VALUE_FIELD`), which no literal reaches. The child it marks is not in
+    /// the bits: it is the node's next edge after the body, for whoever
+    /// serializes the node's children to write ([`FoldHeader::arity`] says how
+    /// many follow).
     #[must_use]
     pub fn to_bits(self) -> u128 {
-        let (Bound::Lit(lo), Bound::Lit(hi)) = (self.lo(), self.hi()) else {
-            panic!("{VALUE_BOUND}: {self:?} has no bits");
-        };
         u128::from(self.stride) << 80
             | u128::from(self.monoid_byte()) << 72
             | u128::from(self.binder.slot()) << 64
-            | u128::from(field(lo)) << 32
-            | u128::from(field(hi))
+            | u128::from(count_field(self.lo())) << 32
+            | u128::from(count_field(self.hi()))
     }
 
     /// The header [`FoldHeader::to_bits`] wrote, or `None` if the bits do not
     /// name one: anything at or above bit `UNUSED_BITS` (112), an op that
-    /// generates no algebra, an index outside the binder space, a range
-    /// [`KnownRange::admits`] does not — reversed, or ending past
-    /// [`Fold::EXACT_BOUND`], which includes an end field of all ones — a zero
-    /// stride, one past [`Fold::EXACT_BOUND`], or one that does not divide
-    /// `hi - lo` exactly.
+    /// generates no algebra, an index outside the binder space, a zero stride
+    /// or one past [`Fold::EXACT_BOUND`], a literal range [`KnownRange::admits`]
+    /// does not (reversed, or ending past the bound) or that the stride does
+    /// not divide exactly, or a value bound (`VALUE_FIELD`, a count field of
+    /// all ones) its fold cannot take: under `ANY`, `ALL` or `SEQ`, at a stride
+    /// other than 1, or beside a literal past the bound.
     ///
     /// Total, and the exact inverse of [`FoldHeader::to_bits`]: a corrupt
     /// cache key or a hand-written token stream is a `None` at the boundary
-    /// rather than a fold that means something else.
+    /// rather than a fold that means something else. A literal never decodes
+    /// as a value (no count is all ones) and a value never as a literal.
     #[must_use]
     pub fn from_bits(bits: u128) -> Option<Self> {
         if bits >> UNUSED_BITS != 0 {
@@ -1023,14 +1028,24 @@ impl FoldHeader {
         let stride = u64::from(((bits >> 80) & 0xffff_ffff) as u32);
         let monoid = Monoid::unmarshal(OpCode::from_bytes([((bits >> 72) & 0xff) as u8]))?;
         let binder = Binder::from_slot(((bits >> 64) & 0xff) as u8)?;
-        let lo = u64::from(((bits >> 32) & 0xffff_ffff) as u32);
-        let hi = u64::from((bits & 0xffff_ffff) as u32);
+        let lo = field_bound(((bits >> 32) & 0xffff_ffff) as u32);
+        let hi = field_bound((bits & 0xffff_ffff) as u32);
         if stride == 0 || !Fold::is_exact(stride) {
             return None;
         }
-        (KnownRange::admits(&(lo..hi)) && (hi - lo).is_multiple_of(stride)).then(|| {
-            let range = KnownRange { lo, hi, stride };
-            Self::known(Fold::strided(monoid, binder, stride), range)
+        let fold = Fold::strided(monoid, binder, stride);
+        // A value bound settles the header by what the fold asks of one; the
+        // rest is a literal range.
+        let (Bound::Lit(first), Bound::Lit(end)) = (lo, hi) else {
+            return admits_a_value(fold, lo, hi).then(|| Self::store(fold, lo, hi));
+        };
+        (KnownRange::admits(&(first..end)) && (end - first).is_multiple_of(stride)).then(|| {
+            let range = KnownRange {
+                lo: first,
+                hi: end,
+                stride,
+            };
+            Self::known(fold, range)
         })
     }
 }
@@ -1043,17 +1058,57 @@ fn field(count: u64) -> u32 {
         .expect("a fold's counts are at most Fold::EXACT_BOUND, which fits its 32-bit field")
 }
 
+/// A count field's bits when its bound is a value: all ones, which no count
+/// reaches (the assert below), so a literal and a value never share a field.
+/// The value's child is the node's next edge after the body, written by whoever
+/// writes the node's children.
+const VALUE_FIELD: u32 = u32::MAX;
+
+/// A bound's count field in [`FoldHeader::to_bits`]: its count, or
+/// `VALUE_FIELD`.
+fn count_field(bound: Bound<()>) -> u32 {
+    match bound {
+        Bound::Lit(count) => field(count),
+        Bound::Value(()) => VALUE_FIELD,
+    }
+}
+
+/// The bound a count field of [`FoldHeader::to_bits`] names: the inverse of
+/// `count_field`. A field of `VALUE_FIELD` is a value; any other is a literal,
+/// whose range [`FoldHeader::from_bits`] checks.
+fn field_bound(field: u32) -> Bound<()> {
+    match field {
+        VALUE_FIELD => Bound::Value(()),
+        count => Bound::Lit(u64::from(count)),
+    }
+}
+
+/// What a bound that is a value asks of its fold, as one predicate: its
+/// monoid takes one (`Monoid::takes_a_value_bound`), its stride is 1, and a
+/// literal beside it is one an `f32` counter holds ([`Fold::is_exact`]).
+/// [`FoldHeader::from_bits`] refuses where it fails, and `with_a_value` panics
+/// there naming which part; `new_panics_exactly_where_the_predicate_refuses`
+/// holds the two equal.
+fn admits_a_value(fold: Fold, lo: Bound<()>, hi: Bound<()>) -> bool {
+    fold.monoid.takes_a_value_bound()
+        && fold.stride == 1
+        && [lo.lit(), hi.lit()]
+            .into_iter()
+            .flatten()
+            .all(Fold::is_exact)
+}
+
 /// Where [`FoldHeader::to_bits`]'s layout ends: every bit from here up is
 /// zero, and [`FoldHeader::from_bits`] refuses bits that say otherwise.
 const UNUSED_BITS: u32 = 112;
 
 // The 32-bit fields hold every count a header may, with the all-ones field
-// left over: `from_bits` refuses it as past the bound. They are also what a
-// header stores (`FoldHeader::store` narrows through `field`), so a count that
-// does not fit is impossible while this holds. Lifting `EXACT_BOUND` past this
-// is the key-format change `to_bits` documents, and this is where a build says
-// so.
-const _: () = assert!(Fold::EXACT_BOUND < u32::MAX as u64);
+// left over: that is the value marker (`VALUE_FIELD`), which no count reaches.
+// They are also what a header stores (`FoldHeader::store` narrows through
+// `field`), so a count that does not fit is impossible while this holds.
+// Lifting `EXACT_BOUND` to the marker is the key-format change `to_bits`
+// documents, and this is where a build says so.
+const _: () = assert!(Fold::EXACT_BOUND < VALUE_FIELD as u64);
 
 /// One header printed the way every reader of an arena spells it: its
 /// combining op, binder and bounds (`add_4[0..8)`, with ` step 2` once the
@@ -1091,26 +1146,13 @@ fn write_bound(f: &mut core::fmt::Formatter<'_>, bound: Bound<()>) -> core::fmt:
     }
 }
 
-/// The message the schedule and the bits refuse a value bound with, until A4:
-/// the IR and the e-graph hold one, `arena_to_schedule` takes a literal only,
-/// and so does [`FoldHeader::to_bits`] — and with it the canonical key,
-/// `kernel!`'s tokens, the dumps and the corpora. One grep target for the step
-/// that lifts it, as [`KNOWN_RANGE`] is for the steps that make an unknown
-/// range reachable where one is read.
-pub const VALUE_BOUND: &str = "a fold bound that is a value has no code and no key before A4 of \
-     docs/language/2026-10-20-a-bound-is-a-value.md: the IR and the e-graph hold one, the \
-     schedule and the bits take a literal";
-
 /// The message of an `expect` on a range a site's folds always have. A site
 /// that reads a range and has no answer of its own for an unknown one reads it
 /// where every fold is literal: a lattice's fold (`SEQ`, which takes literal
-/// bounds only), a `kernel!` fold before A6, a production glyph's before B2, a
-/// schedule's (codegen refuses a value bound first, with [`VALUE_BOUND`]), or a
-/// test's own literal fold. One grep target for the steps that make the `None`
-/// reachable there.
-pub const KNOWN_RANGE: &str = "this fold's bounds are literals: a lattice's fold, a kernel! fold \
-     before A6, a production glyph's before B2, a schedule's, or a test's \
-     (docs/language/2026-10-20-a-bound-is-a-value.md)";
+/// bounds only), a production glyph's before B2, or a test's own literal fold.
+/// One grep target for the steps that make the `None` reachable there.
+pub const KNOWN_RANGE: &str = "this fold's bounds are literals: a lattice's fold, a production \
+     glyph's before B2, or a test's (docs/language/2026-10-20-a-bound-is-a-value.md)";
 
 /// A fold's range when it is known: the indices `lo, lo + stride, …` below
 /// `hi`. The view every reader of a range reads.
@@ -1332,6 +1374,12 @@ mod tests {
     /// The sum binding the `slot`-th binder.
     fn sum(slot: u8) -> Fold {
         Fold::new(Monoid::SUM, b(slot))
+    }
+
+    /// The monoid's byte in a header's bits: its code.
+    fn monoid_byte(monoid: Monoid) -> u8 {
+        let [byte] = monoid.marshal().to_bytes();
+        byte
     }
 
     /// What a test's terms (named by a `u8`) are, for [`Bound::discover`]: a
@@ -1586,17 +1634,26 @@ mod tests {
         assert!(FoldHeader::from_bits(at).is_some());
     }
 
-    /// An end field of all ones is past the bound like any other: the field is
-    /// 32 bits and the domain 2²⁴, and nothing in the domain is `u32::MAX`
-    /// (the build asserts it), so the decoder owes it no meaning.
+    /// An end field of all ones is the mark of a value bound, wherever it
+    /// stands: nothing in the domain is `u32::MAX` (the build asserts it), so
+    /// no literal shares it.
     #[test]
-    fn from_bits_refuses_an_end_field_of_all_ones() {
+    fn an_end_field_of_all_ones_is_a_value_bound() {
         let b = Binder::from_slot(0).expect("slot 0 exists");
-        let bits = header(Fold::new(Monoid::SUM, b), 0, 4).to_bits();
+        let fold = Fold::new(Monoid::SUM, b);
+        let bits = header(fold, 0, 4).to_bits();
         let hi_ones = bits | 0xffff_ffffu128;
-        assert_eq!(FoldHeader::from_bits(hi_ones), None, "hi");
+        assert_eq!(
+            FoldHeader::from_bits(hi_ones),
+            Some(FoldHeader::new(fold, Bound::Lit(0), Bound::Value(()))),
+            "hi"
+        );
         let lo_ones = bits | (0xffff_ffffu128 << 32);
-        assert_eq!(FoldHeader::from_bits(lo_ones), None, "lo");
+        assert_eq!(
+            FoldHeader::from_bits(lo_ones),
+            Some(FoldHeader::new(fold, Bound::Value(()), Bound::Lit(4))),
+            "lo"
+        );
     }
 
     /// Every placeholder is past every binder — a rename of one never
@@ -1899,6 +1956,22 @@ mod tests {
         }
     }
 
+    /// The same layout with a bound that is a value, assembled by hand: stride 1
+    /// at bit 80, `Add` at 72, slot 0 at 64, `lo = 0`, and `hi` a count field of
+    /// all ones. The mark is a field no count reaches, so a header writes it and
+    /// reads it back as a value, not as a literal.
+    #[test]
+    fn a_value_header_decodes_from_its_layout_assembled_by_hand() {
+        let marked: u128 = 0x0000_0000_0001_0200_0000_0000_ffff_ffff;
+        let want = FoldHeader::new(sum(0), Bound::Lit(0), Bound::Value(()));
+        assert_eq!(FoldHeader::from_bits(marked), Some(want));
+        assert_eq!(want.to_bits(), marked, "and a header still writes it");
+        let lo_marked: u128 = 0x0000_0000_0001_0200_ffff_ffff_0000_0003;
+        let want = FoldHeader::new(sum(0), Bound::Value(()), Bound::Lit(3));
+        assert_eq!(FoldHeader::from_bits(lo_marked), Some(want));
+        assert_eq!(want.to_bits(), lo_marked);
+    }
+
     /// The same layout at the far end of its domain: stride 2 at bit 80, `Add`
     /// at 72, slot 0 at 64, `lo = 0`, `hi = 2^24` at 0 — the widest end a fold
     /// may name, written as the 32-bit field it has always been.
@@ -2115,14 +2188,137 @@ mod tests {
         );
     }
 
-    /// There are no bits for a child until A4: the layout has a field for a
-    /// count, and writing a header whose bound is a value as one would name
-    /// another fold.
+    /// A value bound writes the all-ones mark in its count field and reads back
+    /// as a value; the mark stands in for a child the bits do not hold, and no
+    /// literal writes it.
     #[test]
-    #[should_panic(expected = "a fold bound that is a value")]
-    fn a_value_bound_has_no_bits_until_a4() {
-        let value = FoldHeader::new(sum(0), Bound::Lit(3), Bound::Value(()));
-        let _refused = value.to_bits();
+    fn a_value_bound_writes_the_marker_and_reads_back() {
+        let marker = u128::from(u32::MAX);
+        for (lo, hi) in [
+            (Bound::Value(()), Bound::Lit(4)),
+            (Bound::Lit(3), Bound::Value(())),
+            (Bound::Value(()), Bound::Value(())),
+        ] {
+            let value = FoldHeader::new(sum(0), lo, hi);
+            let bits = value.to_bits();
+            assert_eq!(FoldHeader::from_bits(bits), Some(value), "{value}");
+            let (lo_field, hi_field) = ((bits >> 32) & marker, bits & marker);
+            assert_eq!(lo_field == marker, lo.value().is_some(), "{value}: lo");
+            assert_eq!(hi_field == marker, hi.value().is_some(), "{value}: hi");
+        }
+        let literal = header(sum(0), 3, Fold::EXACT_BOUND);
+        assert_ne!(
+            literal.to_bits() & marker,
+            marker,
+            "the largest count is not the mark"
+        );
+    }
+
+    /// The mark means a value only where the fold can hold one: not under a fold
+    /// of masks or the lattice's, not at a stride other than 1, and not beside a
+    /// literal past the domain. A field one short of the mark is a count past
+    /// the bound, not the mark.
+    #[test]
+    fn from_bits_refuses_a_marker_its_fold_cannot_take() {
+        let marked = |monoid, stride: u32, lo: u64, hi: Option<u64>| {
+            let fold = u128::from(stride) << 80
+                | u128::from(monoid_byte(monoid)) << 72
+                | u128::from(lo) << 32
+                | hi.map_or(u128::from(u32::MAX), u128::from);
+            FoldHeader::from_bits(fold)
+        };
+        assert!(marked(Monoid::SUM, 1, 0, None).is_some(), "the control");
+        for monoid in [Monoid::ANY, Monoid::ALL, Monoid::SEQ] {
+            assert_eq!(marked(monoid, 1, 0, None), None, "{monoid:?}");
+        }
+        assert_eq!(marked(Monoid::SUM, 2, 0, None), None, "stride 2");
+        assert_eq!(
+            marked(Monoid::SUM, 1, Fold::EXACT_BOUND + 1, None),
+            None,
+            "a literal past the bound"
+        );
+        assert!(marked(Monoid::SUM, 1, Fold::EXACT_BOUND, None).is_some());
+        assert_eq!(
+            marked(Monoid::SUM, 1, 0, Some(u64::from(u32::MAX) - 1)),
+            None,
+            "one short of the mark is a count past the bound"
+        );
+    }
+
+    /// What a value bound asks of its fold is stated twice: as one predicate,
+    /// which `from_bits` asks, and a part at a time, which `new` asserts to say
+    /// which part failed. They agree on every monoid, stride and pair of
+    /// bounds with a value in it, the literal beside it inside the domain and
+    /// just outside it.
+    #[cfg(feature = "std")]
+    #[test]
+    fn new_panics_exactly_where_the_predicate_refuses() {
+        let past = Fold::EXACT_BOUND + 1;
+        for monoid in [
+            Monoid::SUM,
+            Monoid::PRODUCT,
+            Monoid::MIN,
+            Monoid::MAX,
+            Monoid::ANY,
+            Monoid::ALL,
+            Monoid::SEQ,
+        ] {
+            for stride in [1, 2] {
+                for (lo, hi) in [
+                    (Bound::Value(()), Bound::Value(())),
+                    (Bound::Lit(0), Bound::Value(())),
+                    (Bound::Value(()), Bound::Lit(Fold::EXACT_BOUND)),
+                    (Bound::Lit(past), Bound::Value(())),
+                    (Bound::Value(()), Bound::Lit(past)),
+                ] {
+                    let fold = Fold::strided(monoid, b(0), stride);
+                    let built = std::panic::catch_unwind(|| FoldHeader::new(fold, lo, hi));
+                    assert_eq!(
+                        built.is_ok(),
+                        admits_a_value(fold, lo, hi),
+                        "{monoid:?} step {stride} from {lo:?} to {hi:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `from_bits` inverts `to_bits` for every header `FoldHeader::new` admits:
+    /// each monoid that takes a value beside a literal pair, a value at either
+    /// end, and both.
+    #[test]
+    fn from_bits_inverts_to_bits_on_every_header_shape() {
+        let shapes = [
+            (Bound::Lit(0), Bound::Lit(8)),
+            (Bound::Lit(3), Bound::Lit(3)),
+            (Bound::Lit(0), Bound::Lit(Fold::EXACT_BOUND)),
+            (Bound::Value(()), Bound::Lit(4)),
+            (Bound::Lit(3), Bound::Value(())),
+            (Bound::Value(()), Bound::Value(())),
+            (Bound::Lit(Fold::EXACT_BOUND), Bound::Value(())),
+        ];
+        for monoid in [
+            Monoid::SUM,
+            Monoid::PRODUCT,
+            Monoid::MIN,
+            Monoid::MAX,
+            Monoid::ANY,
+            Monoid::ALL,
+            Monoid::SEQ,
+        ] {
+            for (lo, hi) in shapes {
+                let holds_a_value = lo.value().is_some() || hi.value().is_some();
+                if holds_a_value && !monoid.takes_a_value_bound() {
+                    continue;
+                }
+                let value = FoldHeader::new(Fold::new(monoid, b(2)), lo, hi);
+                assert_eq!(
+                    FoldHeader::from_bits(value.to_bits()),
+                    Some(value),
+                    "{monoid:?} {value}"
+                );
+            }
+        }
     }
 
     /// Each value bound is handed the next child after the body, `lo`'s before

@@ -320,7 +320,11 @@ its edge.
 - `PeelFold`/`HalveFold` fire only on a known range; Peel plans `hi − s` as a new `Lit`.
   `EmptyFold` (`fold_rules.rs:319`) fires only on a known empty range (L6). `FactorFold`
   declines a known empty range only; under a value bound it factors, accepting the
-  infinite-`c` edge at a runtime `n = 0` (decision 5). `substitute`/`rebuild` (`fold_rules.rs`)
+  infinite-`c` edge at a runtime `n = 0` (decision 5). Under `SUM` a `c` the graph proves
+  zero (a literal `0`, or one such as `X − X`) then meets the `Mul` annihilator
+  (`0·y → 0`), which removes the fold before the guard is placed, so the optimized fold
+  is `0` where the fold as written is NaN: the annihilation rule's edge, in
+  `FactorFold`'s doc and BACKLOG E9. `substitute`/`rebuild` (`fold_rules.rs`)
   follow L7; `rebuild`'s comment (`fold_rules.rs:600-606`) is rewritten, since its premise
   ("its class's variance excludes it") now rests on L3 and L4 adds the bounds' bits.
   `ENode::variance` follows L4 in the same CL as the IR's; `insert` and `add` refuse L3 as
@@ -357,14 +361,17 @@ its edge.
   `end` and the `Ge` compare are emitted in the head block after the fold's frame has popped
   (`select.rs:311-312`), so `lookup(hi)` resolves in the parent, and the read is inside
   the loop, so `hi` lives to the latch as an outer value does
-  (`emit/regalloc/local.rs:44-46`). Either the carve adds `hi` to the fold's `outer`, or
-  the `Reduce` def's interval spans the loop; A4 picks one and pins it with a JIT test
-  whose `hi` is read only by the loop and whose body varies with X. Otherwise placement is
-  today's: a `CONST` bound lands in `Scope::Body`; a bound on an enclosing binder makes the
-  inner `Reduce` vary with it, and the existing carve places it in that fold.
+  (`emit/regalloc/local.rs:44-46`). The `Reduce` def's interval spans the loop: the latch's
+  compare reads `hi`, so the allocator keeps it live there by its own rule, and `operands()`
+  yields the bounds so the carve and ownership see them. A compare reads two registers, so a
+  `hi` the allocator does not carry is reloaded at every latch. A JIT test pins a `hi` read
+  only by the loop under a body that varies with X
+  (`a_bound_read_only_by_the_loop_reaches_its_latch`). Otherwise placement is today's: a
+  `CONST` bound lands in `Scope::Body`; a bound on an enclosing binder makes the inner
+  `Reduce` vary with it, and the existing carve places it in that fold.
 - **The entry guard**, for a `Real`-sorted fold whose range is not known, is built as
-  arena nodes by a legalize pass in `program::build` before `arena_to_schedule`, so every
-  guard def takes its variance from `compute_arena_variance` (the alternative, following the
+  arena nodes by the last pass of `pixelflow_ir::passes::legalize` (`passes/guard.rs`), so
+  every guard def takes its variance from `compute_arena_variance` (the alternative, following the
   `Context` precedent, `program/lower.rs:146-148` and `:199-211`, would hand-assign the
   bounds' union). Per `Value` bound `dom = Le(0, v) & Le(v, 2²⁴) & Eq(Floor(v), v)` (a
   known bound is in the domain by construction), `run = Lt(lo, hi)`, and
@@ -374,13 +381,28 @@ its edge.
   parameter, the allocator's single-predecessor exit and head-only parameters
   (`regalloc/local.rs:1015-1022`, `:1114`) untouched. `select.rs:266`'s assert becomes "a
   known range is non-empty".
-- After `collapse`, lowering asserts L3 against the `Write`'s binders and that
-  `stride ≠ 1` only with `Known` bounds (pipeline-bug panics).
-- `Trips::{Known(u64), Estimated}` from `select.rs:287`, saturating; `trips_at` reads the
-  number. `EmitTraffic.trips` carries the type (`emit/traffic.rs:160` multiplies by it), so
-  no measurement shows an estimate as a count. Its `Display` prints a known count as the
-  bare number, so byte_probe's `trips=` text (`examples/byte_probe.rs:306-307`) is unchanged
-  and A4's gate compares like with like.
+- After `collapse`, lowering asserts that a value bound reads no lattice binder (L3 against
+  the `Write`s' binders) and that a value-bounded fold has exactly one reader, an `If` whose
+  true arm is the fold: the single-reader property placement rests on (pipeline-bug
+  panics). `FoldHeader::new` already refuses a stride other than 1 beside a value bound, so
+  no stride assert is added. A value bound the emitter holds as a mask (a comparison, or a
+  bitwise and/or of two such) is refused by name, at either end and on every tier, by
+  `ScheduledOp::is_mask`: a mask names no count (`BoundSort`). Without the refusal every tier
+  would read the mask's bits as a float: a value `lo` is seeded `lo + 0`, and AVX-512 widens
+  an opmask there (`vpmovm2d`), so all ones reads as NaN, which fails the guard's domain test,
+  and all zeros as the count 0. Any other bound whose value is
+  a mask, a select between two masks, is a lane read as a float on every tier alike, which
+  the guard turns into NaN or a count. The predicate and the AVX-512 selector share the
+  bitwise rule (`BinaryOp::on_masks`), and a test selects every op that reads a lane over a
+  mask and a number and holds the opmask file to the predicate's answer.
+- `Trips::{Known(u64), Estimated(u64)}` from selection, a nested fold's trips the product
+  of its parent's (an estimate at `u64::MAX` when the product passes `u64`); the allocator
+  reads the number through `Trips::weight`, and its sums of weights saturate, so a deep
+  nest is priced at the most it can weigh and still compiles. `EmitTraffic.trips` carries
+  the type, and `dynamic_memory_ops` is `None` over an estimate, so no measurement shows
+  an estimate as a count. `Display` prints a known count
+  as the bare number and an estimate as `~n`, so byte_probe's `trips=` text
+  (`examples/byte_probe.rs:306-307`) is unchanged and A4's gate compares like with like.
 
 ### 3.4 `kernel!` (`pixelflow-compiler`)
 
@@ -467,7 +489,7 @@ one program per font. "Hunk" names an open PR whose diff touches or abuts the li
 | `docs/DENOTATION.md:123-125`, `:140-142` | "Loop bounds, extents and ranges are never uniforms"; "the range is a static natural" | §1.1–§1.2 | A4 | none |
 | `docs/DENOTATION.md:246-248` | the lattice's extent is in the key | stands, with a pointer to §4's deferral | A1 | none |
 | totality doc `:97-99` | "Extents are concrete literals known at `bake` … we monomorphize on them regardless" | extents are values known per call; nothing monomorphizes on them | B1 | none |
-| totality doc `:107-118` (the `:111` row), `:214` | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; per-call values, not literals | A1 rule, `:111` B1, `:214` A4 | none |
+| totality doc, "One discipline, four faces" (the paragraph and its table) and consequence 5 | every iteration count is a static natural; "extent known at bake" | fixed before the loop it bounds starts, never a coordinate; a fold's bounds each a literal, a per-call value or an enclosing index, so its count is known per call, or once per trip of the enclosing fold whose index a bound is | A1 the rule; the paragraph, the reduction-binder row and consequence 5 A4 as built; the discrete-domain and typed-field rows B1 | none |
 | totality doc `:191-200` | "only dynamic *bounds* die … static max + early-out … cost is the static worst case `N`" | a per-call bound is a value, not a static max; the cost model's estimate is §1.5's | A4 | none |
 | `2026-10-15-kernels-evaluate-kernels.md:175` | "applying a discrete kernel over the wrong extent is a bake-time refusal by name" | a bind-time refusal | B1 | none |
 | the-language-is-kernel `:78-81`, §1.4 structural row, §1.5, §1.7, §1.6 `:296-314` | ranges constant; one program per piece count (2026-10-09); the host chooses a program by its piece count | a reversal note pointing here | A1 | none |
@@ -610,11 +632,11 @@ A5's deletion, which removes code #1427 only re-scopes.
   built through the builder passes L3. That answer is not "closed": a placeholder can escape
   its builder, and closedness is judged by `free_index`, as `Kernel::by_ref` does and the
   runtime tier's unit walk does for a unit it resolves. A value bound is priced by its
-  class's chosen literal through the fold's literal twin, and the key refuses a value bound
-  until A4.
+  class's chosen literal through the fold's literal twin, and the key refused a value bound
+  until A4 gave it a marker.
   The L8 and `HalveFold` pins saturate over the fold rules alone, with no `ConstantFold`
-  and no production optimizer: the key refuses a value bound, so no production path can
-  carry one, and without `ConstantFold` a rule-made `0 + 1` stays the arithmetic it is,
+  and no production optimizer: the key then refused a value bound, so no production path
+  could carry one, and without `ConstantFold` a rule-made `0 + 1` stays the arithmetic it is,
   which the triangular pin must allow. `Saturation::total_evals` rises on every kernel
   with a fold, because `KnownBound` is evaluated on every `Reduce`; no gate reads it, but
   the anytime curves and the Guide research bins do, so a moved curve is not a regression.
@@ -638,16 +660,40 @@ A5's deletion, which removes code #1427 only re-scopes.
   literal: `push_reduce` keeps one as a value bound (A3), so the guard, not a panic,
   decides it. Extraction picks one member per class, so a bound class whose chosen member
   reads a coordinate the class does not vary with is refused at materialization with
-  `BoundVaries`, loudly; A4 decides whether a bound's pick is constrained. Gate: byte_probe
+  `BoundVaries`, loudly, and A4 leaves it so: constraining a bound's pick would trade that
+  failure for another (a class read as a bound with no member that keeps L3 would never
+  settle, and every other user of the class would fail with it). Gate: byte_probe
   empty (no row has a value bound); new JIT tests in
-  `pixelflow-codegen/tests/` against scalar Rust, every tier: a uniform `n` at 0, 1, 7,
-  1000, `2²⁴` (in the domain), and `2²⁴ + 2`, NaN, 2.5, −1 (NaN, no hang); uniforms 5 and 3
-  as `lo` and `hi` (the identity); a triangular `Σ_i Σ_{j<i}`; a uniform-bounded fold whose
-  body reads no coordinate, so the guarded fold is hoisted to `Scope::Body` and the carve
-  sees the `If`, not the `Reduce`, as its def (the single-reader assumption under
-  placement); a uniform-bounded fold whose body varies with X and whose `hi` is read only
+  `pixelflow-codegen/tests/` against scalar Rust, every tier: a uniform in the domain at
+  `hi` (0, 1, 7, 1000, `2²⁴`), at `lo` beside a literal `hi` (0, 1, 7, 1000 below 1003;
+  `2²⁴ − 2` and `2²⁴` below `2²⁴`), and at both ends of a pair (1000 and 1003; `2²⁴ − 2` and
+  `2²⁴`; `2²⁴` twice, and one uniform at both ends); a uniform outside it (`2²⁴ + 2`, NaN,
+  2.5, −1, ±∞, 10³⁰: NaN, no hang) at `hi`, at `lo` beside a literal `hi`, and at either end
+  of a pair; uniforms 5 and 3 as `lo` and `hi` (the identity); a triangular
+  `Σ_i Σ_{j<i}`; a uniform-bounded fold whose body reads no coordinate, so the guarded fold
+  is hoisted to `Scope::Body` and the carve sees the `If`, not the `Reduce`, as its def (the
+  single-reader assumption under placement), for `n` in the domain and for NaN, `+∞` and
+  `2²⁴ + 2`; a uniform-bounded fold that reads `Y` alone, in the row fold, for the same
+  kinds of `n`; a uniform-bounded fold whose body varies with X and whose `hi` is read only
   by the loop (§3.3's placement rule); one program and one code pointer for every `n`.
-  `2²⁴ + 1` is not a case here: no `f32` names it (§1.4).
+  `2²⁴ + 1` is not a case here: no `f32` names it (§1.4). **Done:** byte_probe empty in both
+  columns under `PIXELFLOW_ISA=avx512` and `=avx2`; the 29 font programs' keys, digests and
+  saturation telemetry, the extraction fields included, unchanged. The guard is
+  `pixelflow_ir::passes::legalize`'s last pass (`passes/guard.rs`); lowering asserts after
+  collapse that a value bound reads no lattice binder and that a value-bounded fold is read
+  only as its guard's true arm, and refuses a value bound the emitter holds as a mask by
+  name, at either end and on every tier (a mask names no count); `FoldHeader::new` already
+  refuses a stride other than 1 beside a value, so no stride assert is added. A value bound
+  is an operand of its fold: `lo` seeds the loop and `hi` is read at the latch, live there
+  by the allocator's own rule.
+  `Trips::{Known, Estimated}` each carry a number, an estimate printed `~n`, and
+  `EmitTraffic::dynamic_memory_ops` is `None` over an estimate. The key's marker is a count
+  field of all ones; the collapse corpus is v5 and the training corpus's schema names the
+  marker; the arena dumps stay v1, because no reader parses an `R` line. The JIT tests are
+  `pixelflow-codegen/tests/value_bounds_jit.rs`; NEON runs in CI's macOS job only. The
+  extraction decision is the one above: loud, with `BoundVaries` pinned in `fold_rules.rs`
+  for a class with no lawful member and for one whose cheapest member reads a coordinate
+  beside a dearer lawful one.
 - **A5. `<const N: usize>` is deleted**, and with it §3.4's structural path, which it was
   the only producer of. No production user: tests (`kernel_typed_parameters.rs`,
   `rustc_is_the_oracle.rs`, `items_block.rs`, `binding_times.rs`, `sema.rs` and `emit.rs`

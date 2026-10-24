@@ -21,12 +21,16 @@
 //! ```
 //!
 //! Each ExprNode is encoded as:
-//!   tag: u8  (0=Var, 1=Const, 2=Param, 3=Unary, 4=Binary, 5=Ternary, 6=Nary)
+//!   tag: u8  (0=Var, 1=Const, 2=Param, 3=Unary, 4=Binary, 5=Ternary, 6=Nary,
+//!   7=Buffer (refused at write), 9=Reduce)
 //!   payload varies by tag — a `Nary`'s children are inline (`len: u16` then
 //!   `len` `ExprId`s), not a separate trailing section, so this format never
 //!   names an arena-internal offset: `write_node` reads a `Nary`'s children
 //!   through `ExprArena::children`, the same accessor everything outside
 //!   `arena.rs` uses (docs/archive/plans/2026-09-09-exprarena-on-dag.md, Stage A).
+//!   A `Reduce` is its [`FoldHeader`]'s bits, its body, then one `ExprId` per
+//!   bound that is a value, `lo`'s first: the bits mark such a bound (a count
+//!   field of all ones) and say how many follow.
 //!
 //! ## Only the reachable subtree is stored
 //!
@@ -66,7 +70,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use pixelflow_ir::fold::FoldHeader;
+use pixelflow_ir::fold::{Bound, FoldHeader};
 use pixelflow_ir::kind::OpCode;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, Lit, OpKind};
 
@@ -90,7 +94,8 @@ impl SchemaIdentity for CorpusFormat {
     // not expression size — bug B3); and the cross-tier dedup key moved from
     // raw structure to the feature-quotient `FenceKey`, because the
     // extraction head's features collapse literals and a literal-keyed dedup
-    // could seat a DEV/FINAL-equivalent expression in TRAIN (P1(d)).
+    // could seat a DEV/FINAL-equivalent expression in TRAIN (P1(d)); and a fold's
+    // bound that is a value was given a place in the record (tag 9).
     const SCHEMA: &'static str = "\
         header: magic[4]=PXCR, schema_identity: u64 le, count: u32 le entries follow; \
         entry: name_len u16 le, name utf8 bytes, node_count u32 le, \
@@ -103,6 +108,9 @@ impl SchemaIdentity for CorpusFormat {
         6=Nary(OpKind::marshal, len u16 le, [ExprId le; len]), \
         7=Buffer(BufferId u16 le) refused at write time, its declaration is never \
         serialized; \
+        9=Reduce(FoldHeader::to_bits u128 le: a count field of all ones marks a bound \
+        that is a value; body ExprId le; then one ExprId le per bound so marked, lo's \
+        first); \
         op byte encoding: pixelflow_ir::OpKind::marshal, dense 0..COUNT discriminants \
         private to pixelflow-ir; \
         entries store ONLY the subtree reachable from root (reachable_subtree \
@@ -400,17 +408,16 @@ fn write_node(w: &mut impl Write, arena: &ExprArena, id: ExprId) -> io::Result<(
             w.write_all(&[TAG_BUFFER])?;
             w.write_all(&b.0.to_le_bytes())?;
         }
-        // The fold's header as opaque bits: metadata, not children.
+        // The fold's header as opaque bits: a literal bound travels in them, a
+        // bound that is a value is marked there and its child follows the body,
+        // `lo`'s first.
         ExprNode::Reduce { lo, hi, body, .. } => {
-            if lo.value().is_some() || hi.value().is_some() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "a value bound has no corpus encoding before A4's format version",
-                ));
-            }
             w.write_all(&[TAG_REDUCE])?;
             w.write_all(&arena.fold_header(id).to_bits().to_le_bytes())?;
             w.write_all(&body.0.to_le_bytes())?;
+            for child in [lo, hi].into_iter().filter_map(Bound::value) {
+                w.write_all(&child.0.to_le_bytes())?;
+            }
         }
         ExprNode::Uniform(u) => {
             return Err(io::Error::new(
@@ -609,8 +616,11 @@ fn read_node_into(
                 )
             })?;
             let body = resolve_child(id_map, r.read_u32()?)?;
-            // `from_bits` names literal bounds only, so no child follows.
-            let (lo, hi) = header.attach(core::iter::empty());
+            // The header says how many children follow the body.
+            let values = (1..header.arity())
+                .map(|_| resolve_child(id_map, r.read_u32()?))
+                .collect::<io::Result<Vec<_>>>()?;
+            let (lo, hi) = header.attach(values);
             Ok(arena.push_reduce(header.fold(), lo, hi, body))
         }
         _ => Err(io::Error::new(
@@ -735,6 +745,7 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_ir::fold::{Binder, Fold, Monoid};
 
     // Per-process path: concurrent `cargo test` runs must not share corpus files,
     // or one process's remove_file races another's write/read.
@@ -754,21 +765,101 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(arena.len(), 1, "the malformed record entered nothing");
     }
-    /// A record whose end field is all ones is the field a value bound would
-    /// need and this format does not have: it names no fold, rather than
-    /// reading as a bound.
+    /// A record whose end field is all ones marks a bound that is a value, and
+    /// the child it names follows the body.
     #[test]
-    fn a_fold_record_with_an_all_ones_end_names_no_fold() {
-        let all_ones_hi = 0x0000_0000_0001_0201_0000_0003_ffff_ffff_u128;
+    fn a_fold_record_marking_a_value_reads_its_child() {
+        let value_hi = 0x0000_0000_0001_0201_0000_0003_ffff_ffff_u128;
         let mut bytes = vec![TAG_REDUCE];
-        bytes.extend_from_slice(&all_ones_hi.to_le_bytes());
+        bytes.extend_from_slice(&value_hi.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        let mut arena = ExprArena::new();
+        let body = arena.push_var(0);
+        // Not a count, so it stays a value; it reads no coordinate, so it is
+        // a lawful bound.
+        let hi = arena.push_const(2.5);
+        let fold = read_node_into(&mut Cursor::new(&bytes), &mut arena, &[body, hi])
+            .expect("a value bound's child follows the body");
+        assert!(
+            matches!(
+                arena.node(fold),
+                ExprNode::Reduce {
+                    lo: Bound::Lit(3),
+                    hi: Bound::Value(child),
+                    ..
+                } if child == hi
+            ),
+            "the record names a fold over [3, 2.5)"
+        );
+    }
+
+    /// The same record without its child is a short record, as any is.
+    #[test]
+    fn a_fold_record_missing_its_value_child_is_unexpected_eof() {
+        let value_hi = 0x0000_0000_0001_0201_0000_0003_ffff_ffff_u128;
+        let mut bytes = vec![TAG_REDUCE];
+        bytes.extend_from_slice(&value_hi.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let mut arena = ExprArena::new();
+        let body = arena.push_var(0);
+        let err = read_node_into(&mut Cursor::new(&bytes), &mut arena, &[body])
+            .expect_err("the marked bound has no child to read");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(arena.len(), 1, "the short record entered nothing");
+    }
+
+    /// A literal end past the bound the format can hold names no fold,
+    /// rather than reading as a bound.
+    #[test]
+    fn a_fold_record_with_an_end_past_the_bound_names_no_fold() {
+        let past_the_bound = 0x0000_0000_0001_0201_0000_0003_0100_0001_u128;
+        let mut bytes = vec![TAG_REDUCE];
+        bytes.extend_from_slice(&past_the_bound.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
         let err = read_node_into(&mut Cursor::new(&bytes), &mut arena, &[x])
-            .expect_err("an all-ones end is no literal bound");
+            .expect_err("an end past the bound is no literal bound");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(arena.len(), 1, "the malformed record entered nothing");
+    }
+
+    /// `Σ_{i<4} Σ_{j<i} j`: the inner fold's end is the outer fold's index, a
+    /// value, and survives a write and a read.
+    #[test]
+    fn round_trip_a_value_bounded_fold() {
+        let mut arena = ExprArena::new();
+        let outer_binder = Binder::from_slot(0).expect("the first binder");
+        let inner_binder = Binder::from_slot(1).expect("the second binder");
+        let i = arena.push_var(outer_binder.var());
+        let j = arena.push_var(inner_binder.var());
+        let inner = arena.push_reduce(
+            Fold::new(Monoid::SUM, inner_binder),
+            Bound::Lit(0),
+            Bound::Value(i),
+            j,
+        );
+        let root = arena.push_reduce(
+            Fold::new(Monoid::SUM, outer_binder),
+            Bound::Lit(0),
+            Bound::Lit(4),
+            inner,
+        );
+
+        let tmp = unique_tmp("value_bounded_fold");
+        write_corpus(&tmp, &[("triangle".to_string(), arena.clone(), root)]).expect("write");
+        let loaded = read_corpus(&tmp).expect("read");
+        std::fs::remove_file(&tmp).expect("clean up");
+
+        let [(name, loaded_arena, loaded_root)] = loaded.as_slice() else {
+            panic!("one entry was written");
+        };
+        assert_eq!(name, "triangle");
+        assert!(
+            loaded_arena.subtree_eq(*loaded_root, &arena, root),
+            "a value-bounded fold did not round trip"
+        );
     }
 
     #[test]

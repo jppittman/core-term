@@ -28,6 +28,27 @@
 //! is inlined into the column fold's
 //! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.2).
 //!
+//! A fold whose bound is a value arrives inside the guard
+//! [`pixelflow_ir::passes::legalize`] builds (an `If`'s arm): its counter
+//! starts at `lo`'s lane (plus zero, so a `-0.0` count starts at the integer 0
+//! a literal seeds) and its latch compares against `hi`'s, and the arm is
+//! skipped when the range is empty or a bound is not a count in `[0, 2²⁴]` (a
+//! fraction, NaN and an infinity are none). The latch's compare reads two
+//! registers, so `hi` is one the allocator carries across the loop or reloads
+//! at each latch, where a literal end is a constant placed again at its read.
+//!
+//! The guard's masks are the call's when the bounds are. Its arm tests sit
+//! where the fold does, in the innermost scope of the nest that the fold reads,
+//! and run as often as that scope does. The first of these that holds:
+//! - in an enclosing fold's scope, once per trip of it, when the fold's body or
+//!   bound reads that fold's index (the innermost such fold's);
+//! - in the column fold, in every batch of it, when it reads `X`;
+//! - in the row fold, once per row, when it reads `Y`;
+//! - in the body, once per call, when it reads none of these.
+//!
+//! A mask the register file cannot keep across the trips of that scope (an
+//! opmask, on AVX-512) is reloaded each time the scope runs.
+//!
 //! ## Spilling
 //!
 //! Values the register file cannot hold go to frame slots, which the allocator
@@ -52,7 +73,7 @@ mod x86_64;
 // this path), what it hands back, and the counts inside that.
 pub use crate::pipeline::compile;
 pub use executable::CompiledKernel;
-pub use traffic::{EmitTraffic, ScopeTraffic};
+pub use traffic::{EmitTraffic, ScopeTraffic, Trips};
 
 use asm::{Encoding, Label, Labels, Patch};
 use encoded::EncodedInst;
@@ -513,9 +534,9 @@ struct Loop {
     head: Label,
     /// The enclosing loop, as an index into [`Function::loops`].
     parent: Option<usize>,
-    /// How many times its body runs per call: its own trip count times its
-    /// parent's.
-    trips: u64,
+    /// How many times its body runs per call, or an estimate's price where a
+    /// fold's range is not known: its own trips nested in its parent's.
+    trips: Trips,
 }
 
 /// The pool section: its label, then each entry with its own label, in order.
@@ -1586,6 +1607,56 @@ mod tests {
         compile_for::<aarch64::Neon>(&a, root, POINT).expect("NEON emit");
         compile_for::<avx2::Avx2>(&a, root, POINT).expect("AVX2 emit");
         compile_for::<avx512::Avx512>(&a, root, POINT).expect("AVX-512 emit");
+    }
+
+    /// A fold whose bound is a value, on every backend from this host: the
+    /// guard's arms around a loop whose counter starts at one lane and ends at
+    /// another. Three shapes that reach what a literal fold never does: a
+    /// seed that reads another loop's counter (`i + 0`, added where the fold
+    /// is entered), a bound read by nothing in the body that must live across
+    /// a wall of values, and a ragged row whose main and remainder column
+    /// folds both open the loop.
+    ///
+    /// NEON cannot run here; selection, allocation and assembly can.
+    #[test]
+    fn every_backend_emits_a_fold_whose_bound_is_a_value() {
+        use pixelflow_ir::fold::Monoid;
+        use pixelflow_ir::{Kernel, Uniform};
+
+        // More values live at once than any tier's vector file holds.
+        const WALL: u32 = 48;
+
+        let (zero, eight) = (Kernel::constant(0.0), Kernel::constant(8.0));
+        let count = || Uniform::new(7.0).kernel();
+        let from_the_outer_index = Kernel::sum_over(8, |i| {
+            Kernel::over_values(Monoid::SUM, i, &eight, |j| Kernel::x().add(j))
+        });
+        let a_wall = Kernel::over_values(Monoid::SUM, &zero, &count(), |k| {
+            let terms: Vec<Kernel> = (1..=WALL)
+                .map(|m| Kernel::x().add(k).mul(&Kernel::constant(m as f32)))
+                .collect();
+            let up = terms[1..]
+                .iter()
+                .fold(terms[0].clone(), |acc, t| acc.add(t));
+            let down = terms
+                .iter()
+                .rev()
+                .skip(1)
+                .fold(terms[WALL as usize - 1].clone(), |acc, t| acc.add(t));
+            up.add(&down)
+        });
+        let ragged = Kernel::over_values(Monoid::SUM, &zero, &count(), |k| Kernel::x().add(k));
+
+        for (kernel, shape) in [
+            (from_the_outer_index, POINT),
+            (a_wall, LatticeShape::new([8, 2])),
+            (ragged, LatticeShape::new([37, 3])),
+        ] {
+            let (arena, root) = kernel.parts();
+            compile_for::<aarch64::Neon>(arena, root, shape).expect("NEON emit");
+            compile_for::<avx2::Avx2>(arena, root, shape).expect("AVX2 emit");
+            compile_for::<avx512::Avx512>(arena, root, shape).expect("AVX-512 emit");
+        }
     }
 
     // =========================================================================

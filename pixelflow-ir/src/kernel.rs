@@ -716,8 +716,8 @@ impl Kernel {
     /// captures it, which no check sees (docs/BACKLOG.md C10). An index that
     /// has escaped and is not captured is open, and `ExprArena::free_index`
     /// says so. `range` is the literal spelling of a known
-    /// range; a bound that is a value is `Kernel::over_values`'. Either way
-    /// every bound is known before the lattice is traversed, which is what keeps
+    /// range; a bound that is a value is [`Kernel::over_values`]'s. Either way
+    /// no bound reads a coordinate, which is what keeps
     /// the language total and its cost closed-form — `|D|·cost(body) +
     /// (|D|−1)·cost(⊕)` (docs/language/2026-10-20-a-bound-is-a-value.md §1.5).
     /// A fold that survives extraction is a loop; extraction unrolls a known
@@ -785,6 +785,18 @@ impl Kernel {
     /// triangular `Σ_i Σ_{j<i}`), or a constant
     /// (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
     ///
+    /// A bound that is a value is read per call: `n` a [`Uniform`] is one
+    /// compiled program for every `n`, and the fold runs `n` trips. A bound that
+    /// is no count at run time — a count is an integer in `0..=2²⁴`; a uniform
+    /// set to `2.5`, `−1`, NaN or `2²⁴ + 2` is none — makes the fold NaN (L5),
+    /// and a pair that runs backwards at run time is the identity, up to the
+    /// factoring edge `FactorFold` accepts at a runtime-empty range (decision
+    /// 5). The NaN has an exception on the optimized path: under
+    /// [`Monoid::SUM`], a body with a factor the optimizer proves zero (a
+    /// literal `0`, or one such as `X − X`) loses its fold to the annihilation rule
+    /// (`0·y → 0`, [`OpKind::annihilator`]), so no fold is left for the guard
+    /// to wrap and a bound that is no count gives `0` (`FactorFold`'s doc).
+    ///
     /// Constness is discovered, not declared: a bound that is a constant naming
     /// a count is the fold's data, so `over_values(⊕, 0, 4, f)` is
     /// `over(⊕, 0..4, f)` node for node, and a pair of constants running
@@ -808,12 +820,19 @@ impl Kernel {
     /// ([`BoundRefusal::BoundVaries`], L3), on a value bound under `ANY`, `ALL`
     /// or `SEQ` ([`BoundRefusal::BoundSort`]), and when the body binds every
     /// slot.
+    ///
+    /// ```
+    /// use pixelflow_ir::{Kernel, Monoid, Uniform};
+    ///
+    /// let n = Uniform::new(8.0);
+    /// // Σ_{i < n} X·i, one program for every n.
+    /// let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &n.kernel(), |i| {
+    ///     Kernel::x().mul(i)
+    /// });
+    /// assert_eq!(sum.uniforms().len(), 1);
+    /// ```
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "pub(crate) until A4 makes it public (decision 7)")
-    )]
-    pub(crate) fn over_values(
+    pub fn over_values(
         monoid: Monoid,
         lo: &Kernel,
         hi: &Kernel,
@@ -862,10 +881,6 @@ impl Kernel {
     /// Whether `bound`, the fold's `end` bound as a user wrote it, is one
     /// `over_values` takes: a leaf naming a number — a constant naming a count,
     /// a uniform, an index — and nothing computed (§1.4, until T6).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "pub(crate) until A4 makes it public (decision 7)")
-    )]
     fn user_bound(end: BoundEnd, bound: &Kernel) -> Result<(), BoundRefusal> {
         match *bound.root() {
             ExprData::Var(_) | ExprData::Uniform(_) => Ok(()),

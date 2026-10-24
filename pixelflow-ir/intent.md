@@ -10,12 +10,12 @@ except for the process-global store a `Ref` names into.
 - The representation of a term: `ExprArena` over `Dag`, interning, the
   dense `ExprId`, the identity tables, and what reachability means. Nothing
   else may depend on how a node is stored.
-- The meaning of a fold (`Fold`: monoid, binder, stride; `Bound`: a literal
-  or a child), of a constant (`Lit`: a real by its bits or a mask by its
-  truth, never a lane whose bits mean one or the other by convention), of a
-  reinterpretation (`Bits`/`Float`: the same bits read as the other sort,
-  compiling to nothing), of the bitwise domain (`is_bitwise_domain`), and of
-  a name (`KernelKey`, `Ref`).
+- The meaning of a fold (`Fold`: monoid, binder, stride; `Bound`: a literal or a
+  child; NaN unless each bound is a count in `0..=2²⁴`), of a constant (`Lit`: a
+  real by its bits or a mask by its truth, never a lane whose bits mean one or
+  the other by convention), of a reinterpretation (`Bits`/`Float`: the same bits
+  read as the other sort, compiling to nothing), of the bitwise domain
+  (`is_bitwise_domain`), and of a name (`KernelKey`, `Ref`).
 - Composition: `Kernel::at` as substitution into `Var` leaves, `by_ref` and
   the linker. Composition substitutes and links; it never evaluates or
   optimizes.
@@ -69,8 +69,8 @@ crates depend on it (`pixelflow-codegen`, `pixelflow-search`,
 - A constant is typed (`Lit`), but a node is not: a lane is a real or an integer
   by convention, a computed mask a lane like any other. Node sorts and `Lit::Int`
   are ruled (kernels-evaluate-kernels §2) and wait on the arena-is-typed T3.
-- `Var(u8)` means an axis or a binder by range; `Binder` a `u8`, against
-  the 64-bit control-plane rule. Codegen and the key take literal `Bound`s until A4.
+- `Var(u8)` means an axis or a binder by range; `Binder` a `u8`, against the
+  64-bit control-plane rule.
 - `Buffer`, `BoundManifold`'s link tables and `passes::lattice` are in the
   tree and not concepts (DENOTATION §11).
 

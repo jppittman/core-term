@@ -48,9 +48,8 @@
 //! [`Kernel`]: pixelflow_core::Kernel
 
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
-use pixelflow_ir::fold::KNOWN_RANGE;
 use pixelflow_ir::optimize::Optimize;
-use pixelflow_ir::{Fold, Lit, OpKind};
+use pixelflow_ir::{Bound, Fold, Lit, OpKind};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
@@ -578,7 +577,7 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
         // `FoldHeader`, whose fields are private precisely so no caller can
         // assemble one that means nothing — so it travels the way the two
         // cache keys carry it, as bits with a total inverse on the far side.
-        ExprNode::Reduce { body, .. } => {
+        ExprNode::Reduce { lo, hi, body, .. } => {
             let header = arena.fold_header(id);
             let bits = header.to_bits();
             let body = node_var(body);
@@ -587,14 +586,31 @@ fn node(arena: &ExprArena, id: ExprId, context: &EntryContext) -> TokenStream {
                     .expect("kernel! emitted a well-formed fold")
             };
             // An open fold keeps its monoid and binder, which are
-            // structure, and takes its range from this instantiation.
-            let header_range = arena.known_range(id).expect(KNOWN_RANGE);
-            match context.holes.range_of(header_range) {
-                None => quote! {{
-                    let __header = #decoded;
-                    let (__lo, __hi) = __header.attach(::core::iter::empty());
-                    __arena.push_reduce(__header.fold(), __lo, __hi, #body)
-                }},
+            // structure, and takes its range from this instantiation. A fold
+            // with a bound that is a value has no known range, so it is never
+            // open.
+            let hole = arena
+                .known_range(id)
+                .and_then(|range| context.holes.range_of(range));
+            match hole {
+                None => {
+                    // A bound that is a value is a child after the body, `lo`'s
+                    // first, as the header's bits say.
+                    let values: Vec<Ident> = [lo, hi]
+                        .into_iter()
+                        .filter_map(Bound::value)
+                        .map(node_var)
+                        .collect();
+                    let children = match values.as_slice() {
+                        [] => quote! { ::core::iter::empty() },
+                        _ => quote! { [#(#values),*] },
+                    };
+                    quote! {{
+                        let __header = #decoded;
+                        let (__lo, __hi) = __header.attach(#children);
+                        __arena.push_reduce(__header.fold(), __lo, __hi, #body)
+                    }}
+                }
                 Some(range) => {
                     let range = instantiated_range(range);
                     quote! {{
@@ -1086,5 +1102,54 @@ mod tests {
         let mut offered = Offered(0);
         emit_kernel(&analyzed, &mut offered).expect("emits");
         assert_eq!(offered.0, 1, "`plain` alone");
+    }
+
+    /// `Σ_{k<hi} k` as an arena, the fold's id, and the uniform that is its
+    /// `hi` when it is a value.
+    fn sum_to(count: Option<u64>) -> (ExprArena, ExprId, ExprId) {
+        let mut arena = ExprArena::new();
+        let slot = arena.declare_uniform(pixelflow_ir::Uniform::new(3.0).decl());
+        let uniform = arena.push_uniform(slot);
+        let binder = pixelflow_ir::Binder::from_slot(0).expect("the first binder");
+        let index = arena.push_var(binder.var());
+        let hi = count.map_or(Bound::Value(uniform), Bound::Lit);
+        let fold = arena.push_reduce(
+            Fold::new(pixelflow_ir::Monoid::SUM, binder),
+            Bound::Lit(0),
+            hi,
+            index,
+        );
+        (arena, fold, uniform)
+    }
+
+    /// A fold with a bound that is a value rebuilds it with the bound's
+    /// child, which the header's bits cannot hold.
+    #[test]
+    fn a_value_bounded_fold_emits_its_children() {
+        let (arena, fold, uniform) = sum_to(None);
+        let context = EntryContext {
+            arguments: vec![quote!(3.0f32)],
+            structural: &[],
+            holes: &Holes::default(),
+        };
+        let code = node(&arena, fold, &context).to_string();
+        let child = node_var(uniform);
+        assert!(code.contains(&format!("attach ([{child}])")), "{code}");
+    }
+
+    /// A fold whose bounds are literals emits what it always did: no children.
+    #[test]
+    fn a_literal_fold_emits_no_children() {
+        let (arena, fold, _) = sum_to(Some(3));
+        let context = EntryContext {
+            arguments: vec![quote!(3.0f32)],
+            structural: &[],
+            holes: &Holes::default(),
+        };
+        let code = node(&arena, fold, &context).to_string();
+        assert!(
+            code.contains("attach (:: core :: iter :: empty ())"),
+            "{code}"
+        );
     }
 }

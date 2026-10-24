@@ -82,7 +82,9 @@ pub struct Linked {
 ///
 /// The returned `Arc` is the shared handle — two constructions of the same
 /// kernel at the same shape yield pointer-equal manifolds — and the link
-/// beside it says what this construction's slots bind.
+/// beside it says what this construction's slots bind. A fold whose bound is a
+/// value compiles inside its guard (`Kernel::over_values`), and every count it
+/// is run with shares the one program.
 ///
 /// # Errors
 ///
@@ -92,9 +94,13 @@ pub struct Linked {
 ///
 /// Panics if the arena — as handed in, or as saturation leaves it — names a
 /// retired coordinate axis (`Var(2)`/`Var(3)`, the old Z and W), or if `shape`
-/// has a zero extent, which has no sample to compute. The assertions live one
-/// layer down, in [`emit::compile`], because that is the boundary every route
-/// to machine code passes through and this is only one of them.
+/// has a zero extent, which has no sample to compute, or if a fold's bound is
+/// a mask an emitter holds as one, which is refused by name (`BoundSort`) at
+/// either end on every tier, since a mask names no count.
+/// `Kernel::over_values` takes no such bound, but a kernel adopted with
+/// `Kernel::from_parts` can carry one. The assertions live one layer down, in
+/// [`emit::compile`], because that is the boundary every route to machine code
+/// passes through and this is only one of them.
 pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Linked, CompileError> {
     let (arena, root) = kernel.parts();
     // The link tables, and the key, are read off the kernel with every

@@ -968,8 +968,9 @@ impl ExprArena {
     /// ([`Bound::discover`]), so every constructor — a builder, a copier,
     /// extraction's `embed` — holds a known bound as data. A `Const` naming no
     /// count (not an integer, or outside `0..=Fold::EXACT_BOUND`) stays a value
-    /// bound, whose guard makes the fold NaN (L5, A4): a literal a rule or the
-    /// folder made never panics here. `Kernel::over_values` refuses one by name
+    /// bound, whose guard makes the fold NaN (L5: the guard `passes::legalize`
+    /// ends with): a literal a rule or the folder made never panics here.
+    /// `Kernel::over_values` refuses one by name
     /// ([`BoundRefusal::BoundOutOfDomain`](crate::fold::BoundRefusal::BoundOutOfDomain)),
     /// and `Kernel::over` refuses a literal range past 2²⁴ in
     /// `KnownRange::new`'s words.
@@ -983,9 +984,10 @@ impl ExprArena {
     ///
     /// The sort of a value bound is checked of its term as written: a mask
     /// *literal* is refused, and a computed bound that is a mask (only a
-    /// hand-built call makes one; `over_values` takes a leaf) is admitted. If the
-    /// folder turns it into a mask literal, materializing it panics with the
-    /// same refusal, loudly. Giving a bound a sort (T6) closes the hole.
+    /// hand-built call makes one; `over_values` takes a leaf) is admitted here.
+    /// If the folder turns it into a mask literal, materializing it panics with
+    /// the same refusal, loudly, and lowering refuses one the emitter holds as a
+    /// mask by that refusal too. Giving a bound a sort (T6) closes the rest.
     ///
     /// # Panics
     ///

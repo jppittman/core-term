@@ -505,6 +505,14 @@ pub struct EmptyFold;
 /// - a negative `c`, where `c·(+0)` is `-0.0`;
 /// - for `MIN` and `MAX`, a NaN `c`.
 ///
+/// **Under [`Monoid::SUM`], a `c` the graph proves zero takes its fold with
+/// it**: a literal `0`, or a class merged with one, such as `X − X`. The `Mul`
+/// annihilator (`0·y → 0`, `OpKind::annihilator`) rewrites `c · Σ f` to `0`, so
+/// no fold is left for the guard `passes::legalize` builds to wrap, and a bound
+/// that is no count (NaN, a fraction, past 2²⁴) gives `0` where the fold as
+/// written is NaN. For a finite body the answers agree in the domain. That is
+/// the annihilation rule's edge, not this rule's (BACKLOG E9).
+///
 /// **Floating point.** Min and max with `Add` are exact: `fl(c + f)` is
 /// monotone in `f`, so `min_i fl(c + f_i) = fl(c + min_i f_i)` bit for bit,
 /// except where a NaN is involved or a zero's sign is chosen — both already
@@ -541,8 +549,8 @@ pub struct FactorFold;
 /// literal naming no count — a fraction, a negative, past 2²⁴ — is no count,
 /// and a mask is no count of any sort: the rule declines on both (L5 of
 /// docs/language/2026-10-20-a-bound-is-a-value.md: such a fold is NaN, by the
-/// guard codegen will emit). A pair it makes known runs forwards (L2 of the
-/// same plan: `[k, j)` with `k > j` is the empty range at `k`), which
+/// guard `passes::legalize` ends with). A pair it makes known runs forwards (L2
+/// of the same plan: `[k, j)` with `k > j` is the empty range at `k`), which
 /// [`EmptyFold`] then closes.
 ///
 /// The member is found by scan, as `math::algebra`'s `constant_of` finds one,
@@ -1809,7 +1817,8 @@ mod tests {
     }
 
     /// A literal that is no count is no count: a fraction, and a count past the
-    /// domain, decline (L5: such a fold is NaN, by the guard codegen will emit).
+    /// domain, decline (L5: such a fold is NaN, by the guard `passes::legalize`
+    /// ends with).
     #[test]
     fn known_bound_declines_a_count_out_of_domain() {
         for no_count in [2.5, 16_777_218.0] {
@@ -2203,8 +2212,10 @@ mod tests {
     /// cost and does not know a bound's pick must keep L3, so a bound class
     /// with no member that does (here `i + X` and `i + Y`) is materialized
     /// through one that reads a coordinate, and `ExprArena::push_reduce` refuses
-    /// the fold with `BoundVaries`. Nothing is silent. Whether the pick of a
-    /// bound is constrained is A4's to decide; this changes with it.
+    /// the fold with `BoundVaries`. Nothing is silent, and it is left so:
+    /// constraining a bound's pick would trade this failure for another, since
+    /// a class read as a bound with no member that keeps L3 would never settle
+    /// and every other user of the class would fail with it.
     #[test]
     #[should_panic(expected = "BoundVaries")]
     fn extracting_a_bound_class_with_no_member_that_keeps_l3_is_refused_by_name() {
@@ -2234,8 +2245,9 @@ mod tests {
     /// the fold is refused with `BoundVaries` all the same. The class's fact is
     /// the outer index alone, which is why the fold was admitted. Saturation
     /// can leave the cheap spelling standing or rewrite it away; this graph has
-    /// no rules, so nothing does. A4 decides whether a bound's pick is
-    /// constrained, and this changes with it.
+    /// no rules, so nothing does. The cheaper spelling carries an extra
+    /// subtraction to cancel the coordinate, which no kernel or profile shows
+    /// winning, so the pick is left unconstrained and the failure loud.
     #[test]
     #[should_panic(expected = "BoundVaries")]
     fn extracting_a_bound_class_whose_cheapest_member_reads_a_coordinate_is_refused_by_name() {

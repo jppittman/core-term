@@ -5,12 +5,15 @@
 //! the arena that follows children must follow it, and each copier must carry
 //! it. This file builds one fold with a value bound that is deeper than its
 //! body, so a walker that read the body alone would answer differently, and
-//! asks the public API about it. The private pieces (`over_values`, the rooted
-//! variance walk) are pinned in the crate's own unit tests.
+//! asks the public API about it. The rooted variance walk is pinned in the
+//! crate's own unit tests.
 
 use pixelflow_ir::arena::{Axis, ExprArena, ExprId, ExprNode};
 use pixelflow_ir::fold::{Binder, Bound, Fold, Monoid};
-use pixelflow_ir::variance::{Variance, compute_arena_variance};
+use pixelflow_ir::key::canonical;
+use pixelflow_ir::passes::lattice::{Collapse, Domain};
+use pixelflow_ir::passes::legalize;
+use pixelflow_ir::variance::{LatticeShape, Variance, compute_arena_variance};
 use pixelflow_ir::{Kernel, KernelKey, Lit, OpKind, Uniform};
 
 /// The `slot`-th binder.
@@ -36,8 +39,13 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_counting(2.0)
+}
+
+/// The fixture with its uniform `u` declared holding `default`.
+fn fixture_counting(default: f32) -> Fixture {
     let mut arena = ExprArena::new();
-    let decl = arena.declare_uniform(Uniform::new(2.0).decl());
+    let decl = arena.declare_uniform(Uniform::new(default).decl());
     let u = arena.push_uniform(decl);
     let y = arena.push_var(Axis::Y.var());
     let i = arena.push_var(binder(0).var());
@@ -143,14 +151,29 @@ fn substituting_a_coordinate_leaves_a_bound_alone() {
     assert!(!f.arena.has_var(c));
 }
 
-/// A key is a fold's header and its children's keys, and the header has no
-/// field for a child yet: a value-bounded kernel is refused by name rather than
-/// keyed as another fold.
+/// A key is a fold's header and its children's keys, and a bound that is a
+/// value is the header's marker and a child. The shape is one canonical form
+/// however the uniform it reads is set (one compiled program for every count),
+/// and two instances of that uniform are two kernels: the instance is in the
+/// kernel's identity, the default only in the block.
 #[test]
-#[should_panic(expected = "a fold bound that is a value")]
-fn a_value_bounded_kernel_has_no_key_until_a4() {
-    let f = fixture();
-    let _refused = KernelKey::of(&f.arena, f.outer);
+fn a_value_bounded_kernel_has_a_key() {
+    let (one, other) = (fixture_counting(2.0), fixture_counting(9.0));
+    let (shape_one, shape_other) = (
+        canonical(&one.arena, one.outer),
+        canonical(&other.arena, other.outer),
+    );
+    assert_eq!(shape_one.key, shape_other.key);
+    assert_ne!(shape_one.uniforms, shape_other.uniforms);
+    assert_ne!(
+        KernelKey::of(&one.arena, one.outer),
+        KernelKey::of(&other.arena, other.outer)
+    );
+    assert_eq!(
+        KernelKey::of(&one.arena, one.outer),
+        KernelKey::of(&one.arena, one.outer),
+        "and a key is a function of its kernel"
+    );
 }
 
 /// A bound that reads a binder no fold around it binds makes the term open: the
@@ -191,4 +214,98 @@ fn a_constant_bound_is_read_where_it_is_pushed() {
     let kept = a.push_reduce(sum(0), Bound::Lit(0), Bound::Value(half), body);
     assert_ne!(kept, by_literal);
     assert_eq!(a.known_range(kept), None);
+}
+
+/// `over_values` is the user's door to a value bound: a uniform count is one
+/// `Reduce` whose `hi` is a child, not a literal.
+#[test]
+fn over_values_is_public() {
+    let count = Uniform::new(8.0);
+    let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &count.kernel(), |i| {
+        i.clone()
+    });
+    let (arena, root) = sum.parts();
+    let ExprNode::Reduce { lo, hi, .. } = arena.node(root) else {
+        panic!("a fold, got {}", arena.display(root));
+    };
+    assert_eq!(lo, Bound::Lit(0));
+    assert!(matches!(hi, Bound::Value(_)));
+    assert_eq!(sum.uniforms(), [count.decl()]);
+}
+
+/// Until bounds are `Int`, a bound is a leaf: arithmetic is refused by name at
+/// the public surface, where a bound could round into the domain.
+#[test]
+#[should_panic(expected = "BoundArithmetic")]
+fn over_values_refuses_arithmetic_at_the_public_surface() {
+    let count = Uniform::new(8.0).kernel();
+    let hi = count.add(&Kernel::constant(1.0));
+    let _refused = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &hi, |i| i.clone());
+}
+
+/// A fold a user built with a value bound leaves `legalize` inside its guard,
+/// and nothing else reads it: `If(dom, If(lo < hi, fold, identity), NaN)`.
+#[test]
+fn legalize_guards_what_over_values_built() {
+    let count = Uniform::new(8.0);
+    let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &count.kernel(), |i| {
+        Kernel::x().mul(i)
+    });
+    let (arena, root) = sum.parts();
+    let origin = |default| Uniform::new(default).decl();
+    let collapse = Collapse {
+        domain: Domain {
+            shape: LatticeShape::new([4, 2]),
+            origin: [origin(0.0), origin(0.0)],
+        },
+        lanes: 4,
+    };
+    let (legalized, root) = legalize(arena, root, &collapse).expect("a kernel with no Dwrt");
+
+    let reachable = reachable(&legalized, root);
+    let valued: Vec<ExprId> = reachable
+        .iter()
+        .copied()
+        .filter(|id| {
+            matches!(
+                legalized.node(*id),
+                ExprNode::Reduce {
+                    hi: Bound::Value(_),
+                    ..
+                }
+            )
+        })
+        .collect();
+    let [fold] = valued[..] else {
+        panic!("one fold with a value bound, got {valued:?}");
+    };
+    let readers: Vec<ExprId> = reachable
+        .iter()
+        .copied()
+        .filter(|id| legalized.children(*id).any(|child| child == fold))
+        .collect();
+    let [reader] = readers[..] else {
+        panic!("the fold has one reader, got {readers:?}");
+    };
+    let ExprNode::Ternary(OpKind::If, _, arm, _) = legalized.node(reader) else {
+        panic!("read by {}", legalized.display(reader));
+    };
+    assert_eq!(
+        arm, fold,
+        "as the true arm of the guard around the range test"
+    );
+}
+
+/// The nodes reachable from `root`.
+fn reachable(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
+    let mut seen = vec![false; arena.len()];
+    let mut stack = vec![root];
+    let mut order = Vec::new();
+    while let Some(id) = stack.pop() {
+        if !std::mem::replace(&mut seen[id.0 as usize], true) {
+            order.push(id);
+            stack.extend(arena.children(id));
+        }
+    }
+    order
 }

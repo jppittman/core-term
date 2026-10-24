@@ -195,10 +195,12 @@ pub struct Canonical {
 ///
 /// **Why no two programs share a key.** Each emitted node names its children
 /// by canonical ids smaller than its own, every tag has a fixed encoding
-/// length (an n-ary node carries its count), and the root is the last node
-/// emitted: it cannot equal an earlier one, because that one would be its own
-/// descendant. So the bytes parse back into exactly one tree over (tag,
-/// payload, dense slot), and two programs with different unfoldings have
+/// length given its payload (an n-ary node carries its count, a fold's header
+/// says how many children follow it,
+/// [`FoldHeader::arity`](crate::fold::FoldHeader::arity)), and the root is the
+/// last node emitted: it cannot equal an earlier one, because that one would
+/// be its own descendant. So the bytes parse back into exactly one tree over
+/// (tag, payload, dense slot), and two programs with different unfoldings have
 /// different bytes. What is deliberately *not* in the bytes — which memory a
 /// slot binds — is the two tables beside them.
 #[must_use]
@@ -446,11 +448,13 @@ impl<'a> Walk<'a> {
             }
             // The fold's header is metadata, so it is *in the tag bytes*
             // rather than encoded as three child nodes; a bound that is a
-            // value is a child, keyed after the body. Two folds over the same
-            // body under different algebras, binders or ranges are different
-            // kernels, and this is where that is said. A known bound is header
-            // data at its `to_bits` field, so a fold over literals keys as it
-            // always has.
+            // value writes its header field's marker and its child's key after
+            // the body's. Two folds over the same body under different
+            // algebras, binders or ranges are different kernels, and this is
+            // where that is said. A known bound is header data at its
+            // `to_bits` field, so a fold over literals keys as it always has.
+            // A uniform bound contributes its dense slot, not its default, so
+            // every count is one key (L9).
             ExprNode::Reduce { lo, hi, body, .. } => {
                 self.scratch.push(10);
                 self.scratch
@@ -782,6 +786,90 @@ mod tests {
             key.windows(record.len()).any(|window| window == record),
             "no tag-ten record in {key:?}"
         );
+    }
+
+    /// `Σ_{k ∈ [lo, hi)} k` over binder slot 1, each bound the literal it is
+    /// or the uniform its declaration names.
+    fn counted(
+        lo: crate::Bound<UniformDecl>,
+        hi: crate::Bound<UniformDecl>,
+    ) -> (ExprArena, ExprId) {
+        use crate::fold::{Binder, Fold, Monoid};
+
+        let mut a = ExprArena::new();
+        let slot1 = Binder::from_slot(1).expect("a binder slot");
+        let body = a.push_var(slot1.var());
+        let mut leaf = |bound: crate::Bound<UniformDecl>| {
+            bound.map(|decl| {
+                let slot = a.uniform_slot_for(decl);
+                a.push_uniform(slot)
+            })
+        };
+        let (lo, hi) = (leaf(lo), leaf(hi));
+        let r = a.push_reduce(Fold::new(Monoid::SUM, slot1), lo, hi, body);
+        (a, r)
+    }
+
+    /// A fold whose bound is a value keys as tag ten, its header's bits with the
+    /// bound's count field all ones, the body's canonical id, then the bound's:
+    /// the record assembled by hand, beside the two leaves it names.
+    #[test]
+    fn a_value_bounded_folds_key_record_is_tag_ten_its_bits_and_its_children() {
+        use crate::Bound;
+
+        let u = crate::Uniform::new(8.0);
+        let (a, r) = counted(Bound::Lit(0), Bound::Value(u.decl()));
+        let mut want = vec![0u8, crate::fold::Binder::from_slot(1).expect("slot").var()];
+        // The uniform, at its dense slot 0.
+        want.push(8);
+        want.extend_from_slice(&0u64.to_le_bytes());
+        want.push(10);
+        want.extend_from_slice(&0x0000_0000_0001_0201_0000_0000_ffff_ffffu128.to_le_bytes());
+        // The body (canonical 0), then the bound (canonical 1).
+        want.extend_from_slice(&0u32.to_le_bytes());
+        want.extend_from_slice(&1u32.to_le_bytes());
+        assert_eq!(canonical(&a, r).key, want);
+    }
+
+    /// A count is not part of the program: two uniform instances bounding one
+    /// fold are one canonical shape however their defaults differ, which is
+    /// what the JIT cache keys on. Their [`KernelKey`]s differ, as every two
+    /// uniform instances' do, because the instance is part of a kernel's
+    /// identity and the shape is not.
+    #[test]
+    fn every_count_is_one_key() {
+        use crate::Bound;
+
+        let (a, ra) = counted(Bound::Lit(0), Bound::Value(crate::Uniform::new(0.0).decl()));
+        let (b, rb) = counted(Bound::Lit(0), Bound::Value(crate::Uniform::new(7.0).decl()));
+        let (shape_a, shape_b) = (canonical(&a, ra), canonical(&b, rb));
+        assert_eq!(shape_a.key, shape_b.key);
+        assert_eq!(shape_a.uniforms.len(), 1);
+        assert_ne!(shape_a.uniforms, shape_b.uniforms);
+        assert_ne!(KernelKey::of(&a, ra), KernelKey::of(&b, rb));
+    }
+
+    /// Which end is a value, and whether the other is the literal 0 or a value
+    /// too, each tell two folds apart: the mark sits in the field it bounds.
+    #[test]
+    fn which_end_is_a_value_is_in_the_key() {
+        use crate::Bound;
+
+        let u = crate::Uniform::new(4.0).decl();
+        let shape = |lo, hi| {
+            let (a, r) = counted(lo, hi);
+            canonical(&a, r).key
+        };
+        let value_below = shape(Bound::Value(u), Bound::Lit(4));
+        let value_above = shape(Bound::Lit(0), Bound::Value(u));
+        let literal = shape(Bound::Lit(0), Bound::Lit(4));
+        let both = shape(Bound::Value(u), Bound::Value(u));
+        let keys = [&value_below, &value_above, &literal, &both];
+        for (i, one) in keys.iter().enumerate() {
+            for other in &keys[i + 1..] {
+                assert_ne!(one, other);
+            }
+        }
     }
 
     /// A store of one value under different binders is a different program,
