@@ -116,3 +116,51 @@ in A5.
 - **D-A6-1..4** (the `write_into` refusal, which needs a `pixelflow-core` public API decision, plus the
   helper, closure and host-panic questions) are A6's design round. D-A6-1 touches public API and goes to JP
   with a recommendation.
+
+## Round 1 (reviews `review1.{closure,semantics,fidelity}.md`, on 38703e0)
+
+Every finding accepted except where said. Code and docs both.
+
+- **C1 (blocking): the four `Param` docs** (`pixelflow-ir/src/kind.rs:219` `OpKind::Param`,
+  `pixelflow-search/src/egraph/node.rs:248` `ENode::Param`, `pixelflow-search/src/egraph/insert.rs:52-57`
+  `Declined::Param`, `pixelflow-search/src/runtime.rs:150`) say what a `Param` is now: a rewrite rule's
+  metavariable, an unbound slot of a rule template, substituted before any arena reaches emission or a
+  `Kernel` exists; `kernel!` builds none. In insert.rs, "the macro tier holds params natively" becomes
+  "`Vocabulary::Templates` holds a rule template's metavariables". `ir_insert.rs:174`'s asserted substring
+  is not changed. Check each sentence against the code: grep who builds a `Param` today
+  (`push_param`, `ExprNode::Param`, `ENode::Param`) and describe exactly that.
+- **C2/F2 (blocking): the A5 Done line's gate clause**, worded against the base actually compared:
+  "byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and `=avx2`; the 29 font programs' keys,
+  digests and saturation telemetry, the extraction fields included, unchanged" (gates compared to the base
+  verified at main 7e9531e).
+- **F1 (blocking): the A5 Done line.** The test templates that take no kernel (`ramp`, `rings`, `swept`,
+  `mean_index`, and emit.rs's `counted`) are offered to the macro tier at expansion; the two that take one
+  (`applied`, `mean_down`) stay `Staged`. "which only the template set" → "which only the template set past
+  1". Verify the list against the diff.
+- **S1/F3 (blocking): parser.rs's module doc** (:120): "a generic or a `where` clause on a `fn` (a `const`
+  generic by a message saying a count is a literal or a `usize` const, §1.2 of the bound plan), and on a
+  `const`, which syn hands over as an unknown item and the item refusal names". The new test's doc (:2700)
+  drops "and no `const`". No generic-`const` case is added (R7).
+- **S2 (blocking): `generic_refusal`'s doc** (:637): "a `const` one was a count, which a block now writes as
+  a literal or a `usize` const, and any other names a type the language does not have".
+- **C3: `refuse_shadowing_an_item`** loses the one-arm `match` into `Option`: `if self.symbols.lookup(&text)
+  .is_some_and(|s| s.kind == SymbolKind::Const) { return Err(..) }`, message unchanged.
+- **C4:** reflow `lower.rs:795-798`, `arena.rs:167-169`, `fold.rs:539-541` to the file's width.
+- **S3:** the `Expr::Call` arm tests `!segment.arguments.is_empty()`, as the `Path` arm does, so `h::<>(X)`
+  is `h(X)` in both.
+- **S4:** the `Path` arm refuses a one-segment unqualified path whose segment carries non-empty arguments
+  (`N::<4>`, `X::<f32>`) with R6's message, not the outside-the-block one. One function builds R6's error;
+  both arms call it. A case of each arm in the new parser test.
+- **S5:** a `where` clause is refused at `where_clause.where_token.span` (`syn::Error::new`), so an empty one
+  points at `where`.
+- **F4:** the new test asserts the plan path in the non-`const` generic message (`§1.3 of
+  docs/language/2026-09-25-the-language-is-kernel.md`) and in R6's. **Spans stay unpinned in A5**: the crate
+  cannot observe a span (no compile-fail harness, no `span-locations`); that is a CI gap for the whole front
+  end, not A5's, and gets a BACKLOG row (C12: refusal spans are unpinned; how a span-observing check could
+  be built — a compile-fail target or proc-macro2's `span-locations` in tests — and the one wrong span it
+  would have caught, S5). **R6 is amended**: the refusal is spanned on the segment's arguments (`::<4>`), not
+  the segment; impl.md records it.
+- **F5: R8 is amended** to "the variable holding each open fold, and the `FoldTerms` it closes into", and
+  `Staged::open`'s doc says that. Check it against the code.
+- **R14's reason in impl.md** takes the probe's corrections (E0308, not E0530/E0005; the family is every
+  `__` local, `__arena`/`__root` beside any entry). BACKLOG C11 already says so.
