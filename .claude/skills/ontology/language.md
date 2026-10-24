@@ -75,7 +75,8 @@
   `lower.rs`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
   `kernel_raw!`, `macro_tier()` and `DwrtFree` are still in `lib.rs`, and
   `kernel!` is `expand(input, &mut macro_tier())`: it saturates at expansion
-  unless the term carries a `Dwrt` or structural parameters. That
+  unless the term carries a `Dwrt` (an entry that takes a kernel is lowered
+  when called, and optimized at bake). That
   contradicts "nothing is optimized at expansion". `parse_expr` is still in
   `pixelflow-pipeline/src/training/factored.rs`.
 
@@ -83,13 +84,15 @@
 
 - **Is:**
   - An **entry** is a `pub fn`. The macro emits a host function for it that
-    instantiates the lowered template with its structural values and
-    returns the `Kernel`.
+    returns the `Kernel`. It rebuilds its lowered arena, saturated at
+    expansion unless it carries a `Dwrt` or the macro is `kernel_raw!`; an
+    entry that takes a kernel runs lowering's steps when it is called
+    (`Staged`).
   - A **helper** is a private `fn`. Lowering inlines it (β-reduction), and
     it takes coordinates as arguments.
   - A **record** is a `struct` of named `f32` fields. It is flattened at
     lowering into uniforms in declaration order.
-  - **Args** is each entry's record of its non-structural arguments. A
+  - **Args** is each entry's record of its uniform arguments. A
     compiled program is bound from `&Args`, so "every argument supplied" is
     a type, not a runtime assert.
 - **Is not:** a helper as an optimization unit (D19, withdrawn 2026-09-29:
@@ -123,8 +126,9 @@
   - `Ref`, bound at link. A discrete kernel is a kernel, so it binds here too;
     there is no memory to bind (kernels-evaluate-kernels §2).
 
-  An author sees three binding times: **structural**, **uniform** and
-  **kernel-typed**.
+  An author sees two binding times: **uniform** and **kernel-typed**. A
+  count is a literal or a `usize` const, known at expansion
+  (a-bound-is-a-value §1.2).
 - **Is not:** kinds of thing that passes may tell apart. "A pass may ask
   when a name is bound and must not care what it names." That is what makes
   `contains_gather` unstatable rather than merely discouraged. Not decided
@@ -142,26 +146,24 @@
   Decided in `2026-09-10-one-name-bound-later.md` §1–§5 (status Draft) and
   the-language-is-kernel §1.4, D1. `pixelflow-compiler/tests/binding_times.rs`.
 
-### Structural parameter
+### Structural parameter (retired)
 
-- **Is:** a parameter bound at instantiation, where each value is a
-  different program: "`const N: usize`, a zoom level's tile extent; the
-  font's shape, meaning which glyphs and how many pieces each". Fold ranges
-  are expressions over literals and structural parameters.
-- **Is not:** a type for a count ("A count of things is not a type. It is
-  how many instances the host composed"). Not a uniform. Not variable at run
-  time. "Uniform iterations", once "no where near the docket", are a bound
-  that is a value (`Kernel::over_values`), not a structural parameter.
-- **Follows:** every structural range is constant, so every read point's
-  range is known at construction, so a new tile extent or zoom recompiles
-  and is cached by key. A font's glyphs are drawn by one program per piece
-  count, chosen by the count, a structural parameter (C1, 2026-10-09); the
-  id tree whose threshold `k` raised "structural or uniform" is superseded.
-- **Lives:** the-language-is-kernel §1.4–§1.5, §1.7, O2; one-pipeline
-  decisions (JP, 2026-09-25). In code, a structural parameter read as a value
-  (`N as f32`) is lowered to a `Param(k)` hole the host function fills
-  (`count` in `pixelflow-compiler/src/lower.rs`), so it rides on the leaf
-  the Param entry says has no job left.
+- **Is:** nothing in `kernel!` since a-bound-is-a-value A5 deleted it. A
+  count is a literal or a `usize` const, known at expansion; a count that
+  changes per call is a value bound (`Kernel::over_values`; in `kernel!`,
+  decision 2's `n: usize` entry parameter, which A6 builds). What stays
+  structural is the lattice's own extent, in the program and the key
+  (a-bound-is-a-value §4, "Deferred").
+- **Is not:** a binding time. Retired 2026-10-20 (a-bound-is-a-value §1.2:
+  "a structural count was a per-call value spelled so that rustc evaluated
+  it"), deleted in A5: an entry's `const N: usize` generic, each value its
+  own program, its ranges evaluated by rustc per instantiation, its
+  `N as f32` a `Param(k)` hole.
+- **Follows:** `kernel!` refuses a generic on any `fn` at parse. The
+  template holes and the macro tier's template exemption went with it, so
+  every entry that takes no kernel is offered to the optimizer at expansion.
+- **Lives:** `refuse_generics` (`pixelflow-compiler/src/parser.rs`);
+  a-bound-is-a-value §1.2, §3.4, §6 A5.
 
 ### Uniform (the parameter)
 
@@ -369,10 +371,9 @@
   `ENode::Param(u8)` (`pixelflow-search/src/egraph/node.rs`),
   `Declined::Param` (`pixelflow-search/src/egraph/insert.rs`). Decided in
   macro-tier-is-arena-native and `2026-09-10-a-surviving-reduce-is-a-loop.md`
-  2a″. Today it is still present, `Vocabulary::Templates` still admits it,
-  and it has a new job: the template hole for a structural parameter read
-  as a value (`count` in `pixelflow-compiler/src/lower.rs`), which refuses
-  past 256 rather than wrapping.
+  2a″. Today it is still present and `Vocabulary::Templates` still admits
+  it; `kernel!` builds none since a-bound-is-a-value A5 deleted the template
+  hole it was for.
 
 ### Binder
 

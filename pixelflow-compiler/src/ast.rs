@@ -22,7 +22,6 @@
 //!
 //! FnItem
 //!   ├── vis                           // `pub` makes an entry; private is a helper
-//!   ├── structural: [name, ...]       // an entry's `const N: usize` parameters
 //!   ├── params: [(name, type), ...]   // scalar and record parameters
 //!   ├── ret: type                     // declared; absent only for the closure sugar
 //!   └── body: Expr
@@ -160,11 +159,6 @@ pub struct FnItem {
     /// private `fn` is a helper, inlined at each call.
     pub vis: syn::Visibility,
     pub name: Ident,
-    /// An entry's structural parameters, its `const N: usize` generics, in
-    /// declaration order (plan §1.4). Each value is its own program: the
-    /// host function is generic over them, and a body reads one as a count,
-    /// in a range's bounds or as `N as f32`. A helper has none.
-    pub structural: Vec<Ident>,
     pub params: Vec<Param>,
     /// The declared return type. `None` only for the closure sugar, whose
     /// type is inferred.
@@ -670,8 +664,7 @@ pub enum Reduction {
 
 /// `operand as f32`, the language's one conversion. The target is always
 /// `f32` — the parser refuses any other — so it is not stored. `sema`
-/// accepts one operand: a `usize`, by name, a fold's index, a `usize` const
-/// or an entry's structural parameter.
+/// accepts one operand: a `usize`, by name, a fold's index or a `usize` const.
 #[derive(Debug, Clone)]
 pub struct CastExpr {
     pub operand: Box<Expr>,
@@ -683,7 +676,7 @@ impl CastExpr {
     /// The name being converted, through any parentheses, or `None` if the
     /// operand is not a name. Only a name can be a `usize`: nothing in a
     /// body computes one (plan §1.6), so a `usize` expression is always a
-    /// fold's index, a `usize` const or a structural parameter.
+    /// fold's index or a `usize` const.
     pub fn named(&self) -> Option<&Ident> {
         self.operand.named()
     }
@@ -818,7 +811,6 @@ mod tests {
                 attrs: Vec::new(),
                 vis: syn::parse_quote!(pub),
                 name: syn::parse_str(entry).expect("an identifier"),
-                structural: Vec::new(),
                 params: Vec::new(),
                 ret: None,
                 body: Expr::Paren(Box::new(Expr::Ident(IdentExpr {

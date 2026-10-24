@@ -536,8 +536,8 @@ pub struct Fold {
     binder: Binder,
     /// The step between visited indices: 1 from [`Fold::new`]. Not 1 only
     /// over a known range it divides, which the constructors that meet the
-    /// bounds check ([`FoldHeader::new`], `KnownRange::new`); only `pack`,
-    /// `kernel!`'s open folds and `HalveFold` make one. At most
+    /// bounds check ([`FoldHeader::new`], `KnownRange::new`); only `pack`
+    /// and `HalveFold` make one. At most
     /// [`Fold::EXACT_BOUND`]: it is added to an `f32` counter.
     stride: u64,
 }

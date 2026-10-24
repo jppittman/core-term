@@ -764,7 +764,6 @@ impl Kernel {
         let (arena, root) = body.parts();
         let terms = FoldTerms {
             monoid,
-            stride: 1,
             lo: Bound::Lit(u64::from(range.start)),
             hi: Bound::Lit(u64::from(range.end)),
         };
@@ -863,7 +862,6 @@ impl Kernel {
         let (arena, ids) = to_arena_roots(&rooted, &entries, &env);
         let terms = FoldTerms {
             monoid,
-            stride: 1,
             lo: Bound::Value(ids[1]),
             hi: Bound::Value(ids[2]),
         };
@@ -1685,7 +1683,6 @@ mod tests {
         let body = arena.apply(&argument, [index, y]);
         let terms = FoldTerms {
             monoid: Monoid::SUM,
-            stride: 1,
             lo: Bound::Lit(0),
             hi: Bound::Lit(3),
         };

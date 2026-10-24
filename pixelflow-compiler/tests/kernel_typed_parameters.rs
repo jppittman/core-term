@@ -59,6 +59,12 @@ fn constant(v: f32) -> Kernel {
 }
 
 kernel! {
+    /// How many terms `mean_down` sums.
+    const DOWN: usize = 4;
+
+    /// A count of one: a one-term fold.
+    const ONE: usize = 1;
+
     /// The monoid's operation: two kernels summed at the sample.
     pub fn sum2(a: impl Fn(f32, f32) -> f32, b: impl Fn(f32, f32) -> f32) -> f32 {
         a(X, Y) + b(X, Y)
@@ -91,9 +97,14 @@ kernel! {
         b(X, Y) * r + a(X, Y)
     }
 
-    /// An argument applied under a structural count's fold.
-    pub fn mean_down<const N: usize>(k: impl Fn(f32, f32) -> f32) -> f32 {
-        (0..N).map(|i| k(X, Y + (i as f32))).sum::<f32>() / (N as f32)
+    /// An argument applied under a fold over a `usize` const.
+    pub fn mean_down(k: impl Fn(f32, f32) -> f32) -> f32 {
+        (0..DOWN).map(|i| k(X, Y + (i as f32))).sum::<f32>() / (DOWN as f32)
+    }
+
+    /// The same over a count of one: a one-term fold around an application.
+    pub fn mean_down_one(k: impl Fn(f32, f32) -> f32) -> f32 {
+        (0..ONE).map(|i| k(X, Y + (i as f32))).sum::<f32>() / (ONE as f32)
     }
 
     /// An argument that is never applied: its uniforms are declared all the
@@ -257,14 +268,14 @@ fn a_derivative_inside_an_argument_follows_the_warp() {
     assert_ne!(bake(&written), resolved_first);
 }
 
-/// A structural count's fold around an application: each count is its own
-/// program, built when the host function is instantiated and called.
+/// A fold over a `usize` const around an application, the count read as a
+/// value too; a count of one is a fold of one term.
 #[test]
-fn a_structural_entry_applies_its_argument() {
+fn a_fold_over_a_usize_const_applies_its_argument() {
     let k = kernel!(|| X + Y);
     // (8 + 9 + 10 + 11) / 4.
-    assert_eq!(bake(&mean_down::<4>(&k)), 9.5);
-    assert_eq!(bake(&mean_down::<1>(&k)), 8.0);
+    assert_eq!(bake(&mean_down(&k)), 9.5);
+    assert_eq!(bake(&mean_down_one(&k)), 8.0);
 }
 
 // ─────────────────────────── binding ───────────────────────────

@@ -16,13 +16,11 @@
 //!                                            -- a record of `f32` fields
 //!           | VIS? 'const' IDENT ':' 'f32' '=' cexpr ';'
 //!           | VIS? 'const' IDENT ':' 'usize' '=' iexpr ';'
-//!           | VIS 'fn' IDENT structural? '(' params ')' '->' type block
+//!           | VIS 'fn' IDENT '(' params ')' '->' type block
 //!                                            -- an entry
 //!           | 'fn' IDENT '(' params ')' '->' type block
-//!                                            -- a helper: private, no generics
+//!                                            -- a helper: private
 //! field   ::= VIS? IDENT ':' 'f32'
-//! structural ::= '<' 'const' IDENT ':' 'usize' (',' 'const' IDENT ':' 'usize')* ','? '>'
-//!                                            -- an entry's structural parameters
 //! params  ::= (param (',' param)* ','?)?
 //! param   ::= IDENT ':' type
 //! type    ::= 'f32' | 'bool' | RECORD        -- an entry's `f32`s and records
@@ -39,10 +37,7 @@
 //!           | '(' iexpr ')'                        -- or a `usize` const's
 //!           | IDENT | INTEGER                      -- initializer; each operation
 //!                                                  -- checked as rustc checks it,
-//!                                                  -- at expansion, or when the
-//!                                                  -- host fn is instantiated if
-//!                                                  -- it names a structural
-//!                                                  -- parameter
+//!                                                  -- at expansion
 //!
 //! expr    ::= expr binop expr
 //!           | '-' expr
@@ -54,9 +49,8 @@
 //!                                                  -- `(x, y)`: contramap
 //!           | 'if' expr block 'else' (block | 'if' …)   -- the choice
 //!           | fold
-//!           | IDENT 'as' 'f32'         -- a `usize` (a fold's index, a `usize`
-//!                                      -- const or a structural parameter) as
-//!                                      -- a value
+//!           | IDENT 'as' 'f32'         -- a `usize` (a fold's index or a `usize`
+//!                                      -- const) as a value
 //!           | '(' expr ')'
 //!           | block
 //!           | IDENT                    -- X, Y (in an entry), a parameter, an
@@ -93,21 +87,20 @@
 //!
 //! A `let` is scoped as Rust scopes it (`crate::symbol`), and so is a fold's
 //! index: its body sees the enclosing bindings, an enclosing fold's index
-//! among them. Nothing shadows `X`, `Y`, a `const`, a structural parameter
-//! or a `fn`: a parameter, a `let` or an index of that name is refused. `X`
-//! and `Y` appear only in an entry; a helper takes its coordinates as
-//! arguments
+//! among them. Nothing shadows `X`, `Y`, a `const` or a `fn`: a parameter, a
+//! `let` or an index of that name is refused. `X` and `Y` appear only in an
+//! entry; a helper takes its coordinates as arguments
 //! (docs/language/2026-09-25-the-language-is-kernel.md §1.2). A fold
 //! (plan §1.5) denotes ⊕ of its body over `i ∈ [a, b)`, and its monoid's
 //! identity when the range is empty; the syntax never unrolls it.
 //!
-//! Binding times (plan §1.4). An entry's `const N: usize` generics are
-//! **structural**: each value is its own program, and a body reads one only
-//! as a count. Every parameter is a **uniform**: an `f32` is one, a record is
-//! one per field, and the host function's arguments are their values for
-//! that call — never constants folded in. A record is written by name: a
-//! parameter, a `let` alias of one (`let q = p;`), an argument passed on, or
-//! the base of a field read.
+//! Binding times (plan §1.4). Every parameter is a **uniform**: an `f32` is
+//! one, a record is one per field, and the host function's arguments are
+//! their values for that call — never constants folded in. A record is
+//! written by name: a parameter, a `let` alias of one (`let q = p;`), an
+//! argument passed on, or the base of a field read. A count is a literal or a
+//! `usize` const; no `fn` takes generics
+//! (§1.2 of docs/language/2026-10-20-a-bound-is-a-value.md).
 //!
 //! The language has no collection types (plan §1.3, §1.6): no array, slice,
 //! list or table, as a parameter, a value or a thing to iterate. Several
@@ -124,9 +117,10 @@
 //! Refused here, with a span, at the token: an item that is not a `struct`, a
 //! `const` or a `fn`; a record that is generic, a tuple struct or a unit
 //! struct, and a `repr` or a `cfg` on a record or its field (§1.3); an
-//! attribute other than a doc comment on a `const` or a `fn`; generics on a
-//! helper and on a `const`, and any generic of an entry but a
-//! `const N: usize` without a default; a function, spelled any way, as a
+//! attribute other than a doc comment on a `const` or a `fn`; a generic or a
+//! `where` clause on a `fn` or a `const` (a `const` generic by a message
+//! saying a count is a literal or a `usize` const, §1.2 of the bound plan),
+//! and generic arguments at a call; a function, spelled any way, as a
 //! parameter of the closure form (rustc's E0562 of an `impl` type: an entry
 //! of the items form takes a kernel);
 //! a `fn` without a declared return type; an `if` without an
@@ -179,9 +173,7 @@
 //!
 //! Refused by lowering, where the language meets the IR's widths: a range
 //! bound past 2²⁴, the last integer bound a fold's index — an `f32` lane —
-//! names exactly, and folds nested deeper than the IR has binders. A range
-//! over a structural parameter is refused the same ways when its host
-//! function is instantiated, by rustc, in a `const` block.
+//! names exactly, and folds nested deeper than the IR has binders.
 //!
 //! ## Implementation Note
 //!
@@ -189,13 +181,13 @@
 //! This gives us Rust's expression parsing for free while maintaining our
 //! own semantic layer.
 
-use crate::PLAN;
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, CastExpr, ConstItem, Expr, FieldExpr, FnItem,
     FoldExpr, FunctionType, IdentExpr, IfExpr, KernelDef, LetStmt, Literal, LiteralExpr,
     MethodCallExpr, Param, RangeExpr, RecordField, RecordItem, Reduction, Spelling, Stmt,
     UnaryExpr, UnaryOp,
 };
+use crate::{BOUND_PLAN, PLAN};
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
@@ -267,7 +259,6 @@ fn parse_closure(input: ParseStream) -> syn::Result<KernelDef> {
         attrs: Vec::new(),
         vis: syn::Visibility::Public(Default::default()),
         name: syn::Ident::new(SUGAR_ENTRY, Span::call_site()),
-        structural: Vec::new(),
         params,
         ret: None,
         body,
@@ -450,13 +441,7 @@ fn convert_fn(item: syn::ItemFn) -> syn::Result<FnItem> {
             "a variadic parameter list has no meaning in a kernel",
         ));
     }
-    let structural = match item.vis {
-        syn::Visibility::Inherited => {
-            refuse_a_helpers_generics(&sig.generics)?;
-            Vec::new()
-        }
-        _ => structural_parameters(&sig.generics)?,
-    };
+    refuse_generics(&sig.generics)?;
 
     let mut params = Vec::with_capacity(sig.inputs.len());
     for input in sig.inputs {
@@ -483,75 +468,10 @@ fn convert_fn(item: syn::ItemFn) -> syn::Result<FnItem> {
         attrs: item.attrs,
         vis: item.vis,
         name: sig.ident,
-        structural,
         params,
         ret: Some(ret),
         body: Expr::Block(convert_block(*item.block)?),
     })
-}
-
-/// An entry's structural parameters: its generics, each `const N: usize`
-/// (plan §1.4). A type or lifetime parameter, a const of another type, a
-/// default and a `where` clause are refused: the language's one value bound
-/// when its program is compiled is a count.
-fn structural_parameters(generics: &syn::Generics) -> syn::Result<Vec<syn::Ident>> {
-    if let Some(where_clause) = &generics.where_clause {
-        return Err(syn::Error::new_spanned(
-            where_clause,
-            "a `where` clause in a `kernel!` block: a structural parameter is a `usize`, and \
-             there is nothing to bound",
-        ));
-    }
-    let mut structural = Vec::with_capacity(generics.params.len());
-    for param in &generics.params {
-        let syn::GenericParam::Const(count) = param else {
-            return Err(syn::Error::new_spanned(
-                param,
-                format!(
-                    "a type or lifetime parameter on an entry\n\
-                     \n\
-                     note: an entry's generics are its structural parameters, `const N: usize`, \
-                     and each value is its own program (§1.4 and B3 of {PLAN})"
-                ),
-            ));
-        };
-        refuse_attributes(&count.attrs)?;
-        if !is_usize(&count.ty) {
-            return Err(syn::Error::new_spanned(
-                &count.ty,
-                "a structural parameter is a `usize`: a count, which sizes a program's shape",
-            ));
-        }
-        if let Some(default) = &count.default {
-            return Err(syn::Error::new_spanned(
-                default,
-                "a default for a structural parameter: a call names the program it wants, \
-                 `entry::<4>(…)`",
-            ));
-        }
-        structural.push(count.ident.clone());
-    }
-    Ok(structural)
-}
-
-/// A helper takes no generics: it is inlined into an entry, and reads the
-/// entry's structural parameters only through its arguments — a count as
-/// `n as f32`.
-fn refuse_a_helpers_generics(generics: &syn::Generics) -> syn::Result<()> {
-    if let Some(param) = generics.params.first() {
-        return Err(syn::Error::new_spanned(
-            param,
-            format!(
-                "generics on a helper\n\
-                 \n\
-                 note: a helper is inlined into an entry, and reads the entry's structural \
-                 parameters through its arguments: pass `n as f32`\n\
-                 note: structural parameters are an entry's, `pub fn f<const N: usize>` \
-                 (§1.4 of {PLAN})"
-            ),
-        ));
-    }
-    refuse_generics(generics)
 }
 
 /// A `fn` parameter: a plain name and a scalar type.
@@ -697,17 +617,13 @@ fn refuse_layout_attributes(attrs: &[syn::Attribute]) -> syn::Result<()> {
     }
 }
 
-/// A `const` takes no generics: it is one value, evaluated at expansion.
+/// A `fn` takes no generics: a value is an `f32` or a `bool`, a record is one
+/// of the block's, a kernel is `impl Fn(f32, f32) -> f32`, and a count is a
+/// literal or a `usize` const, evaluated at expansion. A `const`'s generics are
+/// refused here too, though syn gives such an item the item refusal first.
 fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
     if let Some(param) = generics.params.first() {
-        return Err(syn::Error::new_spanned(
-            param,
-            format!(
-                "generics in a `kernel!` block\n\
-                 \n\
-                 note: structural parameters, `const N: usize`, are an entry's (§1.4 of {PLAN})"
-            ),
-        ));
+        return Err(syn::Error::new_spanned(param, generic_refusal(param)));
     }
     if let Some(where_clause) = &generics.where_clause {
         return Err(syn::Error::new_spanned(
@@ -716,6 +632,28 @@ fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The refusal of a generic, by what it would have meant: a `const` one was a
+/// count, which is a value now, and any other names a type the language does
+/// not have.
+fn generic_refusal(param: &syn::GenericParam) -> String {
+    match param {
+        syn::GenericParam::Const(_) => format!(
+            "a `const` generic in a `kernel!` block\n\
+             \n\
+             note: a count does not make a program of its own: an entry is one program, \
+             whatever its counts (§1.2 of {BOUND_PLAN})\n\
+             help: write the count as a literal, or as a `usize` const of the block: \
+             `const N: usize = 4;`"
+        ),
+        _ => format!(
+            "generics in a `kernel!` block\n\
+             \n\
+             note: nothing in a kernel is generic: a value is an `f32` or a `bool`, a record \
+             is one of the block's, and a kernel is `impl Fn(f32, f32) -> f32` (§1.3 of {PLAN})"
+        ),
+    }
 }
 
 /// Convert syn::Expr to our AST Expr.
@@ -819,7 +757,20 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             // Extract the function name from the callee
             if let syn::Expr::Path(ref path) = *expr_call.func {
                 if path.path.segments.len() == 1 && path.qself.is_none() {
-                    let func = path.path.segments[0].ident.clone();
+                    let segment = &path.path.segments[0];
+                    if !segment.arguments.is_none() {
+                        return Err(syn::Error::new_spanned(
+                            &segment.arguments,
+                            format!(
+                                "generic arguments at a call in a `kernel!` block\n\
+                                 \n\
+                                 note: nothing in a kernel is generic, so no `fn` takes generic \
+                                 arguments (§1.3 of {PLAN})\n\
+                                 help: a count is a literal, or a `usize` const of the block"
+                            ),
+                        ));
+                    }
+                    let func = segment.ident.clone();
                     let args = expr_call
                         .args
                         .into_iter()
@@ -1211,11 +1162,6 @@ fn sum_or_product(call: &syn::ExprMethodCall, reduction: Reduction) -> syn::Resu
 /// conversion's target, may name.
 fn is_f32(ty: &Type) -> bool {
     matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("f32"))
-}
-
-/// Whether `ty` is exactly `usize`: the one type a structural parameter has.
-fn is_usize(ty: &Type) -> bool {
-    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("usize"))
 }
 
 /// `operand as f32`. The conversion's target is always `f32`, so any other
@@ -2378,24 +2324,6 @@ mod tests {
         assert_eq!(row.fields[0].attrs.len(), 1, "the field's `allow`");
     }
 
-    /// An entry's generics are its structural parameters, in declaration
-    /// order; a helper has none.
-    #[test]
-    fn an_entrys_const_generics_are_its_structural_parameters() {
-        let def = parse(quote! {
-            fn h(x: f32) -> f32 { x }
-            pub fn f<const N: usize, const M: usize>(r: f32) -> f32 { h(r) }
-        })
-        .expect("parses");
-        let names: Vec<String> = def.fns[1]
-            .structural
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(names, ["N", "M"]);
-        assert!(def.fns[0].structural.is_empty());
-    }
-
     // ───────────────────────────── folds ─────────────────────────────
 
     /// The fold the body `|| <expr>` parses to.
@@ -2542,7 +2470,7 @@ mod tests {
         let cases: [(TokenStream, &str); 14] = [
             (quote! { |v: [f32; 2]| X }, "a collection-typed parameter"),
             (
-                quote! { pub struct Row { pub x0: f32 } pub fn f<const N: usize>(pieces: [Row; N]) -> f32 { X } },
+                quote! { pub struct Row { pub x0: f32 } pub fn f(pieces: [Row; 4]) -> f32 { X } },
                 "a collection-typed parameter",
             ),
             (
@@ -2754,31 +2682,11 @@ mod tests {
         }
     }
 
-    /// A `fn` signature carries nothing the language cannot honor: an
-    /// entry's generics are `const N: usize` and nothing else, and a helper
-    /// has none — it reads its entry's through its arguments. (The helper's
-    /// refusal named B3 until B3 was done without helper generics.)
+    /// A `fn` signature carries nothing the language cannot honor. (Generics
+    /// are refused by `generics_are_refused_and_a_const_generic_says_what_a_count_is`.)
     #[test]
     fn a_fn_signature_is_plain() {
-        let cases: [(TokenStream, &str); 9] = [
-            (
-                quote! { fn h<const N: usize>(x: f32) -> f32 { x } pub fn f() -> f32 { X } },
-                "generics on a helper",
-            ),
-            (
-                quote! { fn h<const N: usize>(x: f32) -> f32 { x } pub fn f() -> f32 { X } },
-                "pass `n as f32`",
-            ),
-            (quote! { pub fn f<T>() -> f32 { X } }, "B3"),
-            (quote! { pub fn f<'a>() -> f32 { X } }, "lifetime parameter"),
-            (
-                quote! { pub fn f<const N: u32>() -> f32 { X } },
-                "a structural parameter is a `usize`",
-            ),
-            (
-                quote! { pub fn f<const N: usize = 4>() -> f32 { X } },
-                "a default for a structural parameter",
-            ),
+        let cases: [(TokenStream, &str); 3] = [
             (quote! { pub fn f() { X } }, "declares no return type"),
             (quote! { pub fn f(mut x: f32) -> f32 { x } }, "plain name"),
             (quote! { const fn f() -> f32 { X } }, "`const fn`"),
@@ -2786,6 +2694,61 @@ mod tests {
         for (input, expected) in cases {
             let err = refusal(input);
             assert!(err.contains(expected), "expected `{expected}`, got: {err}");
+        }
+    }
+
+    /// No `fn` and no `const` takes generics, and no call names any. A `const`
+    /// generic is refused by saying what a count is — a literal or a `usize`
+    /// const, an entry being one program whatever its counts — naming the plan
+    /// that made a bound a value; any other generic names what the language's
+    /// values are; a call's generic arguments, whatever they are, say that
+    /// nothing in a kernel is generic.
+    #[test]
+    fn generics_are_refused_and_a_const_generic_says_what_a_count_is() {
+        for input in [
+            quote! { pub fn f<const N: usize>() -> f32 { X } },
+            quote! { pub fn f<const N: usize, const M: usize>(r: f32) -> f32 { r } },
+            quote! { pub fn f<const N: u32>() -> f32 { X } },
+            quote! { pub fn f<const N: usize = 4>() -> f32 { X } },
+            quote! { fn h<const N: usize>(x: f32) -> f32 { x } pub fn f() -> f32 { h(X) } },
+        ] {
+            let err = refusal(input);
+            assert!(
+                err.contains("a `const` generic in a `kernel!` block")
+                    && err.contains("§1.2 of docs/language/2026-10-20-a-bound-is-a-value.md")
+                    && err.contains("`const N: usize = 4;`"),
+                "got: {err}"
+            );
+        }
+        for input in [
+            quote! { pub fn f<T>() -> f32 { X } },
+            quote! { pub fn f<'a>() -> f32 { X } },
+            quote! { fn h<T>(x: f32) -> f32 { x } pub fn f() -> f32 { X } },
+        ] {
+            let err = refusal(input);
+            assert!(
+                err.contains("generics in a `kernel!` block")
+                    && err.contains("nothing in a kernel is generic"),
+                "got: {err}"
+            );
+        }
+        let err = refusal(quote! { pub fn f() -> f32 where f32: Copy { X } });
+        assert!(
+            err.contains("a `where` clause in a `kernel!` block"),
+            "got: {err}"
+        );
+        for input in [
+            quote! { fn h(x: f32) -> f32 { x } pub fn f() -> f32 { h::<4>(X) } },
+            quote! { pub fn f() -> f32 { DX::<f32>(X * X) } },
+            quote! { pub fn f(k: impl Fn(f32, f32) -> f32) -> f32 { k::<4>(X, Y) } },
+        ] {
+            let err = refusal(input);
+            assert!(
+                err.contains("generic arguments at a call in a `kernel!` block")
+                    && err.contains("no `fn` takes generic arguments")
+                    && err.contains("a count is a literal, or a `usize` const of the block"),
+                "got: {err}"
+            );
         }
     }
 

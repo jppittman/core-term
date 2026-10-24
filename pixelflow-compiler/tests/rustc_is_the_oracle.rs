@@ -587,13 +587,13 @@ fn a_range_from_consts_folds_as_rustcs_does() {
     assert_eq!(bake(&k), 9.0, "3 · (2 + 3 + 4) / 3");
 }
 
-// ─────────────── B3: records, and structural counts ───────────────
+// ─────────────── B3: records, and counts ───────────────
 //
 // A record (docs/language/2026-09-25-the-language-is-kernel.md §1.3) is a Rust
 // struct of `f32` fields, and the macro emits it as one: so the oracle for a
 // record's field arithmetic is the same tokens over the host struct itself.
-// A structural parameter (§1.4) is a Rust const generic, and the oracle for
-// a range over one is the same iterator in a host `fn` generic over it.
+// A count is a `usize` const, and the oracle for a range over one, and for
+// the count as a value, is the same tokens over Rust `const`s.
 
 kernel! {
     /// An affine map of the plane.
@@ -650,46 +650,63 @@ fn a_records_field_arithmetic_is_rustcs() {
 
 kernel! {
     const FIRST: usize = 1;
+    const N: usize = 4;
+    const ONE: usize = 1;
 
-    /// A helper reads its entry's structural parameter as an argument.
+    /// A helper reads a count as an argument.
     fn per(n: f32, total: f32) -> f32 { total / n }
 
-    /// The mean of `X·i` over `i ∈ [FIRST, FIRST + N)`: `N` in a range's
-    /// const arithmetic, and as a value.
-    pub fn mean_index<const N: usize>() -> f32 {
+    /// The mean of `X·i` over `i ∈ [FIRST, FIRST + N)`: `N` in a range's const
+    /// arithmetic, and as a value.
+    pub fn mean_index() -> f32 {
         per(N as f32, (FIRST..FIRST + N).map(|i| X * (i as f32)).sum::<f32>())
+    }
+
+    /// The same over a count of one: a one-term range.
+    pub fn mean_index_one() -> f32 {
+        per(ONE as f32, (FIRST..FIRST + ONE).map(|i| X * (i as f32)).sum::<f32>())
     }
 }
 
-fn rust_mean_index<const N: usize>(x: f32) -> f32 {
+fn rust_mean_index(x: f32) -> f32 {
     const RUST_FIRST: usize = 1;
-    (RUST_FIRST..RUST_FIRST + N)
+    const RUST_N: usize = 4;
+    (RUST_FIRST..RUST_FIRST + RUST_N)
         .map(|i| x * (i as f32))
         .sum::<f32>()
-        / (N as f32)
+        / (RUST_N as f32)
 }
 
-/// A range over a structural parameter, and the parameter as a value, mean
-/// what the same tokens in a host `fn` generic over it mean, at each
-/// instantiation: each is its own program, and each sum is exact.
+fn rust_mean_index_one(x: f32) -> f32 {
+    const RUST_FIRST: usize = 1;
+    const RUST_ONE: usize = 1;
+    (RUST_FIRST..RUST_FIRST + RUST_ONE)
+        .map(|i| x * (i as f32))
+        .sum::<f32>()
+        / (RUST_ONE as f32)
+}
+
+/// A range in a count's const arithmetic, and the count as a value through a
+/// helper, mean what the same tokens over Rust `const`s mean, for a count of
+/// four and a count of one; each sum is exact.
 #[test]
-fn a_structural_count_folds_as_rustcs_const_generic_does() {
+fn a_count_in_a_ranges_const_arithmetic_folds_as_rustcs_does() {
     for (x, y) in FOLD_SAMPLES {
         assert_eq!(
-            Lattice::eval_at(&mean_index::<1>(), x, y),
-            rust_mean_index::<1>(x)
+            Lattice::eval_at(&mean_index(), x, y),
+            rust_mean_index(x),
+            "at ({x}, {y})"
         );
         assert_eq!(
-            Lattice::eval_at(&mean_index::<3>(), x, y),
-            rust_mean_index::<3>(x)
-        );
-        assert_eq!(
-            Lattice::eval_at(&mean_index::<4>(), x, y),
-            rust_mean_index::<4>(x)
+            Lattice::eval_at(&mean_index_one(), x, y),
+            rust_mean_index_one(x),
+            "at ({x}, {y})"
         );
     }
     // X = 3: (1 + 2 + 3 + 4) · 3 / 4.
-    assert_eq!(bake(&mean_index::<4>()), 7.5);
+    assert_eq!(bake(&mean_index()), 7.5);
+    // X = 3: 1 · 3 / 1.
+    assert_eq!(bake(&mean_index_one()), 3.0);
 }
 
 // ─────────────── B3: tuple lets ───────────────
