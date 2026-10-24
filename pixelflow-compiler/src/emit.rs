@@ -36,12 +36,12 @@
 //!
 //! **Binding times** (docs/language/2026-09-25-the-language-is-kernel.md §1.4).
 //! A host function takes its parameters by their declared types, and every
-//! one is a uniform: the kernel it returns declares one uniform per scalar —
-//! a record parameter, one per field — in declaration order, with the call's
-//! value as its default. So the call's values are the kernel's arguments,
-//! never its constants: every call of an entry is one program, keyed and
-//! compiled once, and a compiled program is rebound per call from the
-//! entry's `Args` record.
+//! `f32` and record one is a uniform: the kernel it returns declares one
+//! uniform per scalar — a record parameter, one per field — in declaration
+//! order, with the call's value as its default. So the call's values are the
+//! kernel's arguments, never its constants: every call of an entry that
+//! takes no kernel is one program, keyed and compiled once, and a compiled
+//! program is rebound per call from the entry's `Args` record.
 //!
 //! [`Kernel`]: pixelflow_core::Kernel
 
@@ -436,13 +436,9 @@ fn node(arena: &ExprArena, id: ExprId) -> TokenStream {
         ExprNode::Const(Lit::Mask(m)) => {
             quote! { __arena.push_lit(::pixelflow_core::__macro::ir::Lit::Mask(#m)) }
         }
-        // A rewrite rule's metavariable: lowering builds none.
+        // A slot with no value: lowering builds none.
         ExprNode::Param(k) => {
-            panic!(
-                "kernel! produced ExprNode::Param({k}): a `Param` is a rewrite rule's \
-                 metavariable, substituted before any arena reaches emission; lowering builds \
-                 none"
-            )
+            panic!("kernel! produced ExprNode::Param({k}): lowering builds none")
         }
         // The `kernel!` macro has no buffer surface yet, so this is
         // unreachable in practice; fail loud rather than emit a node that

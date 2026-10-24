@@ -72,8 +72,8 @@ use proc_macro::TokenStream;
 /// refusal of one names the phase that brings it.
 pub(crate) const PLAN: &str = "docs/language/2026-09-25-the-language-is-kernel.md";
 
-/// The plan that made a fold's bound a value: a refusal that turns on what a
-/// count is names it.
+/// The plan that made a fold's bound a value, named by the `const` generic
+/// refusal.
 pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value.md";
 
 /// The `kernel!` macro: the language, as a block of items or as a closure,
@@ -255,18 +255,19 @@ pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value
 ///
 /// Every value a program reads is bound at one of two times (§1.4):
 ///
-/// - **Uniform**: every parameter. An `f32` is one uniform and a record is
-///   one per field; the kernel an entry returns declares them in that order,
-///   each with the call's value as its default, and baking it draws the
-///   call. The value is an argument of the program, never folded into it, so
-///   every call of an entry is one program: compiled once, and rebound per
-///   call from the entry's `Args` record — `<Entry in UpperCamelCase>Args`,
-///   its parameters as fields, written into a block the program made with
-///   `write_into`, which allocates nothing once the block is the caller's
-///   alone. A kernel the entry's is composed into still rebinds from it, its
-///   declarations the entry's in order beside argument-free kernels; beside
-///   other arguments the count differs, and `write_into` refuses. A
-///   constant is a `const` item.
+/// - **Uniform**: every `f32` and record parameter. An `f32` is one uniform
+///   and a record is one per field; the kernel an entry returns declares
+///   them in that order, each with the call's value as its default, and
+///   baking it draws the call. The value is an argument of the program, never
+///   folded into it, so every call of an entry that takes no kernel is one
+///   program: compiled once, and rebound per call from the entry's `Args`
+///   record — `<Entry in UpperCamelCase>Args`, its parameters as fields,
+///   written into a block the program made with `write_into`, which
+///   allocates nothing once the block is the caller's alone. A kernel the
+///   entry's is composed into still rebinds from it, its declarations the
+///   entry's in order beside argument-free kernels; beside other arguments
+///   the count differs, and `write_into` refuses. A constant is a `const`
+///   item.
 /// - **Kernel-typed**: an argument the host passes when it calls the entry.
 ///   The composed program declares the entry's own uniforms first, in
 ///   declaration order, then each argument's, in parameter order and that
@@ -275,8 +276,8 @@ pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value
 ///   no `Args` record: binding a composed program is O3 of the plan.
 ///
 /// A count — a fold's bound, or `N as f32` — is a literal or a `usize` const,
-/// evaluated at expansion: an entry is one program, whatever its counts, and
-/// no `fn` takes generics (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
+/// evaluated at expansion: it makes no program of its own, and no `fn` takes
+/// generics (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
 ///
 /// ```ignore
 /// use pixelflow_compiler::kernel;

@@ -216,17 +216,14 @@ op_table! {
     /// call from a block; never folded, loaded once per call.
     Uniform = 50,
 
-    /// An unbound scalar slot of a rewrite-rule template. A leaf with no
-    /// value yet — never folded, matched by no rewrite rule, derivative zero —
-    /// which is exactly [`OpKind::Uniform`]'s contract, one tier earlier.
+    /// An unbound scalar slot: a leaf with no value. It is never folded,
+    /// matched by no rewrite rule, and its derivative is zero.
     ///
-    /// `kernel!` builds none, and the JIT emitter and the compiler's emission
-    /// both panic on one. The e-graph holds one only under
-    /// `Vocabulary::Templates`; `Vocabulary::Runtime` declines it. Before this
-    /// existed, the e-graph refused `Param` outright and every macro-side
-    /// caller smuggled one past as something else — as `Var(16 + i)`, or as
-    /// an opaque identifier — which is how `Var` reacquired the third meaning
-    /// CLAUDE.md records as retired.
+    /// No stage of compilation builds one: `kernel!` builds none, and what
+    /// does is a test, or a reader that round-trips one (the training
+    /// corpus's). The JIT emitter and the compiler's emission both panic on
+    /// one. The e-graph holds one only under `Vocabulary::Templates`;
+    /// `Vocabulary::Runtime` declines it.
     Param = 51,
 
     // --- Effects (post-legalize) ---
@@ -799,8 +796,9 @@ impl OpKind {
     /// - Lt/Le/Gt/Ge/Eq/Ne (return masks, not floats — type-invalid in arithmetic)
     /// - If (needs mask input — only valid composed with a comparison)
     /// - Buffer/Gather (memory ops — require a bound buffer, not synthesizable)
-    /// - Uniform/Param (unbound scalar slots — a value arrives per call or
-    ///   from a builder, so a generator cannot synthesize one that evaluates)
+    /// - Uniform/Param (unbound scalar slots — a uniform's value arrives per
+    ///   call and a `Param` has none, so a generator cannot synthesize one
+    ///   that evaluates)
     #[must_use]
     pub const fn is_seed_op(self) -> bool {
         !matches!(

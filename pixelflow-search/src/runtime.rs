@@ -147,8 +147,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// - An admitted op applied to other than its arity's worth of operands,
 ///   which `push_nary` permits — a node holds exactly that many inline
 ///   (`Declined::Arity`).
-/// - `Param` — an unbound slot of a rewrite-rule template, which should
-///   never reach a runtime-built `Kernel` in the first place.
+/// - `Param` — an unbound scalar slot, a leaf with no value
+///   (`Declined::Param`).
 /// - A `Shl`/`Shr` whose count is not a `Const` holding a
 ///   [`ShiftCount`](pixelflow_ir::ShiftCount) (`Declined::ShiftCount`). The
 ///   count is a parameter of the shift's node, so the graph cannot hold

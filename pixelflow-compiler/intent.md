@@ -27,7 +27,8 @@ that term to is an `Optimize` value, never a branch (§8).
   path through sema, lowering and emission, under both macros.
 - No collection type, recursion, `X` or `Y` in a helper, mask read as a number,
   or whole-record arithmetic: each is refused where it is written.
-- No call's value becomes a constant: one entry is one program.
+- No call's value becomes a constant: an entry that takes no kernel is one
+  program.
 
 ## Contract
 `src/lib.rs` exports exactly `kernel!` and `kernel_raw!`, both `expand(input,

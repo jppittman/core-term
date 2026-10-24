@@ -431,8 +431,8 @@ mask. `Glyph::bake` binds rows and box per call; `n = 0` is L2, the guard's `run
 
 **Deleted.** `bucketed_trip_count`, `padding_row` and their pins. `FontPrograms`'
 per-count programs, `program(n)`, the host `ink`/`sum2` tree, `blank()`, `UNWRITTEN`.
-§3.4's structural range path and `<const N: usize>` (A5). `Param(u8)` stays: it is also a
-rewrite rule's metavariable, and its deletion is the-language-is-kernel D2's, with
+§3.4's structural range path and `<const N: usize>` (A5). `Param(u8)` stays: nothing in
+compilation builds one, and its deletion is the-language-is-kernel D2's, with
 `Vocabulary::Templates`, on that plan's schedule. `Fold`'s ends and `to_bits`' range
 fields as a type (a `Lit` pair keeps their bit positions; corpus formats that store a
 `Value` bound bump a version). For glyphs, the bound-buffer path (`with_buffer_data`,
@@ -532,8 +532,8 @@ shares files with A2–A4 but no hunk. #1427 rewrites the compiler's `ast`/`pars
 `kernel_typed_parameters.rs` and `items_block.rs`, and keeps the structural path A5 deletes
 (made `pub(crate)`).
 
-Order: A0 goes now. A1 goes now, except its the-language-is-kernel `:179`/`:186` rows,
-which follow #1431, and its D-table rows, which follow #1323 (§5's "Hunk" column). A2a goes
+Order: A0 goes now. A1 goes now, except its the-language-is-kernel `:186` row and its
+D-table rows, which follow #1323 (§5's "Hunk" column). A2a goes
 against main with #1431 still open (2026-10-22), so #1431 rebases onto A2a. A2a leaves the
 `fold.monoid().identity()` lines alone; the emptiness guard above two of them and a few import
 lines still conflict, each resolved by keeping both sides. A2b–A4 rebase onto #1431 once
@@ -694,14 +694,16 @@ A5's deletion, which removes code #1427 only re-scopes.
   the only producer of. No production user: tests (`kernel_typed_parameters.rs`,
   `rustc_is_the_oracle.rs`, `items_block.rs`, `binding_times.rs`, `sema.rs` and `emit.rs`
   unit tests) and docs rewritten. It comes before A6 because the obvious lowering of a
-  structural bound, a `Param` leaf, is `Variance::ALL` (`variance.rs:338`) and L3 refuses it.
+  structural bound, a `Param` leaf, is `Variance::ALL` (`variance.rs`'s `Param` arm) and L3
+  refuses it.
   **Done:** `kernel!` refuses a generic on any `fn` at parse, a `const` one naming §1.2; the
   structural path is deleted (§3.4), and `FoldTerms` lost its stride, which only the template
   set past 1; the template exemption went with it, so A7 is empty (below). The test templates
   that take no kernel (`ramp`, `rings`, `swept`, `mean_index`, and `emit.rs`'s
   `counted`) are written over `usize` consts and are offered to the macro tier at expansion;
-  the two that take one (`applied`, `mean_down`) stay `Staged`; the tests whose subject was
-  the template are deleted. byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and
+  `emit.rs`'s `inside`, whose count nothing read, lost its generic; the two that take a
+  kernel (`applied`, `mean_down`) stay `Staged`; the tests whose subject was the template are
+  deleted. byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and
   `=avx2`; the 29 font programs' keys, digests and saturation telemetry, the extraction fields
   included, unchanged (gates compared to the base verified at main 7e9531e).
 - **A6. `kernel!` bounds are typed expressions** (§3.4). Waits on decision 2, the spelling;
@@ -710,9 +712,9 @@ A5's deletion, which removes code #1427 only re-scopes.
   `Args` write refuses `2²⁴ + 1`; `tests/fold_is_kernel_over.rs` green; byte_probe empty.
 - **A7. Folded into A5.** The exemption (`emit.rs:154-156` at `7e9531e`) was
   `if !entry.structural.is_empty()`, a condition on the field A5 deletes, so A5 deleted it.
-  It exempted only test templates, which A5 rewrote over `usize` consts or deleted with the
-  tests whose subject they were, and no production entry, so there was no production byte
-  change to measure.
+  It exempted only test templates, which A5 rewrote over `usize` consts, stripped of a
+  generic nothing read (`emit.rs`'s `inside`), or deleted with the tests whose subject they
+  were, and no production entry, so there was no production byte change to measure.
 
 A alone does not deliver ruling 6 on the production path: the piece table's extent is
 still in the key (§3.5). Ruling 6 lands with B2; decision 4's interim is refused (§8).

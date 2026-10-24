@@ -83,7 +83,8 @@
   programs"). Before extracting in a template, give template inputs a
   meaning of their own (B6).
 - **Lives:** the-language-is-kernel §1.1, §1.4, §1.7–§1.8, D9. Templates are
-  `Staged` (`pixelflow-compiler/src/emit.rs`).
+  `arena_to_tokens`' output, or `Staged`'s for an entry that takes a kernel
+  (`pixelflow-compiler/src/emit.rs`).
 
 ### Pass, legalize, Optimize
 

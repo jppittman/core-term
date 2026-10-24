@@ -1,14 +1,15 @@
 //! Records, binding times and `Args`
 //! (docs/language/2026-09-25-the-language-is-kernel.md §1.3, §1.4; B3).
 //!
-//! Every parameter is a **uniform**: an `f32` parameter is one, a record
-//! parameter one per field, and a call's values are the kernel's arguments,
-//! never its constants. So every call of an entry is one program — one
-//! canonical key, one compiled region — and a program compiled once is rebound
-//! per call from the entry's `Args` record, into a block the caller keeps; so
-//! is a program the entry's kernel was composed into, beside kernels with no
-//! arguments of their own. A count is a literal or a `usize` const of the
-//! block (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
+//! Every `f32` and record parameter is a **uniform**: an `f32` parameter is
+//! one, a record parameter one per field, and a call's values are the
+//! kernel's arguments, never its constants. So every call of an entry that
+//! takes no kernel is one program — one canonical key, one compiled region —
+//! and a program compiled once is rebound per call from the entry's `Args`
+//! record, into a block the caller keeps; so is a program the entry's kernel
+//! was composed into, beside kernels with no arguments of their own. A count
+//! is a literal or a `usize` const of the block
+//! (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
 //!
 //! What a record and a count *mean* is pinned against rustc in
 //! `rustc_is_the_oracle.rs`; the refusals are `sema`'s and the parser's unit

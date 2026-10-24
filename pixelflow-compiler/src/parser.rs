@@ -94,12 +94,12 @@
 //! (plan §1.5) denotes ⊕ of its body over `i ∈ [a, b)`, and its monoid's
 //! identity when the range is empty; the syntax never unrolls it.
 //!
-//! Binding times (plan §1.4). Every parameter is a **uniform**: an `f32` is
-//! one, a record is one per field, and the host function's arguments are
-//! their values for that call — never constants folded in. A record is
-//! written by name: a parameter, a `let` alias of one (`let q = p;`), an
-//! argument passed on, or the base of a field read. A count is a literal or a
-//! `usize` const; no `fn` takes generics
+//! Binding times (plan §1.4). An `f32` parameter is a **uniform**, a record
+//! is one per field, and the host function's arguments are their values for
+//! that call — never constants folded in; a kernel-typed parameter is a
+//! kernel, not a uniform. A record is written by name: a parameter, a `let`
+//! alias of one (`let q = p;`), an argument passed on, or the base of a field
+//! read. A count is a literal or a `usize` const; no `fn` takes generics
 //! (§1.2 of docs/language/2026-10-20-a-bound-is-a-value.md).
 //!
 //! The language has no collection types (plan §1.3, §1.6): no array, slice,
@@ -339,8 +339,8 @@ fn convert_record(item: syn::ItemStruct) -> syn::Result<RecordItem> {
         ));
     }
     if let Some(where_clause) = &item.generics.where_clause {
-        return Err(syn::Error::new_spanned(
-            where_clause,
+        return Err(syn::Error::new(
+            where_clause.where_token.span,
             "a `where` clause on a record: there are no generics to bound",
         ));
     }
@@ -637,9 +637,8 @@ fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
     Ok(())
 }
 
-/// The refusal of a generic, by what it would have meant: a `const` one was a
-/// count, which a block now writes as a literal or a `usize` const, and any
-/// other names a type the language does not have.
+/// The refusal of a generic, by what it would have meant: a `const` one says
+/// what a count is now; any other, that nothing in a kernel is generic.
 fn generic_refusal(param: &syn::GenericParam) -> String {
     match param {
         syn::GenericParam::Const(_) => format!(
@@ -661,7 +660,7 @@ fn generic_refusal(param: &syn::GenericParam) -> String {
 
 /// The refusal of generic arguments on a name in a body, at a call or in a
 /// value position alike: nothing in a kernel is generic. It is spanned on the
-/// arguments, `::<4>`, the token that is wrong.
+/// turbofish, the tokens that are wrong.
 fn generic_arguments_refusal(arguments: &syn::PathArguments) -> syn::Error {
     syn::Error::new_spanned(
         arguments,
@@ -673,6 +672,14 @@ fn generic_arguments_refusal(arguments: &syn::PathArguments) -> syn::Error {
              help: a count is a literal, or a `usize` const of the block"
         ),
     )
+}
+
+/// The type arguments a method names, if it names any: `::<>` names none, as
+/// it names none on a path, so it is the method without it.
+fn turbofish_of(call: &syn::ExprMethodCall) -> Option<&syn::AngleBracketedGenericArguments> {
+    call.turbofish
+        .as_ref()
+        .filter(|arguments| !arguments.args.is_empty())
 }
 
 /// Convert syn::Expr to our AST Expr.
@@ -746,7 +753,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             // receiver's own refusal, the innermost, comes first, as rustc's
             // does (`(0..4).rev().map(…)` is about `.rev`).
             let collection = a_collection_iterated(&expr_method);
-            if let Some(arguments) = &expr_method.turbofish {
+            if let Some(arguments) = turbofish_of(&expr_method) {
                 return Err(syn::Error::new_spanned(
                     arguments,
                     "type arguments on a method in a kernel body\n\
@@ -1142,7 +1149,7 @@ fn convert_fold_terminal(
 /// it is the one type the terms have: `.sum::<f32>()`, which rustc needs
 /// wherever nothing else says what the sum is.
 fn sum_or_product(call: &syn::ExprMethodCall, reduction: Reduction) -> syn::Result<Reduction> {
-    if let Some(arguments) = &call.turbofish {
+    if let Some(arguments) = turbofish_of(call) {
         let names_f32 = match arguments.args.iter().collect::<Vec<_>>().as_slice() {
             [syn::GenericArgument::Type(ty)] => is_f32(ty),
             _ => false,
@@ -1239,7 +1246,7 @@ fn is_path(expr: &syn::Expr, segments: &[&str; 2]) -> bool {
 
 /// A method of a fold that takes no type argument.
 fn refuse_turbofish(call: &syn::ExprMethodCall) -> syn::Result<()> {
-    match &call.turbofish {
+    match turbofish_of(call) {
         Some(arguments) => Err(syn::Error::new_spanned(
             arguments,
             format!(
@@ -2652,11 +2659,18 @@ mod tests {
     }
 
     /// Type arguments name a type a method would be generic over, and no
-    /// method in a kernel body is generic; they are refused, not dropped.
+    /// method in a kernel body is generic; they are refused, not dropped. An
+    /// empty `::<>` names none, on a method as on a path, and is the method.
     #[test]
     fn type_arguments_on_a_method_are_refused() {
         let err = refusal(quote! { || X.sqrt::<f32>() });
         assert!(err.contains("type arguments on a method"), "got: {err}");
+        for input in [
+            quote! { || X.max::<>(Y) },
+            quote! { || (0..4).map::<>(|i| i as f32).sum::<>() },
+        ] {
+            parse(input).expect("an empty turbofish names no type");
+        }
     }
 
     /// `i as f32` parses as a cast of its operand; which operands a cast

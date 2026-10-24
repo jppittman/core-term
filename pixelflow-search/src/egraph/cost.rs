@@ -102,7 +102,7 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
     OpMap::from_fn(|op| match op {
         OpKind::Var => 0,     // free
         OpKind::Const => 0,   // free
-        OpKind::Param => 0,   // free: a leaf, substituted away before codegen
+        OpKind::Param => 0,   // free: a leaf
         OpKind::Add => 4,     // measured 4.0 (anchor)
         OpKind::Sub => 4,     // measured 4.0
         OpKind::Mul => 5,     // measured 5.3

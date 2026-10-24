@@ -353,11 +353,12 @@
 
 ### Param
 
-- **Is:** an unbound scalar slot of a builder template. `Param(i)` exists
-  only before the builder is called. In the e-graph it is an opaque leaf:
-  no rule matches it and its derivative is 0. "`Param` keeps its meaning
-  exactly … an unbound slot at bake time is still a bug and
-  `Declined::Param` still means a builder was never called."
+- **Is:** an unbound scalar slot: a leaf with no value. It is never folded,
+  no rewrite rule matches it, and its derivative is 0; in the e-graph it is
+  an opaque leaf. No stage of compilation builds one: `kernel!` builds none,
+  and what does is a test or a reader that round-trips one (the training
+  corpus's). The JIT emitter and the compiler's emission panic on one, and
+  `Vocabulary::Runtime` declines it (`Declined::Param`).
 - **Is not:** an identity (`Param(u8)` "collides on splice, both ways"). Not
   a `Var` in a magic range. Not something the emitter accepts. Not a
   carrier of a loop body's per-iteration value. Superseded: "Parameters …
@@ -365,15 +366,15 @@
   (2025, retracted by JP on 2026-09-06: "My intent was actually for
   `Param(i)` to lower to a uniform, not a constant").
 - **Follows:** with "everything not structural is a uniform" (2026-09-25),
-  Param's job is gone. `ENode::Param` and the macro tier's saturation are
-  "deleted, not completed" (one-pipeline M1–M5, F4).
+  Param's job is gone. The plans delete `ENode::Param` and the macro tier's
+  saturation, "deleted, not completed" (one-pipeline M1–M5, F4).
 - **Lives:** `ExprNode::Param(u8)` (`pixelflow-ir/src/arena.rs`),
   `ENode::Param(u8)` (`pixelflow-search/src/egraph/node.rs`),
   `Declined::Param` (`pixelflow-search/src/egraph/insert.rs`). Decided in
   macro-tier-is-arena-native and `2026-09-10-a-surviving-reduce-is-a-loop.md`
   2a″. Today it is still present and `Vocabulary::Templates` still admits
-  it; `kernel!` builds none since a-bound-is-a-value A5 deleted the template
-  hole it was for.
+  it; `kernel!` builds none, a-bound-is-a-value A5 having deleted the one
+  place that did.
 
 ### Binder
 

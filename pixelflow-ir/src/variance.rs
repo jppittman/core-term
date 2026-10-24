@@ -371,8 +371,8 @@ fn transfer(arena: &ExprArena, id: ExprId, child: impl Fn(ExprId) -> Variance) -
         ExprNode::Uniform(_) => Variance::CONST,
         ExprNode::Ref(key) => referent_variance(key),
         ExprNode::Param(_) => {
-            // Parameters are substituted before JIT compilation.
-            // If we see one here, treat conservatively as all-varying.
+            // A `Param` has no value, so nothing is known of what it varies
+            // with: treat it conservatively as all-varying.
             Variance::ALL
         }
         ExprNode::Unary(_, a) => child(a),

@@ -35,7 +35,7 @@
 //! `f32` parameter, or one field of a record parameter — is declared as a
 //! uniform, in [`AnalyzedKernel::parameters`]' order, and read through its
 //! `Uniform` leaf. Nothing a call passes is a constant of the program, so
-//! every call of an entry is one program.
+//! every call of an entry that takes no kernel is one program.
 //!
 //! **Where a term is built is a [`Site`]** (Phase D-a). Lowering is one walk,
 //! and there are two places it can build:

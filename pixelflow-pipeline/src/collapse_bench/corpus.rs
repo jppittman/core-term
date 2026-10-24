@@ -96,8 +96,8 @@ impl Trips {
 // "reading a bound buffer would be unlike anything production bakes" —
 // false since a glyph's winding became a `Kernel::sum_over` over a bound
 // piece table (`pixelflow-graphics`'s `loop_blinn::glyph`), which is exactly
-// this shape. `Param` is still rejected: nothing production bakes carries an
-// unsubstituted macro parameter.
+// this shape. `Param` is still rejected: it has no value, and nothing
+// production bakes carries one.
 //
 // v3 carried a buffer's *shape* only; replay bound every declared buffer to
 // zeros (`dummy_context`) on the premise that "collapse cost depends on the
@@ -151,9 +151,9 @@ const SUPERSEDED_HEADERS: &[(&str, &str)] = &[
 ///
 /// # Panics
 /// If the directory cannot be created, a file cannot be written, or a kernel
-/// holds a `Param` node — a macro front-end placeholder that never survives
-/// to a compiled kernel, so a corpus entry carrying one is a corpus bug, not
-/// a shape production bakes.
+/// holds a `Param` node — a slot with no value, which no compiled kernel
+/// holds, so a corpus entry carrying one is a corpus bug, not a shape
+/// production bakes.
 pub fn write_dir(dir: &Path, kernels: &[CollapseKernel]) {
     std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
     for kernel in kernels {
@@ -294,7 +294,7 @@ pub fn encode(kernel: &CollapseKernel) -> String {
             }
             ExprNode::Param(i) => panic!(
                 "{}: corpus kernels must be bakeable, but this one holds Param({i}) — a \
-                 macro front-end placeholder, never present in a compiled kernel",
+                 slot with no value, never present in a compiled kernel",
                 kernel.name
             ),
             // A key names an entry in this process's `KernelStore`, which a

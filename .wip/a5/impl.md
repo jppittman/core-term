@@ -345,3 +345,129 @@ reflow, and the gates were not re-run.
 Test count: 298, unchanged (no `#[test]` added or removed; the new assertions are inside the existing parser test). The edit to
 `pixelflow-ir` (docs and one message) changed the build of everything above it; `cargo test -p pixelflow-core` and `-graphics` were
 not re-run because nothing they compile changed in meaning. `df -h /` before each build: 5.3 GB free, 5.0 GB after the scratch probe.
+
+## Round 2 (rulings.md "Round 2", reviews `review2.{docs,code}.md`, on `0c3b52a`)
+
+**Tree:** `f3233fc` (rulings committed) plus the working-tree edits below, 24 files, nothing committed, stashed or reset. Paths are
+`/home/user/pixelflow/<path>`, line numbers are of the tree now. Every denotation sentence was written from the code: `Param` is a leaf
+with no value; never folded (`insert.rs:128-130`, `fold.rs`/`kernel.rs:889` refuse it as a bound); matched by no rewrite rule
+(`template.rs:73`, `:109`, `unify` at `:456`); derivative zero (`graph.rs:1847`); `graph.rs:1720` panics on one in a right-hand side;
+`Vocabulary::Runtime` declines it, `Templates` holds it as `ENode::Param` (`insert.rs:128-130`); the JIT emitter and the compiler's
+emission panic on one. Makers, by grep of `push_param|ExprNode::Param|ENode::Param|Shape::Param`: tests (`ir_insert.rs`, `kernel.rs`
+and `arena.rs` unit tests), `arena_pat!`'s `par N` leaf (`rewrite.rs:42`, no caller), the training corpus's reader (`corpus.rs:575`),
+and copy-throughs of a `Param` already in hand. `pixelflow-compiler` holds `ExprNode::Param` in `emit.rs`'s panic arm only (G4).
+
+### D1 (blocking), the `Param` docs
+- `pixelflow-ir/src/kind.rs:219-227` `OpKind::Param`: "An unbound scalar slot: a leaf with no value. It is never folded, matched by no
+  rewrite rule, and its derivative is zero." then who builds one, the two panics, and the `Vocabulary` sentence.
+- `pixelflow-search/src/egraph/node.rs:248-254` `ENode::Param`; `egraph/insert.rs:52-57` `Declined::Param` and `:85-94` `insert`'s doc;
+  `runtime.rs:150-151`; `pixelflow-ir/src/expr.rs:32-33` `ExprData::Param`; `term.rs:104-107` `Shape::Param`.
+- `pixelflow-search/tests/ir_insert.rs:145-154` (the test's doc) and its two assert messages (`:163`, `:170`). The ruling's `:165`,
+  `:167`, `:172`, `:174` are the review's numbering. No test asserts a substring of either message (grep of `should_panic` and of the
+  old texts), so no asserted substring changed.
+- Panics: `pixelflow-compiler/src/emit.rs:439-442` "kernel! produced ExprNode::Param({k}): lowering builds none" and its comment;
+  `pixelflow-codegen/src/program/lower.rs:373-375` "ExprNode::Param({i}) reached the JIT emitter: a `Param` has no value". No test
+  asserts either. G3 and G4 still give what the spec says.
+- Plan §4, `docs/language/2026-10-20-a-bound-is-a-value.md:434`: "`Param(u8)` stays: nothing in compilation builds one, and its deletion
+  is the-language-is-kernel D2's, with `Vocabulary::Templates`, on that plan's schedule."
+- **Departure 1 (deletions beyond the wording):** the history paragraphs are gone, not reworded: kind.rs's and node.rs's "Before this
+  existed the e-graph refused `Param` outright and each macro-side caller smuggled one past ... `Var(16 + i)`", insert.rs:89's "saying it
+  there is what stopped the macro tier from smuggling params past this gate", and ir_insert.rs's copy of it. They describe callers that
+  no longer exist, and the ruling says "that much and no more". Also gone: "exactly `Uniform`'s contract, one tier earlier" (kind.rs) and
+  "the same opaque leaf as `Uniform`, one tier earlier" (node.rs), since the tier that built one is gone; node.rs keeps "an opaque leaf
+  like `Uniform`".
+- **Departure 2 (makers):** the docs say "a test, or a reader that round-trips one (the training corpus's)", not the ruling's "NNUE
+  readers": `nnue/mod.rs:227` and `:881` copy a `Param` they were handed (`Shape::Param` to `push_param`); they read none from a file.
+- **Not edited, for the coordinator:** `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md:600` ("`Declined::Param` still means a
+  builder was never called") is a dated plan of record's decision text; `docs/language/2026-09-24-one-pipeline.md:598` and `:667` are
+  history rows; `docs/language/2026-09-25-the-language-is-kernel.md:1276` is an appendix finding. All dated, as round 1's disposition of
+  `one-pipeline.md:667`.
+
+### D7, the same correction outside the diff
+`pixelflow-ir/src/variance.rs:374-375` ("A `Param` has no value, so nothing is known of what it varies with: treat it conservatively
+as all-varying"); `egraph/cost.rs:105` ("free: a leaf"); `saturate_pass.rs:19-20` ("a `Param` slot under [`Vocabulary::Runtime`]");
+`kind.rs:799-801` (`is_seed_op`: "a uniform's value arrives per call and a `Param` has none"); `nnue/factored.rs:604` and `:777` (the
+panic is now "ExprNode::Param({i}) reached the edge walker: a `Param` has no value"; no test asserts it).
+- **Departure 3 (siblings the grep found):** `pixelflow-pipeline/src/training/factored.rs:606` (a panic, "substitute params first" is now
+  "a `Param` has no value"); `collapse_bench/corpus.rs:99`, `:154` and `:297` ("unsubstituted macro parameter", "macro front-end
+  placeholder", the encode panic); `pixelflow-ir/src/term.rs:117` (`Shape::Ref`: "for the reason it declines a `Param`: ... until
+  something resolves it" lost the comparison); `egraph/node.rs:590` (the variance comment said a `Param` "is one number for the whole
+  lattice", against `fold.rs`'s "has no value": it now says the e-graph classes it with a uniform, which is what `ENode::variance`
+  does; `variance.rs` classes the same leaf `ALL`, and each comment says only what its own code does).
+- **`arena.rs:407` not edited:** it is about `Var` ("in the macro front end only, before substitution, a parameter placeholder"), a
+  third meaning of `Var` that CLAUDE.md records as retired, not about `Param`. It is stale, and the ontology's `Var` entry
+  (`language.md:346-352`) already records it as such. Flagged for the coordinator; fixing it means editing that entry too.
+- Plan A5 bullet, `a-bound-is-a-value.md:697`: "`variance.rs:338`" cited a line that is not the `Param` arm at base or now (`:373`), so
+  the citation is now "`variance.rs`'s `Param` arm".
+
+### D2 (blocking), the ontology's `Param`
+`.claude/skills/ontology/language.md:356-361` "Is": the denotation above; the history quotation is gone. "Follows" (`:368-370`): "The
+plans delete `ENode::Param` and the macro tier's saturation, 'deleted, not completed'", since the plans are what say it and the "Lives"
+line says it is still present. "Lives" (`:376`): "`kernel!` builds none, a-bound-is-a-value A5 having deleted the one place that did"
+(no "template hole"). "Is not" is unchanged: its quotation is marked "Superseded".
+
+### D3 (blocking), `inside`
+Checked against `git diff 7e9531e..HEAD`, entry by entry. At `7e9531e` the structural entries were: `emit.rs` `inside` (`N` unread),
+`mean` (deleted with `a_templates_holes_are_filled_by_the_instantiation`), `counted` (a `usize` const, offered); `binding_times.rs`
+`ramp`, `rings` (usize consts), `grid`, `span` (deleted with their tests); `items_block.rs` `swept` (usize const, offered), `applied`
+(usize const, `Staged`); `kernel_typed_parameters.rs` `mean_down` (usize const, `Staged`); `rustc_is_the_oracle.rs` `mean_index` (usize
+consts, offered); `lib.rs`'s `rings` example. `inside` is the one the sentence missed. The Done line (`a-bound-is-a-value.md:702-706`)
+now says "`emit.rs`'s `inside`, whose count nothing read, lost its generic"; the A7 bullet (`:714-716`) "stripped of a generic nothing
+read (`emit.rs`'s `inside`)".
+
+### D4 (blocking), D6, D8, D9
+- D4: `pixelflow-compiler/src/lib.rs:75-76` `BOUND_PLAN`: "The plan that made a fold's bound a value, named by the `const` generic
+  refusal." intent.md's "each citing its plan section (`PLAN`, `BOUND_PLAN`)" is unchanged, as ruled.
+- D6: `a-bound-is-a-value.md:535-536`: "A1 goes now, except its the-language-is-kernel `:186` row and its D-table rows, which follow
+  #1323". `BACKLOG.md:32` ("A1's the-language-is-kernel rows after #1323") agrees.
+- D8: `parser.rs:640-641` `generic_refusal`: "a `const` one says what a count is now; any other, that nothing in a kernel is generic."
+- D9: `.claude/skills/ontology/compiler.md:85-87`: "Templates are `arena_to_tokens`' output, or `Staged`'s for an entry that takes a
+  kernel". Checked against the entry's "Is": lowering produces the replay, `emit.rs:359` writes it for an entry that takes no kernel,
+  `Staged` (`:555`) for one that takes a kernel.
+
+### D5, "every parameter is a uniform" and "one entry is one program"
+`tests/binding_times.rs:4-10`, `intent.md:30`, `parser.rs:97-100`, `sema.rs:30-32`, `emit.rs:39-44`: an `f32` or a record parameter is a
+uniform, a kernel-typed one is a kernel (`AnalyzedKernel::parameters` filters `is_kernel()`), and "one program" is said of an entry that
+takes no kernel.
+- **Departure 4 (siblings of the same sentence):** `lib.rs:258-266` ("**Uniform**: every `f32` and record parameter ... every call of an
+  entry that takes no kernel is one program"), `lib.rs:279-280` (the count paragraph now says "it makes no program of its own"), and
+  `lower.rs:38` ("every call of an entry that takes no kernel is one program").
+- **Left, for the coordinator:** R9's refusal text "a count does not make a program of its own: an entry is one program, whatever its
+  counts" (`parser.rs:647`) and the test's doc beside it (`:2727`). Read as "counts do not multiply programs" it is true of every entry;
+  read as "an entry is exactly one program" it is not of an entry that takes a kernel. R9 fixed the text and the test pins only its
+  header, plan path and help line, so a change is a one-line edit if wanted. `binding_times.rs:101`'s test doc and name say "every call
+  of an entry" of a test over entries that take no kernel; not edited.
+
+### R2C-1 (blocking), R2C-2 (blocking), R2C-3
+- R2C-1: `parser.rs:341-345` `convert_record`: `syn::Error::new(where_clause.where_token.span, ...)`, as `refuse_generics` does
+  (`:629-636`). BACKLOG C12's sentence is now true of both. No test reads a span (C12), so none pins it; a scratch probe is not re-run
+  (the change is the review's own fix, on the line the review quotes).
+- R2C-2: `parser.rs:662-663` `generic_arguments_refusal`: "It is spanned on the turbofish, the tokens that are wrong." G8 gives only the
+  new test's `quote!` lines.
+- R2C-3: `parser.rs:679-686` `turbofish_of`, one function that settles it ("`::<>` names none, as it names none on a path"); the three
+  method sites call it: the `MethodCall` arm (`:756`), `sum_or_product` (`:1152`) and `refuse_turbofish` (`:1249`). The case is in
+  `type_arguments_on_a_method_are_refused` (`:2661-2677`): `X.max::<>(Y)` and `(0..4).map::<>(|i| i as f32).sum::<>()` parse. Mutation:
+  with `turbofish_of` returning `call.turbofish.as_ref()` the test fails on the first case with "type arguments on a method in a
+  kernel body"; restored.
+
+### Commands, after the last edit unless said
+| Command | Result |
+|---|---|
+| `cargo fmt --all` then `cargo fmt --all -- --check` | clean |
+| `cargo test -p pixelflow-compiler --lib` | `142 passed; 0 failed` |
+| `PIXELFLOW_ISA=avx2 cargo test -p pixelflow-compiler` | 14 targets: 142 + 5 + 7 + 6 + 14 + 6 + 12 + 5 + 6 + 30 + 16 + 10 + 30 + 9 = **298** passed, 0 failed; doc-tests 6 ignored |
+| `PIXELFLOW_ISA=avx512 cargo test -p pixelflow-compiler` | identical, **298** passed, 0 failed |
+| `cargo test -p pixelflow-ir` | 310, 1, 75 (1 ignored), 9, 1, doc 1 (1 ignored): **397** passed, 0 failed |
+| `cargo test -p pixelflow-search --features provenance-journal` | 397 (8 ignored), 5, 13, 2, 7, 1, 2, 7: **434** passed, 0 failed |
+| `cargo test -p pixelflow-codegen --lib` | **102** passed, 0 failed (the panic text has no test) |
+| `cargo check -p pixelflow-pipeline --lib` | clean (two edited strings and three comments) |
+| `cargo clippy -p pixelflow-compiler --no-deps --all-targets -- -D warnings` | clean |
+| rustdoc, `pixelflow-compiler`, `rustdoc_norm.py --compare` | base 4, head 4, NEW 0, GONE 0 |
+| `scripts/check-intent.sh`, `scripts/check-doc-paths.sh` | OK |
+
+Test count: 298, unchanged for the compiler crate (a case added inside an existing `#[test]`, none added or removed). The compiler
+`--lib`, `-p pixelflow-ir`, `-search` and `-codegen --lib` rows above were re-run after the final doc edits except `lower.rs:38`, a
+module-doc line, after which only `fmt --check` and `-p pixelflow-compiler --lib` (142) were re-run. The gates (byte_probe, the 29
+font programs) were not re-run: this round changes no path an accepted program takes, only comments, documents, three panic texts and
+one span, and the refusal of `::<>` on a method, which a program that parsed before cannot contain. `df -h /`: 4.9 GB free before
+each build and after.

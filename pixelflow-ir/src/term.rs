@@ -101,8 +101,8 @@ pub enum Shape<'a, R> {
     Var(u8),
     /// Literal: a number or a mask.
     Const(Lit),
-    /// Unbound slot of a rewrite-rule template. Valid only before kernel
-    /// compilation; a runtime-tier e-graph insert declines one rather than
+    /// Unbound scalar slot: a leaf with no value. Kernel compilation refuses
+    /// one, and a runtime-tier e-graph insert declines it rather than
     /// inventing a value for it.
     Param(u8),
     /// Bound-memory leaf, carrying the identity that survives a merge.
@@ -114,8 +114,8 @@ pub enum Shape<'a, R> {
     /// [`KernelStore`](crate::store::KernelStore) and not in this term. An
     /// e-graph insert holds one as an opaque leaf only when the graph was
     /// told it is a unit and given its variance (the runtime tier's unit
-    /// walk), and otherwise declines it, for the reason it declines a
-    /// `Param`: there is nothing to reason about until something resolves it.
+    /// walk), and otherwise declines it: there is nothing to reason about
+    /// until something resolves it.
     ///
     /// (The `Ref` in [`Ir::Ref`] is unrelated — that is how a representation
     /// *names* one of its own nodes; this is a name for a whole kernel.)

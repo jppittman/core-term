@@ -603,7 +603,7 @@ pub fn arena_to_kernel_code(arena: &ExprArena, root: ExprId) -> String {
                         "arena_to_kernel_code: a mask literal ({m}) has no `kernel!` spelling"
                     ),
                     ExprNode::Param(i) => panic!(
-                        "ExprNode::Param({}) reached arena_to_kernel_code — substitute params first",
+                        "ExprNode::Param({}) reached arena_to_kernel_code: a `Param` has no value",
                         i
                     ),
                     ExprNode::Buffer(b) => panic!(

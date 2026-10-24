@@ -27,8 +27,9 @@
 //! 5. **Folds**: a fold's bounds are constant and run forwards
 //!    ([`range_bounds`]), and its body is a term of its monoid, an `f32` or
 //!    a `bool`, in a scope where the closure's parameter is the index.
-//! 6. **Binding times** (plan §1.4): every parameter is a uniform —
-//!    [`AnalyzedKernel::parameters`] is the order they are declared in.
+//! 6. **Binding times** (plan §1.4): every `f32` and record parameter is a
+//!    uniform, and a kernel-typed one is a kernel (item 8) —
+//!    [`AnalyzedKernel::parameters`] is the uniforms' order of declaration.
 //! 7. **Tuple `let`s** (D7's front half): a tuple `let` types every
 //!    expression before it binds any name.
 //! 8. **Kernels** (Phase D-a): a parameter typed `impl Fn(f32, f32) -> f32`
