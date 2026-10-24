@@ -1842,8 +1842,8 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         }
         // Invariant across the lattice: ∂u/∂x = 0, as for a constant.
         ENode::Uniform(_) => return sink.make(ENode::constant(0.0)),
-        // Likewise ∂p/∂x = 0: a builder's scalar is one number for the
-        // whole lattice, whichever number it turns out to be.
+        // Likewise ∂p/∂x = 0: a slot does not vary along the axis, as a
+        // uniform does not.
         ENode::Param(_) => return sink.make(ENode::constant(0.0)),
         // A unit that does not vary along the axis has derivative zero, as
         // a uniform does. One that does keeps its `Dwrt`: a name has no

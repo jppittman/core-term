@@ -16,21 +16,20 @@
 //!    keeps its lanes — a `bool` is a mask lane — so the type lives here and
 //!    nowhere downstream; what it buys is that `X.select(Y, 7.0)`, which
 //!    blended a number as a mask, is a type error rather than plausible
-//!    pixels. A third type, `usize`, is a count: a fold's index, a `usize`
-//!    const or an entry's structural parameter. It is never the type of an
-//!    expression — a body names one only to convert it, `i as f32` —
-//!    because nothing in the language computes with an index
-//!    (docs/language/2026-09-25-the-language-is-kernel.md §1.3, §1.6). A
-//!    fourth, a record, is a name for its `f32` fields: written by name,
-//!    read by field, and never computed (Phase D, D7).
+//!    pixels. A third type, `usize`, is a count: a fold's index or a `usize`
+//!    const. It is never the type of an expression — a body names one only to
+//!    convert it, `i as f32` — because nothing in the language computes with
+//!    an index (docs/language/2026-09-25-the-language-is-kernel.md §1.3,
+//!    §1.6). A fourth, a record, is a name for its `f32` fields: written by
+//!    name, read by field, and never computed (Phase D, D7).
 //! 4. **Calls**: a helper is called at its arity with arguments of its
 //!    parameters' types; an entry is not callable; recursion is refused.
 //! 5. **Folds**: a fold's bounds are constant and run forwards
 //!    ([`range_bounds`]), and its body is a term of its monoid, an `f32` or
 //!    a `bool`, in a scope where the closure's parameter is the index.
-//! 6. **Binding times** (plan §1.4): an entry's structural parameters are
-//!    counts, and every parameter is a uniform — [`AnalyzedKernel::parameters`]
-//!    is the order they are declared in.
+//! 6. **Binding times** (plan §1.4): every `f32` and record parameter of an
+//!    entry is a uniform, and a kernel-typed one is a kernel (item 8) —
+//!    [`AnalyzedKernel::parameters`] is the uniforms' order of declaration.
 //! 7. **Tuple `let`s** (D7's front half): a tuple `let` types every
 //!    expression before it binds any name.
 //! 8. **Kernels** (Phase D-a): a parameter typed `impl Fn(f32, f32) -> f32`
@@ -50,18 +49,16 @@
 //! 3. a fold's index → the fold's binder, a `usize`, visible in the fold's
 //!    body and nowhere else
 //! 4. a `const` → its value
-//! 5. an entry's structural parameter → a count, fixed per instantiation
-//! 6. an intrinsic (X, Y) → a coordinate `Var`, in an entry only: a helper
+//! 5. an intrinsic (X, Y) → a coordinate `Var`, in an entry only: a helper
 //!    takes its coordinates as arguments, so that application is contramap
 //!    (docs/language/2026-09-25-the-language-is-kernel.md §1.2)
-//! 7. otherwise → refused. A kernel body does not capture from the caller's
+//! 6. otherwise → refused. A kernel body does not capture from the caller's
 //!    scope, so a name nothing here binds is an error here, with a span —
 //!    not a capture that lowering then refuses without one.
 //!
-//! Nothing shadows X, Y, a `const`, a structural parameter or a `fn` — a
-//! parameter, a `let` or a fold's index of that name is refused — so a
-//! coordinate always means the coordinate and an item always means the
-//! item.
+//! Nothing shadows X, Y, a `const` or a `fn` — a parameter, a `let` or a
+//! fold's index of that name is refused — so a coordinate always means the
+//! coordinate and an item always means the item.
 //!
 //! ## Output
 //!
@@ -77,9 +74,9 @@ use crate::ast::{
 use crate::lower::{LIBRARY_METHODS, Projection};
 use crate::symbol::{SymbolKind, SymbolTable};
 use pixelflow_ir::{OpKind, known_method_names};
-use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use proc_macro2::Span;
 use std::collections::HashMap;
+use std::ops::Range;
 use syn::{Ident, Type};
 
 /// The type of a name or an expression in a kernel body.
@@ -91,11 +88,10 @@ use syn::{Ident, Type};
 /// a number used as a mask blends bit patterns.
 ///
 /// The third, `usize`, is a count and not a value. A fold's index is one,
-/// and so are a `usize` const and an entry's structural parameter. A name of
-/// this type is refused wherever a value is expected, and converted only by
-/// `i as f32`: the index is an `f32` lane already, so the conversion lowers
-/// to nothing, but writing it is what keeps index arithmetic out of the
-/// language.
+/// and so is a `usize` const. A name of this type is refused wherever a value
+/// is expected, and converted only by `i as f32`: the index is an `f32` lane
+/// already, so the conversion lowers to nothing, but writing it is what keeps
+/// index arithmetic out of the language.
 ///
 /// The fourth, a record, is its `f32` fields under one name (§1.3). It has
 /// no lane of its own: lowering flattens it, so a record is written only by
@@ -115,7 +111,7 @@ pub enum Ty {
     /// A mask: a comparison produces it, `&` and `|` combine it, an `if`
     /// chooses by it.
     Bool,
-    /// A count: a fold's index, a `usize` const or a structural parameter.
+    /// A count: a fold's index or a `usize` const.
     /// 64 bits, as `usize` is on every target the language compiles for.
     Usize,
     /// One of the block's records.
@@ -131,7 +127,10 @@ impl Ty {
         let Type::Path(path) = ty else {
             return None;
         };
-        if path.qself.is_some() || path.path.segments.len() != 1 {
+        if path.qself.is_some()
+            || path.path.leading_colon.is_some()
+            || path.path.segments.len() != 1
+        {
             return None;
         }
         let segment = &path.path.segments[0];
@@ -156,9 +155,8 @@ impl Ty {
                 format!(
                     "{what} an `f32` or a `bool`\n\
                      \n\
-                     note: a `usize` is a count, not a value: a fold's index, a `usize` const \
-                     or an entry's structural parameter (`pub fn f<const N: usize>`), which a \
-                     body converts by `i as f32`"
+                     note: a `usize` is a count, not a value: a fold's index or a `usize` \
+                     const, which a body converts by `i as f32`"
                 ),
             )),
             Some(Ty::Record(_) | Ty::Kernel) | None => Err(syn::Error::new_spanned(
@@ -655,8 +653,6 @@ struct FnAnalyzer<'a> {
     items: &'a Items<'a>,
     /// The `const`s' values, which a fold's bounds are evaluated over.
     consts: &'a HashMap<String, ConstValue>,
-    /// The `fn`'s structural parameters, which a fold's bounds may name.
-    structural: &'a [Ident],
     role: Role,
     symbols: SymbolTable,
     /// How many folds' bodies the walk is inside: a fold's body is a Rust
@@ -673,7 +669,7 @@ struct FnAnalyzer<'a> {
 
 impl<'a> FnAnalyzer<'a> {
     /// The scope a body opens in: the coordinates, the block's `const`s, and
-    /// the `fn`'s own structural and scalar parameters.
+    /// the `fn`'s own parameters.
     fn new(
         f: &'a FnItem,
         items: &'a Items<'a>,
@@ -682,7 +678,6 @@ impl<'a> FnAnalyzer<'a> {
         let mut analyzer = FnAnalyzer {
             items,
             consts,
-            structural: &f.structural,
             role: f.role(),
             symbols: SymbolTable::new(),
             folds_open: 0,
@@ -690,9 +685,6 @@ impl<'a> FnAnalyzer<'a> {
         };
         for (name, &ty) in &items.consts {
             analyzer.symbols.register_const(name, ty);
-        }
-        for count in &f.structural {
-            analyzer.register_structural(count)?;
         }
         let signature = &items.fns[&f.name.to_string()];
         for (param, &ty) in f.params.iter().zip(&signature.params) {
@@ -733,26 +725,9 @@ impl<'a> FnAnalyzer<'a> {
         Ok(())
     }
 
-    /// Register one of an entry's structural parameters: a count, which a
-    /// range's bounds may name and a body converts by `N as f32`.
-    fn register_structural(&mut self, count: &Ident) -> syn::Result<()> {
-        let name = count.to_string();
-        let declared = self.symbols.lookup(&name).map(|symbol| symbol.kind);
-        if declared == Some(SymbolKind::Structural) {
-            return Err(syn::Error::new(
-                count.span(),
-                format!("the structural parameter `{name}` is declared twice"),
-            ));
-        }
-        self.refuse_shadowing_an_item(count, "a structural parameter")?;
-        self.symbols.register_structural(&name);
-        Ok(())
-    }
-
     /// A parameter or a `let` may not take the name of a coordinate, a
-    /// projection, a `const`, a structural parameter or a `fn` — rustc
-    /// refuses a binding that shadows a const generic, too. A `let` may
-    /// shadow a parameter or another `let`, as Rust's does.
+    /// projection, a `const` or a `fn`. A `let` may shadow a parameter or
+    /// another `let`, as Rust's does.
     ///
     /// A projection because a call is resolved by its name: a kernel named
     /// `DX` would make `DX(x, y)` an application here and a derivative to a
@@ -782,16 +757,15 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        let shadowed = match self.symbols.lookup(&text).map(|s| s.kind) {
-            Some(SymbolKind::Const) => Some(format!("the `const {text}` of this block")),
-            Some(SymbolKind::Structural) => Some(format!("the structural parameter `{text}`")),
-            _ => None,
-        };
-        if let Some(shadowed) = shadowed {
+        if self
+            .symbols
+            .lookup(&text)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Const)
+        {
             return Err(syn::Error::new(
                 name.span(),
                 format!(
-                    "{binder} `{text}` shadows {shadowed}\n\
+                    "{binder} `{text}` shadows the `const {text}` of this block\n\
                      help: rename this {binder} to something else"
                 ),
             ));
@@ -899,12 +873,10 @@ impl<'a> FnAnalyzer<'a> {
         ))
     }
 
-    /// The bounds a fold's range may name: the block's `usize` consts and
-    /// this `fn`'s structural parameters.
+    /// The bounds a fold's range may name: the block's `usize` consts.
     fn range_scope(&self) -> RangeScope<'a> {
         RangeScope {
             consts: self.consts,
-            structural: self.structural,
         }
     }
 
@@ -959,8 +931,8 @@ impl<'a> FnAnalyzer<'a> {
                 "`as f32` converts a `usize`, and this expression's type is `{}`\n\
                  \n\
                  note: {why}\n\
-                 note: a `usize` is a fold's index, a `usize` const or a structural parameter, \
-                 converted by name: `i as f32`",
+                 note: a `usize` is a fold's index or a `usize` const, converted by name: \
+                 `i as f32`",
                 self.items.name_of(found)
             ),
         ))
@@ -1635,8 +1607,8 @@ impl<'a> FnAnalyzer<'a> {
     }
 }
 
-/// A `usize` where a value is expected. A `usize` — a fold's index, a
-/// `usize` const or a structural parameter — is a value only as `i as f32`:
+/// A `usize` where a value is expected. A `usize` — a fold's index or a
+/// `usize` const — is a value only as `i as f32`:
 /// nothing in the language computes with one, because there is nothing to
 /// index (plan §1.6).
 fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
@@ -1645,7 +1617,7 @@ fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
         format!(
             "mismatched types: `{name}` is a `usize`, where a value is expected\n\
              \n\
-             note: a `usize` (a fold's index, a `usize` const or a structural parameter) \
+             note: a `usize` (a fold's index or a `usize` const) \
              becomes a value by an explicit conversion, `{name} as f32`, and by nothing else: \
              there is no arithmetic on a `usize`, no comparison of one, and no table to index \
              (§1.6 of {PLAN})\n\
@@ -1656,58 +1628,29 @@ fn a_count_is_not_a_value(name: &Ident) -> syn::Error {
 
 // ───────────────────────────── consts ─────────────────────────────
 
-/// A count: a `usize` evaluated at expansion, or one that names an entry's
-/// structural parameters and so has a value only once the host function is
-/// instantiated with them (plan §1.4).
-#[derive(Debug, Clone)]
-pub(crate) enum Count {
-    /// Evaluated here, each operation checked.
-    Known(u64),
-    /// A Rust `usize` expression over literals and structural parameters:
-    /// rustc evaluates it, per instantiation, in a `const` block, and checks
-    /// each operation there as it checks any `const`.
-    Structural(TokenStream),
-}
-
-impl Count {
-    /// The count as a Rust `usize` expression.
-    fn tokens(&self) -> TokenStream {
-        match self {
-            Count::Known(value) => {
-                let value = proc_macro2::Literal::u64_unsuffixed(*value);
-                quote!(#value)
-            }
-            Count::Structural(tokens) => tokens.clone(),
-        }
-    }
-}
-
-/// One of a count's operations on two known counts, `None` where rustc's
-/// const evaluator would refuse it.
+/// One of a count's operations on two counts, `None` where rustc's const
+/// evaluator would refuse it.
 type CheckedOp = fn(u64, u64) -> Option<u64>;
 
 /// Integer arithmetic over counts: what a `usize` const's initializer and a
-/// fold's bounds are built from. Each operation on two known counts is
-/// checked here, as rustc's const evaluator checks it, so a count that would
-/// wrap is an error rather than a different count; one that names a
-/// structural parameter is checked by rustc itself, when the host function
-/// is instantiated.
+/// fold's bounds are built from. Each operation is checked here, as rustc's
+/// const evaluator checks it, so a count that would wrap is an error rather
+/// than a different count.
 ///
 /// A trait because its scopes differ only in what a name means: a `const`
 /// being evaluated may name another, evaluated on demand; a fold's bound
-/// names a `usize` const, already evaluated, or a structural parameter.
-/// Anything else is not constant.
+/// names a `usize` const, already evaluated. Anything else is not constant.
 trait UsizeScope {
     /// The value of `name` in a `usize` expression, or why it has none.
-    fn usize_named(&mut self, name: &Ident) -> syn::Result<Count>;
+    fn usize_named(&mut self, name: &Ident) -> syn::Result<u64>;
 
     /// The refusal of something a `usize` expression is not built from.
     fn not_a_count(&self, span: Span) -> syn::Error;
 
     /// An integer literal, a name, `+ - * /` and parentheses.
-    fn eval_usize(&mut self, expr: &Expr) -> syn::Result<Count> {
+    fn eval_usize(&mut self, expr: &Expr) -> syn::Result<u64> {
         let binary = match expr {
-            Expr::Literal(literal) => return literal.usize_value().map(Count::Known),
+            Expr::Literal(literal) => return literal.usize_value(),
             Expr::Ident(ident) => return self.usize_named(&ident.name),
             Expr::Paren(inner) => return self.eval_usize(inner),
             // Constant, but no count: rustc's refusal of the same tokens.
@@ -1727,11 +1670,11 @@ trait UsizeScope {
         };
         let lhs = self.eval_usize(&binary.lhs)?;
         let rhs = self.eval_usize(&binary.rhs)?;
-        let (checked, symbol): (CheckedOp, TokenStream) = match binary.op {
-            BinaryOp::Add => (u64::checked_add, quote!(+)),
-            BinaryOp::Sub => (u64::checked_sub, quote!(-)),
-            BinaryOp::Mul => (u64::checked_mul, quote!(*)),
-            BinaryOp::Div => (u64::checked_div, quote!(/)),
+        let (checked, symbol): (CheckedOp, &str) = match binary.op {
+            BinaryOp::Add => (u64::checked_add, "+"),
+            BinaryOp::Sub => (u64::checked_sub, "-"),
+            BinaryOp::Mul => (u64::checked_mul, "*"),
+            BinaryOp::Div => (u64::checked_div, "/"),
             BinaryOp::Lt
             | BinaryOp::Le
             | BinaryOp::Gt
@@ -1741,17 +1684,13 @@ trait UsizeScope {
             | BinaryOp::BitAnd
             | BinaryOp::BitOr => return Err(self.not_a_count(binary.span)),
         };
-        let (Count::Known(lhs), Count::Known(rhs)) = (&lhs, &rhs) else {
-            let (lhs, rhs) = (lhs.tokens(), rhs.tokens());
-            return Ok(Count::Structural(quote!((#lhs #symbol #rhs))));
-        };
-        if binary.op == BinaryOp::Div && *rhs == 0 {
+        if binary.op == BinaryOp::Div && rhs == 0 {
             return Err(syn::Error::new(
                 binary.span,
                 format!("attempt to divide `{lhs}_usize` by zero"),
             ));
         }
-        checked(*lhs, *rhs).map(Count::Known).ok_or_else(|| {
+        checked(lhs, rhs).ok_or_else(|| {
             syn::Error::new(
                 binary.span,
                 format!(
@@ -1762,58 +1701,21 @@ trait UsizeScope {
     }
 }
 
-/// A fold's bounds: evaluated at expansion, or, where they name an entry's
-/// structural parameters, when its host function is instantiated.
-#[derive(Debug, Clone)]
-pub(crate) enum Bounds {
-    /// Both evaluated, and the range runs forwards.
-    Known(u64, u64),
-    /// At least one names a structural parameter.
-    Structural(StructuralRange),
-}
-
-/// `lo..hi` as Rust `usize` expressions over literals and an entry's
-/// structural parameters: what the host function evaluates, per
-/// instantiation, in a `const` block — where rustc checks each operation,
-/// and the refusals lowering makes of a known range (backwards, past 2²⁴)
-/// are made of this one.
-#[derive(Debug, Clone)]
-pub(crate) struct StructuralRange {
-    pub lo: TokenStream,
-    pub hi: TokenStream,
-}
-
-impl StructuralRange {
-    /// The range as its source reads, for a diagnostic, and as the key two
-    /// folds over one range share.
-    pub fn text(&self) -> String {
-        format!("{}..{}", self.lo, self.hi)
-    }
-}
-
 /// A fold's bounds, each a `usize` built from integer literals, `usize`
-/// consts and the entry's structural parameters, and — when both are known
-/// here — the range running forwards.
+/// consts, `+ - * /` and parentheses, running forwards.
 ///
 /// The one evaluation of them: `sema` checks a fold with it, and lowering
 /// reads the bounds it returns, so the two cannot disagree on a range.
 ///
 /// Ranges are constant (plan §1.5): the program's shape is known when it is
-/// compiled, and a structural parameter is part of the program. A reversed
-/// range is refused rather than read as the empty fold it would be in Rust:
-/// an empty range is written `a..a`, and `b..a` is almost always a slip
-/// (clippy's `reversed_empty_ranges` is deny-by-default for the same
-/// reason), and the IR's own `KnownRange::new` refuses one.
-pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Result<Bounds> {
+/// compiled. A reversed range is refused rather than read as the empty fold it
+/// would be in Rust: an empty range is written `a..a`, and `b..a` is almost
+/// always a slip (clippy's `reversed_empty_ranges` is deny-by-default for the
+/// same reason), and the IR's own `KnownRange::new` refuses one.
+pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Result<Range<u64>> {
     let mut scope = scope;
     let lo = scope.eval_usize(&range.lo)?;
     let hi = scope.eval_usize(&range.hi)?;
-    let (Count::Known(lo), Count::Known(hi)) = (&lo, &hi) else {
-        return Ok(Bounds::Structural(StructuralRange {
-            lo: lo.tokens(),
-            hi: hi.tokens(),
-        }));
-    };
     if lo > hi {
         return Err(syn::Error::new(
             range.span,
@@ -1826,21 +1728,19 @@ pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Res
             ),
         ));
     }
-    Ok(Bounds::Known(*lo, *hi))
+    Ok(lo..hi)
 }
 
-/// What a fold's bound may name: a `usize` const, already evaluated, or one
-/// of the entry's structural parameters.
+/// What a fold's bound may name: a `usize` const, already evaluated.
 #[derive(Clone, Copy)]
 pub(crate) struct RangeScope<'a> {
     pub consts: &'a HashMap<String, ConstValue>,
-    pub structural: &'a [Ident],
 }
 
 impl UsizeScope for RangeScope<'_> {
-    fn usize_named(&mut self, name: &Ident) -> syn::Result<Count> {
+    fn usize_named(&mut self, name: &Ident) -> syn::Result<u64> {
         match self.consts.get(&name.to_string()) {
-            Some(ConstValue::Usize(value)) => Ok(Count::Known(*value)),
+            Some(ConstValue::Usize(value)) => Ok(*value),
             Some(ConstValue::F32(_)) => Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -1849,15 +1749,14 @@ impl UsizeScope for RangeScope<'_> {
                      help: declare the count as `const {name}: usize`"
                 ),
             )),
-            None if self.structural.contains(name) => Ok(Count::Structural(quote!(#name))),
             None => Err(syn::Error::new(
                 name.span(),
                 format!(
                     "a range's bounds are constant, and `{name}` is not a `const`\n\
                      \n\
-                     note: a bound is built from integer literals, `usize` consts, the entry's \
-                     structural parameters (`const N: usize`), `+ - * /` and parentheses; a \
-                     fold's index, a parameter, a `let` and a coordinate are not constant\n\
+                     note: a bound is built from integer literals, `usize` consts, \
+                     `+ - * /` and parentheses; a fold's index, a parameter, a `let` and a \
+                     coordinate are not constant\n\
                      note: ranges are constant: a program's shape is known when it is \
                      compiled (§1.5 of {PLAN})"
                 ),
@@ -1871,8 +1770,8 @@ impl UsizeScope for RangeScope<'_> {
             format!(
                 "a range's bounds are constant\n\
                  \n\
-                 note: a bound is built from integer literals, `usize` consts, the entry's \
-                 structural parameters, `+ - * /` and parentheses\n\
+                 note: a bound is built from integer literals, `usize` consts, \
+                 `+ - * /` and parentheses\n\
                  note: ranges are constant: a program's shape is known when it is compiled \
                  (§1.5 of {PLAN})"
             ),
@@ -1920,9 +1819,9 @@ struct ConstEvaluator<'a> {
 }
 
 impl UsizeScope for ConstEvaluator<'_> {
-    fn usize_named(&mut self, name: &Ident) -> syn::Result<Count> {
+    fn usize_named(&mut self, name: &Ident) -> syn::Result<u64> {
         match self.value_of(name)? {
-            ConstValue::Usize(value) => Ok(Count::Known(value)),
+            ConstValue::Usize(value) => Ok(value),
             ConstValue::F32(_) => Err(syn::Error::new(
                 name.span(),
                 format!(
@@ -1950,17 +1849,12 @@ impl ConstEvaluator<'_> {
             Expr::Ident(ident) => self.f32_named(&ident.name),
             Expr::Paren(inner) => self.eval_f32(inner),
             // Rust's own `as`, which rounds to the nearest `f32` as rustc's
-            // does: exact up to 2²⁴. A `const` cannot name a structural
-            // parameter — they are an entry's — so a count this does not
-            // know is refused rather than assumed away.
+            // does: exact up to 2²⁴.
             Expr::Cast(cast) => {
                 let Some(name) = cast.named() else {
                     return Err(Self::not_constant(cast.span));
                 };
-                match self.usize_named(name)? {
-                    Count::Known(count) => Ok(count as f32),
-                    Count::Structural(_) => Err(Self::not_constant(cast.span)),
-                }
+                Ok(self.usize_named(name)? as f32)
             }
             Expr::Unary(unary) => match unary.op {
                 UnaryOp::Neg => Ok(-self.eval_f32(&unary.operand)?),
@@ -2027,7 +1921,7 @@ impl ConstEvaluator<'_> {
         }
         self.in_progress.push(key.clone());
         let value = match self.types.get(&key) {
-            Some(Ty::Usize) => ConstValue::Usize(self.known_usize(&item.init)?),
+            Some(Ty::Usize) => ConstValue::Usize(self.eval_usize(&item.init)?),
             Some(Ty::F32) => ConstValue::F32(self.eval_f32(&item.init)?),
             Some(Ty::Bool | Ty::Record(_) | Ty::Kernel) | None => {
                 return Err(syn::Error::new_spanned(
@@ -2039,17 +1933,6 @@ impl ConstEvaluator<'_> {
         self.in_progress.pop();
         self.values.insert(key, value);
         Ok(value)
-    }
-
-    /// A `usize` initializer's value, known here. Only a structural parameter
-    /// leaves a count unknown, and a `const` item cannot name one — they are
-    /// an entry's — so one that is not known is refused rather than assumed
-    /// away.
-    fn known_usize(&mut self, expr: &Expr) -> syn::Result<u64> {
-        match self.eval_usize(expr)? {
-            Count::Known(value) => Ok(value),
-            Count::Structural(_) => Err(Self::not_constant(expr.span())),
-        }
     }
 
     fn not_constant(span: Span) -> syn::Error {
@@ -2806,13 +2689,10 @@ mod tests {
         };
         let scope = RangeScope {
             consts: &analyzed.consts,
-            structural: &[],
         };
-        assert!(
-            matches!(
-                range_bounds(&fold.range, scope).expect("constant"),
-                Bounds::Known(3, 14)
-            ),
+        assert_eq!(
+            range_bounds(&fold.range, scope).expect("constant"),
+            3..14,
             "`LO..LO + N` is `3..14`"
         );
     }
@@ -2939,6 +2819,17 @@ mod tests {
             let err = refusal(input);
             assert!(err.contains(expected), "expected `{expected}`, got: {err}");
         }
+    }
+
+    /// A type path from the crate root names no type of the block's: emission
+    /// spells a declared type back out, so `::f32` would reach rustc as a crate.
+    #[test]
+    fn a_type_named_from_the_crate_root_is_refused() {
+        let err = refusal(quote! { pub fn f(x: ::f32) -> f32 { x } });
+        assert!(
+            err.contains("a kernel parameter is an `f32` or a `bool`"),
+            "got: {err}"
+        );
     }
 
     /// A `usize` is a count, not a value: no parameter, `let` or `fn`
@@ -3160,75 +3051,6 @@ mod tests {
             pub struct PlainArgs { pub r: f32 }
             pub fn plain() -> f32 { X }
         });
-    }
-
-    // ───────────────────────── structural parameters ─────────────────────────
-
-    /// A structural parameter is a count: a range's bound, alone or in
-    /// const arithmetic, and a value as `N as f32`.
-    #[test]
-    fn a_structural_parameter_is_a_count() {
-        let analyzed = accepted(quote! {
-            const LO: usize = 2;
-            pub fn f<const N: usize>() -> f32 {
-                (LO..LO + N * 2).map(|i| X * (i as f32)).sum::<f32>() / (N as f32)
-            }
-        });
-        let Expr::Block(body) = &analyzed.def.fns[0].body else {
-            panic!("a fn's body is a block");
-        };
-        let Some(Expr::Binary(mean)) = body.expr.as_deref() else {
-            panic!("the body is a quotient");
-        };
-        let Expr::Fold(fold) = &*mean.lhs else {
-            panic!("its numerator is the fold");
-        };
-        let structural = &analyzed.def.fns[0].structural;
-        let scope = RangeScope {
-            consts: &analyzed.consts,
-            structural,
-        };
-        let Ok(Bounds::Structural(range)) = range_bounds(&fold.range, scope) else {
-            panic!("`LO..LO + N * 2` names `N`");
-        };
-        assert_eq!(range.text(), "2..(2 + (N * 2))");
-    }
-
-    /// A structural parameter is no value, shadows nothing and is shadowed
-    /// by nothing, and a helper does not see its entry's.
-    #[test]
-    fn a_structural_parameter_is_not_a_value_and_is_its_entrys() {
-        let cases: [(TokenStream, &str); 5] = [
-            (
-                quote! { pub fn f<const N: usize>() -> f32 { X * N } },
-                "mismatched types: `N` is a `usize`",
-            ),
-            (
-                quote! { pub fn f<const N: usize>() -> f32 { let N = X; N } },
-                "shadows the structural parameter `N`",
-            ),
-            (
-                quote! { pub fn f<const N: usize>(N: f32) -> f32 { X } },
-                "shadows the structural parameter `N`",
-            ),
-            (
-                quote! { const N: usize = 4; pub fn f<const N: usize>() -> f32 { X } },
-                "shadows the `const N`",
-            ),
-            (
-                quote! {
-                    fn h(x: f32) -> f32 { (0..N).map(|i| x).sum() }
-                    pub fn f<const N: usize>() -> f32 { h(X) }
-                },
-                "`N` is not a `const`",
-            ),
-        ];
-        for (input, expected) in cases {
-            let err = refusal(input);
-            assert!(err.contains(expected), "expected `{expected}`, got: {err}");
-        }
-        let err = refusal(quote! { pub fn f<const N: usize, const N: usize>() -> f32 { X } });
-        assert!(err.contains("declared twice"), "got: {err}");
     }
 
     // ───────────────────────────── tuple lets ─────────────────────────────

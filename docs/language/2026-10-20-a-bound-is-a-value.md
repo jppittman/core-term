@@ -413,15 +413,11 @@ An argument's extent arrives with B5's surface. X and Y are `Ty::F32` with no `a
 so sema refuses L3 by type, the IR's `BoundVaries` behind it; a non-leaf bound
 (`0..i + 1`) is refused until T6 (§1.4). `lower_fold` lowers `lo`/`hi` before
 `open_fold`; `Site::close_fold` hands them to the IR. A known bound keeps the
-expansion-time checks it has (reversed, past 2²⁴). The structural path goes with
-`<const N: usize>` in A5, its only producer (`Count::Structural` is made only for a name
-in `self.structural`, `sema.rs:1851`): `Count::Structural`, `StructuralRange`,
-`instantiated_range`, `FoldRange`, `Holes`, `OPEN_RANGE`, `HOLE_STRIDE`,
-`ExpansionFold::Hole`, and the lowering's use of `Param` as a structural hole (`lower.rs`
-`count`). Until then a hole's `0..0` stays a `Lit` pair in the node, so `range_of`
-(`lower.rs:343`) and `emit.rs`'s hole filling (`:576-598`, and `fold_terms` at `:697-728`,
-which emits a `FoldTerms` value since A3 where `fold_at` emitted a closure, and builds the
-same arena) work unchanged through A2–A4.
+expansion-time checks it has (reversed, past 2²⁴). The structural path went with
+`<const N: usize>`, its only producer, in A5: `Count::Structural`, `StructuralRange`,
+`instantiated_range`, `FoldRange`, `Holes`, `OPEN_RANGE`, `HOLE_STRIDE`, `ExpansionFold`,
+the lowering's `Param` hole and the macro tier's template exemption are deleted, and
+`kernel!` refuses a generic on any `fn`.
 
 ### 3.5 The glyph (`pixelflow-graphics`)
 
@@ -435,8 +431,8 @@ mask. `Glyph::bake` binds rows and box per call; `n = 0` is L2, the guard's `run
 
 **Deleted.** `bucketed_trip_count`, `padding_row` and their pins. `FontPrograms`'
 per-count programs, `program(n)`, the host `ink`/`sum2` tree, `blank()`, `UNWRITTEN`.
-§3.4's structural range path and `<const N: usize>` (A5). `Param(u8)` stays: it is also a
-rewrite rule's metavariable, and its deletion is the-language-is-kernel D2's, with
+§3.4's structural range path and `<const N: usize>` (A5). `Param(u8)` stays: nothing in
+compilation builds one, and its deletion is the-language-is-kernel D2's, with
 `Vocabulary::Templates`, on that plan's schedule. `Fold`'s ends and `to_bits`' range
 fields as a type (a `Lit` pair keeps their bit positions; corpus formats that store a
 `Value` bound bump a version). For glyphs, the bound-buffer path (`with_buffer_data`,
@@ -493,7 +489,8 @@ one program per font. "Hunk" names an open PR whose diff touches or abuts the li
 | totality doc `:191-200` | "only dynamic *bounds* die … static max + early-out … cost is the static worst case `N`" | a per-call bound is a value, not a static max; the cost model's estimate is §1.5's | A4 | none |
 | `2026-10-15-kernels-evaluate-kernels.md:175` | "applying a discrete kernel over the wrong extent is a bake-time refusal by name" | a bind-time refusal | B1 | none |
 | the-language-is-kernel `:78-81`, §1.4 structural row, §1.5, §1.7, §1.6 `:296-314` | ranges constant; one program per piece count (2026-10-09); the host chooses a program by its piece count | a reversal note pointing here | A1 | none |
-| the-language-is-kernel §1.3 `:179`, `:186` | `usize` is "a fold binder or a structural count"; a count "is how many instances the host composed" | a fold binder or a per-call count; a count is a value | A1, after #1431 | #1431 `:175-181` holds `:179`; `:186` abuts it |
+| the-language-is-kernel §1.3 `:179` | `usize` is "a fold binder or a structural count" | a fold binder or a count (built from literals and `usize` consts with `+ - * /`) | A5 (literals and `usize` consts), A6 (a per-call count) | none |
+| the-language-is-kernel §1.3 `:186` | a count "is how many instances the host composed" | a count is a value | A5 (A1's, after #1431) | none |
 | the-language-is-kernel D1 `:643`, D3 `:645`, D9 `:651` | structural binding time; "a count is how many instances the host composed"; "one per piece count" | a reversal note pointing here | A1, after #1323 | #1323 `:644-650` holds `:645`; `:643`, `:651` abut it |
 | `2026-10-17-the-arena-is-typed.md` §1.1 `Reduce` row, §4 T6 | `Reduce`: `⊕ : S × S → S`, body `: S`; T6 types the binder only | `Reduce` with value bounds `Real × Real × S → S`, `Int × Int × S → S` at T6; T6 retypes the bounds with the binder, lifts `BoundArithmetic`, measured. A known bound is node data, so T6 re-keys no bound literal | A3 | none |
 | BACKLOG plan table; `docs/README.md` "The language" | no row, no entry for this plan | a row ("landed — / next A0, A1"); an entry | A1 | none |
@@ -535,9 +532,9 @@ shares files with A2–A4 but no hunk. #1427 rewrites the compiler's `ast`/`pars
 `kernel_typed_parameters.rs` and `items_block.rs`, and keeps the structural path A5 deletes
 (made `pub(crate)`).
 
-Order: A0 goes now. A1 goes now, except its the-language-is-kernel `:179`/`:186` rows,
-which follow #1431, and its D-table rows, which follow #1323 (§5's "Hunk" column). A2a goes
-against main with #1431 still open (2026-10-22), so #1431 rebases onto A2a. A2a leaves the
+Order: A0 goes now. A1 goes now, except its the-language-is-kernel D-table rows, which
+follow #1323 (§5's "Hunk" column). A2a goes against main with #1431 still open
+(2026-10-22), so #1431 rebases onto A2a. A2a leaves the
 `fold.monoid().identity()` lines alone; the emptiness guard above two of them and a few import
 lines still conflict, each resolved by keeping both sides. A2b–A4 rebase onto #1431 once
 merged; if it is abandoned, they proceed against main. #1432 is
@@ -559,9 +556,8 @@ A5's deletion, which removes code #1427 only re-scopes.
   defs, a 1.4 KiB frame.
 - **A1. Docs.** §5's rows marked A1, under the order above; the docs/README.md entry and
   the BACKLOG plan-table row. Gate: `scripts/check-doc-paths.sh`. **Done** except
-  the-language-is-kernel §1.3's `usize` row and its "how many instances the host composed"
-  sentence (§5's `:179`/`:186`, `:192`/`:199` after A1), after #1431, and its D-table rows,
-  after #1323.
+  the-language-is-kernel's D-table rows, after #1323; §1.3's "how many instances the host
+  composed" sentence (§5's `:186`) was A5's, once #1431 had landed.
 - **A2a. One reader of a fold's range.** A `KnownRange` value (`fold.rs`: `lo`, `hi`,
   `stride`) owns `len`, `is_empty`, `peel`, `peel_back`, `halve` and `admits`, and `Fold`
   loses them. One reader per representation that will hold bounds hands it out:
@@ -696,16 +692,29 @@ A5's deletion, which removes code #1427 only re-scopes.
   beside a dearer lawful one.
 - **A5. `<const N: usize>` is deleted**, and with it §3.4's structural path, which it was
   the only producer of. No production user: tests (`kernel_typed_parameters.rs`,
-  `rustc_is_the_oracle.rs`, `items_block.rs`, `binding_times.rs`, `sema.rs` and `emit.rs`
-  unit tests) and docs rewritten. It comes before A6 because the obvious lowering of a
-  structural bound, a `Param` leaf, is `Variance::ALL` (`variance.rs:338`) and L3 refuses it.
+  `rustc_is_the_oracle.rs`, `items_block.rs`, `binding_times.rs`, and the `parser.rs`,
+  `sema.rs`, `lower.rs` and `emit.rs` unit tests) and docs rewritten. It comes before A6
+  because the obvious lowering of a structural bound, a `Param` leaf, is `Variance::ALL`
+  (`variance.rs`'s `Param` arm) and L3 refuses it.
+  **Done:** `kernel!` refuses a generic on any `fn` at parse, a `const` one naming §1.2; the
+  structural path is deleted (§3.4), and `FoldTerms` lost its stride, which only the template
+  set past 1; the template exemption went with it, so A7 is empty (below). The test templates
+  that take no kernel (`ramp`, `rings`, `swept`, `mean_index`, and `emit.rs`'s
+  `counted`) are written over `usize` consts and are offered to the macro tier at expansion;
+  `emit.rs`'s `inside`, whose count nothing read, lost its generic; the two that take a
+  kernel (`applied`, `mean_down`) stay `Staged`; the tests whose subject was the template are
+  deleted. byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and
+  `=avx2`; the 29 font programs' keys, digests and saturation telemetry, the extraction fields
+  included, unchanged (gates compared to the base verified at main 7e9531e).
 - **A6. `kernel!` bounds are typed expressions** (§3.4). Waits on decision 2, the spelling;
   decision 1 is B5's. Gate: `tests/rustc_is_the_oracle.rs` gains a triangular case and a
   per-call count case (`fn rust_sum(n: usize, x: f32)`, in decision 2's spelling); the
   `Args` write refuses `2²⁴ + 1`; `tests/fold_is_kernel_over.rs` green; byte_probe empty.
-- **A7. The macro-tier template exemption goes** (`emit.rs:154-156`). Its reason, the
-  `0..0` placeholder, left with A5; entries it exempted are now saturated. Its own CL so
-  the byte change is measured, not a side effect.
+- **A7. Folded into A5.** The exemption (`emit.rs:154-156` at `7e9531e`) was
+  `if !entry.structural.is_empty()`, a condition on the field A5 deletes, so A5 deleted it.
+  It exempted only test templates, which A5 rewrote over `usize` consts, stripped of a
+  generic nothing read (`emit.rs`'s `inside`), or deleted with the tests whose subject they
+  were, and no production entry, so there was no production byte change to measure.
 
 A alone does not deliver ruling 6 on the production path: the piece table's extent is
 still in the key (§3.5). Ruling 6 lands with B2; decision 4's interim is refused (§8).

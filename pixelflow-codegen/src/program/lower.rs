@@ -370,12 +370,9 @@ pub(crate) fn arena_to_schedule(
                 Some(b) => ScheduledOp::Var(b),
             },
             ExprNode::Const(lit) => ScheduledOp::Const(lane_pattern(lit)),
-            ExprNode::Param(i) => panic!(
-                "ExprNode::Param({}) reached the JIT emitter -- a template's slot (a `kernel!` \
-                 template's structural hole, a rewrite rule's metavariable) is filled before \
-                 a Kernel exists",
-                i
-            ),
+            ExprNode::Param(i) => {
+                panic!("ExprNode::Param({i}) reached the JIT emitter: a `Param` has no value")
+            }
             // A buffer's base pointer: the `k`-th context entry, a pointer
             // value the gathers reading the buffer take as an operand.
             ExprNode::Buffer(id) => ScheduledOp::Context(id.0),

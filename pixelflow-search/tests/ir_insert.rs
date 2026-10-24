@@ -145,17 +145,13 @@ fn unrepresentable_input_declines_rather_than_panicking() {
 /// A `Param` is holdable or not *according to the vocabulary*, which is the
 /// question `Vocabulary` exists to answer.
 ///
-/// `Templates` is the macro tier, where a builder's scalar is legitimately
-/// unbound — an unbound slot is what a builder is — so it inserts as the
-/// opaque leaf `ENode::Param`, alongside `Buffer` and `Uniform`. `Runtime` is
-/// bake time, by which a builder must have substituted it, so one surviving
-/// there means the term was never specialized and is declined.
+/// `Templates` holds the slot, so it inserts as the opaque leaf `ENode::Param`,
+/// alongside `Buffer` and `Uniform`. `Runtime` declines it: the term then
+/// compiles as written, and the JIT emitter panics on the slot.
 ///
 /// Both halves are asserted here because the interesting property is the
-/// *difference*: `insert` used to decline `Param` under every vocabulary, and
-/// each macro-side caller then smuggled params past it as something else — as
-/// `Var(16 + i)`, as an opaque synthetic identifier. A test that only checked
-/// the `Runtime` half would pass just as well against that blanket refusal.
+/// *difference*: a test that only checked the `Runtime` half would pass just
+/// as well against a blanket refusal of `Param` under every vocabulary.
 #[test]
 fn a_param_is_held_by_the_macro_vocabulary_and_declined_by_the_runtime_one() {
     let mut arena = ExprArena::new();
@@ -164,14 +160,14 @@ fn a_param_is_held_by_the_macro_vocabulary_and_declined_by_the_runtime_one() {
     let mut templates = EGraph::new();
     assert!(
         insert(&arena, p, &mut templates, Vocabulary::Templates).is_ok(),
-        "the macro tier must hold an unbound builder slot"
+        "`Templates` must hold an unbound slot"
     );
 
     let mut runtime = EGraph::new();
     assert_eq!(
         insert(&arena, p, &mut runtime, Vocabulary::Runtime),
         Err(Declined::Param(3)),
-        "a Param at bake time means a builder was never called"
+        "`Runtime` must decline a `Param`: it has no value"
     );
 }
 

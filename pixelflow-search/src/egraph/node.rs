@@ -245,19 +245,12 @@ pub enum ENode {
     /// `Const`, so it is never folded; its gain in the e-graph is CSE of the
     /// arithmetic that depends on it alone.
     Uniform(UniformDecl),
-    /// Unbound scalar slot of a `kernel!` builder, hash-consed by index.
+    /// Unbound scalar slot, hash-consed by index: a leaf with no value.
     ///
-    /// The same opaque leaf as [`ENode::Uniform`], one tier earlier: no rule
-    /// matches it, nothing folds it, its derivative is zero, and its gain in
-    /// the e-graph is CSE of the arithmetic depending on it alone. A builder
-    /// substitutes it away before anything is compiled, so only the macro
-    /// tier's [`Vocabulary::Templates`](super::ops::Vocabulary) may hold one.
-    ///
-    /// Before this leaf existed the e-graph refused `Param` outright, and
-    /// each macro-side caller smuggled one past as something else — as
-    /// `Var(16 + i)` in the compiler's arena bridge, as an opaque synthetic
-    /// identifier in its AST optimizer. Two encodings of one idea, next to
-    /// two worked examples of it.
+    /// An opaque leaf like [`ENode::Uniform`]: no rule matches it, nothing
+    /// folds it, its derivative is zero, and its gain in the e-graph is CSE of
+    /// the arithmetic depending on it alone. Only a
+    /// [`Vocabulary::Templates`](super::ops::Vocabulary) graph may hold one.
     Param(u8),
     /// An operation applied to the classes of its operands.
     Op { op: OpKind, children: Operands },
@@ -594,8 +587,9 @@ impl ENode {
             ENode::Var(v) => Variance::of_var(*v),
             // A buffer's contents are fixed for the kernel's lifetime — a
             // read of one varies with its index, which is the `Gather`'s
-            // other children, unioned by the `Op` arm. A uniform or a
-            // builder's parameter is one number for the whole lattice.
+            // other children, unioned by the `Op` arm. A uniform is one
+            // number for the whole lattice, and a `Param`, which has no
+            // value, is classed with it.
             ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) | ENode::Param(_) => {
                 Variance::CONST
             }

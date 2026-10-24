@@ -165,9 +165,9 @@ impl OpenFold {
 }
 
 /// What a builder closes a fold's body over ([`ExprArena::close_over`]): the
-/// fold's algebra and step, and its bounds, each a literal or a term in the
-/// arena the body is built in. The binder is `close_over`'s to choose, so it is
-/// not here.
+/// fold's algebra and its bounds, each a literal or a term in the arena the
+/// body is built in. The binder is `close_over`'s to choose, so it is not
+/// here.
 ///
 /// A value bound is a term like any other, built where the body is before the
 /// fold closes (`Kernel::over_values` splices it beside the body). One that is
@@ -177,9 +177,6 @@ impl OpenFold {
 pub struct FoldTerms {
     /// The algebra the fold combines under.
     pub monoid: Monoid,
-    /// The step between visited indices: 1, but for `kernel!`'s open folds
-    /// (`HOLE_STRIDE`) until A5 deletes them.
-    pub stride: u64,
     /// The first bound.
     pub lo: Bound<ExprId>,
     /// The last bound.
@@ -405,12 +402,11 @@ pub struct NaryChildren {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprNode {
     /// A bound variable: a lattice coordinate ([`COORD_AXES`] of them, X and
-    /// Y), a reduction binder's index (from [`REDUCE_BINDER_BASE`],
-    /// [`REDUCE_BINDERS`] of them), or — in the macro front end
-    /// only, before substitution — a parameter placeholder. Which one an
-    /// index means is [`ExprArena::push_var`]'s documentation; the indices
-    /// between the coordinates and the binders are not a hole to grow into,
-    /// they are where Z and W used to be and nothing may claim them.
+    /// Y) or a reduction binder's index (from [`REDUCE_BINDER_BASE`],
+    /// [`REDUCE_BINDERS`] of them). Which one an index means is
+    /// [`ExprArena::push_var`]'s documentation; the indices between the
+    /// coordinates and the binders are not a hole to grow into, they are where
+    /// Z and W used to be and nothing may claim them.
     Var(u8),
     /// A literal: a number or a mask. See [`Lit`].
     Const(Lit),
@@ -1743,12 +1739,7 @@ impl ExprArena {
         placeholder: Placeholder,
         terms: FoldTerms,
     ) -> Result<(ExprArena, ExprId), IndexSpaceFull> {
-        let FoldTerms {
-            monoid,
-            stride,
-            lo,
-            hi,
-        } = terms;
+        let FoldTerms { monoid, lo, hi } = terms;
         // Discovered before anything is copied: a bound whose term is a literal
         // naming a count is the fold's data and not a root, so nothing is copied
         // for it, and a fold over two such bounds is the one over literals, node
@@ -1759,7 +1750,7 @@ impl ExprArena {
         roots.extend(lo.value());
         roots.extend(hi.value());
         let binder = self.lowest_free_binder(&roots).ok_or(IndexSpaceFull)?;
-        let fold = Fold::strided(monoid, binder, stride);
+        let fold = Fold::new(monoid, binder);
 
         use crate::expr::{ExprBuilderExt, from_arena_roots, substitute_vars, to_arena_roots};
         let (open, tables) = from_arena_roots(self, &roots);
@@ -2452,14 +2443,9 @@ mod tests {
         Fold::new(Monoid::SUM, b(slot))
     }
 
-    /// What a builder closes a stride-1 fold over.
+    /// What a builder closes a fold over.
     fn terms(monoid: Monoid, lo: Bound<ExprId>, hi: Bound<ExprId>) -> FoldTerms {
-        FoldTerms {
-            monoid,
-            stride: 1,
-            lo,
-            hi,
-        }
+        FoldTerms { monoid, lo, hi }
     }
 
     /// `close_over` binds the lowest slot the body leaves free, renames the

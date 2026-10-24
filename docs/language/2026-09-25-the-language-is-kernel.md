@@ -51,7 +51,12 @@
   count. That reverses the 2026-10-09 ruling of one program per piece count (§1.7, §1.6's
   worked example), a count's structural binding time (§1.4), §1.5's constant ranges, and
   the rule quoted at the top that ranges are constant. Until that plan's steps land (its
-  §6; one program per font is B2), those sections describe what the tree does.
+  §6; one program per font is B2), those sections describe what the tree does. A5 deleted
+  `kernel!`'s `const N: usize` (2026-10): where this document has an entry's structural
+  parameters, a template instantiated with structural values or a range over them (§1.1's
+  diagram and binding-time bullet, §1.5's "Ranges are constant", §1.6's and §1.7's choice by
+  a structural parameter, "What the macro emits"), `kernel!` has none: a count makes no
+  program of its own.
 - **Created**: 2026-09-25
 - **Verified against**: `8b7b75a`, in two rounds.
   - A four-way inventory of every use of the `Kernel` builder, a
@@ -189,14 +194,16 @@ sugar for a block with one entry.
 |---|---|---|
 | `f32` | a value | an `f32` lane |
 | `bool` | a mask; comparisons produce it; `&` and `\|` combine it | an all-ones or all-zero lane; a constant one is `Lit::Mask(bool)` |
-| `usize` | a fold binder or a structural count | `Var(REDUCE_BINDER_BASE + slot)`; converted by an explicit `i as f32` |
+| `usize` | a fold binder or a count (built from literals and `usize` consts with `+ - * /`) | `Var(REDUCE_BINDER_BASE + slot)`; converted by an explicit `i as f32` |
 | records | named `f32` fields | flattened at lowering |
 | `impl Fn(f32, f32) -> f32` | a kernel-typed parameter: a kernel the host passes at run time, applied `k(x, y)` (Phase D-a, done) | none of its own: each application splices the argument's term, `k[X := x, Y := y]` (`ExprArena::apply`) |
 | `u32` bits | packed words (Phase D) | `Bits` ops |
 
 **No collection types** (JP, 2026-10-01: *"No arrays at all."*). The
 language has no arrays, families, lists or tables. A count of things is not
-a type. It is how many instances the host composed (§1.7).
+a type. In `kernel!` it is a fold's bound, a value
+([a bound is a value](2026-10-20-a-bound-is-a-value.md) §1.2); the font's piece count is
+how many instances the host composed (§1.7) until that plan's B2.
 
 **Masks are typed.** Today `X.select(Y, 7.0)` compiles and blends a number as
 a mask. F: probe p16 gives 5. After this plan it is a type error.
@@ -210,9 +217,9 @@ a mask. F: probe p16 gives 5. After this plan it is a type error.
 | kernel-typed | `k: impl Fn(f32, f32) -> f32` | at runtime; composed, then `P` | the composed program's |
 
 **Reversed 2026-10-20 for counts** ([a bound is a value](2026-10-20-a-bound-is-a-value.md)):
-a count stops being structural. `const N: usize` is deleted (its A5), and a glyph's piece
+a count stops being structural. `const N: usize` is deleted (A5, done), and a glyph's piece
 count becomes a per-call value (B2). The tile extent stays structural and in the key (its
-§7). Until then the table is what the tree does.
+§7). Until B2 the table is what the tree does, but for that `const N: usize`.
 
 - **A kernel-typed argument is admitted when the host function is called**
   (F, D-a). The host function takes it as a `&Kernel`, and builds its

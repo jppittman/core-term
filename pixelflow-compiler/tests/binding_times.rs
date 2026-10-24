@@ -1,11 +1,10 @@
 //! Records, binding times and `Args`
 //! (docs/language/2026-09-25-the-language-is-kernel.md §1.3, §1.4; B3).
 //!
-//! An entry's `const N: usize` generics are **structural**: each value is its
-//! own program. Everything else is a **uniform**: an `f32` parameter is one,
-//! a record parameter one per field, and a call's values are the kernel's
-//! arguments, never its constants. So every call of an entry at one
-//! structural instantiation is one program — one canonical key, one compiled
+//! Every `f32` and record parameter of an entry is a **uniform**: an `f32`
+//! parameter is one, a record parameter one per field, and a call's values
+//! are the kernel's arguments, never its constants. So every call of an entry
+//! that takes no kernel is one program — one canonical key, one compiled
 //! region — and a program compiled once is rebound per call from the entry's
 //! `Args` record, into a block the caller keeps; so is a program the entry's
 //! kernel was composed into, beside kernels with no arguments of their own.
@@ -14,13 +13,16 @@
 //! `rustc_is_the_oracle.rs`; the refusals are `sema`'s and the parser's unit
 //! tests. This file pins the binding: keys, positions and rebinding.
 
-use pixelflow_compiler::{kernel, kernel_raw};
+use pixelflow_compiler::kernel;
 use pixelflow_core::{ArityMismatch, Kernel, Lattice, Manifold, Uniform};
 use pixelflow_ir::key::canonical;
 
 kernel! {
     /// An axis-aligned box.
     pub struct Bounds { pub x0: f32, pub y0: f32, pub x1: f32, pub y1: f32 }
+
+    /// How many terms and rings.
+    const N: usize = 4;
 
     fn inside(b: Bounds, x: f32, y: f32) -> bool {
         (x >= b.x0) & (x <= b.x1) & (y >= b.y0) & (y <= b.y1)
@@ -35,15 +37,15 @@ kernel! {
     /// A body that never reads its first parameter.
     pub fn skips(unread: f32, a: f32, c: f32) -> f32 { a * 10.0 + c }
 
-    /// The mean of `X·i` over `i ∈ [0, N)`, scaled: `N` is the program.
-    pub fn ramp<const N: usize>(scale: f32) -> f32 {
+    /// The mean of `X·i` over `i ∈ [0, N)`, scaled.
+    pub fn ramp(scale: f32) -> f32 {
         (0..N).map(|i| X * (i as f32)).sum::<f32>() * scale / (N as f32)
     }
 
     /// `N` rings about a box's corner, `fg` on `bg`: the macro doc's
     /// example, compiled, so the doc cannot drift from the language. A
     /// record is its block's: this one could not name `Bounds` from another.
-    pub fn rings<const N: usize>(b: Bounds, fg: f32, bg: f32) -> f32 {
+    pub fn rings(b: Bounds, fg: f32, bg: f32) -> f32 {
         let dx = X - b.x0;
         let dy = Y - b.y0;
         let r = (dx * dx + dy * dy).sqrt();
@@ -94,11 +96,10 @@ fn a_record_parameter_is_one_uniform_per_field_in_declaration_order() {
     assert_eq!(Lattice::eval_at(&k, 7.0, 2.0), 0.25, "right of it");
 }
 
-/// Every call of an entry is one program: two calls with different values
-/// share a canonical key and a compiled region. Each structural value is a
-/// program of its own.
+/// Every call of this entry is one program: two calls with different values
+/// share a canonical key and a compiled region.
 #[test]
-fn every_call_of_an_entry_at_one_instantiation_is_one_program() {
+fn every_call_of_an_entry_is_one_program() {
     let a = boxed(UNIT, 1.0, 0.0);
     let b = boxed(
         Bounds {
@@ -113,84 +114,8 @@ fn every_call_of_an_entry_at_one_instantiation_is_one_program() {
     assert_eq!(program_key(&a), program_key(&b));
     assert_eq!(code_at_frame(&a), code_at_frame(&b), "one compiled region");
 
-    assert_eq!(program_key(&ramp::<4>(1.0)), program_key(&ramp::<4>(2.5)));
-    assert_eq!(
-        code_at_frame(&ramp::<4>(1.0)),
-        code_at_frame(&ramp::<4>(2.5))
-    );
-    assert_ne!(
-        program_key(&ramp::<4>(1.0)),
-        program_key(&ramp::<5>(1.0)),
-        "a structural value is its own program"
-    );
-}
-
-kernel_raw! {
-    const TWO: usize = 2;
-    const FIVE: usize = 5;
-
-    /// Two ranges over structural parameters, one inside the other — `M`
-    /// rows of `N` terms — and `N` as a value.
-    pub fn grid<const M: usize, const N: usize>() -> f32 {
-        (0..M)
-            .map(|i| (0..N).map(|j| X * (i as f32) + Y * (j as f32)).sum::<f32>())
-            .sum::<f32>()
-            + (N as f32)
-    }
-
-    /// `grid::<2, 5>`, written over ranges known at expansion.
-    pub fn grid_two_by_five() -> f32 {
-        (0..TWO)
-            .map(|i| (0..FIVE).map(|j| X * (i as f32) + Y * (j as f32)).sum::<f32>())
-            .sum::<f32>()
-            + (FIVE as f32)
-    }
-}
-
-/// Each distinct range over structural parameters is a hole of its own. A
-/// template with two, instantiated at `M = 2, N = 5`, is the program written
-/// over `0..2` and `0..5`; at `M = 5, N = 2` it is another. Both are
-/// `kernel_raw!`, so neither key is an optimizer's. Two ranges sharing one
-/// hole would compile a program over one of them twice, with plausible
-/// pixels.
-#[test]
-fn each_structural_range_is_a_hole_of_its_own() {
-    assert_eq!(
-        program_key(&grid::<2, 5>()),
-        program_key(&grid_two_by_five())
-    );
-    assert_ne!(
-        program_key(&grid::<5, 2>()),
-        program_key(&grid::<2, 5>()),
-        "the rows and the terms are not interchangeable"
-    );
-}
-
-/// Structural parameters spelled as the emitted range's bounds once were,
-/// in a module of their own so that the lint their spelling trips is
-/// allowed for them alone.
-#[allow(non_upper_case_globals)]
-mod lower_case {
-    use pixelflow_compiler::kernel;
-
-    kernel! {
-        /// A sum over `[lo, hi)`: the names the emission binds are its own.
-        pub fn span<const lo: usize, const hi: usize>() -> f32 {
-            (lo..hi).map(|i| i as f32).sum::<f32>()
-        }
-    }
-}
-
-/// An open fold's range is evaluated in code the entry's own names cannot
-/// reach: a structural parameter named `lo` or `hi` is the range's bound,
-/// not a pattern the evaluation's binding reads as it.
-#[test]
-fn a_structural_parameter_named_as_the_emissions_locals_is_its_own() {
-    assert_eq!(
-        Lattice::eval_at(&lower_case::span::<2, 5>(), 0.0, 0.0),
-        9.0,
-        "2 + 3 + 4"
-    );
+    assert_eq!(program_key(&ramp(1.0)), program_key(&ramp(2.5)));
+    assert_eq!(code_at_frame(&ramp(1.0)), code_at_frame(&ramp(2.5)));
 }
 
 /// A program compiled once, rebound from two different `Args`, gives the
@@ -226,13 +151,13 @@ fn a_program_compiled_once_is_rebound_from_args() {
         assert_eq!(rebound.buffer(), baked.buffer(), "{args:?}");
     }
 
-    let program = Manifold::compile(&ramp::<4>(0.0), lattice.extent);
+    let program = Manifold::compile(&ramp(0.0), lattice.extent);
     let mut block = program.block();
-    RampArgs::<4> { scale: 2.0 }
+    RampArgs { scale: 2.0 }
         .write_into(&mut block)
         .expect("ramp's own argument");
     let rebound = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
-    assert_eq!(rebound.buffer(), lattice.bake(&ramp::<4>(2.0)).buffer());
+    assert_eq!(rebound.buffer(), lattice.bake(&ramp(2.0)).buffer());
 }
 
 /// A parameter the body never reads is still declared, so the arguments
@@ -383,7 +308,7 @@ fn the_macro_docs_example_bakes_and_rebinds() {
         x1: 8.0,
         y1: 5.0,
     };
-    let once = lattice.bake(&rings::<4>(b, 1.0, 0.0));
+    let once = lattice.bake(&rings(b, 1.0, 0.0));
     let corner = once.buffer()[0];
     assert!(
         (corner - 0.75).abs() <= 0.75 * RECIP_RELATIVE_TOLERANCE,
@@ -391,9 +316,9 @@ fn the_macro_docs_example_bakes_and_rebinds() {
          up to the tier's reciprocal; got {corner}"
     );
 
-    let program = Manifold::compile(&rings::<4>(b, 1.0, 0.0), lattice.extent);
+    let program = Manifold::compile(&rings(b, 1.0, 0.0), lattice.extent);
     let mut block = program.block();
-    RingsArgs::<4> {
+    RingsArgs {
         b,
         fg: 0.5,
         bg: 0.25,
@@ -401,8 +326,5 @@ fn the_macro_docs_example_bakes_and_rebinds() {
     .write_into(&mut block)
     .expect("rings' own arguments");
     let again = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
-    assert_eq!(
-        again.buffer(),
-        lattice.bake(&rings::<4>(b, 0.5, 0.25)).buffer()
-    );
+    assert_eq!(again.buffer(), lattice.bake(&rings(b, 0.5, 0.25)).buffer());
 }

@@ -954,7 +954,7 @@ impl Selection {
                 // the destination arena, one slot per identity.
                 ENode::Uniform(decl) => Shape::Uniform(*decl),
                 // The slot index is the whole node; it means the same thing in
-                // the destination arena, and the builder substitutes it there.
+                // the destination arena.
                 ENode::Param(slot) => Shape::Param(*slot),
                 // A unit comes back as its name: its body is optimized by
                 // itself and linked after extraction
