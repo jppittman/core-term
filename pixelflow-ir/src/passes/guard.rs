@@ -20,10 +20,12 @@
 //! **Why an `If`.** `If(m, a, b)` runs the true arm's own block only if any
 //! lane of `m` is set, so the loop that is `R` sits in an arm and does not run
 //! at all outside the domain. That is what keeps an out-of-domain count from
-//! hanging an `f32` counter that stalls at 2²⁴ or never meets a NaN end. The
-//! arm skip is dispatch, not a fold, and it is the dispatch wanted here. A
-//! bound reads no lattice binder (L3), so every lane of every mask here holds
-//! one value: no batch is mixed, and the arm runs on every lane or on none.
+//! hanging a counter that never reaches its end: an `f32` counter stalls at
+//! 2²⁴, and at `-∞` from the start, and on a target whose latch compare is
+//! ordered it never meets a NaN end. The arm skip is dispatch, not a fold, and
+//! it is the dispatch wanted here. A bound reads no lattice binder (L3), so
+//! every lane of every mask here holds one value: no batch is mixed, and the
+//! arm runs on every lane or on none.
 //!
 //! **Why last.** Nothing after this pass rebuilds the `If`, so lowering
 //! asserts the shape this pass produced (`R` read only as an `If`'s true arm).

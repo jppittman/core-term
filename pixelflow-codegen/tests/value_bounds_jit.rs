@@ -72,6 +72,12 @@ fn zero() -> Kernel {
     Kernel::constant(0.0)
 }
 
+/// Whether `v` is a count, the domain a bound's guard admits: an integer in
+/// `0..=2^24`.
+fn names_a_count(v: f32) -> bool {
+    (0.0..=TOP).contains(&v) && v.fract() == 0.0
+}
+
 /// Run `f` on a thread and wait for it a minute: a fold that hangs is a failed
 /// assertion, not a CI timeout. A panic in `f` is the caller's panic, with its
 /// message.
@@ -244,9 +250,11 @@ fn a_count_at_the_exact_bound_runs_every_trip() {
     assert_plane(LatticeShape::POINT, planes, "Σ_{k<2^24} 1", |_, _| TOP);
 }
 
-/// Outside the domain the fold is NaN, and the loop is not entered: `+∞` and
-/// `2^24 + 2` would stall an `f32` counter at `2^24` for ever, and NaN never
-/// satisfies an ordered compare. The watchdog turns a hang into a failure.
+/// Outside the domain the fold is NaN, and the loop is not entered. Unguarded,
+/// a `hi` of `+∞`, `1e30` or `2^24 + 2` stalls an `f32` counter at `2^24` for
+/// ever, on every tier. A NaN `hi` hangs it too where the latch's compare is
+/// ordered (NEON's `FCMGE`); x86's is unordered, so a NaN end exits after one
+/// trip there. The watchdog turns a hang into a failure.
 #[test]
 fn a_count_outside_the_domain_is_nan_and_never_hangs() {
     for n in OUTSIDE {
@@ -255,14 +263,14 @@ fn a_count_outside_the_domain_is_nan_and_never_hangs() {
     }
 }
 
-/// `Σ_{k<n} 0·(X + k)`: the optimizer factors the literal zero out of the fold
-/// and annihilates it (`FactorFold`, then `0·x = 0`), so no fold is left for
-/// the guard to wrap. A count in the domain gives `0` on both paths; one that
-/// is none gives NaN as written and, optimized, `0` or NaN. This is the edge
-/// `Kernel::over_values` documents, recorded here so that it is not found
-/// again.
+/// `Σ_{k<n} 0·(X + k)`: `FactorFold` takes the literal zero out of the fold and
+/// the `Mul` annihilator (`0·y → 0`) removes the fold, so the optimizer leaves
+/// no fold for the guard to wrap. In the domain both paths give `0`. Outside
+/// it the fold as written is NaN, and the optimized kernel is exactly `+0.0`:
+/// the annihilation rule's answer, not the guard's, which `Kernel::over_values`
+/// documents.
 #[test]
-fn a_zero_factor_takes_the_fold_and_its_guard_with_it() {
+fn the_annihilator_erases_the_domain_nan_of_a_zero_factored_fold() {
     fn zero_times(n: f32) -> Kernel {
         Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| {
             zero().mul(&Kernel::x().add(k))
@@ -281,16 +289,20 @@ fn a_zero_factor_takes_the_fold_and_its_guard_with_it() {
             |_, _| f32::NAN,
         );
         let optimized = within(move || run_linked(&zero_times(n), SHAPE));
-        assert!(
-            optimized.iter().all(|v| v.is_nan() || v.to_bits() == 0),
-            "n = {n} (optimized): every sample is NaN or +0.0"
+        assert_plane(
+            SHAPE,
+            [("optimized", optimized)],
+            &format!("n = {n}"),
+            |_, _| 0.0,
         );
     }
 }
 
 /// A value `lo` outside the domain beside a literal `hi` is NaN too, and the
 /// loop is not entered: the guard tests `lo` although `hi` is a count already.
-/// `-∞` is the case that hangs unguarded, for `-∞ + 1` never reaches `9`.
+/// Unguarded, `-∞` hangs on every tier, for `-∞ + 1` never reaches `9`. A NaN
+/// `lo` hangs too where the latch's compare is ordered (NEON), and exits after
+/// one trip on x86, where it is unordered.
 #[test]
 fn a_value_lo_outside_the_domain_is_nan_and_never_hangs() {
     for lo in OUTSIDE {
@@ -321,6 +333,122 @@ fn a_pair_with_one_value_outside_the_domain_is_nan() {
             })
         });
         assert_plane(SHAPE, planes, &format!("[3, {outside})"), |_, _| f32::NAN);
+    }
+}
+
+/// The four monoids a value bound takes, each with its identity.
+const MONOIDS: [(Monoid, f32); 4] = [
+    (Monoid::SUM, 0.0),
+    (Monoid::PRODUCT, 1.0),
+    (Monoid::MIN, f32::INFINITY),
+    (Monoid::MAX, f32::NEG_INFINITY),
+];
+
+/// A value `lo` in the domain beside a literal `hi` runs its fold from there:
+/// `Σ_{k ∈ [lo, 1003)} (X + k)` for `lo` at 0, 1, 7 and 1000.
+#[test]
+fn a_value_lo_in_the_domain_beside_a_literal_hi_runs_its_fold() {
+    const HI: u64 = 1003;
+    for lo in [0.0f32, 1.0, 7.0, 1000.0] {
+        let planes = both(SHAPE, move || {
+            Kernel::over_values(Monoid::SUM, &count(lo), &Kernel::constant(HI as f32), |k| {
+                Kernel::x().add(k)
+            })
+        });
+        assert_plane(SHAPE, planes, &format!("[{lo}, {HI})"), |x, _| {
+            fold_of(Monoid::SUM, lo as u64, HI, |k| x + k)
+        });
+    }
+}
+
+/// The top of the domain at `lo`, beside a literal `hi` of `2^24`: `2^24 - 2`
+/// leaves two trips, the counter reaches `2^24` exactly and the latch fires
+/// there, so `MAX` of the index is `2^24 - 1`; and `2^24` is a count, the
+/// range empty, so each monoid gives its identity.
+#[test]
+fn a_value_lo_at_the_top_of_the_domain_beside_a_literal_hi() {
+    let planes = both(SHAPE, || {
+        Kernel::over_values(
+            Monoid::MAX,
+            &count(TOP - 2.0),
+            &Kernel::constant(TOP),
+            |k| k.clone(),
+        )
+    });
+    assert_plane(SHAPE, planes, "MAX_{k ∈ [2^24 - 2, 2^24)} k", |_, _| {
+        TOP - 1.0
+    });
+
+    for (monoid, identity) in MONOIDS {
+        let planes = both(SHAPE, move || {
+            Kernel::over_values(monoid, &count(TOP), &Kernel::constant(TOP), |k| {
+                Kernel::x().add(k)
+            })
+        });
+        assert_plane(
+            SHAPE,
+            planes,
+            &format!("{monoid:?} [2^24, 2^24)"),
+            |_, _| identity,
+        );
+    }
+}
+
+/// A pair of values in the domain runs its fold, at 1000 and at the top: three
+/// trips from 1000, two trips to `2^24` (`MAX` of the index is `2^24 - 1`), and
+/// `[2^24, 2^24)`, which is each monoid's identity.
+#[test]
+fn a_pair_of_values_in_the_domain_runs_its_fold_up_to_the_top() {
+    let planes = both(SHAPE, || {
+        Kernel::over_values(Monoid::SUM, &count(1000.0), &count(1003.0), |k| {
+            Kernel::x().add(k)
+        })
+    });
+    assert_plane(SHAPE, planes, "[1000, 1003)", |x, _| {
+        fold_of(Monoid::SUM, 1000, 1003, |k| x + k)
+    });
+
+    let planes = both(SHAPE, || {
+        Kernel::over_values(Monoid::MAX, &count(TOP - 2.0), &count(TOP), |k| k.clone())
+    });
+    assert_plane(SHAPE, planes, "MAX_{k ∈ [2^24 - 2, 2^24)} k", |_, _| {
+        TOP - 1.0
+    });
+
+    for (monoid, identity) in MONOIDS {
+        let planes = both(SHAPE, move || {
+            Kernel::over_values(monoid, &count(TOP), &count(TOP), |k| Kernel::x().add(k))
+        });
+        assert_plane(
+            SHAPE,
+            planes,
+            &format!("{monoid:?} [2^24, 2^24)"),
+            |_, _| identity,
+        );
+    }
+}
+
+/// One uniform at both ends is the empty range where it is a count, and NaN
+/// where it is none: the range is not empty by being `[v, v)`, so the guard
+/// tests `v`.
+#[test]
+fn one_value_at_both_ends_is_the_identity_in_the_domain_and_nan_outside() {
+    for v in [0.0f32, 7.0, TOP, f32::NAN, 2.5] {
+        let planes = both(SHAPE, move || {
+            let n = Uniform::new(v);
+            Kernel::over_values(Monoid::SUM, &n.kernel(), &n.kernel(), |k| {
+                Kernel::x().add(k)
+            })
+        });
+        assert_plane(
+            SHAPE,
+            planes,
+            &format!("[{v}, {v})"),
+            |_, _| match names_a_count(v) {
+                true => 0.0,
+                false => f32::NAN,
+            },
+        );
     }
 }
 
@@ -355,12 +483,7 @@ fn a_literal_a_rule_made_outside_the_domain_is_nan() {
 /// monoid a value bound takes.
 #[test]
 fn a_pair_that_runs_backwards_is_the_identity() {
-    for (monoid, identity) in [
-        (Monoid::SUM, 0.0f32),
-        (Monoid::PRODUCT, 1.0),
-        (Monoid::MIN, f32::INFINITY),
-        (Monoid::MAX, f32::NEG_INFINITY),
-    ] {
+    for (monoid, identity) in MONOIDS {
         for (lo, hi) in [(5.0f32, 3.0f32), (4.0, 4.0)] {
             let planes = both(SHAPE, move || {
                 Kernel::over_values(monoid, &count(lo), &count(hi), |k| Kernel::x().add(k))
@@ -444,23 +567,27 @@ fn a_triangular_sum_runs_each_inner_fold_to_its_outer_index() {
     });
 }
 
-/// The same under a per-call count for the outer bound: `n = 0`, `5`, NaN.
+/// The same under a per-call count for the outer bound: `n = 0` and `5`, and
+/// NaN, `+∞` and `2^24 + 2`, which are none.
 #[test]
 fn a_triangular_sum_under_a_count() {
-    for n in [0.0f32, 5.0, f32::NAN] {
+    for n in [0.0f32, 5.0, f32::NAN, f32::INFINITY, TOP + 2.0] {
         let planes = both(SHAPE, move || {
             Kernel::over_values(Monoid::SUM, &zero(), &count(n), |i| {
                 Kernel::over_values(Monoid::SUM, &zero(), i, |j| Kernel::x().add(j))
             })
         });
-        assert_plane(SHAPE, planes, &format!("outer n = {n}"), |x, _| {
-            match n.is_nan() {
-                true => f32::NAN,
-                false => fold_of(Monoid::SUM, 0, n as u64, |i| {
+        assert_plane(
+            SHAPE,
+            planes,
+            &format!("outer n = {n}"),
+            |x, _| match names_a_count(n) {
+                true => fold_of(Monoid::SUM, 0, n as u64, |i| {
                     fold_of(Monoid::SUM, 0, i as u64, |j| x + j)
                 }),
-            }
-        });
+                false => f32::NAN,
+            },
+        );
     }
 }
 
@@ -469,13 +596,17 @@ fn a_triangular_sum_under_a_count() {
 /// either count outside the domain makes the whole NaN.
 #[test]
 fn two_counts_nest() {
-    let nan = f32::NAN;
+    let (nan, inf, past) = (f32::NAN, f32::INFINITY, TOP + 2.0);
     for (n, m) in [
         (0.0f32, 3.0f32),
         (3.0, 0.0),
         (3.0, 4.0),
         (nan, 4.0),
         (3.0, nan),
+        (inf, 4.0),
+        (3.0, inf),
+        (past, 4.0),
+        (3.0, past),
     ] {
         let planes = both(SHAPE, move || {
             Kernel::over_values(Monoid::SUM, &zero(), &count(n), |i| {
@@ -485,11 +616,11 @@ fn two_counts_nest() {
             })
         });
         assert_plane(SHAPE, planes, &format!("n = {n}, m = {m}"), |x, _| {
-            match n.is_nan() || m.is_nan() {
-                true => f32::NAN,
-                false => fold_of(Monoid::SUM, 0, n as u64, |i| {
+            match names_a_count(n) && names_a_count(m) {
+                true => fold_of(Monoid::SUM, 0, n as u64, |i| {
                     fold_of(Monoid::SUM, 0, m as u64, |j| x + i + j)
                 }),
+                false => f32::NAN,
             }
         });
     }
@@ -555,14 +686,14 @@ fn an_inner_fold_starting_at_the_outer_index() {
 /// arms. The loop runs once per call, not once per sample.
 #[test]
 fn a_fold_that_reads_no_coordinate_is_guarded_once_per_call() {
-    for n in [0.0f32, 7.0, f32::NAN] {
+    for n in [0.0f32, 7.0, f32::NAN, f32::INFINITY, TOP + 2.0] {
         let (plane, traffic) = within(move || {
             let sum = Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| k.clone());
             run_raw(&Kernel::x().add(&sum), SHAPE)
         });
-        let want = |x: f32| match n.is_nan() {
-            true => f32::NAN,
-            false => x + fold_of(Monoid::SUM, 0, n as u64, |k| k),
+        let want = |x: f32| match names_a_count(n) {
+            true => x + fold_of(Monoid::SUM, 0, n as u64, |k| k),
+            false => f32::NAN,
         };
         assert_plane(
             SHAPE,
@@ -784,6 +915,13 @@ fn a_guard_computed_once_per_call_is_read_again_in_every_batch() {
     );
 }
 
+/// `Y·Σ_{k<n} (Y + k)`: a fold that reads `Y` alone, so it sits in the row fold.
+fn y_times_a_sum_over_y(n: f32) -> Kernel {
+    Kernel::y().mul(&Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| {
+        Kernel::y().add(k)
+    }))
+}
+
 /// The same guard around a fold that reads `Y` alone sits in the row fold: its
 /// two selects run once per row, and the column fold, which runs in every
 /// batch, gains nothing. A guard goes where its fold goes, not to the column
@@ -791,9 +929,7 @@ fn a_guard_computed_once_per_call_is_read_again_in_every_batch() {
 #[test]
 fn a_guard_around_a_fold_that_reads_only_y_is_the_row_folds() {
     let over = |hi: Option<f32>| match hi {
-        Some(n) => Kernel::y().mul(&Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| {
-            Kernel::y().add(k)
-        })),
+        Some(n) => y_times_a_sum_over_y(n),
         None => Kernel::y().mul(&Kernel::sum_over(7, |k| Kernel::y().add(k))),
     };
     let (value, _) = traffic_of(&over(Some(7.0)));
@@ -819,6 +955,25 @@ fn a_guard_around_a_fold_that_reads_only_y_is_the_row_folds() {
         "the column fold, run in every batch, runs none of the guard: {:?} against {:?}",
         value.scopes[column], literal.scopes[column]
     );
+}
+
+/// The row fold's guard computes the fold in the domain and is NaN outside
+/// it, and does not hang: the guard sits in the row fold's scope, once per
+/// row, and the arm test is read there.
+#[test]
+fn a_guard_in_the_row_fold_computes_its_fold_or_nan() {
+    for n in [0.0f32, 7.0, f32::NAN, f32::INFINITY, TOP + 2.0] {
+        let planes = both(SHAPE, move || y_times_a_sum_over_y(n));
+        assert_plane(
+            SHAPE,
+            planes,
+            &format!("Y·Σ_{{k<{n}}} (Y + k)"),
+            |_, y| match names_a_count(n) {
+                true => y * fold_of(Monoid::SUM, 0, n as u64, |k| y + k),
+                false => f32::NAN,
+            },
+        );
+    }
 }
 
 /// A guard around a fold that reads an enclosing fold's index sits in that
@@ -952,8 +1107,8 @@ fn each_monoid_runs_under_its_guard() {
 }
 
 /// A bound that is a mask and a number is a count: `3` where the mask holds
-/// and `0` where it does not. No tier holds that in a file a loop's seed
-/// cannot be in, so it compiles and runs on all of them, `lo` and `hi` alike.
+/// and `0` where it does not. `ScheduledOp::is_mask` calls it a number, so it
+/// is not refused, and it runs on every tier, at `lo` and at `hi`.
 #[test]
 fn a_mask_and_a_number_is_a_count_on_every_tier() {
     for (u, trips) in [(5.0f32, 3u64), (-1.0, 0)] {

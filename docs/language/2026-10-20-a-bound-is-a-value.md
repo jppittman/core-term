@@ -320,8 +320,10 @@ its edge.
 - `PeelFold`/`HalveFold` fire only on a known range; Peel plans `hi − s` as a new `Lit`.
   `EmptyFold` (`fold_rules.rs:319`) fires only on a known empty range (L6). `FactorFold`
   declines a known empty range only; under a value bound it factors, accepting the
-  infinite-`c` edge at a runtime `n = 0` and, for a literal zero `c`, the annihilated fold
-  and its guard with it (decision 5). `substitute`/`rebuild` (`fold_rules.rs`)
+  infinite-`c` edge at a runtime `n = 0` (decision 5). Under `SUM` a literal zero `c` then
+  meets the `Mul` annihilator (`0·y → 0`), which removes the fold before the guard is
+  placed, so the optimized fold is `0` where the fold as written is NaN: the annihilation
+  rule's edge, in `FactorFold`'s doc and BACKLOG E9. `substitute`/`rebuild` (`fold_rules.rs`)
   follow L7; `rebuild`'s comment (`fold_rules.rs:600-606`) is rewritten, since its premise
   ("its class's variance excludes it") now rests on L3 and L4 adds the bounds' bits.
   `ENode::variance` follows L4 in the same CL as the IR's; `insert` and `add` refuse L3 as
@@ -486,7 +488,7 @@ one program per font. "Hunk" names an open PR whose diff touches or abuts the li
 | `docs/DENOTATION.md:123-125`, `:140-142` | "Loop bounds, extents and ranges are never uniforms"; "the range is a static natural" | §1.1–§1.2 | A4 | none |
 | `docs/DENOTATION.md:246-248` | the lattice's extent is in the key | stands, with a pointer to §4's deferral | A1 | none |
 | totality doc `:97-99` | "Extents are concrete literals known at `bake` … we monomorphize on them regardless" | extents are values known per call; nothing monomorphizes on them | B1 | none |
-| totality doc, "One discipline, four faces" (the paragraph and its table) and consequence 5 | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; a fold's count a literal, a per-call value or an enclosing index | A1 the rule; the paragraph, the reduction-binder row and consequence 5 A4 as built; the discrete-domain and typed-field rows B1 | none |
+| totality doc, "One discipline, four faces" (the paragraph and its table) and consequence 5 | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; a fold's bounds each a literal, a per-call value or an enclosing index, so its count `hi − lo` is known per call, or once per trip of the enclosing fold whose index a bound is | A1 the rule; the paragraph, the reduction-binder row and consequence 5 A4 as built; the discrete-domain and typed-field rows B1 | none |
 | totality doc `:191-200` | "only dynamic *bounds* die … static max + early-out … cost is the static worst case `N`" | a per-call bound is a value, not a static max; the cost model's estimate is §1.5's | A4 | none |
 | `2026-10-15-kernels-evaluate-kernels.md:175` | "applying a discrete kernel over the wrong extent is a bake-time refusal by name" | a bind-time refusal | B1 | none |
 | the-language-is-kernel `:78-81`, §1.4 structural row, §1.5, §1.7, §1.6 `:296-314` | ranges constant; one program per piece count (2026-10-09); the host chooses a program by its piece count | a reversal note pointing here | A1 | none |
@@ -661,13 +663,17 @@ A5's deletion, which removes code #1427 only re-scopes.
   failure for another (a class read as a bound with no member that keeps L3 would never
   settle, and every other user of the class would fail with it). Gate: byte_probe
   empty (no row has a value bound); new JIT tests in
-  `pixelflow-codegen/tests/` against scalar Rust, every tier: a uniform `n` at 0, 1, 7,
-  1000, `2²⁴` (in the domain), and `2²⁴ + 2`, NaN, 2.5, −1 (NaN, no hang), at `hi`, at `lo`
-  beside a literal `hi`, and at either end of a pair; uniforms 5 and 3
-  as `lo` and `hi` (the identity); a triangular `Σ_i Σ_{j<i}`; a uniform-bounded fold whose
-  body reads no coordinate, so the guarded fold is hoisted to `Scope::Body` and the carve
-  sees the `If`, not the `Reduce`, as its def (the single-reader assumption under
-  placement); a uniform-bounded fold whose body varies with X and whose `hi` is read only
+  `pixelflow-codegen/tests/` against scalar Rust, every tier: a uniform in the domain at
+  `hi` (0, 1, 7, 1000, `2²⁴`), at `lo` beside a literal `hi` (0, 1, 7, 1000 below 1003;
+  `2²⁴ − 2` and `2²⁴` below `2²⁴`), and at both ends of a pair (1000 and 1003; `2²⁴ − 2` and
+  `2²⁴`; `2²⁴` twice, and one uniform at both ends); a uniform outside it (`2²⁴ + 2`, NaN,
+  2.5, −1, ±∞, 10³⁰: NaN, no hang) at `hi`, at `lo` beside a literal `hi`, and at either end
+  of a pair; uniforms 5 and 3 as `lo` and `hi` (the identity); a triangular
+  `Σ_i Σ_{j<i}`; a uniform-bounded fold whose body reads no coordinate, so the guarded fold
+  is hoisted to `Scope::Body` and the carve sees the `If`, not the `Reduce`, as its def (the
+  single-reader assumption under placement), for `n` in the domain and for NaN, `+∞` and
+  `2²⁴ + 2`; a uniform-bounded fold that reads `Y` alone, in the row fold, for the same
+  kinds of `n`; a uniform-bounded fold whose body varies with X and whose `hi` is read only
   by the loop (§3.3's placement rule); one program and one code pointer for every `n`.
   `2²⁴ + 1` is not a case here: no `f32` names it (§1.4). **Done:** byte_probe empty in both
   columns under `PIXELFLOW_ISA=avx512` and `=avx2`; the 29 font programs' keys, digests and

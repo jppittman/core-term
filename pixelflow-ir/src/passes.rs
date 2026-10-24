@@ -21,14 +21,15 @@
 //! over the lattice's binders after it, so the two lattice passes sit between
 //! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.3). The guard goes
 //! last, so no pass after it rebuilds the `If` lowering relies on. Every pass
-//! but the guard is idempotent; the guard wraps every value-bounded fold it
-//! meets, its own output's included, so `legalize` runs it once. Every pass,
-//! the guard too, has an identity fast-path, so running one that has nothing to
-//! do is free (a kernel whose bounds are all literals leaves the guard
-//! untouched) — except the two lattice passes, which always wrap: after them no
-//! coordinate `Var` exists and the root is a `Reduce` over the unit monoid whose
-//! body is a `Write`. That is the shape every backend emits, and the only
-//! shape.
+//! but the guard and the two lattice passes is idempotent: the guard wraps every
+//! value-bounded fold it meets, its own output's included, `collapse` wraps its
+//! input in the lattice's folds, and `pack` takes `collapse`'s own output and
+//! nothing else, so `legalize` runs each of the three once. Every pass but the
+//! lattice passes has an identity fast-path, so running one that has nothing to
+//! do is free (the guard leaves a kernel whose bounds are all literals
+//! untouched); the two lattice passes always wrap: after them no coordinate
+//! `Var` exists and the root is a `Reduce` over the unit monoid whose body is a
+//! `Write`. That is the shape every backend emits, and the only shape.
 //!
 //! **`Reduce` is legal in the arena and [`legalize`] leaves every one
 //! standing**, nested or not: codegen emits a surviving fold as a loop, and a

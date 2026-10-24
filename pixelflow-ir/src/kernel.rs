@@ -789,11 +789,13 @@ impl Kernel {
     /// compiled program for every `n`, and the fold runs `n` trips. A bound that
     /// is no count at run time — a count is an integer in `0..=2²⁴`; a uniform
     /// set to `2.5`, `−1`, NaN or `2²⁴ + 2` is none — makes the fold NaN (L5),
-    /// and a pair that runs backwards at run time is the identity. Both are up
-    /// to the edges `FactorFold` accepts (decision 5): its factored form at a
-    /// runtime-empty range, and a body with a literal zero factor, which the
-    /// optimizer takes out of the fold and annihilates with the guard, so that a
-    /// bound that is no count gives `0`.
+    /// and a pair that runs backwards at run time is the identity, up to the
+    /// factoring edge `FactorFold` accepts at a runtime-empty range (decision
+    /// 5). The NaN has one exception on the optimized path: under
+    /// [`Monoid::SUM`], a body with a literal zero factor loses its fold to the
+    /// annihilation rule (`0·y → 0`, [`OpKind::annihilator`]), so no fold is
+    /// left for the guard to wrap and a bound that is no count gives `0`
+    /// (`FactorFold`'s doc).
     ///
     /// Constness is discovered, not declared: a bound that is a constant naming
     /// a count is the fold's data, so `over_values(⊕, 0, 4, f)` is

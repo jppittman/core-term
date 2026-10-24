@@ -512,3 +512,138 @@ None.
   `.wip` path, ruling label or model name (`git diff a747770 -- . ':!.wip'`).
 - Not rerun: `check-feature-matrix.sh` (no feature, cfg or dependency changed), `measure.sh` (no emitted code
   changed: tests and doc comments only, and gates 1, 1b, 2, 2x are identical).
+
+# A4 final fixes, round 1 (TAG=a4-final1)
+
+Base of this round: 98dcbca. Items are `c3-open.json`'s (6 blocking, 7 non-blocking), numbered in the order the
+file lists them, under the rulings' "Final round" (Z1 and the docs discipline). Every item was checked against
+the code first; the reproductions are named per item. No emitted code changed: tests, doc comments, the plan,
+the totality doc and one BACKLOG row.
+
+## Blocking
+
+- **1. The top of the guard's domain is unpinned at `lo` beside a literal `hi` and in a pair** (semantics): real.
+  Reproduced by re-running the reviewer's four mutations (scripts and scratch copy in
+  `/home/user/scratch/a4-close4-guard-adv/mut/`, synced to this tree first) against the old tests: all four
+  passed. New tests in `value_bounds_jit.rs`, each through `both()` (so `run_raw` and `run_linked`), every
+  oracle explicit:
+  - `a_value_lo_in_the_domain_beside_a_literal_hi_runs_its_fold`: `lo` in {0, 1, 7, 1000} beside the literal
+    `hi` 1003.
+  - `a_value_lo_at_the_top_of_the_domain_beside_a_literal_hi`: `MAX` over `[count(2^24-2), constant(2^24))` is
+    `2^24 - 1`; `[count(2^24), constant(2^24))` is each of the four monoids' identity.
+  - `a_pair_of_values_in_the_domain_runs_its_fold_up_to_the_top`: `[count(1000), count(1003))`, `MAX` over
+    `[count(2^24-2), count(2^24))` (`2^24 - 1`), and `[count(2^24), count(2^24))` (identity, four monoids).
+  - Beyond the finding: `one_value_at_both_ends_is_the_identity_in_the_domain_and_nan_outside`, one uniform at
+    both ends (the guard's third domain arm, where the two bounds are one id): identity at 0, 7 and `2^24`, NaN
+    at NaN and 2.5. It is also the JIT pin for the plan's L6 (`[v, v)` is not empty by being `[v, v)`).
+  - Helpers: `names_a_count` (the domain, one definition for the oracles) and `MONOIDS` (the four monoids with
+    their identities; `a_pair_that_runs_backwards_is_the_identity` reads it too).
+
+  **Mutations, re-run against the new tests** (`run.sh`, then the harness's summary), the unmutated baseline
+  `M0_unmutated` first: 36 `value_bounds_jit` tests pass on avx2 and avx512, probe mismatches 0, guard unit
+  tests pass. Each mutation now fails, on avx2 and avx512 alike, and every guard unit test still passes
+  (the mutations keep the guard's op counts, so the unit tests could not see them):
+
+  | mutation | what it moves | fails | message (as written) |
+  |---|---|---|---|
+  | MA2 | lone-`lo` arm's top to `2^24 - 1` | `a_value_lo_at_the_top_of_the_domain_beside_a_literal_hi` | `[2^24, 2^24)` got NaN, want 0 |
+  | MC2 | lone-`lo` arm's top to 1000 | the same test | `MAX [2^24 - 2, 2^24)` got NaN, want 16777215 |
+  | MB2 | pair arm's top to `2^24 - 1` | `a_pair_of_values_in_the_domain_runs_its_fold_up_to_the_top` | `MAX [2^24 - 2, 2^24)` got NaN, want 16777215 |
+  | MD2 | pair arm's top to 1000 | the same test | `[1000, 1003)` got NaN, want 3006 |
+
+  A fifth mutation, mine (`MF_same_id_top_1000`: the same-id arm's top to 1000, the one arm the four do not
+  reach), fails `one_value_at_both_ends_is_the_identity_in_the_domain_and_nan_outside` on both tiers, which
+  confirms that a uniform used at both ends is one arena id and takes the catch-all arm.
+  `guard.rs` in the scratch copy is restored (`cmp` against this tree: equal).
+- **2. The plan's A4 gate sentence claims in-domain `lo` and pair runs that no test did** (semantics): real, and
+  now true because the tests exist. The sentence lists exactly what runs: in the domain at `hi` (0, 1, 7, 1000,
+  `2^24`), at `lo` beside a literal `hi` (0, 1, 7, 1000 below 1003; `2^24 - 2` and `2^24` below `2^24`) and at both
+  ends of a pair (1000 and 1003; `2^24 - 2` and `2^24`; `2^24` twice, and one uniform at both ends); outside it
+  (`2^24 + 2`, NaN, 2.5, -1, both infinities, 10^30: NaN, no hang) at `hi`, at `lo` beside a literal `hi` and at
+  either end of a pair; and the two placement kernels (no coordinate, `Y` alone) for `n` in the domain and for
+  NaN, `+inf` and `2^24 + 2`. Each clause was matched to a test.
+- **3. `passes.rs`'s module doc says every pass but the guard is idempotent** (literal-craft): real. The two
+  lattice passes are not: `collapse` wraps whatever it is given (`lattice.rs`, its own doc), and `pack` panics
+  unless its input is exactly `collapse`'s output (`collapse_shape`, `pack`'s `# Panics`). The doc names the
+  guard and both lattice passes, says why `legalize` runs each once, says the identity fast-path belongs to every
+  pass but the lattice passes (read: `expand_refs_owned`, `lower_dwrt_owned`, `expand_gather_owned`,
+  `expand_transcendentals_owned`, `guard_value_bounds_owned` each return early), and the parenthetical now reads
+  "the guard leaves a kernel whose bounds are all literals untouched". (Not claimed: what a second `collapse` or
+  `pack` does beyond the two documented facts, since nothing runs it.)
+- **4. `a_mask_and_a_number_is_a_count_on_every_tier`'s doc argues from a register file** (literal-craft):
+  real, the last of the sweep's sites (`git grep "cannot be in"` finds none now). It states the law: a mask and a
+  number is a count, `3` where the mask holds and `0` where it does not; `ScheduledOp::is_mask` calls it a number
+  (`Compare` is a mask, and a bitwise op is one only on two masks), so it is not refused, and it runs on every
+  tier at `lo` and at `hi`. The "`hi` alike" clause (never a seed) is gone.
+- **5. The totality doc and the plan's section 5 say a fold's count is a literal, a per-call value or an
+  enclosing index** (literal-craft): real. `Σ_i Σ_{j∈[i,8)}` has the count `8 - i`, which is none of the three.
+  Both now say it of the bounds: each bound is a literal, a value known per call or an enclosing fold's index, so
+  the count `hi - lo` is known per call, or once per trip of the enclosing fold whose index a bound is. Sites:
+  the totality doc's paragraph, its table cell (`|D| = hi - lo, each bound ...`), the plan's section 5 cell.
+  Same defect, not on the list: the totality doc's consequence 5 said "for a fold's count also a per-call value
+  or an enclosing fold's index"; it now says the bounds. (`pixelflow-core/README.md`, `lower.rs`, the ontology
+  and the other greps hits already say "bound".)
+- **6. The zero-factor edge is recorded as decision 5's** (literal-craft): real, per the final-round ruling:
+  the edge is the annihilation rule's (`0·y → 0`, `OpKind::annihilator`; `Annihilator::new(OpKind::Mul)` is in
+  `basic_algebra_rules`, unchanged since the base), not decision 5's, which accepted only the empty-range edge.
+  No `FactorFold` change. Docs: `kernel.rs`'s `over_values` (the NaN has one exception on the optimized path:
+  under `SUM` a body with a literal zero factor loses its fold to the annihilation rule, so no fold is left for
+  the guard to wrap and a bound that is no count gives `0`; the backwards-pair identity keeps its decision 5
+  edge, as the F5 ruling worded it), `FactorFold`'s paragraph (below), and the plan's lowering bullet (decision
+  5 for the infinite-`c` edge; under `SUM` the annihilator; `FactorFold`'s doc and BACKLOG E9). The test is
+  renamed `the_annihilator_erases_the_domain_nan_of_a_zero_factored_fold`: in the domain `0` on both paths;
+  outside it NaN through `run_raw` and exactly `+0.0` through `run_linked`, both pinned. One BACKLOG row, E9
+  ("Annihilation erases a domain NaN ... Revisit if a kernel's correctness depends on the NaN").
+
+## Non-blocking, applied
+
+- **1. No test runs a guard in the row fold** (semantics): real, `traffic_of` only compiles. New
+  `a_guard_in_the_row_fold_computes_its_fold_or_nan` runs `Y·Σ_{k<n}(Y + k)` through `both()` for `n` in 0, 7,
+  NaN, `+inf`, `2^24 + 2`; the kernel is one builder (`y_times_a_sum_over_y`) shared with the traffic test, so
+  the kernel that is counted is the kernel that runs.
+- **2. The hang rationale reads wrong on one tier each** (semantics): real; checked against the latch
+  (`select.rs`, `Compare(Ge, step, end)`), x86's `Pred::Ge = 5` (`vcmpps` NLT_US, unordered: a NaN end is true) and
+  NEON's `Fcmge` (ordered). Both test docs now say: `-inf` hangs unguarded on every tier (`-inf + 1` never
+  reaches 9); `+inf`, `1e30` and `2^24 + 2` as `hi` stall the counter at `2^24` on every tier; a NaN end hangs
+  where the compare is ordered (NEON) and exits after one trip on x86. Same sentence, not on the list:
+  `guard.rs`'s "never meets a NaN end" is now "on a target whose latch compare is ordered", with `-inf` and
+  `2^24` named. The nested-placement lists gain `+inf` and `2^24 + 2`: `two_counts_nest` (both orders),
+  `a_triangular_sum_under_a_count` and `a_fold_that_reads_no_coordinate_is_guarded_once_per_call`, so on x86
+  those pin the no-hang guarantee, not only the value.
+- **3. The zero-factor test's optimized half accepts NaN or `+0.0`** (literal-craft): real, pinned: see
+  blocking 6 (`+0.0` exactly through `run_linked`, NaN through `run_raw`).
+- **4. `kernel.rs` says the optimizer annihilates "with the guard"** (literal-craft): real, the guard is placed
+  by `legalize` after the optimizer. The doc says no fold is left for the guard to wrap (blocking 6).
+- **5. `FactorFold`'s paragraph overclaims** (literal-craft): real. Now "Under `Monoid::SUM`, a literal zero `c`
+  takes its fold with it"; "for a finite body the answers agree in the domain" (`Σ_{k<3} 0·(1/k)` is NaN as
+  written, `0·inf` at `k = 0`, and `0` optimized); and it says the edge is the annihilation rule's (BACKLOG E9).
+  The `MIN`/`MAX` sentence the reviewer's evidence suggested was left out: the scoping to `SUM` says it.
+- **6. `emit/mod.rs`'s test doc says a value-bounded loop adds "only" three things** (literal-craft): real. It
+  lists the seed's add of zero, a latch compare against a register that may be reloaded at each trip (module doc,
+  and `a_bound_that_is_not_carried_is_reloaded_at_every_latch`), and the guard around the loop: its domain tests,
+  its two selects and the arm skip. "A compare of two registers" is gone (a literal latch compares two too).
+- **7. The plan's gate sentence at :664** (literal-craft): the same sentence as blocking 2; one fix.
+
+## Skipped
+
+None.
+
+## Verification (TAG=a4-final1; outputs in .wip/a4/run/final1/ and .wip/gates/out/*.a4-final1.*)
+
+- Gates 1 (both tiers, 127 lines each), 1b (29), 2 (29), 2x (29): all exit 0, IDENTICAL to base.
+  `git status --short pixelflow-graphics` is empty (the probe file `tests.rs` is clean). LFS count 68.
+- `cargo test -p pixelflow-codegen`, PIXELFLOW_ISA=avx2 and =avx512: 214 passed, 0 failed each (`--lib` 102;
+  `tests/value_bounds_jit.rs` 36 each, the 31 of round 3 and the five new). `-p pixelflow-ir` 397 passed,
+  `-p pixelflow-search` 434 passed (doc-only changes in both).
+- `cargo +1.99.0 clippy -p pixelflow-ir -p pixelflow-search -p pixelflow-codegen --all-targets --all-features
+  -- -D warnings` (`CARGO_TARGET_DIR=/home/user/scratch/a3-close1/t199`): exit 0. `cargo fmt --all -- --check`:
+  clean (`cargo fmt -p pixelflow-codegen` reflowed the new tests first).
+  `RUSTFLAGS="-D warnings" cargo check -p pixelflow-ir|pixelflow-search --no-default-features`: ok.
+  `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p pixelflow-codegen --document-private-items`: ok; rustdoc
+  comparison against the a747770 bases: ir 38/38, search 28/28, codegen 0/0, NEW 0.
+- Reduce-site checklist: UNCLASSIFIED 0, STALE 0. check-intent, check-doc-paths, check-cfg-encapsulation,
+  check-emit-boundary, check-bin-declarations: exit 0. Every `intent.md` within 80 lines. This round's added
+  lines hold no `.wip` path, ruling label or model name (`git diff` of the working tree against HEAD, outside
+  `.wip`).
+- Not rerun: `check-feature-matrix.sh` (no feature, cfg or dependency changed) and `measure.sh` (no emitted code
+  changed, and gates 1, 1b, 2, 2x are identical).
