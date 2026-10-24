@@ -1,0 +1,11 @@
+pixelflow-codegen-avx2: 205 passed, 0 failed, 0 ignored
+pixelflow-codegen-avx512: 205 passed, 0 failed, 0 ignored
+pixelflow-compiler: 306 passed, 0 failed, 6 ignored
+pixelflow-core: 136 passed, 0 failed, 1 ignored
+pixelflow-graphics: 239 passed, 0 failed, 15 ignored
+pixelflow-ir: 397 passed, 0 failed, 2 ignored
+pixelflow-pipeline: 228 passed, 0 failed, 2 ignored
+pixelflow-runtime: 152 passed, 0 failed, 6 ignored
+pixelflow-search-all: 437 passed, 0 failed, 15 ignored
+pixelflow-search-default: 434 passed, 0 failed, 15 ignored
+pixelflow-search-telemetry: 437 passed, 0 failed, 15 ignored

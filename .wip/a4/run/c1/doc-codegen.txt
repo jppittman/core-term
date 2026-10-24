@@ -1,0 +1,11 @@
+   Compiling libm v0.2.15
+    Checking foldhash v0.2.0
+   Compiling libc v0.2.183
+    Checking rustc-hash v2.1.3
+    Checking hashbrown v0.16.1
+    Checking pixelflow-ir v0.1.0 (/home/user/pixelflow/pixelflow-ir)
+    Checking pixelflow-search v0.1.0 (/home/user/pixelflow/pixelflow-search)
+ Documenting pixelflow-codegen v0.1.0 (/home/user/pixelflow/pixelflow-codegen)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.71s
+   Generated /dev/shm/a4-c1-tchk/doc/pixelflow_codegen/index.html
+doc-codegen EXIT 0

@@ -1,0 +1,8 @@
+head: cannot open '../AGENTS.md' for reading: No such file or directory
+grep: ../AGENTS.md: No such file or directory
+head: cannot open '../CLAUDE.md' for reading: No such file or directory
+grep: ../CLAUDE.md: No such file or directory
+head: cannot open '../GEMINI.md' for reading: No such file or directory
+grep: ../GEMINI.md: No such file or directory
+OK: 682 source paths cited across 170 plans, designs, notes and instructions resolve
+    (1 accepted via scripts/doc-paths-baseline.txt)
