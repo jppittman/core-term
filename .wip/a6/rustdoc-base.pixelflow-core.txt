@@ -1,4 +1,0 @@
-1	pixelflow-core/src/lattice/cell_grid.rs	public documentation for `write` links to private item `CellGridMetrics::assert_writable`
-1	pixelflow-core/src/lattice/manifold.rs	redundant explicit link target
-2	pixelflow-core/src/lattice/mod.rs	unresolved link to `Kernel::with_buffer_data`
-1	pixelflow-core/src/lattice/mod.rs	unresolved link to `Self::eval`
