@@ -1,0 +1,118 @@
+// Probe appended to emit::tests of a detached scratch copy of pixelflow-codegen at HEAD ff5ffcf
+// (/home/user/scratch/a4-c2-cg-neon, path deps on the real ir/search); tracked tree untouched.
+// compile_for::<B> counts each backend's traffic from this x86 host; NEON is never executed.
+    /// Closing-gate probe: the value_bounds_jit traffic pins as each backend counts them.
+    #[test]
+    fn c2_traffic_pins_per_backend() {
+        use pixelflow_ir::fold::Monoid;
+        use pixelflow_ir::{Kernel, Uniform};
+        const SHAPE: LatticeShape = LatticeShape::new([64, 4]);
+        const WALL: u32 = 48;
+        fn wall(k: &Kernel) -> Kernel {
+            let terms: Vec<Kernel> = (0..WALL)
+                .map(|m| Kernel::x().add(k).mul(&Kernel::constant((m + 1) as f32)))
+                .collect();
+            let chain = |terms: &[Kernel]| terms[1..].iter().fold(terms[0].clone(), |acc, t| acc.add(t));
+            let reversed: Vec<Kernel> = terms.iter().rev().cloned().collect();
+            chain(&terms).add(&chain(&reversed))
+        }
+        let count = |v: f32| Uniform::new(v).kernel();
+        let zero = Kernel::constant(0.0);
+        let value_wall = Kernel::over_values(Monoid::SUM, &zero, &count(7.0), wall);
+        let literal_wall = Kernel::sum_over(7, wall);
+        let guard_value = Kernel::x().mul(&Kernel::over_values(Monoid::SUM, &zero, &count(7.0), |k| Kernel::x().add(k)));
+        let guard_literal = Kernel::x().mul(&Kernel::sum_over(7, |k| Kernel::x().add(k)));
+        let y_value = Kernel::y().mul(&Kernel::over_values(Monoid::SUM, &zero, &count(7.0), |k| Kernel::y().add(k)));
+        let y_literal = Kernel::y().mul(&Kernel::sum_over(7, |k| Kernel::y().add(k)));
+
+        fn counted<B: IsaBackend>(k: &Kernel) -> (EmitTraffic, u64) {
+            let (a, root) = k.parts();
+            let r = compile_for::<B>(a, root, SHAPE).expect("compiles");
+            (r.traffic, r.frame_bytes)
+        }
+        fn pins<B: IsaBackend>(name: &str, k: [&Kernel; 6]) {
+            let [vw, lw, gv, gl, yv, yl] = k;
+            // Pin 1: the reload.
+            let (v, _) = counted::<B>(vw);
+            let (l, _) = counted::<B>(lw);
+            let last = |t: &EmitTraffic| *t.scopes.last().unwrap();
+            let p1 = last(&v).loads == last(&l).loads + 1;
+            let est = v.trips.last().map(|t| t.known()) == Some(None);
+            std::eprintln!("C2 {name} pin1 reload: value last loads={} literal={} -> holds={p1}; trips estimated={est}", last(&v).loads, last(&l).loads);
+            assert!(p1 && est, "{name} pin1");
+            // Pin 2: the guard computed once per call.
+            let (v, vf) = counted::<B>(gv);
+            let (l, lf) = counted::<B>(gl);
+            let col = |t: &EmitTraffic| t.scopes[2];
+            let p2 = col(&v).instructions == col(&l).instructions + 2;
+            std::eprintln!("C2 {name} pin2 instr: value col instr={} loads={} frame={vf} | literal col instr={} loads={} frame={lf} -> instr holds={p2}; AVX-512-only: loads> {} frame> {}",
+                col(&v).instructions, col(&v).loads, col(&l).instructions, col(&l).loads, col(&v).loads > col(&l).loads, vf > lf);
+            assert!(p2, "{name} pin2");
+            // Pin 3: the Y-only guard is the row fold's.
+            let (v, _) = counted::<B>(yv);
+            let (l, _) = counted::<B>(yl);
+            let rows = Trips::Known(u64::from(SHAPE.extent()[1]));
+            let scope_of = |t: &EmitTraffic, trips: Trips| t.trips.iter().position(|&n| n == trips);
+            let row = scope_of(&l, rows).expect("row fold");
+            let column = l.trips.iter().enumerate().filter_map(|(s, n)| n.known().map(|n| (n, s))).max().map(|(_, s)| s).expect("known scopes");
+            let p3a = row != column && v.trips[row] == rows;
+            let p3b = v.scopes[row].instructions == l.scopes[row].instructions + 2;
+            let p3c = v.scopes[column].instructions == l.scopes[column].instructions;
+            std::eprintln!("C2 {name} pin3 row-fold: row={row} column={column} row instr {} vs {} (+2: {p3b}); column instr {} vs {} (equal: {p3c}); trips ok={p3a}",
+                v.scopes[row].instructions, l.scopes[row].instructions, v.scopes[column].instructions, l.scopes[column].instructions);
+            assert!(p3a && p3b && p3c, "{name} pin3");
+        }
+        let ks = [&value_wall, &literal_wall, &guard_value, &guard_literal, &y_value, &y_literal];
+        pins::<aarch64::Neon>("neon", ks);
+        pins::<avx2::Avx2>("avx2", ks);
+        pins::<avx512::Avx512>("avx512", ks);
+    }
+
+    /// Closing-gate probe: the JIT file's kernels added since the last NEON CI run, compiled for NEON.
+    #[test]
+    fn c2_neon_compiles_the_new_kernels() {
+        use pixelflow_ir::fold::{Binder, Bound, Fold, Monoid};
+        use pixelflow_ir::{Kernel, OpKind, Uniform};
+        const PAST_U64: usize = (u64::BITS / Fold::ESTIMATED_TRIPS.ilog2()) as usize + 1;
+        fn nested(depth: usize, n: &Uniform, acc: Kernel) -> Kernel {
+            if depth == 0 {
+                return Kernel::x().add(&acc);
+            }
+            let again = *n;
+            Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &n.kernel(), move |i| nested(depth - 1, &again, acc.add(i)))
+        }
+        let frame = LatticeShape::new([1920, 1080]);
+        for (shape, depth) in [(POINT, PAST_U64 - 1), (POINT, PAST_U64), (POINT, PAST_U64 + 1), (frame, PAST_U64 - 2)] {
+            let k = nested(depth, &Uniform::new(1.0), Kernel::constant(0.0));
+            let (a, root) = k.parts();
+            compile_for::<aarch64::Neon>(a, root, shape).expect("NEON emit");
+            compile_for::<avx2::Avx2>(a, root, shape).expect("AVX2 emit");
+            compile_for::<avx512::Avx512>(a, root, shape).expect("AVX-512 emit");
+        }
+        // The -0.0 seed: a value lo, as a uniform and as a constant, MIN and MAX.
+        let shape = LatticeShape::new([64, 4]);
+        for lo in [Uniform::new(-0.0).kernel(), Kernel::constant(-0.0), Uniform::new(0.0).kernel()] {
+            for monoid in [Monoid::MIN, Monoid::MAX] {
+                let k = Kernel::over_values(monoid, &lo, &Uniform::new(1.0).kernel(), |k| Kernel::constant(1.0).div(k));
+                let (a, root) = k.parts();
+                let n = compile_for::<aarch64::Neon>(a, root, shape).expect("NEON emit");
+                let v = compile_for::<avx2::Avx2>(a, root, shape).expect("AVX2 emit");
+                std::eprintln!("C2 -0.0 seed: neon frame={} instr={} avx2 frame={} instr={}", n.frame_bytes, n.traffic.scopes.iter().map(|s| s.instructions).sum::<u64>(), v.frame_bytes, v.traffic.scopes.iter().map(|s| s.instructions).sum::<u64>());
+            }
+        }
+        // A select between two masks as hi.
+        let mut a = ExprArena::new();
+        let slot = a.declare_uniform(Uniform::new(5.0).decl());
+        let u = a.push_uniform(slot);
+        let (zero, one) = (a.push_const(0.0), a.push_const(1.0));
+        let positive = a.push_binary(OpKind::Lt, zero, u);
+        let above_one = a.push_binary(OpKind::Lt, one, u);
+        let hi = a.push_ternary(OpKind::If, positive, positive, above_one);
+        let binder = Binder::from_slot(0).expect("slot 0 exists");
+        let (x, k) = (a.push_var(0), a.push_var(binder.var()));
+        let body = a.push_binary(OpKind::Add, x, k);
+        let root = a.push_reduce(Fold::new(Monoid::SUM, binder), Bound::Lit(0), Bound::Value(hi), body);
+        let r = compile_for::<aarch64::Neon>(&a, root, LatticeShape::new([64, 4]));
+        std::eprintln!("C2 select-between-masks on NEON: {:?}", r.as_ref().map(|_| "compiled").map_err(|e| format!("{e:?}")));
+    }
+}

@@ -1,0 +1,12 @@
+pixelflow-ir done: EXIT 0 (avail 4403M)
+pixelflow-search-default done: EXIT 0 (avail 4403M)
+pixelflow-search-all done: EXIT 0 (avail 4403M)
+pixelflow-search-telemetry done: EXIT 0 (avail 4397M)
+pixelflow-codegen-avx2 done: EXIT 0 (avail 4397M)
+pixelflow-codegen-avx512 done: EXIT 0 (avail 4397M)
+pixelflow-compiler done: EXIT 0 (avail 4397M)
+pixelflow-graphics done: EXIT 0 (avail 4391M)
+pixelflow-pipeline done: EXIT 0 (avail 4389M)
+pixelflow-core done: EXIT 0 (avail 4363M)
+pixelflow-runtime done: EXIT 0 (avail 4363M)
+ALLDONE

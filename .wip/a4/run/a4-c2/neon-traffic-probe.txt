@@ -1,0 +1,17 @@
+test emit::tests::c2_neon_compiles_the_new_kernels ... C2 -0.0 seed: neon frame=80 instr=24 avx2 frame=128 instr=24
+C2 -0.0 seed: neon frame=80 instr=24 avx2 frame=128 instr=24
+C2 -0.0 seed: neon frame=80 instr=16 avx2 frame=128 instr=16
+C2 -0.0 seed: neon frame=80 instr=16 avx2 frame=128 instr=16
+C2 -0.0 seed: neon frame=80 instr=24 avx2 frame=128 instr=24
+C2 -0.0 seed: neon frame=80 instr=24 avx2 frame=128 instr=24
+C2 select-between-masks on NEON: Ok("compiled")
+test emit::tests::c2_traffic_pins_per_backend ... C2 neon pin1 reload: value last loads=45 literal=44 -> holds=true; trips estimated=true
+C2 neon pin2 instr: value col instr=7 loads=0 frame=48 | literal col instr=5 loads=0 frame=48 -> instr holds=true; AVX-512-only: loads> false frame> false
+C2 neon pin3 row-fold: row=1 column=3 row instr 6 vs 4 (+2: true); column instr 1 vs 1 (equal: true); trips ok=true
+C2 avx2 pin1 reload: value last loads=45 literal=44 -> holds=true; trips estimated=true
+C2 avx2 pin2 instr: value col instr=7 loads=1 frame=96 | literal col instr=5 loads=0 frame=48 -> instr holds=true; AVX-512-only: loads> true frame> true
+C2 avx2 pin3 row-fold: row=1 column=3 row instr 6 vs 4 (+2: true); column instr 1 vs 1 (equal: true); trips ok=true
+C2 avx512 pin1 reload: value last loads=45 literal=44 -> holds=true; trips estimated=true
+C2 avx512 pin2 instr: value col instr=7 loads=4 frame=64 | literal col instr=5 loads=0 frame=48 -> instr holds=true; AVX-512-only: loads> true frame> true
+C2 avx512 pin3 row-fold: row=1 column=2 row instr 6 vs 4 (+2: true); column instr 1 vs 1 (equal: true); trips ok=true
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 102 filtered out; finished in 0.19s
