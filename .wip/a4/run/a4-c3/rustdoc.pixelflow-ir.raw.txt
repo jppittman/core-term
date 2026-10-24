@@ -1,0 +1,328 @@
+ Documenting pixelflow-ir v0.1.0 (/home/user/pixelflow/pixelflow-ir)
+warning: unresolved link to `Dyadic::ZERO`
+  |
+  = note: the link appears in this line:
+          
+          [`Dyadic::ZERO`], and `to_f32` returns `+0.0`. Callers must therefore not
+           ^^^^^^^^^^^^^^
+  = note: no item named `Dyadic` in scope
+  = note: `#[warn(rustdoc::broken_intra_doc_links)]` on by default
+
+warning: public documentation for `all` links to private item `OpKind::index`
+   --> pixelflow-ir/src/kind.rs:413:24
+    |
+413 |     /// Every op, in [`OpKind::index`] order.
+    |                        ^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+    = note: `#[warn(rustdoc::private_intra_doc_links)]` on by default
+
+warning: public documentation for `all` links to private item `OpKind::from_index`
+   --> pixelflow-ir/src/kind.rs:415:57
+    |
+415 |     /// Prefer this to walking `0..COUNT` and calling [`OpKind::from_index`] —
+    |                                                         ^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `from_method_call` links to private item `OpKind::is_dsl_method`
+   --> pixelflow-ir/src/kind.rs:675:31
+    |
+675 |     /// `None` for anything [`OpKind::is_dsl_method`] excludes, or a name
+    |                               ^^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `iter` links to private item `OpKind::index`
+    --> pixelflow-ir/src/kind.rs:1173:22
+     |
+1173 |     /// Iterate in [`OpKind::index`] order — the order [`OpMap::as_slice`]
+     |                      ^^^^^^^^^^^^^ this item is private
+     |
+     = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `known_method_names` links to private item `OpKind::is_dsl_method`
+    --> pixelflow-ir/src/kind.rs:1289:7
+     |
+1289 | /// [`OpKind::is_dsl_method`] for exactly which ops that is and why it is
+     |       ^^^^^^^^^^^^^^^^^^^^^ this item is private
+     |
+     = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: unresolved link to `emit::compile`
+  --> pixelflow-ir/src/variance.rs:89:11
+   |
+89 |     /// [`emit::compile`] that refuses one, so the bits stay constructible
+   |           ^^^^^^^^^^^^^ no item named `emit` in scope
+
+warning: public documentation for `Var` links to private item `REDUCE_BINDER_BASE`
+   --> pixelflow-ir/src/arena.rs:408:48
+    |
+408 |     /// Y), a reduction binder's index (from [`REDUCE_BINDER_BASE`],
+    |                                                ^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `Var` links to private item `REDUCE_BINDERS`
+   --> pixelflow-ir/src/arena.rs:409:11
+    |
+409 |     /// [`REDUCE_BINDERS`] of them), or — in the macro front end
+    |           ^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `Write` links to private item `ExprArena::push_write`
+   --> pixelflow-ir/src/arena.rs:475:12
+    |
+475 |     /// ([`ExprArena::push_write`] is `pub(crate)`); the e-graph declines one
+    |            ^^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `ExprArena` links to private item `crate::dag::Builder`
+   --> pixelflow-ir/src/arena.rs:612:29
+    |
+612 | /// A [`Builder<NodeData>`](crate::dag::Builder) rather than a
+    |                             ^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `push_var` links to private item `RETIRED_COORD_AXES`
+   --> pixelflow-ir/src/arena.rs:710:57
+    |
+710 |     /// Only `0..COORD_AXES` are lattice coordinates. [`RETIRED_COORD_AXES`]
+    |                                                         ^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `node` links to private item `NodeData`
+    --> pixelflow-ir/src/arena.rs:1160:18
+     |
+1160 |     /// node's [`NodeData`] and its DAG edges. Every field `ExprNode` can
+     |                  ^^^^^^^^ this item is private
+     |
+     = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: unresolved link to `Expr`
+    --> pixelflow-ir/src/arena.rs:2160:11
+     |
+2160 |     /// [`Expr`] display format.
+     |           ^^^^ no item named `Expr` in scope
+     |
+     = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `Display`
+    --> pixelflow-ir/src/arena.rs:2247:20
+     |
+2247 |     /// Return a [`Display`]-able wrapper for the subtree rooted at `root`.
+     |                    ^^^^^^^ no item named `Display` in scope
+     |
+     = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `canonical`
+  |
+  = note: the link appears in this line:
+          
+          [`canonical`] walks the subgraph reachable from a root in post-order from
+           ^^^^^^^^^^^
+  = note: no item named `canonical` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `Canonical`
+  |
+  = note: the link appears in this line:
+          
+          The identity is the whole [`Canonical`], not its `key` field. The bytes
+                                     ^^^^^^^^^^^
+  = note: no item named `Canonical` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `Canonical`
+  |
+  = note: the link appears in this line:
+          
+          the full [`Canonical`] form beside each entry — shape bytes and link — and
+                    ^^^^^^^^^^^
+  = note: no item named `Canonical` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `legalize`
+  |
+  = note: the link appears in this line:
+          
+          [`legalize`] runs seven passes, each `(arena, root) -> (arena, root)`, each
+           ^^^^^^^^^^
+  = note: no item named `legalize` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `expand_refs`
+  |
+  = note: the link appears in this line:
+          
+          | [`expand_refs`] | `Ref` | the referent, spliced in |
+             ^^^^^^^^^^^^^
+  = note: no item named `expand_refs` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `lower_dwrt`
+  |
+  = note: the link appears in this line:
+          
+          | [`lower_dwrt`] | `Dwrt` | arithmetic, and *re-introduces* transcendentals |
+             ^^^^^^^^^^^^
+  = note: no item named `lower_dwrt` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `lattice::collapse`
+  |
+  = note: the link appears in this line:
+          
+          | [`lattice::collapse`] | a kernel over `X`/`Y` | the same kernel wrapped in the lattice's row/col/lane folds around one `Write` |
+             ^^^^^^^^^^^^^^^^^^^
+  = note: no item named `lattice` in scope
+
+warning: unresolved link to `lattice::pack`
+  |
+  = note: the link appears in this line:
+          
+          | [`lattice::pack`] | `collapse`'s degenerate `[0,1)` lane fold | the same folds strip-mined to the target's lane width |
+             ^^^^^^^^^^^^^^^
+  = note: no item named `lattice` in scope
+
+warning: unresolved link to `expand_gather`
+  |
+  = note: the link appears in this line:
+          
+          | [`expand_gather`] | `Gather` | index arithmetic + `RawGather` |
+             ^^^^^^^^^^^^^^^
+  = note: no item named `expand_gather` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `expand_transcendentals`
+  |
+  = note: the link appears in this line:
+          
+          | [`expand_transcendentals`] | `Sin`..`Pow` | arithmetic + bit-manip atoms |
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: no item named `expand_transcendentals` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `legalize`
+  |
+  = note: the link appears in this line:
+          
+          **`Reduce` is legal in the arena and [`legalize`] leaves every one
+                                                ^^^^^^^^^^
+  = note: no item named `legalize` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `legalize`
+  |
+  = note: the link appears in this line:
+          
+          They may use `If`. [`legalize`] runs `lower_dwrt` *before*
+                              ^^^^^^^^^^
+  = note: no item named `legalize` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `super::legalize`
+  |
+  = note: the link appears in this line:
+          
+          [`legalize`](super::legalize) runs them between `lower_dwrt` and
+                       ^^^^^^^^^^^^^^^
+  = note: no item named `legalize` in module `pixelflow_ir`
+
+warning: unresolved link to `Monoid::SEQ`
+  |
+  = note: the link appears in this line:
+          
+          [`Monoid::SEQ`], the unit monoid; `;` is [`OpKind::Seq`]. `collapse` builds
+           ^^^^^^^^^^^^^
+  = note: no item named `Monoid` in scope
+
+warning: public documentation for `expand_refs_owned` links to private item `expand_transcendentals_owned`
+   --> pixelflow-ir/src/passes.rs:386:31
+    |
+386 | /// Owned wrapper mirroring [`expand_transcendentals_owned`]: identity
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `expand_transcendentals` links to private item `rebuild_arena`
+   --> pixelflow-ir/src/passes.rs:402:58
+    |
+402 | /// Non-transcendental nodes are copied unchanged (see [`rebuild_arena`]).
+    |                                                          ^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `lower_dwrt_owned` links to private item `expand_transcendentals_owned`
+   --> pixelflow-ir/src/passes.rs:547:31
+    |
+547 | /// Owned wrapper mirroring [`expand_transcendentals_owned`]: identity fast-path
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `TRIG_DOMAIN` links to private item `expand_sin_phase`
+    --> pixelflow-ir/src/passes.rs:1303:24
+     |
+1303 | /// return NaN — see [`expand_sin_phase`] for why the boundary is here.
+     |                        ^^^^^^^^^^^^^^^^ this item is private
+     |
+     = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: unresolved link to `BufferDecl`
+  |
+  = note: the link appears in this line:
+          
+          of `ExprId` and a whole [`BufferDecl`] in place of `BufferId`. The latter
+                                   ^^^^^^^^^^^^
+  = note: no item named `BufferDecl` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: unresolved link to `BufferIdentity`
+ --> pixelflow-ir/src/term_arena.rs:8:16
+  |
+8 | //! distinct [`BufferIdentity`]. That dedup is what "declare a buffer here"
+  |                ^^^^^^^^^^^^^^ no item named `BufferIdentity` in scope
+  |
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: public documentation for `linked_parts` links to private item `Self::linked`
+    --> pixelflow-ir/src/kernel.rs:1019:21
+     |
+1019 |     /// ([`linked`](Self::linked)), because they compose further; this is
+     |                     ^^^^^^^^^^^^ this item is private
+     |
+     = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: public documentation for `by_ref` links to private item `BinderScope`
+    --> pixelflow-ir/src/kernel.rs:1064:21
+     |
+1064 |     /// holding a [`BinderScope`] placeholder, i.e. the index a `Kernel::over`
+     |                     ^^^^^^^^^^^ this item is private
+     |
+     = note: this link resolves only because you passed `--document-private-items`, but will break without
+
+warning: redundant explicit link target
+   --> pixelflow-ir/src/term.rs:125:31
+    |
+125 |     /// indices (see [`Fold`](crate::Fold)'s doc).
+    |                       ------  ^^^^^^^^^^^ explicit target is redundant
+    |                       |
+    |                       because label contains path that resolves to same destination
+    |
+    = note: when a link's destination is not specified,
+            the label is used to resolve intra-doc links
+    = note: `#[warn(rustdoc::redundant_explicit_links)]` on by default
+help: remove explicit link target
+    |
+125 -     /// indices (see [`Fold`](crate::Fold)'s doc).
+125 +     /// indices (see [`Fold`]'s doc).
+    |
+
+warning: `pixelflow-ir` (lib doc) generated 38 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.21s
+   Generated /dev/shm/a4-c2-tchk/doc/pixelflow_ir/index.html

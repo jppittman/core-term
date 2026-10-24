@@ -1,0 +1,4 @@
+/dev/vda        252G   36G  3.3G  92% /
+built /home/user/scratch/gates-bin/bin.gate2 (from /home/user/pixelflow/target.noindex/release/deps/pixelflow_graphics-78da61d31bc7befc)
+wrote /home/user/pixelflow/.wip/gates/out/gate2.a4-c3.txt (29 lines, sha256 1e3ab0b5ee9b7016...) and /home/user/pixelflow/.wip/gates/out/gate2.a4-c3.jsonl (29 records)
+IDENTICAL to gate2.base.txt

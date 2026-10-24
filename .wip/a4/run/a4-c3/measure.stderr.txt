@@ -1,0 +1,3 @@
+/dev/vda        252G   36G  3.3G  92% /
+built /home/user/scratch/gates-bin/bin.measure (from /home/user/pixelflow/target.noindex/release/deps/pixelflow_graphics-a88dd7d285dddc9d)
+callgrind -> /home/user/pixelflow/.wip/gates/out/cg.a4-c3.out

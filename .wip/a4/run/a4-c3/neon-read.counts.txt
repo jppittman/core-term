@@ -1,0 +1,26 @@
+NEON pin1 wall: value trips=[Known(1), Known(4), Known(64), Estimated(2048)] frame=848
+NEON pin1 wall: literal trips=[Known(1), Known(4), Known(64), Known(448)] frame=800
+NEON pin1 wall: scope 0: value instr=13 loads=0 stores=5 | literal instr=4 loads=0 stores=2
+NEON pin1 wall: scope 1: value instr=1 loads=0 stores=2 | literal instr=1 loads=0 stores=2
+NEON pin1 wall: scope 2: value instr=6 loads=8 stores=2 | literal instr=4 loads=4 stores=2
+NEON pin1 wall: scope 3: value instr=144 loads=45 stores=43 | literal instr=144 loads=44 stores=43
+NEON pin2 guard-once: value trips=[Known(1), Known(4), Known(64), Estimated(2048)] frame=48
+NEON pin2 guard-once: literal trips=[Known(1), Known(4), Known(64), Known(448)] frame=48
+NEON pin2 guard-once: scope 0: value instr=13 loads=0 stores=0 | literal instr=4 loads=0 stores=0
+NEON pin2 guard-once: scope 1: value instr=1 loads=0 stores=0 | literal instr=1 loads=0 stores=0
+NEON pin2 guard-once: scope 2: value instr=7 loads=0 stores=0 | literal instr=5 loads=0 stores=0
+NEON pin2 guard-once: scope 3: value instr=1 loads=0 stores=0 | literal instr=1 loads=0 stores=0
+NEON pin3 y-only: value trips=[Known(1), Known(4), Estimated(128), Known(64)] frame=48
+NEON pin3 y-only: literal trips=[Known(1), Known(4), Known(28), Known(64)] frame=48
+NEON pin3 y-only: scope 0: value instr=12 loads=0 stores=0 | literal instr=3 loads=0 stores=0
+NEON pin3 y-only: scope 1: value instr=6 loads=0 stores=0 | literal instr=4 loads=0 stores=0
+NEON pin3 y-only: scope 2: value instr=1 loads=0 stores=0 | literal instr=1 loads=0 stores=0
+NEON pin3 y-only: scope 3: value instr=1 loads=0 stores=0 | literal instr=1 loads=0 stores=0
+NEON pin4 enclosing: value trips=[Known(1), Known(4), Known(64), Known(512), Estimated(16384)] frame=48
+NEON pin4 enclosing: literal trips=[Known(1), Known(4), Known(64), Known(512), Known(4096)] frame=48
+NEON pin4 enclosing: scope 0: value instr=13 loads=0 stores=0 | literal instr=4 loads=0 stores=0
+NEON pin4 enclosing: scope 1: value instr=1 loads=0 stores=0 | literal instr=1 loads=0 stores=0
+NEON pin4 enclosing: scope 2: value instr=4 loads=0 stores=0 | literal instr=4 loads=0 stores=0
+NEON pin4 enclosing: scope 3: value instr=3 loads=0 stores=0 | literal instr=1 loads=0 stores=0
+NEON pin4 enclosing: scope 4: value instr=2 loads=0 stores=0 | literal instr=2 loads=0 stores=0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s

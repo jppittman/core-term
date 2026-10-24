@@ -1,0 +1,51 @@
+--- /home/user/pixelflow/pixelflow-codegen/src/pipeline.rs	2026-10-24 01:21:25.994655812 +0000
++++ src/pipeline.rs	2026-10-24 01:36:00.932229240 +0000
+@@ -151,7 +151,16 @@
+             .then(Own)
+             .then(Layout)
+     };
+-    emit::native(front, (arena, root))
++    // SCRATCH (closing-gate NEON read): the host's code, and NEON's counts.
++    let host = emit::native(front, (arena, root))?;
++    let neon = emit::native_neon(front, (arena, root))?;
++    Ok(CompileResult {
++        code: host.code,
++        spill_count: neon.spill_count,
++        frame_bytes: neon.frame_bytes,
++        hoisted_values: neon.hoisted_values,
++        traffic: neon.traffic,
++    })
+ }
+ 
+ #[cfg(test)]
+--- /home/user/pixelflow/pixelflow-codegen/src/emit/mod.rs	2026-10-24 01:23:58.233815892 +0000
++++ src/emit/mod.rs	2026-10-24 01:36:00.933853186 +0000
+@@ -795,6 +795,15 @@
+     }
+ }
+ 
++/// SCRATCH (closing-gate NEON read): the chain on the NEON backend, whatever the host.
++pub(crate) fn native_neon<P, F>(front: F, input: P::Input) -> Result<CompileResult, CompileError>
++where
++    P: Pass<Output = ScopedSchedule<Flow>>,
++    F: FnOnce(u32) -> P,
++{
++    compile_on::<aarch64::Neon, P, F>(front, input)
++}
++
+ /// Bytes in one vector register of `isa`'s backend: the batch the lattice's
+ /// lane fold is executed by. The arms mirror [`native`]'s.
+ #[must_use]
+--- /home/user/pixelflow/pixelflow-codegen/tests/value_bounds_jit.rs	2026-10-24 01:25:51.320541656 +0000
++++ tests/value_bounds_jit.rs	2026-10-24 01:37:19.248327509 +0000
+@@ -685,8 +685,8 @@
+ 
+ /// How many lanes one batch of the column fold holds on this host.
+ fn lanes() -> u64 {
+-    u64::try_from(pixelflow_codegen::jit_vector_bytes() / size_of::<f32>())
+-        .expect("a lane count fits u64")
++    // SCRATCH: the counts are NEON's, so the lane count is NEON's (16 bytes).
++    u64::try_from(16 / size_of::<f32>()).expect("a lane count fits u64")
+ }
+ 
+ /// How many times the column fold's body runs per call at [`SHAPE`]: once per
