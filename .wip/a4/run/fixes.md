@@ -324,3 +324,92 @@ to ignore. Mutation evidence is in `.wip/a4/run/r5/mutation-run.log`.
   80 lines. Added lines hold no `.wip` path, ruling label or model name. LFS count 68.
 - Not rerun: `check-feature-matrix.sh` (no feature, cfg or dependency changed in this round: tests and
   doc comments only) and `measure.sh` (no emitted code changed; gates 1, 1b, 2, 2x are identical).
+
+# A4 closing fixes, round 2 (TAG=a4-close2)
+
+Base of this round: 79c21ea. Gate failures: none. Every item was checked against the code first; the one
+that names a wrong value was reproduced before the fix (the new test fails on the unfixed `select.rs`, on
+avx2 and avx512: `MIN_{k in [uniform -0.0, 1)} 1/k (as written) at (1, 2): got -inf (0xff800000), want inf
+(0x7f800000)`) and passes after.
+
+## Blocking
+
+- **1. A value `lo` of `-0.0` seeds the loop with `-0.0`, a literal seeds `+0.0`** (semantics): real.
+  `Selector::fold` seeded the counter with the lane itself, so the first index was `-0.0` where a literal
+  `0` (and a literal `-0.0`, which `Bound::discover` turns into `Lit(0)`) seeds `+0.0`: the same count gave
+  different answers as a uniform and as a constant for a body that sees the sign of zero. Fixed in
+  `emit/select.rs`: a `Bound::Value` `lo` is seeded `lo + 0.0` (`-0.0 + 0.0` is `+0.0` under round to
+  nearest on AVX2, AVX-512 and NEON; no backend peephole folds an add of zero, grep); a `Bound::Lit` `lo`
+  is untouched, so every literal kernel is byte-identical (gates below). `fold`'s doc says so.
+  The cost is one add in the preheader of a fold whose `lo` is a value, which no production kernel has.
+  Pin: `value_bounds_jit.rs` `a_value_lo_of_negative_zero_starts_the_fold_at_positive_zero`, through
+  `both` (so `run_raw` and `run_linked`), for `lo` spelled as a uniform and as a constant, at `-0.0` and
+  `0.0`: `MIN_{k in [lo, 1)} 1/k` is `+inf` and `MAX_{k in [lo, 1)} k` is `+0.0`, bit for bit. A
+  uniform and a constant of the same count agree, which is the property. `a_value_lo_starts_the_fold`'s
+  doc says the seed is the lane plus zero.
+- **2 and 3. `emit/mod.rs`'s module doc says a guard's arm tests are always the column fold's, or run once
+  per call in the body** (semantics, and literal-craft; one defect, one fix): real. A fold that reads `Y`
+  alone sits in the row fold, and one bounded by an enclosing fold's index sits in that fold's scope,
+  once per trip (the plan's section 1.2 table and `guard.rs`'s
+  `a_bound_on_an_enclosing_index_is_guarded_inside_that_fold` already said so). The paragraph now says the
+  arm tests sit where the fold does, in the innermost scope of the nest the fold reads, and lists the
+  four cases (column fold per batch for `X`; row fold per row for `Y` alone; an enclosing fold's scope per
+  trip for its index; the body per call for none), and that a mask the register file cannot keep across
+  those trips (an AVX-512 opmask) is reloaded each time the scope runs. The `lo` seed's `plus zero` is in
+  the same paragraph. The row-fold case had no pin, so one is added:
+  `a_guard_around_a_fold_that_reads_only_y_is_the_row_folds` (`Y * Sum_{k<n}(Y + k)` against the literal
+  twin: the row fold gains exactly the guard's two selects, the column fold gains none; the scopes are
+  found by their trips, not by index). Mutation check: reading `X` in the value kernel's body moves the
+  selects into the column fold and the test fails ("the row fold runs the guard's two selects ...");
+  reverted, `cmp` clean.
+- **4. `assert_off_the_lattice`'s doc says "a bound is one value for the call"** (literal-craft): real. An
+  enclosing fold's index passes through this assert and takes one value per trip of that fold. The doc now
+  says what L3 guarantees: the bound reads no lattice binder, so it is one value for the call or, for an
+  enclosing fold's index, one value per trip of that fold, and either way one value in every lane of a
+  batch.
+- **5. The totality doc's count clause and B1 clause** (literal-craft): real. Both the paragraph and the
+  reduction-binder row now read "a literal, a value known per call, or an enclosing fold's index"; the B1
+  clause is scoped to extents (B1 makes the discrete-domain and typed-field extents values; bounded
+  iteration's trip count stays static); the repeated "Each is fixed before the lattice is traversed" is
+  gone. Same defect, not on the list: consequence 5 said "a literal or a per-call value"; it now says never
+  a coordinate, a literal, and for a fold's count also a per-call value or an enclosing fold's index.
+- **6. The plan's section 5 cell mixes two line numberings** (literal-craft): real (`:110-112` contains
+  `:111`, and neither named what the cell meant). The row cites by content: "totality doc, 'One discipline,
+  four faces' (the paragraph and its table) and consequence 5", CL "A1 the rule; the paragraph, the
+  reduction-binder row and consequence 5 A4 as built; the discrete-domain and typed-field rows B1". Its
+  Becomes cell now includes the enclosing index.
+
+## Non-blocking, applied
+
+- **`a_guarded_fold`'s doc calls its guard "the shape `passes::legalize` leaves"** (literal-craft): real, true
+  only at `Hi`. Reworded to what it is: a stand-in `If`, not the `Lt(lo, hi)` legalize builds; lowering asks
+  only that the fold has one reader, an `If`'s true arm. (Built from the real bounds instead? Not done: lowering
+  checks only that the fold's one reader is an `If`'s true arm, so a stand-in test is enough.)
+- **"`hi` is read only by the latch's compare"** (literal-craft), in `lower.rs`'s test doc and the plan's
+  lowering bullet: real, the conclusion held and the reason did not. Both now say every op that reads `hi`
+  (the latch's compare, the guard's tests, a body that reads it too) widens an opmask operand, so a mask
+  `hi` would not panic, and only a mask `lo` (a head parameter) would. No other file carries the sentence
+  (grep for "latch's compare", "read only by").
+
+## Skipped
+
+None. The reviewer's two notes on mutation coverage are a description of which tests pin which class, not
+a defect.
+
+## Verification (TAG=a4-close2; outputs in .wip/a4/run/c2/ and .wip/gates/out/*.a4-close2.*)
+
+- Gates 1 (both tiers, 127 lines each), 1b (29), 2 (29), 2x (29): all exit 0, IDENTICAL to base.
+  `git status --short pixelflow-graphics` is empty (the probe file `tests.rs` is clean). LFS count 68.
+- `cargo test -p pixelflow-codegen`, PIXELFLOW_ISA=avx2 and =avx512: 207 passed, 0 failed each (`--lib` 102;
+  `tests/value_bounds_jit.rs` 29 each, the 27 of round 1 and the two above). Only `pixelflow-codegen` has
+  code changes this round; the other touched files are docs.
+- `cargo +1.99.0 clippy --workspace --all-targets --all-features -- -D warnings`
+  (`CARGO_TARGET_DIR=/home/user/scratch/a3-close1/t199`): exit 0. (First pass flagged `type_complexity` on
+  the new test's `[(&str, fn(f32) -> Kernel); 2]`; a local `type Spelling` fixed it.) `cargo fmt --all --
+  --check`: clean. `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p pixelflow-codegen
+  --document-private-items`: ok.
+- Reduce-site checklist: UNCLASSIFIED 0, STALE 0. check-intent, check-doc-paths, check-cfg-encapsulation,
+  check-emit-boundary, check-bin-declarations: exit 0. Every `intent.md` within 80 lines. This round's added
+  lines hold no `.wip` path, ruling label or model name.
+- Not rerun: `check-feature-matrix.sh` (no feature, cfg or dependency changed) and `measure.sh` (gates 1, 1b,
+  2, 2x are identical: the seed add exists only in a fold whose `lo` is a value).

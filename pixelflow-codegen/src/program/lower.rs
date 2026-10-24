@@ -155,13 +155,15 @@ impl ValueFolds {
 
 /// L3 after collapse: a fold's bound varies with no binder of the lattice.
 ///
-/// A bound is fixed before the lattice is traversed: one value for the call.
-/// `collapse` picks the lattice's binder slots from those no reachable `Var`
-/// or fold uses, so this cannot fail on a legalized arena. It is also what
-/// keeps every lane of a guard's mask and of a latch's compare at one value:
-/// the lane binder would vary them within a batch, and a guard's arm would run
-/// on some of its lanes; the row and column binders would vary them between
-/// batches, which the law forbids all the same.
+/// A bound reads no lattice binder, so it is fixed before the lattice is
+/// traversed: one value for the call or, where it is an enclosing fold's index,
+/// one value per trip of that fold, and either way one value in every lane of a
+/// batch. `collapse` picks the lattice's binder slots from those no reachable
+/// `Var` or fold uses, so this cannot fail on a legalized arena. It is also
+/// what keeps every lane of a guard's mask and of a latch's compare at one
+/// value: the lane binder would vary them within a batch, and a guard's arm
+/// would run on some of its lanes; the row and column binders would vary them
+/// between batches, which the law forbids all the same.
 fn assert_off_the_lattice(end: BoundEnd, reads: Variance, lattice: Variance) {
     let shared = reads.intersection(lattice);
     assert!(
@@ -662,10 +664,11 @@ mod tests {
     /// The literal at the end of a range a test bounds by a value at the other.
     const OTHER_END: u64 = 8;
 
-    /// A count, a fold bounded at `at` by `end(count)`, and its guard:
-    /// `If(Lt(0, count), Σ_i i, 0)`, the shape `passes::legalize` leaves a
-    /// value-bounded fold in, as `(arena, count, fold, root)`. The fold's other
-    /// bound is a literal: `0` below, [`OTHER_END`] above.
+    /// A count, a fold bounded at `at` by `end(count)`, and a guard around it:
+    /// `If(Lt(0, count), Σ_i i, 0)`, as `(arena, count, fold, root)`. The fold's
+    /// other bound is a literal: `0` below, [`OTHER_END`] above. The `If`'s test
+    /// is a stand-in, not the `Lt(lo, hi)` that `passes::legalize` builds:
+    /// lowering asks only that the fold has one reader, an `If`'s true arm.
     ///
     /// The body is the binder's own `Var`, not `X`: a coordinate is a
     /// survivor refused first, and would answer for the bound.
@@ -855,7 +858,8 @@ mod tests {
     /// reinterpretation of either. A bitwise op on a mask and a number is a
     /// number, and a count. `lo` is the end AVX-512 would panic on in selection
     /// (the loop's seed is a head parameter, and none is in the opmask file);
-    /// `hi` is read only by the latch's compare, which reads either file.
+    /// every op that reads `hi` (the latch's compare, the guard's tests, a body
+    /// that reads it too) widens an opmask operand, so it would not.
     #[test]
     fn a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask() {
         let lt = |a: &mut ExprArena, c| {

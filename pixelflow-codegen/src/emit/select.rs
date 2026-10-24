@@ -273,11 +273,14 @@ impl<B: IsaBackend> Selector<'_, B> {
     /// exit (one predecessor), so the exit takes no parameter. A fold over
     /// the unit monoid has no accumulator and returns `None`.
     ///
-    /// A value bound starts the counter at its lane and ends it at its lane.
-    /// The guard around this fold (an `If`'s arm, `passes::legalize`) made the
-    /// range non-empty and within `[0, 2²⁴]`, so the do-while runs `hi − lo`
-    /// trips; the counter and the end stay `f32` lanes, and no count becomes
-    /// an integer on any tier.
+    /// A value bound starts the counter at its lane plus zero and ends it at
+    /// its lane. The guard around this fold (an `If`'s arm, `passes::legalize`)
+    /// made the range non-empty and within `[0, 2²⁴]`, so the do-while runs
+    /// `hi − lo` trips; the counter and the end stay `f32` lanes, and no count
+    /// becomes an integer on any tier. The zero is what makes the count `-0.0`
+    /// the integer 0 a literal seeds: `-0.0 + 0.0` is `+0.0` under round to
+    /// nearest on every tier, so a body that sees the sign of zero sees the same
+    /// first index from a uniform as from a constant.
     fn fold(
         &mut self,
         parent: Scope,
@@ -292,7 +295,14 @@ impl<B: IsaBackend> Selector<'_, B> {
         );
         let accumulates = fold.monoid() != Monoid::SEQ;
 
-        let lo = self.bound(lo)?;
+        let lo = match lo {
+            Bound::Lit(_) => self.bound(lo)?,
+            Bound::Value(_) => {
+                let seed = self.bound(lo)?;
+                let zero = self.constant(0.0)?;
+                self.binary(BinaryOp::Add, seed, zero)?
+            }
+        };
         let seeds: Vec<B::Lane> = if accumulates {
             alloc::vec![lo, self.constant(lane_pattern(fold.monoid().identity()))?]
         } else {

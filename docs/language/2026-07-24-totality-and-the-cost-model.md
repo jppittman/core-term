@@ -107,16 +107,17 @@ ground and monomorphic.
 
 Totality is the single rule — *every domain and every iteration count is fixed
 before the lattice is traversed, and none is a function of a coordinate* — showing
-up in four places. Each is fixed before the lattice is traversed. A fold's count
-is a literal or a value known per call ([a bound is a
-value](2026-10-20-a-bound-is-a-value.md): a uniform, so one program serves every
-count); the other three faces are still static natural numbers until that plan
-makes extents values too (B1).
+up in four places. A fold's count is a literal, a value known per call (a
+uniform, so one program serves every count), or an enclosing fold's index,
+known once per trip of that fold ([a bound is a
+value](2026-10-20-a-bound-is-a-value.md)). The other three faces are static
+natural numbers: that plan's B1 makes the discrete-domain and typed-field
+extents values known per call, and bounded iteration's trip count stays static.
 
 | Face | Fixed before the traversal |
 |---|---|
 | discrete domains | extent known at bake (static) |
-| reduction binder `⊕_{i∈D}` | `|D|` a literal or a value known per call |
+| reduction binder `⊕_{i∈D}` | `|D|` a literal, a value known per call, or an enclosing fold's index |
 | bounded iteration (the "fixpoint") | trip count static |
 | typed fields | ground extents |
 
@@ -219,8 +220,8 @@ the body, not a new primitive type.)
    lattice becomes the typed discrete field; iteration is a separate, orthogonal
    construct.
 5. Every eliminator that could iterate (`⊕_{i∈D}`, `iterate[N]`, field reify)
-   carries a bound fixed before the lattice is traversed, a literal or a
-   per-call value and never a coordinate, so the cost walk is closed-form in
-   values known per call.
+   carries a bound fixed before the lattice is traversed, never a coordinate: a
+   literal, and for a fold's count also a per-call value or an enclosing fold's
+   index, so the cost walk is closed-form in values known per call.
 6. Build the cost model as a re-denotation of the arena into the cost semiring,
    reusing the extents the field types already carry.

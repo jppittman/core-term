@@ -1,0 +1,14 @@
+Reduce-site checklist at HEAD 79c21ea
+grep: 195 lines, 190 sites (deduped by (file, line))
+class            sites
+already-correct     45
+changed-by-A3       24
+changed-by-A4       15
+left                13
+tests               88
+n/a                  5
+A4                   0
+A5                   0
+classified         190
+UNCLASSIFIED 0
+STALE 0

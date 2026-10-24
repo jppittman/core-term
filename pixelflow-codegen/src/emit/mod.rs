@@ -30,16 +30,24 @@
 //!
 //! A fold whose bound is a value arrives inside the guard
 //! [`pixelflow_ir::passes::legalize`] builds (an `If`'s arm): its counter
-//! starts at `lo`'s lane and its latch compares against `hi`'s, and the arm is
+//! starts at `lo`'s lane (plus zero, so a `-0.0` count starts at the integer 0
+//! a literal seeds) and its latch compares against `hi`'s, and the arm is
 //! skipped when the range is empty or a bound is not a count in `[0, 2²⁴]` (a
 //! fraction, NaN and an infinity are none). The latch's compare reads two
 //! registers, so `hi` is one the allocator carries across the loop or reloads
 //! at each latch, where a literal end is a constant placed again at its read.
-//! The guard's masks are the call's when the bounds are. Where the guarded fold
-//! reads a coordinate, the guard's arm tests are the column fold's and run in
-//! every batch of it, so a mask the register file cannot keep across batches
-//! (an opmask, on AVX-512) is reloaded in each. Where the fold reads none, the
-//! guard and the loop are call-invariant and run once per call, in the body.
+//!
+//! The guard's masks are the call's when the bounds are. Its arm tests sit
+//! where the fold does, in the innermost scope of the nest that the fold reads,
+//! and run as often as that scope does:
+//! - in the column fold, in every batch of it, for a fold that reads `X`;
+//! - in the row fold, once per row, for one that reads `Y` alone;
+//! - in an enclosing fold's scope, once per trip of it, for one whose body or
+//!   bound reads that fold's index;
+//! - in the body, once per call, for one that reads none of these.
+//!
+//! A mask the register file cannot keep across the trips of that scope (an
+//! opmask, on AVX-512) is reloaded each time the scope runs.
 //!
 //! ## Spilling
 //!

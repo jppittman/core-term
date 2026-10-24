@@ -342,7 +342,8 @@ fn a_pair_that_runs_backwards_is_the_identity() {
     }
 }
 
-/// A value `lo` starts the fold there: the counter is seeded with its lane.
+/// A value `lo` starts the fold there: the counter is seeded with its lane (plus
+/// zero, which only the sign of a zero count shows).
 #[test]
 fn a_value_lo_starts_the_fold() {
     let planes = both(SHAPE, || {
@@ -353,6 +354,43 @@ fn a_value_lo_starts_the_fold() {
     assert_plane(SHAPE, planes, "Σ_{k=3}^{6} (X + k)", |x, _| {
         fold_of(Monoid::SUM, 3, 7, |k| x + k)
     });
+}
+
+/// `-0.0` is the count 0 at `lo`, and the fold starts at the integer 0, `+0.0`,
+/// whether the count is a uniform or a constant (`Bound::discover` turns a
+/// literal `-0.0` into `Lit(0)`). A body that sees the sign of zero tells them
+/// apart: `1/k` is `+∞` at `+0.0` and `-∞` at `-0.0`, and a `MAX` over one trip
+/// keeps the sign of the index it was given.
+#[test]
+fn a_value_lo_of_negative_zero_starts_the_fold_at_positive_zero() {
+    /// How a count is spelled: as a uniform, or as a constant.
+    type Spelling = fn(f32) -> Kernel;
+    let spellings: [(&str, Spelling); 2] = [("uniform", count), ("constant", Kernel::constant)];
+    for (kind, lo_of) in spellings {
+        for lo in [-0.0f32, 0.0] {
+            let planes = both(SHAPE, move || {
+                Kernel::over_values(Monoid::MIN, &lo_of(lo), &count(1.0), |k| {
+                    Kernel::constant(1.0).div(k)
+                })
+            });
+            assert_plane(
+                SHAPE,
+                planes,
+                &format!("MIN_{{k ∈ [{kind} {lo:?}, 1)}} 1/k"),
+                |_, _| f32::INFINITY,
+            );
+
+            let planes = both(SHAPE, move || {
+                Kernel::over_values(Monoid::MAX, &lo_of(lo), &count(1.0), |k| k.clone())
+            });
+            assert_plane(
+                SHAPE,
+                planes,
+                &format!("MAX_{{k ∈ [{kind} {lo:?}, 1)}} k"),
+                |_, _| 0.0,
+            );
+        }
+    }
 }
 
 /// `Σ_{i<8} Σ_{j<i} (X + j)`: the inner `hi` is the outer fold's index, so
@@ -678,6 +716,51 @@ fn a_guard_computed_once_per_call_is_read_again_in_every_batch() {
     assert!(
         value_frame > literal_frame,
         "the opmasks are slots in the frame: {value_frame} against {literal_frame}"
+    );
+}
+
+/// The same guard around a fold that reads `Y` alone sits in the row fold: its
+/// two selects run once per row, and the column fold, which runs in every
+/// batch, gains nothing. A guard goes where its fold goes, not to the column
+/// fold by default.
+#[test]
+fn a_guard_around_a_fold_that_reads_only_y_is_the_row_folds() {
+    let over = |hi: Option<f32>| match hi {
+        Some(n) => Kernel::y().mul(&Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| {
+            Kernel::y().add(k)
+        })),
+        None => Kernel::y().mul(&Kernel::sum_over(7, |k| Kernel::y().add(k))),
+    };
+    let (value, _) = traffic_of(&over(Some(7.0)));
+    let (literal, _) = traffic_of(&over(None));
+
+    // The row fold runs once per row; the column fold, which no literal count
+    // loops inside, is the nest's most-run known scope.
+    let rows = Trips::Known(u64::from(SHAPE.extent()[1]));
+    let scope_of = |t: &EmitTraffic, trips: Trips| t.trips.iter().position(|&n| n == trips);
+    let row = scope_of(&literal, rows).expect("the row fold runs once per row");
+    let column = literal
+        .trips
+        .iter()
+        .enumerate()
+        .filter_map(|(scope, n)| n.known().map(|n| (n, scope)))
+        .max()
+        .map(|(_, scope)| scope)
+        .expect("the nest has known scopes");
+    assert_ne!(row, column);
+    assert_eq!(value.trips[row], rows, "{:?}", value.trips);
+
+    assert_eq!(
+        value.scopes[row].instructions,
+        literal.scopes[row].instructions + 2,
+        "the row fold runs the guard's two selects, one per mask: {:?} against {:?}",
+        value.scopes[row],
+        literal.scopes[row]
+    );
+    assert_eq!(
+        value.scopes[column].instructions, literal.scopes[column].instructions,
+        "the column fold, run in every batch, runs none of the guard: {:?} against {:?}",
+        value.scopes[column], literal.scopes[column]
     );
 }
 

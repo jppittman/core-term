@@ -385,8 +385,9 @@ its edge.
   bitwise and/or of two such) is refused by name, at either end and on every tier, by
   `ScheduledOp::is_mask`: a mask names no count (`BoundSort`). A mask `lo` is also what made
   it urgent, since the loop's seed is a head parameter, which AVX-512 would hold in an
-  opmask and panic on in selection while AVX2 and NEON read its bits as a float; `hi` is read
-  only by the latch's compare, which reads either file. Any other bound whose value is
+  opmask and panic on in selection while AVX2 and NEON read its bits as a float; every op that
+  reads `hi` (the latch's compare, the guard's tests, a body that reads it too) widens an
+  opmask operand, so a mask `hi` would not panic. Any other bound whose value is
   a mask, a select between two masks, is a lane read as a float on every tier alike, which
   the guard turns into NaN or a count. The predicate and the AVX-512 selector share the
   bitwise rule (`BinaryOp::on_masks`), and a test selects every op that reads a lane over a
@@ -485,7 +486,7 @@ one program per font. "Hunk" names an open PR whose diff touches or abuts the li
 | `docs/DENOTATION.md:123-125`, `:140-142` | "Loop bounds, extents and ranges are never uniforms"; "the range is a static natural" | §1.1–§1.2 | A4 | none |
 | `docs/DENOTATION.md:246-248` | the lattice's extent is in the key | stands, with a pointer to §4's deferral | A1 | none |
 | totality doc `:97-99` | "Extents are concrete literals known at `bake` … we monomorphize on them regardless" | extents are values known per call; nothing monomorphizes on them | B1 | none |
-| totality doc `:107-118` (the `:111` row), `:214` | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; per-call values, not literals | A1 rule, `:110-112` and the reduction-binder row A4 as built, `:111` B1, `:214` A4 | none |
+| totality doc, "One discipline, four faces" (the paragraph and its table) and consequence 5 | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; a fold's count a literal, a per-call value or an enclosing index | A1 the rule; the paragraph, the reduction-binder row and consequence 5 A4 as built; the discrete-domain and typed-field rows B1 | none |
 | totality doc `:191-200` | "only dynamic *bounds* die … static max + early-out … cost is the static worst case `N`" | a per-call bound is a value, not a static max; the cost model's estimate is §1.5's | A4 | none |
 | `2026-10-15-kernels-evaluate-kernels.md:175` | "applying a discrete kernel over the wrong extent is a bake-time refusal by name" | a bind-time refusal | B1 | none |
 | the-language-is-kernel `:78-81`, §1.4 structural row, §1.5, §1.7, §1.6 `:296-314` | ranges constant; one program per piece count (2026-10-09); the host chooses a program by its piece count | a reversal note pointing here | A1 | none |
