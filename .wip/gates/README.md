@@ -144,3 +144,7 @@ The recovered text ended mid-sentence in the Gate 5 section ("extraction inclusi
 with the stray output of an `ls` of the lost `gates/` directory, and described `cl7/probes-append.rs` and `prof2/`
 (both lost). The probes, function names, and every number above were re-derived on this host from the sources named
 here; the old bases (`94aeef7a`, `7cd96a32`) could not be reproduced and are not claimed.
+
+**Never commit while a gate runs.** `build_probe` appends the probes to `tests.rs` and restores it with
+`git checkout -- tests.rs`, so a commit taken mid-build records the probes, and every later restore puts them
+back. A5's round 3 did this once (2121763, reverted in the next commit).
