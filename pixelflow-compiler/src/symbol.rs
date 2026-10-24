@@ -8,7 +8,7 @@
 //! | Class      | Binding Time        | Arena Representation | Example |
 //! |------------|---------------------|----------------------|---------|
 //! | Intrinsic  | Collapse time       | `Var(0)`, `Var(1)`   | X, Y    |
-//! | Parameter  | Per call (uniform)  | `Uniform(slot)`, one per record field | cx, p |
+//! | Parameter  | Per call (uniform)  | `Uniform(slot)`, one per record field; a count's holds `n as f32` | cx, p, n |
 //! | Const      | Expansion time      | `Const(v)`, or a count | PI, N |
 //! | Local      | Expression scope    | A shared `ExprId`, or a record's fields | dx, q |
 //! | Index      | A fold's body       | The fold's binder `Var` | i    |
@@ -39,7 +39,9 @@
 //! f32|` produces `move |cx: f32, cy: f32| -> Kernel`, whose kernel declares
 //! one uniform per parameter with the call's value as its default, and a
 //! reference in the body is that uniform's `Uniform` leaf. A record
-//! parameter is one uniform per field.
+//! parameter is one uniform per field. A count parameter `n: usize` is one
+//! uniform too, declared as `n as f32` and read as a fold's bound or by
+//! `n as f32`.
 //!
 //! ## Scoping
 //!
@@ -176,7 +178,7 @@ impl SymbolTable {
         table
     }
 
-    /// Register a parameter symbol (e.g., `r: f32`).
+    /// Register a parameter symbol: `r: f32`, a record, or an entry's count `n: usize`.
     pub fn register_parameter(&mut self, name: &str, ty: Ty) {
         self.bind(name, SymbolKind::Parameter, ty);
     }

@@ -8,6 +8,9 @@
 //! region — and a program compiled once is rebound per call from the entry's
 //! `Args` record, into a block the caller keeps; so is a program the entry's
 //! kernel was composed into, beside kernels with no arguments of their own.
+//! An entry's count parameter, `n: usize`, is a uniform too: one program for
+//! every count, rebound per call, and refused past 2²⁴ where the host writes
+//! it.
 //!
 //! What a record and a count *mean* is pinned against rustc in
 //! `rustc_is_the_oracle.rs`; the refusals are `sema`'s and the parser's unit
@@ -16,6 +19,8 @@
 use pixelflow_compiler::kernel;
 use pixelflow_core::{ArityMismatch, Kernel, Lattice, Manifold, Uniform};
 use pixelflow_ir::key::canonical;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 
 kernel! {
     /// An axis-aligned box.
@@ -52,6 +57,16 @@ kernel! {
         let within = (X <= b.x1) & (Y <= b.y1);
         let n: f32 = (0..N).map(|i| if r < (i as f32) + 1.0 { 1.0 } else { 0.0 }).sum();
         if within { fg * n / (N as f32) } else { bg }
+    }
+
+    /// Σ_{i<n} X·i, its count per call.
+    pub fn sum_to(n: usize) -> f32 {
+        (0..n).map(|i| X * (i as f32)).sum()
+    }
+
+    /// A count between a record and a scalar: declared in parameter order.
+    pub fn scaled_sum(b: Bounds, n: usize, s: f32) -> f32 {
+        (0..n).map(|i| (X - b.x0) * (i as f32)).sum::<f32>() * s
     }
 }
 
@@ -158,6 +173,122 @@ fn a_program_compiled_once_is_rebound_from_args() {
         .expect("ramp's own argument");
     let rebound = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
     assert_eq!(rebound.buffer(), lattice.bake(&ramp(2.0)).buffer());
+}
+
+/// One program for every count (L9): a count is a uniform, keyed by its slot,
+/// so two calls with different counts share a canonical key and a compiled
+/// region.
+#[test]
+fn every_count_is_one_program() {
+    assert_eq!(program_key(&sum_to(3)), program_key(&sum_to(7)));
+    assert_eq!(
+        code_at_frame(&sum_to(3)),
+        code_at_frame(&sum_to(7)),
+        "one compiled region"
+    );
+}
+
+/// A count is one uniform, declared in parameter order as the `f32` it names,
+/// and a program compiled at one count is rebound to another from `Args`: the
+/// pixels of baking that call. `2²⁴` itself is a count, and is written.
+#[test]
+fn a_program_compiled_at_one_count_is_rebound_to_another() {
+    let defaults: Vec<f32> = scaled_sum(UNIT, 5, 0.5)
+        .uniforms()
+        .iter()
+        .map(|u| u.default)
+        .collect();
+    assert_eq!(defaults, [2.0, 1.0, 6.0, 4.0, 5.0, 0.5]);
+
+    let lattice = Lattice::frame(FRAME.0, FRAME.1);
+    let program = Manifold::compile(&sum_to(0), lattice.extent);
+    let bound = program.bind(&[]);
+    let mut block = program.block();
+    for n in [7, 0, 3] {
+        SumToArgs { n }
+            .write_into(&mut block)
+            .expect("sum_to's own count");
+        let rebound = lattice.collapse(&bound.clone().with_uniforms(&block));
+        assert_eq!(
+            rebound.buffer(),
+            lattice.bake(&sum_to(n)).buffer(),
+            "n = {n}"
+        );
+    }
+    let at_the_top = sum_to(16_777_216);
+    assert_eq!(at_the_top.uniforms()[0].default, 16_777_216.0);
+    SumToArgs { n: 16_777_216 }
+        .write_into(&mut block)
+        .expect("2^24 is a count");
+    assert_eq!(block.values(), [16_777_216.0]);
+}
+
+/// The host function refuses a count past 2²⁴, as `Kernel::over` refuses a
+/// literal range past it: its uniform would hold `2²⁴`, a count, and the fold
+/// would run one trip short with no NaN to say so (§1.4).
+#[test]
+#[should_panic(expected = "past 16777216 (2^24)")]
+fn the_host_function_refuses_a_count_past_the_domain() {
+    let _refused = sum_to(16_777_217);
+}
+
+/// The `Args` write refuses a count past 2²⁴ before it writes anything (§1.4):
+/// as an `f32`, `2²⁴ + 1` is `2²⁴`, a count, so the program could not tell.
+/// That nothing is written is the order of the expansion, which refuses before
+/// `set_declared` (`emit.rs`'s unit test).
+#[test]
+#[should_panic(expected = "past 16777216 (2^24)")]
+fn the_args_write_refuses_a_count_past_the_domain() {
+    let program = Manifold::compile(&sum_to(0), [1, 1]);
+    let mut block = program.block();
+    let _refused = SumToArgs { n: 16_777_217 }.write_into(&mut block);
+}
+
+/// How long a fold outside its domain may take to answer: it never hangs.
+const HANG: Duration = Duration::from_secs(60);
+
+/// Run `f` on a thread and wait for it a minute: a fold that hangs is a
+/// failed assertion, not a CI timeout. A panic in `f` is the caller's panic,
+/// with its message.
+fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        if let Err(gone) = tx.send(f()) {
+            panic!("the test stopped listening before its kernel returned: {gone}");
+        }
+    });
+    match rx.recv_timeout(HANG) {
+        Ok(value) => value,
+        Err(RecvTimeoutError::Timeout) => {
+            panic!("a count outside the domain never hangs: no answer in {HANG:?}")
+        }
+        Err(RecvTimeoutError::Disconnected) => match worker.join() {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(()) => unreachable!("a worker that sent its answer is not disconnected"),
+        },
+    }
+}
+
+/// A block written by position is untyped: any `f32` reaches the count's
+/// slot, and one that names no count makes this fold NaN (L5), the loop not
+/// entered, so nothing hangs. (`2²⁴ + 1` cannot be written this way at all:
+/// no `f32` names it, `value_bounds_jit.rs`'s
+/// `the_f32_nearest_two_to_the_24_plus_one_is_two_to_the_24`.)
+#[test]
+fn a_count_written_raw_outside_the_domain_is_nan() {
+    let values = within(|| {
+        let program = Manifold::compile(&sum_to(0), [1, 1]);
+        let bound = program.bind(&[]);
+        let mut block = program.block();
+        [16_777_218.0, f32::NAN, -1.0, 2.5, f32::INFINITY, 1e30]
+            .into_iter()
+            .map(|raw| {
+                block.set_declared([raw]).expect("one argument");
+                bound.clone().with_uniforms(&block).eval_at(3.0, 0.0)
+            })
+            .collect::<Vec<f32>>()
+    });
+    assert!(values.iter().all(|v| v.is_nan()), "{values:?}");
 }
 
 /// A parameter the body never reads is still declared, so the arguments

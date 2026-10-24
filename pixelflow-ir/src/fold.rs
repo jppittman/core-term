@@ -437,8 +437,9 @@ impl core::fmt::Display for BoundEnd {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum BoundRefusal {
     /// A real literal that names no count — not an integer, or outside
-    /// `0..=Fold::EXACT_BOUND` (L5). Refused at the user surfaces only
-    /// (`Kernel::over_values`, and `kernel!` from A6); every other constructor
+    /// `0..=Fold::EXACT_BOUND` (L5). Refused at the user surfaces only:
+    /// `Kernel::over_values`, and `kernel!` in its own words, at expansion for
+    /// a literal and where the host writes a count; every other constructor
     /// keeps such a literal as a value bound, whose guard makes the fold NaN
     /// (`passes::legalize`'s guard), so a literal a rule made never panics.
     BoundOutOfDomain { end: BoundEnd, literal: f32 },

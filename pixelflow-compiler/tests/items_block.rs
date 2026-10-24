@@ -108,8 +108,8 @@ fn if_and_select_lower_to_the_same_arena() {
 }
 
 /// A block written where no prelude is in scope: a record, a `pub const`, a
-/// helper, a tuple `let`, a fold over a `usize` const, the `Args`
-/// record, the closure form, and an entry that takes a kernel — whose host
+/// helper, a tuple `let`, a fold over a `usize` const, a count parameter, the
+/// `Args` record, the closure form, and an entry that takes a kernel — whose host
 /// function runs lowering's steps, a fold's and a library method's and a
 /// derivative's among them. The expansion names every item by path,
 /// so it expands in a `#[no_implicit_prelude]` module as anywhere else —
@@ -137,6 +137,11 @@ mod without_a_prelude {
                 + if b < v { HALF } else { 0.0 }
         }
 
+        /// The weighed point summed over a count the host passes.
+        pub fn counted(m: Mass, n: usize) -> f32 {
+            (0..n).map(|i| weighed(m, i as f32)).sum::<f32>()
+        }
+
         /// A kernel applied in a fold over a `usize` const, weighed.
         pub fn applied(k: impl Fn(f32, f32) -> f32, m: Mass) -> f32 {
             weighed(m, (0..N).map(|i| k(X + (i as f32), Y)).sum::<f32>()) + X.fract() + DX(Y)
@@ -154,7 +159,7 @@ mod without_a_prelude {
 /// from its `Args`.
 #[test]
 fn a_block_expands_where_no_prelude_is_in_scope() {
-    use without_a_prelude::{HALF, Mass, SweptArgs, scaled, swept};
+    use without_a_prelude::{CountedArgs, HALF, Mass, SweptArgs, counted, scaled, swept};
     let m = Mass { x: 1.0, w: 2.0 };
     let (v, r) = (4.0, 0.5);
     let x = 0.5;
@@ -175,6 +180,17 @@ fn a_block_expands_where_no_prelude_is_in_scope() {
     let rebound = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
     let baked = lattice.bake(&swept(args.m, args.v, args.r));
     assert_eq!(rebound.buffer(), baked.buffer());
+
+    // Σ_{i<4} (i·m.x + m.w), rebound from its `Args` at another count.
+    let by_rust: f32 = (0..4).map(|i| (i as f32) * m.x + m.w).sum();
+    assert_eq!(Lattice::eval_at(&counted(m, 4), x, 0.0), by_rust);
+    let program = Manifold::compile(&counted(m, 0), lattice.extent);
+    let mut block = program.block();
+    CountedArgs { m, n: 4 }
+        .write_into(&mut block)
+        .expect("counted's own arguments");
+    let rebound = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
+    assert_eq!(rebound.buffer(), lattice.bake(&counted(m, 4)).buffer());
 
     assert_eq!(Lattice::eval_at(&scaled(1.0, 2.0), 0.5, 0.0), 2.5);
 

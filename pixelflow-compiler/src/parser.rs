@@ -25,6 +25,8 @@
 //! param   ::= IDENT ':' type
 //! type    ::= 'f32' | 'bool' | RECORD        -- an entry's `f32`s and records
 //!                                            -- are its uniforms
+//!           | 'usize'                        -- an entry's count, in the items
+//!                                            -- form: a uniform
 //!           | 'impl' 'Fn' '(' 'f32' ',' 'f32' ')' '->' 'f32'
 //!                                            -- a kernel: an argument the host
 //!                                            -- passes at run time (Phase D-a)
@@ -33,11 +35,11 @@
 //!           | '-' cexpr | '(' cexpr ')'            -- evaluated at expansion,
 //!           | IDENT 'as' 'f32'                     -- per operation in f32
 //!           | IDENT | LITERAL
-//! iexpr   ::= iexpr ('+' | '-' | '*' | '/') iexpr   -- a `usize`: a range's bounds
-//!           | '(' iexpr ')'                        -- or a `usize` const's
-//!           | IDENT | INTEGER                      -- initializer; each operation
-//!                                                  -- checked as rustc checks it,
-//!                                                  -- at expansion
+//! iexpr   ::= iexpr ('+' | '-' | '*' | '/') iexpr   -- a `usize` known at expansion:
+//!           | '(' iexpr ')'                        -- a `usize` const's initializer,
+//!           | CONST | INTEGER                      -- or a range's bound; each
+//!                                                  -- operation checked as rustc
+//!                                                  -- checks it
 //!
 //! expr    ::= expr binop expr
 //!           | '-' expr
@@ -49,8 +51,8 @@
 //!                                                  -- `(x, y)`: contramap
 //!           | 'if' expr block 'else' (block | 'if' …)   -- the choice
 //!           | fold
-//!           | IDENT 'as' 'f32'         -- a `usize` (a fold's index or a `usize`
-//!                                      -- const) as a value
+//!           | IDENT 'as' 'f32'         -- a `usize` (a fold's index, a `usize` const
+//!                                      -- or an entry's count) as a value
 //!           | '(' expr ')'
 //!           | block
 //!           | IDENT                    -- X, Y (in an entry), a parameter, an
@@ -64,7 +66,10 @@
 //!                 '.fold' '(' 'f32::NEG_INFINITY' ',' 'f32::max' ')'     -- max
 //!           | range '.any' '(' binder expr ')'                           -- ∃, of bools
 //!           | range '.all' '(' binder expr ')'                           -- ∀, of bools
-//! range   ::= '(' iexpr '..' iexpr ')'     -- half-open, constant, forwards
+//! range   ::= '(' bound '..' bound ')'     -- half-open
+//! bound   ::= iexpr | INDEX | COUNT        -- known at expansion; or an enclosing
+//!                                          -- fold's index or an entry's count,
+//!                                          -- alone (§1.4 of the bound plan)
 //! binder  ::= '|' IDENT '|'                -- the index: a `usize`
 //! F32     ::= '::' '<' 'f32' '>'
 //! binop   ::= '+' | '-' | '*' | '/'
@@ -83,6 +88,9 @@
 //! METHOD     -- an `OpKind` method, a `LIBRARY_METHODS` composition, or `clone`
 //! PROJECTION -- V, DX, DY, DXX, DXY, DYY
 //! KERNEL     -- a kernel-typed parameter in scope
+//! CONST      -- a `usize` const of the block
+//! INDEX      -- the index of a fold enclosing the range
+//! COUNT      -- an entry's `usize` parameter, in the items form
 //! ```
 //!
 //! A `let` is scoped as Rust scopes it (`crate::symbol`), and so is a fold's
@@ -94,12 +102,13 @@
 //! (plan §1.5) denotes ⊕ of its body over `i ∈ [a, b)`, and its monoid's
 //! identity when the range is empty; the syntax never unrolls it.
 //!
-//! Binding times (plan §1.4). An entry's `f32` parameter is a **uniform**, a
-//! record one per field, and the host function's arguments are their values for
-//! that call — never constants folded in; a kernel-typed parameter is a
-//! kernel, not a uniform. A record is written by name: a parameter, a `let`
-//! alias of one (`let q = p;`), an argument passed on, or the base of a field
-//! read. No `fn` takes generics: a count makes no program of its own
+//! Binding times (plan §1.4). An entry's `f32` and count (`n: usize`)
+//! parameters are **uniforms**, a record one per field, and the host
+//! function's arguments are their values for that call — never constants
+//! folded in; a kernel-typed parameter is a kernel, not a uniform. A record
+//! is written by name: a parameter, a `let` alias of one (`let q = p;`), an
+//! argument passed on, or the base of a field read. No `fn` takes generics: a
+//! count makes no program of its own
 //! (§1.2 of docs/language/2026-10-20-a-bound-is-a-value.md).
 //!
 //! The language has no collection types (plan §1.3, §1.6): no array, slice,
@@ -160,8 +169,10 @@
 //! comparison (Phase D, D7); an unknown field; an `as` of anything but a
 //! `usize` name; an integer an `f32` does not hold exactly where a value is
 //! expected; a `const` whose initializer is not a `cexpr` or an `iexpr`; a
-//! negated `usize`; a range whose bounds are not constant or that runs
-//! backwards; `.at()`,
+//! negated `usize`; a range's bound that names a coordinate (L3) or anything
+//! but a `usize`, that is arithmetic on a value, or that is a value under
+//! `any` or `all`; a known range that runs backwards; a count parameter of a
+//! helper or of the closure form; `.at()`,
 //! `.constant()`, `.collapse()`; a block with no final expression; an
 //! `Args` record's name taken twice; a function type spelled any way but
 //! `impl Fn(f32, f32) -> f32`; a kernel used as anything but applied, with
@@ -173,8 +184,9 @@
 //! parameter, `let` or index named after a projection.
 //!
 //! Refused by lowering, where the language meets the IR's widths: a range
-//! bound past 2²⁴, the last integer bound a fold's index — an `f32` lane —
-//! names exactly, and folds nested deeper than the IR has binders.
+//! bound past 2²⁴, alone or in a pair, the last integer bound a fold's index
+//! — an `f32` lane — names exactly, and folds nested deeper than the IR has
+//! binders.
 //!
 //! ## Implementation Note
 //!
@@ -647,7 +659,8 @@ fn generic_refusal(param: &syn::GenericParam) -> String {
              \n\
              note: a count does not make a program of its own (§1.2 of {BOUND_PLAN})\n\
              help: write the count as a literal, or as a `usize` const of the block: \
-             `const N: usize = 4;`"
+             `const N: usize = 4;`; a count that changes per call is an entry parameter \
+             `n: usize`"
         ),
         _ => format!(
             "generics in a `kernel!` block\n\
@@ -882,7 +895,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
         }
 
         // Iteration with state has no denotation in a DAG. A bounded
-        // reduction is a fold over a constant range.
+        // reduction is a fold.
         syn::Expr::Loop(_) | syn::Expr::While(_) | syn::Expr::ForLoop(_) => {
             Err(syn::Error::new_spanned(
                 expr,
@@ -890,7 +903,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
                     "a loop in a kernel body\n\
                      \n\
                      note: the language is a DAG: nothing iterates with state\n\
-                     note: a bounded reduction over a constant range is a fold: {FOLD_SPELLINGS}"
+                     note: a bounded reduction is a fold: {FOLD_SPELLINGS}"
                 ),
             ))
         }
@@ -1067,7 +1080,7 @@ fn a_collection_iterated(call: &syn::ExprMethodCall) -> Option<syn::Error> {
             call.method,
             quote::quote!(#receiver)
         ),
-        &format!("a fold iterates a constant range: {FOLD_SPELLINGS}"),
+        &format!("a fold iterates a range: {FOLD_SPELLINGS}"),
     ))
 }
 
@@ -1192,7 +1205,8 @@ fn convert_cast(expr_cast: syn::ExprCast) -> syn::Result<Expr> {
             "`as` converts a `usize` to an `f32`, and to nothing else\n\
              \n\
              note: every value in a kernel body is an `f32` or a `bool`, and a `usize` (a \
-             fold's index or a `usize` const) becomes one only as `i as f32`\n\
+             fold's index, a `usize` const or an entry's count parameter) becomes one only \
+             as `i as f32`\n\
              help: write `as f32`",
         ));
     }
@@ -1318,8 +1332,8 @@ fn the_closure(call: &syn::ExprMethodCall) -> syn::Result<(syn::Ident, Expr)> {
     Ok((binder, convert_expr((*closure.body).clone())?))
 }
 
-/// `a..b`: both bounds, half-open. Whether they are constant, and run
-/// forwards, is `sema`'s question: it evaluates them.
+/// `a..b`: both bounds, half-open. What they are, and whether a known pair
+/// runs forwards, is `sema`'s question: it evaluates them.
 fn convert_range(range: &syn::ExprRange) -> syn::Result<RangeExpr> {
     if let syn::RangeLimits::Closed(dots) = &range.limits {
         return Err(syn::Error::new_spanned(
