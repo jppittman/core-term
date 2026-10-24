@@ -717,7 +717,7 @@ impl Kernel {
     /// has escaped and is not captured is open, and `ExprArena::free_index`
     /// says so. `range` is the literal spelling of a known
     /// range; a bound that is a value is [`Kernel::over_values`]'s. Either way
-    /// every bound is known before the lattice is traversed, which is what keeps
+    /// no bound reads a coordinate, which is what keeps
     /// the language total and its cost closed-form — `|D|·cost(body) +
     /// (|D|−1)·cost(⊕)` (docs/language/2026-10-20-a-bound-is-a-value.md §1.5).
     /// A fold that survives extraction is a loop; extraction unrolls a known
@@ -792,8 +792,8 @@ impl Kernel {
     /// and a pair that runs backwards at run time is the identity, up to the
     /// factoring edge `FactorFold` accepts at a runtime-empty range (decision
     /// 5). The NaN has an exception on the optimized path: under
-    /// [`Monoid::SUM`], a body factor the optimizer proves zero (a literal `0`,
-    /// or one such as `X − X`) loses its fold to the annihilation rule
+    /// [`Monoid::SUM`], a body with a factor the optimizer proves zero (a
+    /// literal `0`, or one such as `X − X`) loses its fold to the annihilation rule
     /// (`0·y → 0`, [`OpKind::annihilator`]), so no fold is left for the guard
     /// to wrap and a bound that is no count gives `0` (`FactorFold`'s doc).
     ///

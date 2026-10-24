@@ -1617,11 +1617,7 @@ mod tests {
     /// a wall of values, and a ragged row whose main and remainder column
     /// folds both open the loop.
     ///
-    /// NEON cannot run here; selection, allocation and assembly can. What a
-    /// value-bounded loop adds to a literal one: for a value `lo`, the seed's
-    /// add of zero; for a value `hi`, a latch compare against a register that
-    /// may be reloaded at each trip; and for either, the guard around it: its
-    /// domain tests, its two selects and its two arm tests.
+    /// NEON cannot run here; selection, allocation and assembly can.
     #[test]
     fn every_backend_emits_a_fold_whose_bound_is_a_value() {
         use pixelflow_ir::fold::Monoid;

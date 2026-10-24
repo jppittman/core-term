@@ -359,11 +359,12 @@ const MONOIDS: [(Monoid, f32); 4] = [
 ];
 
 /// A value `lo` in the domain beside a literal `hi` runs its fold from there:
-/// `Σ_{k ∈ [lo, 1003)} (X + k)` for `lo` at 0, 1, 7 and 1000.
+/// `Σ_{k ∈ [lo, 1003)} (X + k)` for `lo` at 0, 1 and 7 (1000 is
+/// [`a_value_lo_runs_its_fold_up_to_the_top_of_the_domain`]'s).
 #[test]
 fn a_value_lo_in_the_domain_beside_a_literal_hi_runs_its_fold() {
     const HI: u64 = 1003;
-    for lo in [0.0f32, 1.0, 7.0, 1000.0] {
+    for lo in [0.0f32, 1.0, 7.0] {
         let planes = both(SHAPE, move || {
             Kernel::over_values(Monoid::SUM, &count(lo), &Kernel::constant(HI as f32), |k| {
                 Kernel::x().add(k)

@@ -775,8 +775,9 @@ mod tests {
         let _ = arena_to_schedule(&a, guarded, AFTER_ONE_UNIFORM);
     }
 
-    /// L3 after collapse: a bound is fixed before the lattice is traversed, so
-    /// it reads none of the lattice's binders. Only the lane binder would vary
+    /// L3 after collapse: a bound reads no coordinate, and collapse spells the
+    /// coordinates through the lattice's binders, so a bound reads none of
+    /// them. Only the lane binder would vary
     /// a guard's mask within a batch; `row` and `col` would vary it between
     /// batches, which is refused all the same. `collapse` picks its binders
     /// from slots nothing else uses, so no pipeline builds this; it is built by

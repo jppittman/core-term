@@ -106,7 +106,7 @@ ground and monomorphic.
 ## One discipline, four faces
 
 Totality is the single rule — *every domain and every iteration count is fixed
-before the lattice is traversed, and none is a function of a coordinate* — showing
+before the loop it bounds starts, and none is a function of a coordinate* — showing
 up in four places. A fold's bounds are each a literal, a value known per call
 (a uniform, so one program serves every count), or an enclosing fold's index,
 so its count is known per call, or once per trip of the enclosing
@@ -115,7 +115,7 @@ value](2026-10-20-a-bound-is-a-value.md)). The other three faces are static
 natural numbers: that plan's B1 makes the discrete-domain and typed-field
 extents values known per call, and bounded iteration's trip count stays static.
 
-| Face | Fixed before the traversal |
+| Face | Fixed before its loop starts |
 |---|---|
 | discrete domains | extent known at bake (static) |
 | reduction binder `⊕_{i∈D}` | `\|D\|`, each bound a literal, a value known per call, or an enclosing fold's index |
@@ -221,7 +221,7 @@ the body, not a new primitive type.)
    lattice becomes the typed discrete field; iteration is a separate, orthogonal
    construct.
 5. Every eliminator that could iterate (`⊕_{i∈D}`, `iterate[N]`, field reify)
-   carries a bound fixed before the lattice is traversed, never a coordinate: a
+   carries a bound fixed before its loop starts, never a coordinate: a
    fold's bounds are each a literal, a per-call value or an enclosing fold's
    index, so the cost walk is closed-form in values known per call.
 6. Build the cost model as a re-denotation of the arena into the cost semiring,
