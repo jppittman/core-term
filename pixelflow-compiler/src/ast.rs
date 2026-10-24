@@ -619,7 +619,7 @@ pub struct IfExpr {
 /// `(lo..hi).map(|i| e).sum()` and its siblings: the fold of `e` over
 /// `i ∈ [lo, hi)` under a monoid, or the monoid's identity when the range is
 /// empty (docs/language/2026-09-25-the-language-is-kernel.md §1.5; the
-/// optimizer's one edge to this is `kernel!`'s `# Folds`).
+/// optimizer's edges to this are in `kernel!`'s `# Folds`).
 ///
 /// The closure's parameter is the binder and its body is the fold's body.
 /// The closure is not a value, and has no meaning anywhere else. Each bound

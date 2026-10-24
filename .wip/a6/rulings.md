@@ -156,3 +156,39 @@ Checks after round 1:
 - Rustdoc: NEW 0 for compiler, IR and core.
 - fmt, check-intent and check-doc-paths: OK.
 - Gates `a6-fix1` (byteprobe, gate1b, gate2, gate2x): all exit 0, identical to base.
+
+## Round 2, closing (reviews `review2.{docs,code,complete}.md`, on 079c01d): applied by the coordinator
+
+No behavioural defect.
+
+- **F1 (blocking; it corrects round 1's premise):** annihilation is not the only rule that drops a domain NaN.
+  - **What the probe showed:** cancellation (`(Y + Σ) − Σ → Y`) and inverse annihilation (`(Σ/Σ)·Y → Y`) drop
+    a fold from an enclosing expression at expansion and at bake. The probe is
+    `/home/user/scratch/a6-review2-docs/tests/edges.rs`, and it gives `Y` on both x86 tiers where the program is
+    NaN. An empty fold's identity has the same exposure.
+  - **Why no code changes:** this is CLAUDE.md's "no value was promised" at NaN and infinity.
+  - **Docs:** the "one edge per law" wording everywhere becomes one pointer: "up to the optimizer's algebraic
+    rules, which are not sound at NaN (or infinity) (BACKLOG E9)". The sites are lib.rs `# Folds`, the oracle
+    test doc, the plan's Done line, the core README, the ontology Range row, ast.rs, parser.rs and CLAUDE.md.
+  - **BACKLOG E9:** widened to name the family with the probe's evidence. `Kernel::over_values`' doc names the
+    family in one sentence.
+- **F2/B1 (blocking):** sema's test doc gets the help rule by what the name is, the twin of D9.
+- **F3/B2 (blocking):** `bound`'s doc: "One end of a fold with a bound that is a value".
+- **F4 / complete N1:** "if it has one" goes in intent.md, the ontology `kernel!` Follows and BACKLOG C8.
+- **code N2 / complete N2:** the emit test asserts `COUNT_DOMAIN` in `write_into`'s `# Panics`.
+- **code N3:** the sema test doc reads "decided at run time".
+- **complete N4:** parser.rs points to `# Folds`, CLAUDE.md gets the E9 pointer, and the-language-is-kernel's
+  "A5" becomes "Its A5".
+- **complete N5:** BACKLOG C12 is widened: lowering's refusals have no span and are reported at the
+  `kernel!` call.
+- **code N1, refused:** M3's help is not chosen by role. A closure-form author who follows it reaches M7, and
+  M7 points to the items form, so the advice is a chain with no dead end.
+- **complete N3:** the public surface goes in the PR body. That covers the generated host function's
+  `n: usize` and `# Panics`, the `pub n: usize` `Args` field, and `write_into`'s reworded `# Errors` and new
+  `# Panics`. No item is added to `pixelflow-core`.
+
+Checks after round 2:
+- Compiler tests: 319 + 319 (avx2, avx512). IR lib: 310.
+- clippy 1.99 on the compiler and IR: exit 0.
+- Rustdoc: NEW 0. fmt and the five check scripts: OK.
+- The only non-comment `.rs` change is a test assert, so the a6-fix1 gates stand.

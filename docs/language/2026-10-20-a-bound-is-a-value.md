@@ -723,7 +723,7 @@ A5's deletion, which removes code #1427 only re-scopes.
   `all` (decision 8), a known end past 2²⁴, and a `usize` parameter of a helper or of the
   closure form. The host function panics on a count past 2²⁴, and `Args::write_into`
   panics on one before writing anything; a raw block write that names no count makes the
-  fold NaN by the guard, up to the annihilation edge `Kernel::over_values` documents
+  fold NaN by the guard, up to the optimizer's algebraic rules, which are not sound at NaN
   (BACKLOG E9). `rustc_is_the_oracle.rs` has the
   triangular and per-call cases, and `fold_is_kernel_over.rs` the same two against
   `over_values`. byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and

@@ -100,7 +100,8 @@
 //! entry; a helper takes its coordinates as arguments
 //! (docs/language/2026-09-25-the-language-is-kernel.md §1.2). A fold
 //! (plan §1.5) denotes ⊕ of its body over `i ∈ [a, b)`, and its monoid's
-//! identity when the range is empty; the syntax never unrolls it.
+//! identity when the range is empty (the optimizer's edges to this are in
+//! `kernel!`'s `# Folds`); the syntax never unrolls it.
 //!
 //! Binding times (plan §1.4). An entry's `f32` and count (`n: usize`)
 //! parameters are **uniforms**, a record one per field, and the host

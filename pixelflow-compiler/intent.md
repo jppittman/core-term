@@ -13,8 +13,8 @@ that term to is an `Optimize` value, never a branch (§8).
 - Binding times as the host sees them (uniform, kernel-typed), the host `fn`,
   the `Args` record, and `const` evaluation: a count is built from literals
   and `usize` consts at expansion, or is an entry's `n: usize`, a uniform,
-  refused past 2²⁴ by the entry's host function and its `Args` record's
-  `write_into`.
+  refused past 2²⁴ by the entry's host function and, if it has one, its
+  `Args` record's `write_into`.
 - Which `Optimize` each macro hands `expand` (`kernel!` saturates, `kernel_raw!`
   is `Identity`), and which entries no optimizer sees.
 

@@ -2867,8 +2867,9 @@ mod tests {
     /// A range's bound is a `usize` typed where the fold is written (§3.4 of
     /// the bound plan): a coordinate is refused by L3, any other name that is
     /// not a `usize` by type, and a shape no count is built from as such. The
-    /// help of a name that is an `f32` is the entry's `n: usize`, where an
-    /// entry of the items form can take one.
+    /// help is by what the name is: an `f32` const's is `const N: usize`; an
+    /// entry's `f32` parameter's is the per-call count `n: usize` (the items
+    /// form's); any other has none.
     #[test]
     fn a_range_bound_is_a_usize_and_reads_no_coordinate() {
         const L3: &str = "L3 of docs/language/2026-10-20-a-bound-is-a-value.md";
@@ -3071,7 +3072,7 @@ mod tests {
 
     /// A known range runs forwards; a reversed one is refused, saying it
     /// would be the empty fold. The empty range itself is a fold like any
-    /// other, and so is a pair with a value, which is decided per call (L2).
+    /// other, and so is a pair with a value, which is decided at run time (L2).
     #[test]
     fn a_reversed_range_is_refused_and_an_empty_one_is_not() {
         let err = refusal(quote! { || (5..3).map(|i| i as f32).sum() });

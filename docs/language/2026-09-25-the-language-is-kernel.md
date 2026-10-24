@@ -51,7 +51,7 @@
   count. That reverses the 2026-10-09 ruling of one program per piece count (§1.7, §1.6's
   worked example), a count's structural binding time (§1.4), §1.5's constant ranges, and
   the rule quoted at the top that ranges are constant. Until that plan's steps land (its
-  §6; one program per font is B2), those sections describe what the tree does. A5 deleted
+  §6; one program per font is B2), those sections describe what the tree does. Its A5 deleted
   `kernel!`'s `const N: usize` (2026-10): where this document has an entry's structural
   parameters, a template instantiated with structural values or a range over them (§1.1's
   diagram and binding-time bullet, §1.5's "Ranges are constant", §1.6's and §1.7's choice by

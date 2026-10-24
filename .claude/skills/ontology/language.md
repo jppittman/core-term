@@ -70,8 +70,8 @@
 - **Follows:** lowering holds no copy of fract, hypot, clamp, the
   derivative, the binder's choice and rename (`close_over`), or a range's
   bound (`KnownRange::admits`) (B5). A count the host writes is refused past
-  2²⁴ by `KnownRange::admits`, in the entry's host function and its
-  `write_into`. Production kernels move onto `kernel!` (C1, D-c).
+  2²⁴ by `KnownRange::admits`, in the entry's host function and, if it has
+  one, its `Args` record's `write_into`. Production kernels move onto `kernel!` (C1, D-c).
 - **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser.rs`, `sema.rs`,
   `lower.rs`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
   `kernel_raw!`, `macro_tier()` and `DwrtFree` are still in `lib.rs`, and
@@ -520,8 +520,8 @@
 - **Is not:** a function of a coordinate, a lattice binder or the fold's own
   binder (L3). Past 2²⁴: a literal is refused at construction, a count
   `kernel!`'s host function or `Args` record writes is refused there; any
-  other write is an `f32`, and one naming no count makes the fold NaN (E9
-  aside). Not implicitly zero-based. Not a value of its own in the IR: a
+  other write is an `f32`, and one naming no count makes the fold NaN (up to
+  the optimizer's rules unsound at NaN, E9). Not implicitly zero-based. Not a value of its own in the IR: a
   range node shared by sibling folds is decision 9 (a-glyph-is-a-formula §4.2).
 - **Follows:** a known range is in the key; a value bound keys as its child, a
   uniform's dense slot, so one program serves every count. Constructors refuse

@@ -725,8 +725,8 @@ impl<S: Site> Lowering<'_, S> {
         Ok([self.bound(lo)?, self.bound(hi)?])
     }
 
-    /// One end of a fold whose other end is a value: a literal, checked alone
-    /// against the domain, or the term a count binding holds.
+    /// One end of a fold with a bound that is a value: a literal, checked
+    /// alone against the domain, or the term a count binding holds.
     fn bound(&self, count: Count) -> Result<Bound<S::Term>, String> {
         match count {
             Count::Known(literal) => literal_bound(literal).map(Bound::Lit),

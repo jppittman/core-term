@@ -1078,7 +1078,8 @@ mod tests {
         let write_into = &args[..args.find("fn write_into").expect("write_into")];
         assert!(
             write_into.contains("# Panics")
-                && write_into.contains("a count in this record is past 2^24"),
+                && write_into.contains("a count in this record is past 2^24")
+                && write_into.contains(COUNT_DOMAIN),
             "write_into documents its panic: {write_into}"
         );
         assert!(
