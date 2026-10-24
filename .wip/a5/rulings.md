@@ -263,3 +263,28 @@ back.
 - **R3C-2, refused:** `f32<>` and `Bx<>` in type position are refused, with a cause that names arguments
   that are not there. That is loud, at the author's token, and gives no wrong value. Instead,
   `turbofish_of`'s doc is narrowed to "on a name in a body".
+
+## Round 4, closing (reviews `review4.{docs,code,complete}.md`, on 20d8144): applied by the coordinator
+
+- **R4D-1 / F1 (blocking, all three lenses):** D3-9's "so a slot with no value never reaches the
+  emitter" was false. A declined term compiles as written, and the JIT emitter panics on the `Param`
+  (reproduced: `/home/user/scratch/a5-review-fix1/tests/param_panic.rs`). insert.rs (both docs) and
+  ir_insert.rs now say exactly that, with no purpose clause.
+- **F2 (code), R4D-2:** a count is "built from literals and `usize` consts with `+ - * /`" in
+  `refuse_generics`' doc, the-language-is-kernel §1.3's `usize` row, plan §5's `:179` row and the ontology's
+  retired entry. The parser module doc now quotes what the `const` generic message says.
+- **F3 (code):** emit.rs's Binding-times sentence: "a kernel-typed one as a `&Kernel`".
+- **R4D-3:** the-language-is-kernel `:204` is scoped to `kernel!`; the font's piece count stays the host's
+  until B2, citing §1.7 again.
+- **R4D-4:** symbol.rs: "An entry's `f32` and record parameters".
+- **R4D-5:** ontology Args: "when it has some and takes no kernel".
+- **R4D-6:** `ExprNode::Var`'s doc loses the deleted macro-parameter meaning (not A5's sentence; a deleted
+  mechanism, so the clause is deleted).
+- **F5 (complete):** reflowed: plan A5 bullet and Order paragraph, ontology compiler.md Program, language.md
+  `kernel!` Lives.
+- **F2, F3, F4 (complete), all `.wip`:** gates-fix3.md records round 3 and 4. R-A6 goes to A6's archive
+  with the design (below). public-surface: `FoldTerms` loses its `pub stride` field. Its one user was the
+  compiler's emitted code (impl.md §5), and the field is recorded here instead of in a separate file.
+
+Round 4 changes only comments and docs (`git diff -U0 -- '*.rs'` adds no non-comment line), so the a5-fix3b
+gates stand.

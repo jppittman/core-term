@@ -35,8 +35,9 @@
 //! [`ExprArena::apply`]: pixelflow_ir::arena::ExprArena::apply
 //!
 //! **Binding times** (docs/language/2026-09-25-the-language-is-kernel.md §1.4).
-//! A host function takes its parameters by their declared types, and every
-//! `f32` and record one is a uniform: the kernel it returns declares one
+//! A host function takes each `f32` and record parameter by its declared type,
+//! and a kernel-typed one as a `&Kernel`; every `f32` and record one is a
+//! uniform: the kernel it returns declares one
 //! uniform per scalar — a record parameter, one per field — in declaration
 //! order, with the call's value as its default. So the call's values are the
 //! kernel's arguments, never its constants: every call of an entry that

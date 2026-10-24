@@ -489,7 +489,7 @@ one program per font. "Hunk" names an open PR whose diff touches or abuts the li
 | totality doc `:191-200` | "only dynamic *bounds* die … static max + early-out … cost is the static worst case `N`" | a per-call bound is a value, not a static max; the cost model's estimate is §1.5's | A4 | none |
 | `2026-10-15-kernels-evaluate-kernels.md:175` | "applying a discrete kernel over the wrong extent is a bake-time refusal by name" | a bind-time refusal | B1 | none |
 | the-language-is-kernel `:78-81`, §1.4 structural row, §1.5, §1.7, §1.6 `:296-314` | ranges constant; one program per piece count (2026-10-09); the host chooses a program by its piece count | a reversal note pointing here | A1 | none |
-| the-language-is-kernel §1.3 `:179` | `usize` is "a fold binder or a structural count" | a fold binder or a count (a literal or a `usize` const) | A5 (a literal or a `usize` const), A6 (a per-call count) | none |
+| the-language-is-kernel §1.3 `:179` | `usize` is "a fold binder or a structural count" | a fold binder or a count (built from literals and `usize` consts with `+ - * /`) | A5 (literals and `usize` consts), A6 (a per-call count) | none |
 | the-language-is-kernel §1.3 `:186` | a count "is how many instances the host composed" | a count is a value | A5 (A1's, after #1431) | none |
 | the-language-is-kernel D1 `:643`, D3 `:645`, D9 `:651` | structural binding time; "a count is how many instances the host composed"; "one per piece count" | a reversal note pointing here | A1, after #1323 | #1323 `:644-650` holds `:645`; `:643`, `:651` abut it |
 | `2026-10-17-the-arena-is-typed.md` §1.1 `Reduce` row, §4 T6 | `Reduce`: `⊕ : S × S → S`, body `: S`; T6 types the binder only | `Reduce` with value bounds `Real × Real × S → S`, `Int × Int × S → S` at T6; T6 retypes the bounds with the binder, lifts `BoundArithmetic`, measured. A known bound is node data, so T6 re-keys no bound literal | A3 | none |
@@ -533,8 +533,8 @@ shares files with A2–A4 but no hunk. #1427 rewrites the compiler's `ast`/`pars
 (made `pub(crate)`).
 
 Order: A0 goes now. A1 goes now, except its the-language-is-kernel D-table rows, which
-follow #1323 (§5's "Hunk" column). A2a goes
-against main with #1431 still open (2026-10-22), so #1431 rebases onto A2a. A2a leaves the
+follow #1323 (§5's "Hunk" column). A2a goes against main with #1431 still open
+(2026-10-22), so #1431 rebases onto A2a. A2a leaves the
 `fold.monoid().identity()` lines alone; the emptiness guard above two of them and a few import
 lines still conflict, each resolved by keeping both sides. A2b–A4 rebase onto #1431 once
 merged; if it is abandoned, they proceed against main. #1432 is
@@ -693,9 +693,9 @@ A5's deletion, which removes code #1427 only re-scopes.
 - **A5. `<const N: usize>` is deleted**, and with it §3.4's structural path, which it was
   the only producer of. No production user: tests (`kernel_typed_parameters.rs`,
   `rustc_is_the_oracle.rs`, `items_block.rs`, `binding_times.rs`, and the `parser.rs`,
-  `sema.rs`, `lower.rs` and `emit.rs` unit tests) and docs rewritten. It comes before A6 because the obvious lowering of a
-  structural bound, a `Param` leaf, is `Variance::ALL` (`variance.rs`'s `Param` arm) and L3
-  refuses it.
+  `sema.rs`, `lower.rs` and `emit.rs` unit tests) and docs rewritten. It comes before A6
+  because the obvious lowering of a structural bound, a `Param` leaf, is `Variance::ALL`
+  (`variance.rs`'s `Param` arm) and L3 refuses it.
   **Done:** `kernel!` refuses a generic on any `fn` at parse, a `const` one naming §1.2; the
   structural path is deleted (§3.4), and `FoldTerms` lost its stride, which only the template
   set past 1; the template exemption went with it, so A7 is empty (below). The test templates

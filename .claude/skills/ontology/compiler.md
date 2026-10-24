@@ -68,8 +68,8 @@
   "a replay of `ExprArena` pushes"; an entry has no structural values since
   a-bound-is-a-value A5, so an entry that takes no kernel replays one
   program, and an entry that takes a kernel is instantiated with its
-  arguments when it is called. An
-  **instance** is one instantiation, with identity by instance. A font at a
+  arguments when it is called. An **instance** is one instantiation, with
+  identity by instance. A font at a
   zoom level is one program per piece count: exact N, unbucketed (JP,
   2026-10-09; see terminal.md, "Font programs").
 - **Is not:** per glyph (95), per bucket (6; JP: unbucketed), or one program

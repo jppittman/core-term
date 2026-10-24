@@ -77,8 +77,8 @@
   `kernel!` is `expand(input, &mut macro_tier())`: it offers each term to the
   optimizer at expansion, which declines one carrying a `Dwrt` or an op the
   template vocabulary cannot hold (an entry that takes a kernel is lowered
-  when called, and optimized at bake). That
-  contradicts "nothing is optimized at expansion". `parse_expr` is still in
+  when called, and optimized at bake). That contradicts "nothing is
+  optimized at expansion". `parse_expr` is still in
   `pixelflow-pipeline/src/training/factored.rs`.
 
 ### Entry, helper, record, Args
@@ -92,7 +92,8 @@
     it takes coordinates as arguments.
   - A **record** is a `struct` of named `f32` fields. It is flattened at
     lowering into uniforms in declaration order.
-  - **Args** is each entry's record of its uniform arguments. A
+  - **Args** is an entry's record of its uniform arguments, when it has
+    some and takes no kernel. A
     compiled program is bound from `&Args`, so "every argument supplied" is
     a type, not a runtime assert.
 - **Is not:** a helper as an optimization unit (D19, withdrawn 2026-09-29:
@@ -147,7 +148,8 @@
 ### Structural parameter (retired)
 
 - **Is:** nothing in `kernel!` since a-bound-is-a-value A5 deleted it. A
-  count is a literal or a `usize` const, known at expansion; a count that
+  count is built from literals and `usize` consts with `+ - * /`, known at
+  expansion; a count that
   changes per call is a value bound (`Kernel::over_values`; in `kernel!`,
   decision 2's `n: usize` entry parameter, which A6 builds). What stays
   structural is the lattice's own extent, in the program and the key

@@ -118,8 +118,8 @@
 //! `const` or a `fn`; a record that is generic, a tuple struct or a unit
 //! struct, and a `repr` or a `cfg` on a record or its field (§1.3); an
 //! attribute other than a doc comment on a `const` or a `fn`; a generic or a
-//! `where` clause on a `fn` (a `const` generic by a message saying a count is
-//! a literal or a `usize` const, §1.2 of the bound plan), and on a `const`,
+//! `where` clause on a `fn` (a `const` generic by a message saying a count
+//! makes no program of its own, §1.2 of the bound plan), and on a `const`,
 //! which syn hands over as an unknown item and the item refusal names;
 //! generic arguments on a name, at a call or not; a function, spelled any
 //! way, as a parameter of the closure form (rustc's E0562 of an `impl` type:
@@ -619,9 +619,10 @@ fn refuse_layout_attributes(attrs: &[syn::Attribute]) -> syn::Result<()> {
 }
 
 /// A `fn` takes no generics: a value is an `f32` or a `bool`, a record is one
-/// of the block's, a kernel is `impl Fn(f32, f32) -> f32`, and a count is a
-/// literal or a `usize` const, evaluated at expansion. A `const`'s generics are
-/// refused here too, though syn gives such an item the item refusal first.
+/// of the block's, a kernel is `impl Fn(f32, f32) -> f32`, and a count is
+/// built from literals and `usize` consts with `+ - * /` at expansion. A
+/// `const`'s generics are refused here too, though syn gives such an item the
+/// item refusal first.
 fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
     if let Some(param) = generics.params.first() {
         return Err(syn::Error::new_spanned(param, generic_refusal(param)));

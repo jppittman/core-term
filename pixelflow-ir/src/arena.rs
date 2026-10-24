@@ -402,12 +402,11 @@ pub struct NaryChildren {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprNode {
     /// A bound variable: a lattice coordinate ([`COORD_AXES`] of them, X and
-    /// Y), a reduction binder's index (from [`REDUCE_BINDER_BASE`],
-    /// [`REDUCE_BINDERS`] of them), or — in the macro front end
-    /// only, before substitution — a parameter placeholder. Which one an
-    /// index means is [`ExprArena::push_var`]'s documentation; the indices
-    /// between the coordinates and the binders are not a hole to grow into,
-    /// they are where Z and W used to be and nothing may claim them.
+    /// Y) or a reduction binder's index (from [`REDUCE_BINDER_BASE`],
+    /// [`REDUCE_BINDERS`] of them). Which one an index means is
+    /// [`ExprArena::push_var`]'s documentation; the indices between the
+    /// coordinates and the binders are not a hole to grow into, they are where
+    /// Z and W used to be and nothing may claim them.
     Var(u8),
     /// A literal: a number or a mask. See [`Lit`].
     Const(Lit),

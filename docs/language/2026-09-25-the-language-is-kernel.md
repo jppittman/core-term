@@ -194,15 +194,16 @@ sugar for a block with one entry.
 |---|---|---|
 | `f32` | a value | an `f32` lane |
 | `bool` | a mask; comparisons produce it; `&` and `\|` combine it | an all-ones or all-zero lane; a constant one is `Lit::Mask(bool)` |
-| `usize` | a fold binder or a count (a literal or a `usize` const) | `Var(REDUCE_BINDER_BASE + slot)`; converted by an explicit `i as f32` |
+| `usize` | a fold binder or a count (built from literals and `usize` consts with `+ - * /`) | `Var(REDUCE_BINDER_BASE + slot)`; converted by an explicit `i as f32` |
 | records | named `f32` fields | flattened at lowering |
 | `impl Fn(f32, f32) -> f32` | a kernel-typed parameter: a kernel the host passes at run time, applied `k(x, y)` (Phase D-a, done) | none of its own: each application splices the argument's term, `k[X := x, Y := y]` (`ExprArena::apply`) |
 | `u32` bits | packed words (Phase D) | `Bits` ops |
 
 **No collection types** (JP, 2026-10-01: *"No arrays at all."*). The
 language has no arrays, families, lists or tables. A count of things is not
-a type. It is a fold's bound, a value
-([a bound is a value](2026-10-20-a-bound-is-a-value.md) §1.2).
+a type. In `kernel!` it is a fold's bound, a value
+([a bound is a value](2026-10-20-a-bound-is-a-value.md) §1.2); the font's piece count is
+how many instances the host composed (§1.7) until that plan's B2.
 
 **Masks are typed.** Today `X.select(Y, 7.0)` compiles and blends a number as
 a mask. F: probe p16 gives 5. After this plan it is a type error.

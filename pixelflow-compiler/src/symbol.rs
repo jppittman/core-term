@@ -34,7 +34,7 @@
 //!
 //! ## Parameter Symbols
 //!
-//! An entry's parameters are its uniforms
+//! An entry's `f32` and record parameters are its uniforms
 //! (docs/language/2026-09-25-the-language-is-kernel.md §1.4): `|cx: f32, cy:
 //! f32|` produces `move |cx: f32, cy: f32| -> Kernel`, whose kernel declares
 //! one uniform per parameter with the call's value as its default, and a
