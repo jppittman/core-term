@@ -164,3 +164,52 @@ Every finding accepted except where said. Code and docs both.
   `Staged::open`'s doc says that. Check it against the code.
 - **R14's reason in impl.md** takes the probe's corrections (E0308, not E0530/E0005; the family is every
   `__` local, `__arena`/`__root` beside any entry). BACKLOG C11 already says so.
+
+## Round 2 (reviews `review2.{docs,code}.md`, on the round-1 tree, committed as 0c3b52a)
+
+**C1 was wrong, and is replaced.** A `Param` is not a rewrite rule's metavariable: a rule template's
+metavariables are `Var`s, a `Param` on a template's left-hand side matches nothing, and one on its right-hand
+side panics (`graph.rs:1720`). The fixer was right to depart. What is true, from the code (re-grep it:
+`push_param`, `ExprNode::Param`, `ENode::Param`, `Shape::Param`, `rewrite.rs:42`'s `par` arm): a `Param` is a
+leaf with no value, an unbound scalar slot; it is never folded, matched by no rewrite rule, and its derivative
+is zero; nothing in the pipeline builds one (`kernel!` builds none since A5), only tests and the corpus and
+NNUE readers that round-trip one. Every doc, comment and message says that much and no more, and none
+mentions a builder, a template hole, substitution or specialization.
+
+- **D1 (blocking):** the docs at `kind.rs:219`, `egraph/node.rs:248`, `egraph/insert.rs:52` and `:89`,
+  `runtime.rs:150`, `expr.rs:32`, `term.rs:104`, and `tests/ir_insert.rs:148`, plus the assert messages at
+  `ir_insert.rs:165`, `:167`, `:172` and `:174`. The asserted substring changes too if it names a builder. Both
+  panics change: `pixelflow-compiler/src/emit.rs:439-445` becomes "kernel! produced ExprNode::Param({k}):
+  lowering builds none", and `pixelflow-codegen/src/program/lower.rs:373-376` becomes
+  "ExprNode::Param({}) reached the JIT emitter: a `Param` has no value". Grep for a test that asserts either
+  message and update it. Plan §4 (`:434-435`) changes "`Param(u8)` stays: it is also a rewrite rule's
+  metavariable, and its deletion is the-language-is-kernel D2's…" to what is true: it stays, nothing in the
+  pipeline builds one, and its deletion is D2's, on that plan's schedule. Also correct the ontology rows (D2)
+  and any `.claude` or docs row naming a `Param` as a builder's slot or a rule's metavariable.
+- **D7:** the same correction outside the diff, wherever a comment says a `Param` is substituted,
+  specialized or arrives from a builder: `variance.rs:374`, `egraph/cost.rs:105`, `saturate_pass.rs:19-20`,
+  `kind.rs:802-803`, `nnue/factored.rs:604` and `:778` (that panic's message too), and `arena.rs:407` if it
+  is about `Param`. Grep `substitut|specializ|builder` within a few lines of `Param` across the workspace.
+- **D2 (blocking):** the ontology's `Param` "Is" (`.claude/skills/ontology/language.md:356-360`) gets the
+  denotation above. The history quote goes.
+- **D3 (blocking):** the plan's A5 Done line and A7 bullet name `emit.rs`'s `inside`, which lost its generic
+  and whose count nothing read. Re-check both sentences against the diff 7e9531e..HEAD, entry by entry.
+- **D4 (blocking):** `BOUND_PLAN`'s doc: "The plan that made a fold's bound a value, named by the `const`
+  generic refusal." Leave intent.md's "each citing its plan section (`PLAN`, `BOUND_PLAN`)": each refusal cites
+  one of the two.
+- **D5:** "every parameter is a uniform" and "one entry is one program" are scoped to what is true:
+  `binding_times.rs:4-7`, `intent.md:30`, `parser.rs:97`, `sema.rs:28`, `emit.rs:37-38`. An `f32` or a record
+  parameter is a uniform, and a kernel-typed one is a kernel. Read each sentence and say what holds.
+- **D6:** the plan's Order paragraph (`:535`) says `:186` and drops "which follow #1431" where R15 moved
+  `:179`.
+- **D8:** `generic_refusal`'s doc: "a `const` one says what a count is now; any other, that nothing in a
+  kernel is generic".
+- **D9:** ontology `compiler.md:85`'s Lives: "Templates are `arena_to_tokens`' output, or `Staged`'s for an
+  entry that takes a kernel (`pixelflow-compiler/src/emit.rs`)". Check it against the entry's Is.
+- **R2C-1 (blocking):** a record's `where` clause is refused at `where_clause.where_token.span`, as a `fn`'s
+  is (`parser.rs:342`), so BACKLOG C12 is true.
+- **R2C-2 (blocking):** `generic_arguments_refusal`'s doc: "It is spanned on the turbofish, the tokens that are
+  wrong." G8 then holds as stated.
+- **R2C-3:** the three method sites treat an empty turbofish as absent (`arguments.args.is_empty()`), as
+  the name arms do, so `::<>` means no arguments everywhere in the front end. Add a case to the parser test
+  if one fits.
