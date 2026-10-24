@@ -1,3 +1,0 @@
- Documenting pixelflow-codegen v0.1.0 (/home/user/pixelflow/pixelflow-codegen)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.43s
-   Generated /dev/shm/a4-c2-tchk/doc/pixelflow_codegen/index.html

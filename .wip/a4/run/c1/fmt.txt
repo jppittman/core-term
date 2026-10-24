@@ -1,1 +1,0 @@
-fmt EXIT 0

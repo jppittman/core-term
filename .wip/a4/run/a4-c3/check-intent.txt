@@ -1,1 +1,0 @@
-OK: 51 intent files present, shaped to the template, and every path they name resolves

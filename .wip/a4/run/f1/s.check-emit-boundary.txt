@@ -1,3 +1,0 @@
-self-test OK: 66 cases
-OK: emit/ and program/ boundaries hold (25 files)
-EXIT 0

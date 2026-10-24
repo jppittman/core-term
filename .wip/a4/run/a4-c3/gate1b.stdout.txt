@@ -1,6 +1,0 @@
-/dev/vda        252G   36G  3.3G  92% /
-built /home/user/scratch/gates-bin/bin.gate1b (from /home/user/pixelflow/target.noindex/release/deps/pixelflow_graphics-a88dd7d285dddc9d)
-selfcheck n=2  probe=22ad8819798461a6  pinned=22ad8819798461a6  equal
-selfcheck n=40  probe=e95137a9d464391e  pinned=e95137a9d464391e  equal
-wrote /home/user/pixelflow/.wip/gates/out/gate1b.a4-c3.txt (29 lines, sha256 4101ba0bd24c1ae0...)
-IDENTICAL to gate1b.base.txt

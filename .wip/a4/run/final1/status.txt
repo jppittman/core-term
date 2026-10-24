@@ -1,5 +1,0 @@
-codegen avx2 rc=0
-codegen avx512 rc=0
-ir rc=0
-search rc=0
-DONE

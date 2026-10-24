@@ -1,2 +1,0 @@
-OK: all 29 src/bin targets are declared in their Cargo.toml
-EXIT 0

@@ -1,2 +1,0 @@
-OK: every crate's every feature builds in isolation
-EXIT 0
