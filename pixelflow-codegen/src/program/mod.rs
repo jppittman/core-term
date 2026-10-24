@@ -423,7 +423,7 @@ impl ScheduledOp {
     /// (lowering maps it to its operand), so it keeps its operand's answer.
     ///
     /// A mask is a bit pattern, not a number, and a target may hold it in a
-    /// file of its own (AVX-512's opmasks, where no head parameter can be), so
+    /// file of its own (AVX-512's opmasks), so
     /// what a position that needs a number may take is asked here, before any
     /// target is chosen. The bitwise rule is the selector's own (`on_masks`);
     /// that a comparison is a mask, and that nothing else is, is the selector's

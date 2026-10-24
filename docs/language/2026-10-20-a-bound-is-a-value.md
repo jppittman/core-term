@@ -320,7 +320,8 @@ its edge.
 - `PeelFold`/`HalveFold` fire only on a known range; Peel plans `hi − s` as a new `Lit`.
   `EmptyFold` (`fold_rules.rs:319`) fires only on a known empty range (L6). `FactorFold`
   declines a known empty range only; under a value bound it factors, accepting the
-  infinite-`c` edge at a runtime `n = 0` (decision 5). `substitute`/`rebuild` (`fold_rules.rs`)
+  infinite-`c` edge at a runtime `n = 0` and, for a literal zero `c`, the annihilated fold
+  and its guard with it (decision 5). `substitute`/`rebuild` (`fold_rules.rs`)
   follow L7; `rebuild`'s comment (`fold_rules.rs:600-606`) is rewritten, since its premise
   ("its class's variance excludes it") now rests on L3 and L4 adds the bounds' bits.
   `ENode::variance` follows L4 in the same CL as the IR's; `insert` and `add` refuse L3 as
@@ -383,11 +384,10 @@ its edge.
   panics). `FoldHeader::new` already refuses a stride other than 1 beside a value bound, so
   no stride assert is added. A value bound the emitter holds as a mask (a comparison, or a
   bitwise and/or of two such) is refused by name, at either end and on every tier, by
-  `ScheduledOp::is_mask`: a mask names no count (`BoundSort`). A mask `lo` is also what made
-  it urgent, since the loop's seed is a head parameter, which AVX-512 would hold in an
-  opmask and panic on in selection while AVX2 and NEON read its bits as a float; every op that
-  reads `hi` (the latch's compare, the guard's tests, a body that reads it too) widens an
-  opmask operand, so a mask `hi` would not panic. Any other bound whose value is
+  `ScheduledOp::is_mask`: a mask names no count (`BoundSort`). Without the refusal every tier
+  would read the mask's bits as a float: a value `lo` is seeded `lo + 0`, and AVX-512 widens
+  an opmask there (`vpmovm2d`), so all ones reads as NaN, which fails the guard's domain test,
+  and all zeros as the count 0. Any other bound whose value is
   a mask, a select between two masks, is a lane read as a float on every tier alike, which
   the guard turns into NaN or a count. The predicate and the AVX-512 selector share the
   bitwise rule (`BinaryOp::on_masks`), and a test selects every op that reads a lane over a

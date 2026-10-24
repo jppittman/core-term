@@ -264,9 +264,7 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
 /// bug and not a kernel's. A bound the emitter holds as a mask
 /// (`ScheduledOp::is_mask`: a comparison, or a bitwise and/or of two such) is
 /// refused by name (`BoundSort`), at either end and on every tier alike: a mask
-/// names no count. For `lo` the tiers would also disagree, since the loop's
-/// seed is a head parameter, which AVX-512 would hold in an opmask and panic on
-/// in selection, where AVX2 and NEON would read its bits as a float.
+/// names no count.
 pub(crate) fn arena_to_schedule(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -525,12 +523,9 @@ pub(crate) fn arena_to_schedule(
                         panic!("arena_to_schedule: {refusal}");
                     }
                     assert_off_the_lattice(end, reads, lattice);
-                    // A mask names no count, at either end. A mask `lo` is
-                    // also the loop's seed, a head parameter, which a target
-                    // that holds a mask in a file of its own cannot take:
-                    // AVX-512 panics there, and the other tiers would read
-                    // its bits as a float. `is_mask` asks, before selection,
-                    // which file AVX-512 will pick.
+                    // A mask names no count, at either end, in whichever
+                    // file a target keeps it: `is_mask` asks, before
+                    // selection, what the emitter will hold as one.
                     assert!(
                         !masks.is_mask(&schedule, map_child(term)),
                         "arena_to_schedule: {}: the bound is a mask (a comparison, or a \
@@ -856,10 +851,7 @@ mod tests {
     /// at either end and on every tier alike, by `ScheduledOp::is_mask`, which
     /// AVX-512's selector is held to: a comparison, a bitwise op on two masks, a
     /// reinterpretation of either. A bitwise op on a mask and a number is a
-    /// number, and a count. `lo` is the end AVX-512 would panic on in selection
-    /// (the loop's seed is a head parameter, and none is in the opmask file);
-    /// every op that reads `hi` (the latch's compare, the guard's tests, a body
-    /// that reads it too) widens an opmask operand, so it would not.
+    /// number, and a count.
     #[test]
     fn a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask() {
         let lt = |a: &mut ExprArena, c| {

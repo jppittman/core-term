@@ -413,3 +413,102 @@ a defect.
   lines hold no `.wip` path, ruling label or model name.
 - Not rerun: `check-feature-matrix.sh` (no feature, cfg or dependency changed) and `measure.sh` (gates 1, 1b,
   2, 2x are identical: the seed add exists only in a fold whose `lo` is a value).
+
+# A4 closing fixes, round 3 (TAG=a4-close3)
+
+Base of this round: ccb24ba. Gate failures: none. Every item was checked against the code first. Round 2's
+seed (`lo + 0.0` for a value `lo`, `select.rs`) made two kinds of doc false; this round corrects the docs and
+the one test that went vacuous, and adds the pins the findings named. No emitted code changed.
+
+## Blocking
+
+- **1. Two docs say the allocator copies a loop parameter** (semantics): real. `select.rs` seeds a
+  `Bound::Value` `lo` with `lo + 0.0`, so the inner fold's entry argument is that Add's result: fresh, read
+  by nothing after the jump, so `LinearScan::pass` -> `home` hands its lease over (`once && !live_after`)
+  and `copy_of` is not reached. Checked by reading `pass`/`home` and the seed (the reviewer's instrumented
+  run, which printed a copy only with the round-1 seed, was not repeated). Fixed:
+  - `an_inner_fold_starting_at_the_outer_index`'s doc now says the inner counter is seeded `i + 0.0`, a fresh
+    value, so the entry argument is not the outer counter itself, and each trip of the outer fold starts the
+    inner one at that trip's index. The test stays: it pins a value `lo` that is an enclosing index, on both
+    paths, which is semantics and not the allocator.
+  - `every_backend_emits_a_fold_whose_bound_is_a_value`'s doc: the seed "reads another loop's counter
+    (`i + 0`, added where the fold is entered)", and the loop's forms are the seed's add of zero, a compare of
+    two registers and the arm skip ("a copy" is gone).
+  - The copy path itself: no kernel reaches it now. It was not reachable at the base either (every seed was a
+    constant), and the allocator has no unit tests to pin it with; `home`'s copy arm is unchanged and stays
+    defensive. Not pinned, said plainly here.
+- **2. Seven docs give a tier reason that round 2 made false** (literal-craft): real. `LaneOp::Binary` on
+  AVX-512 calls `op.on_masks(..)`, which is `None` for `Add`, so `a.vector(b)` widens the opmask
+  (`vpmovm2d`) and a mask `lo` no longer panics in selection: every tier reads its bits as a float (all ones is
+  NaN, which fails the guard's domain test; all zeros is the count 0). The refusal is still right, because a
+  mask names no count. The asymmetry rationale (lo panics on AVX-512, hi does not) is removed, not
+  rewritten, at all seven sites, leaving the law: a mask names no count, refused at either end on every tier.
+  Sites: `pipeline.rs` (`compile`'s doc), `lower.rs` (`arena_to_schedule`'s doc, the inline comment at the
+  refusal, the doc of `a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask`), `emit/avx512.rs`
+  (the doc of `a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask`), `tests/value_bounds_jit.rs`
+  (`a_bound_that_is_a_mask_is_refused_by_name`), and the plan's lowering bullet. The plan keeps one true tier
+  note (the `lo + 0` seed widens an opmask) and drops "every op that reads `hi` widens an opmask operand",
+  which is not exact (a bitwise and/or of `hi` with another mask stays in the opmask file). An eighth site the
+  grep found, not on the list: `ScheduledOp::is_mask`'s doc said "(AVX-512's opmasks, where no head parameter
+  can be)"; now "(AVX-512's opmasks)".
+- **3. The guard-placement list gives two answers for one fold** (literal-craft): real, reproduced on the
+  reviewer's kernel `Σ_{i<8} Σ_{j<u}(X + j + i)`: the guard's two selects land in the `i` fold's scope, not the
+  column fold's. `emit/mod.rs`'s list is now exclusive, innermost first, "the first of these that holds": an
+  enclosing fold's scope once per trip (when the fold's body or bound reads that fold's index, the innermost
+  such fold's); else the column fold, per batch (reads `X`); else the row fold, per row (reads `Y`); else the
+  body, once per call. New pin, as the reviewer proposed:
+  `a_guard_around_a_fold_that_reads_an_enclosing_index_is_that_folds` (`Σ_{i<8} Σ_{j<8}(X + j + i)`, the inner
+  count a value, against its literal twin): the `i` fold's scope gains exactly the two selects, the column
+  fold's gains none, and on AVX-512 the `i` fold's scope gains loads (the opmask reload per trip). Mutations,
+  both tiers: asserting the two selects in the column fold's scope instead fails (`instructions: 3` against
+  `1` in the `i` fold's scope, and the column fold has none); a body that no longer reads `i` moves the
+  inner fold out of the `i` fold and fails the same-loop assertion first.
+- **4. `a_guard_around_a_fold_that_reads_only_y_is_the_row_folds` finds the wrong "column fold" on AVX-512**
+  (literal-craft): real. The fold over `k` runs 4 x 7 = 28 times against the column fold's 4 x (64/16) = 16, so
+  "the most-run known scope" was the `k` fold there and the column assertion compared it. The scope is now
+  found by its own trip count: new helpers `lanes()` (`jit_vector_bytes() / 4`), `column_trips()` (rows x
+  `width.div_ceil(lanes)`, no remainder at `SHAPE`'s width) and `scope_running(traffic, trips)`, which panics
+  unless exactly one scope runs that often, so a collision between two folds' counts is loud. The test and the
+  new pin share them. The comment now says what is true. Mutation, both tiers: the value and literal kernels
+  both read `X` in the `k` fold (so the guard moves to the column fold) with the row assertion removed: the
+  test fails on "the column fold, run in every batch, runs none of the guard" (`instructions: 7` against
+  `5`), AVX-512 included, where the old search compared the `k` fold and could not.
+
+## Non-blocking, applied
+
+- **`lower.rs`'s "every op that reads `hi` widens an opmask operand"** (semantics): real, removed with item 2.
+- **`over_values`' "makes the fold NaN" has an exception it does not list** (semantics): real, reproduced by
+  the new test: `Σ_{k<n} 0·(X + k)` at `n` = NaN and 2.5 is NaN as written and exactly `+0.0` through
+  `jit_cache::compile`, on avx2 and avx512 (the factored `0` is annihilated with the fold, so the guard has
+  nothing to wrap). In the domain the paths agree. The doc now lists both edges `FactorFold` accepts
+  (decision 5): the factored form at a runtime-empty range, and a literal zero factor; `FactorFold`'s own doc
+  gets the paragraph ("A literal zero `c` takes its fold with it"), and the plan's lowering bullet says so.
+  Pin: `a_zero_factor_takes_the_fold_and_its_guard_with_it`, in domain both paths give `0`, outside as written
+  NaN and optimized NaN or `+0.0` (the claim is the edge's existence, not a promise of which). `CLAUDE.md:180`
+  is left: it states the denotation, and the optimizer's departures from it are what the "Floating point at
+  the edges" section already says, which is also where the empty-range edge, never listed there, lives.
+- **`jit_cache.rs`'s `# Panics` paragraph** (literal-craft): real. Reflowed to the paragraph's width, and the
+  colon that read as introducing the `over_values`/`from_parts` clause is a sentence break ("since a mask
+  names no count.").
+
+## Skipped
+
+None.
+
+## Verification (TAG=a4-close3; outputs in .wip/a4/run/c3/ and .wip/gates/out/*.a4-close3.*)
+
+- Gates 1 (both tiers, 127 lines each), 1b (29), 2 (29), 2x (29): all exit 0, IDENTICAL to base.
+  `git status --short pixelflow-graphics` is empty (the probe file `tests.rs` is clean). LFS count 68.
+- `cargo test -p pixelflow-codegen`, PIXELFLOW_ISA=avx2 and =avx512: 209 passed, 0 failed each (`--lib` 102;
+  `tests/value_bounds_jit.rs` 31 each, the 29 of round 2 and the two above). `-p pixelflow-ir` 397 passed,
+  `-p pixelflow-search` 434 passed (doc-only changes in both; the ir doctests ran).
+- `cargo +1.99.0 clippy --workspace --all-targets --all-features -- -D warnings`
+  (`CARGO_TARGET_DIR=/home/user/scratch/a3-close1/t199`): exit 0. `cargo fmt --all -- --check`: clean.
+  `RUSTFLAGS="-D warnings" cargo check -p pixelflow-ir|pixelflow-search --no-default-features`: ok.
+  `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p pixelflow-codegen --document-private-items`: ok; rustdoc
+  comparison against the a747770 bases: ir 38/38, search 28/28, codegen 0/0, NEW 0.
+- Reduce-site checklist: UNCLASSIFIED 0, STALE 0. check-intent, check-doc-paths, check-cfg-encapsulation,
+  check-emit-boundary, check-bin-declarations: exit 0. Every `intent.md` within 80 lines. Added lines hold no
+  `.wip` path, ruling label or model name (`git diff a747770 -- . ':!.wip'`).
+- Not rerun: `check-feature-matrix.sh` (no feature, cfg or dependency changed), `measure.sh` (no emitted code
+  changed: tests and doc comments only, and gates 1, 1b, 2, 2x are identical).

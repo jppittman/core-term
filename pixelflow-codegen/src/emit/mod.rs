@@ -39,12 +39,12 @@
 //!
 //! The guard's masks are the call's when the bounds are. Its arm tests sit
 //! where the fold does, in the innermost scope of the nest that the fold reads,
-//! and run as often as that scope does:
-//! - in the column fold, in every batch of it, for a fold that reads `X`;
-//! - in the row fold, once per row, for one that reads `Y` alone;
-//! - in an enclosing fold's scope, once per trip of it, for one whose body or
-//!   bound reads that fold's index;
-//! - in the body, once per call, for one that reads none of these.
+//! and run as often as that scope does. The first of these that holds:
+//! - in an enclosing fold's scope, once per trip of it, when the fold's body or
+//!   bound reads that fold's index (the innermost such fold's);
+//! - in the column fold, in every batch of it, when it reads `X`;
+//! - in the row fold, once per row, when it reads `Y`;
+//! - in the body, once per call, when it reads none of these.
 //!
 //! A mask the register file cannot keep across the trips of that scope (an
 //! opmask, on AVX-512) is reloaded each time the scope runs.
@@ -1612,14 +1612,14 @@ mod tests {
     /// A fold whose bound is a value, on every backend from this host: the
     /// guard's arms around a loop whose counter starts at one lane and ends at
     /// another. Three shapes that reach what a literal fold never does: a
-    /// seed that is another loop's counter (the allocator copies a parameter
-    /// it must not hand over), a bound read by nothing in the body that must
-    /// live across a wall of values, and a ragged row whose main and
-    /// remainder column folds both open the loop.
+    /// seed that reads another loop's counter (`i + 0`, added where the fold
+    /// is entered), a bound read by nothing in the body that must live across
+    /// a wall of values, and a ragged row whose main and remainder column
+    /// folds both open the loop.
     ///
-    /// NEON cannot run here; selection, allocation and assembly can, and the
-    /// loop uses no form a literal fold does not: a compare of two registers,
-    /// the arm skip, a copy.
+    /// NEON cannot run here; selection, allocation and assembly can, and a
+    /// value-bounded loop adds to a literal one only the seed's add of zero,
+    /// a compare of two registers and the arm skip.
     #[test]
     fn every_backend_emits_a_fold_whose_bound_is_a_value() {
         use pixelflow_ir::fold::Monoid;

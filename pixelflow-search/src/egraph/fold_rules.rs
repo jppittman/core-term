@@ -505,6 +505,11 @@ pub struct EmptyFold;
 /// - a negative `c`, where `c·(+0)` is `-0.0`;
 /// - for `MIN` and `MAX`, a NaN `c`.
 ///
+/// **A literal zero `c` takes its fold with it.** The `Mul` annihilator rewrites
+/// `0 · Σ f` to `0`, so no fold is left for the guard `passes::legalize` builds
+/// to wrap, and a bound that is no count (NaN, a fraction, past 2²⁴) gives `0`
+/// where the fold as written is NaN. In the domain the answers agree.
+///
 /// **Floating point.** Min and max with `Add` are exact: `fl(c + f)` is
 /// monotone in `f`, so `min_i fl(c + f_i) = fl(c + min_i f_i)` bit for bit,
 /// except where a NaN is involved or a zero's sign is chosen — both already

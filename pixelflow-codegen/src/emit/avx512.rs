@@ -625,9 +625,8 @@ mod tests {
     }
 
     /// Lowering refuses a fold's bound that is a mask (`ScheduledOp::is_mask`),
-    /// which names no count; on this tier a mask `lo` would also panic in
-    /// selection, since the opmask file is where it is kept and a loop's seed,
-    /// a head parameter, cannot be there. The two answer one question: this
+    /// which names no count, by asking before selection which values this tier
+    /// will keep in the opmask file. The two answer one question: this
     /// selects every op that reads a lane over a mask and a number in every
     /// operand position (unary, shift, compare, binary, mul-add, the select,
     /// gather and broadcast), and asks the file each result lands in. A

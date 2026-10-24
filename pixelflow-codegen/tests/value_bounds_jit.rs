@@ -255,6 +255,39 @@ fn a_count_outside_the_domain_is_nan_and_never_hangs() {
     }
 }
 
+/// `Σ_{k<n} 0·(X + k)`: the optimizer factors the literal zero out of the fold
+/// and annihilates it (`FactorFold`, then `0·x = 0`), so no fold is left for
+/// the guard to wrap. A count in the domain gives `0` on both paths; one that
+/// is none gives NaN as written and, optimized, `0` or NaN. This is the edge
+/// `Kernel::over_values` documents, recorded here so that it is not found
+/// again.
+#[test]
+fn a_zero_factor_takes_the_fold_and_its_guard_with_it() {
+    fn zero_times(n: f32) -> Kernel {
+        Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| {
+            zero().mul(&Kernel::x().add(k))
+        })
+    }
+    for n in [0.0f32, 3.0] {
+        let planes = both(SHAPE, move || zero_times(n));
+        assert_plane(SHAPE, planes, &format!("n = {n}"), |_, _| 0.0);
+    }
+    for n in [f32::NAN, 2.5] {
+        let written = within(move || run_raw(&zero_times(n), SHAPE).0);
+        assert_plane(
+            SHAPE,
+            [("as written", written)],
+            &format!("n = {n}"),
+            |_, _| f32::NAN,
+        );
+        let optimized = within(move || run_linked(&zero_times(n), SHAPE));
+        assert!(
+            optimized.iter().all(|v| v.is_nan() || v.to_bits() == 0),
+            "n = {n} (optimized): every sample is NaN or +0.0"
+        );
+    }
+}
+
 /// A value `lo` outside the domain beside a literal `hi` is NaN too, and the
 /// loop is not entered: the guard tests `lo` although `hi` is a count already.
 /// `-∞` is the case that hangs unguarded, for `-∞ + 1` never reaches `9`.
@@ -496,10 +529,10 @@ fn a_literal_lo_beside_a_value_hi() {
 }
 
 /// `Σ_{i<8} Σ_{j∈[i,8)} (X + j)`: a value `lo` that is an enclosing index.
-/// The inner counter is seeded with the outer loop's own counter, which is
-/// live after the jump (the outer latch steps it), so the allocator copies it
-/// rather than handing its lease over. No other kernel gives a loop's
-/// parameter as another loop's entry argument.
+/// The inner counter is seeded with `i + 0.0`, a fresh value (a value `lo` is
+/// always seeded its lane plus zero), so the inner loop's entry argument is
+/// not the outer counter itself, which the outer latch steps. Each trip of
+/// the outer fold starts the inner one at that trip's index.
 #[test]
 fn an_inner_fold_starting_at_the_outer_index() {
     let build = || {
@@ -650,6 +683,38 @@ fn traffic_of(kernel: &Kernel) -> (EmitTraffic, u64) {
     (compiled.traffic, compiled.frame_bytes)
 }
 
+/// How many lanes one batch of the column fold holds on this host.
+fn lanes() -> u64 {
+    u64::try_from(pixelflow_codegen::jit_vector_bytes() / size_of::<f32>())
+        .expect("a lane count fits u64")
+}
+
+/// How many times the column fold's body runs per call at [`SHAPE`]: once per
+/// batch of every row. [`SHAPE`]'s width divides by every lane count, so no
+/// remainder fold runs beside it.
+fn column_trips() -> u64 {
+    let [width, rows] = SHAPE.extent().map(u64::from);
+    rows * width.div_ceil(lanes())
+}
+
+/// The scope of `traffic` whose body runs `trips` times per call. A value
+/// bound and its literal twin have one nest, so a scope found in the twin,
+/// where every count is known, names the same fold in both. A scope is found by
+/// how often it runs and not by being the most run: which fold runs most
+/// depends on the lane count.
+#[track_caller]
+fn scope_running(traffic: &EmitTraffic, trips: u64) -> usize {
+    let mut running =
+        (0..traffic.trips.len()).filter(|&at| traffic.trips[at] == Trips::Known(trips));
+    match (running.next(), running.next()) {
+        (Some(scope), None) => scope,
+        _ => panic!(
+            "exactly one scope runs {trips} times per call: {:?}",
+            traffic.trips
+        ),
+    }
+}
+
 /// The wall over `hi` trips when `hi` is a count, and over a literal seven
 /// when it is `None`: the kernel a value bound is compared with.
 fn the_wall_over(hi: Option<f32>) -> Kernel {
@@ -734,21 +799,13 @@ fn a_guard_around_a_fold_that_reads_only_y_is_the_row_folds() {
     let (value, _) = traffic_of(&over(Some(7.0)));
     let (literal, _) = traffic_of(&over(None));
 
-    // The row fold runs once per row; the column fold, which no literal count
-    // loops inside, is the nest's most-run known scope.
-    let rows = Trips::Known(u64::from(SHAPE.extent()[1]));
-    let scope_of = |t: &EmitTraffic, trips: Trips| t.trips.iter().position(|&n| n == trips);
-    let row = scope_of(&literal, rows).expect("the row fold runs once per row");
-    let column = literal
-        .trips
-        .iter()
-        .enumerate()
-        .filter_map(|(scope, n)| n.known().map(|n| (n, scope)))
-        .max()
-        .map(|(_, scope)| scope)
-        .expect("the nest has known scopes");
-    assert_ne!(row, column);
-    assert_eq!(value.trips[row], rows, "{:?}", value.trips);
+    // The row fold runs once per row and the column fold once per batch of
+    // each. The fold over `k` runs seven times in every row, so a wide enough
+    // batch makes it, and not the column fold, the nest's most-run scope.
+    let rows = u64::from(SHAPE.extent()[1]);
+    let row = scope_running(&literal, rows);
+    let column = scope_running(&literal, column_trips());
+    assert_eq!(value.trips[row], Trips::Known(rows), "{:?}", value.trips);
 
     assert_eq!(
         value.scopes[row].instructions,
@@ -761,6 +818,59 @@ fn a_guard_around_a_fold_that_reads_only_y_is_the_row_folds() {
         value.scopes[column].instructions, literal.scopes[column].instructions,
         "the column fold, run in every batch, runs none of the guard: {:?} against {:?}",
         value.scopes[column], literal.scopes[column]
+    );
+}
+
+/// A guard around a fold that reads an enclosing fold's index sits in that
+/// fold's scope, once per trip of it, although the fold also reads `X`:
+/// `Σ_{i<8} Σ_{j<8} (X + j + i)` with the inner count a value, against its
+/// literal twin. The enclosing fold's scope gains the guard's two selects, and
+/// where the masks cannot stay in registers across its trips (AVX-512's
+/// opmasks), the reloads; the column fold, which runs in every batch, gains
+/// nothing.
+#[test]
+fn a_guard_around_a_fold_that_reads_an_enclosing_index_is_that_folds() {
+    const OUTER: u32 = 8;
+    let over = |inner: Option<f32>| {
+        Kernel::sum_over(OUTER, |i| match inner {
+            Some(n) => Kernel::over_values(Monoid::SUM, &zero(), &count(n), |j| {
+                Kernel::x().add(j).add(i)
+            }),
+            None => Kernel::sum_over(8, |j| Kernel::x().add(j).add(i)),
+        })
+    };
+    let (value, _) = traffic_of(&over(Some(8.0)));
+    let (literal, _) = traffic_of(&over(None));
+
+    let column = scope_running(&literal, column_trips());
+    let outer = scope_running(&literal, column_trips() * u64::from(OUTER));
+    assert_eq!(
+        value.trips[outer], literal.trips[outer],
+        "the enclosing fold is the same loop: {:?} against {:?}",
+        value.trips, literal.trips
+    );
+
+    assert_eq!(
+        value.scopes[outer].instructions,
+        literal.scopes[outer].instructions + 2,
+        "the enclosing fold runs the guard's two selects, one per mask, in every trip: \
+         {:?} against {:?}",
+        value.scopes[outer],
+        literal.scopes[outer]
+    );
+    assert_eq!(
+        value.scopes[column].instructions, literal.scopes[column].instructions,
+        "the column fold, run in every batch, runs none of the guard: {:?} against {:?}",
+        value.scopes[column], literal.scopes[column]
+    );
+    if isa::detect() != Isa::Avx512 {
+        return;
+    }
+    assert!(
+        value.scopes[outer].loads > literal.scopes[outer].loads,
+        "each trip reads the opmasks back: {:?} against {:?}",
+        value.scopes[outer],
+        literal.scopes[outer]
     );
 }
 
@@ -898,10 +1008,8 @@ fn a_fold_that_starts_at_a_mask() -> (ExprArena, ExprId) {
     (a, root)
 }
 
-/// A bound the emitter holds as a mask is refused by name, on every tier
-/// alike: a mask names no count. A mask `lo` is the end AVX-512 would panic on
-/// in selection, holding it in an opmask where the loop's seed, a head
-/// parameter, cannot be, while AVX2 and NEON would read its bits as a float.
+/// A bound the emitter holds as a mask is refused by name, at either end and
+/// on every tier alike: a mask names no count. This one is a `lo`.
 #[test]
 #[should_panic(expected = "BoundSort")]
 fn a_bound_that_is_a_mask_is_refused_by_name() {
