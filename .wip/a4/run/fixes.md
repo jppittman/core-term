@@ -647,3 +647,109 @@ None.
   `.wip`).
 - Not rerun: `check-feature-matrix.sh` (no feature, cfg or dependency changed) and `measure.sh` (no emitted code
   changed, and gates 1, 1b, 2, 2x are identical).
+
+# A4 final fixes, round 2 (TAG=a4-final2)
+
+Base of this round: a664498. Items are the final gates' reviewer's (4 blocking, 3 non-blocking), numbered in the
+order given, under the rulings' "Final round" (Z1 and the docs discipline). Every item was checked against the
+code first; no emitted code changed (tests, doc comments, the plan, the totality doc, one BACKLOG row). Gate
+failures: none.
+
+## Blocking
+
+- **1. `over_values` says "one exception" and "a literal zero factor"** (reviewer): real. Verified three ways.
+  `Annihilator::apply` (`pixelflow-search/src/math/algebra.rs:754`) fires on `egraph.contains_const(a, zero)`, a
+  class holding a 0, not a literal; `FactorFold`'s own doc already says `(i - i)·f`, merged with `0·f`, is
+  factorable; and a new pin runs `Σ_{k<n} (X - X)·(X + k)` through `run_raw` and `run_linked` on avx2 and avx512:
+  in the domain `0` on both, outside it NaN as written and exactly `+0.0` optimized, the same as the literal.
+  Not pinned, so not claimed in any doc: the reviewer's `u - u` and `Y·0` probes (scratch, 0/32 NaN).
+  - Docs now say "a factor the optimizer proves zero (a literal `0`, or one such as `X - X`)", scoped to `SUM`;
+    "one exception" became "an exception". Sites: `kernel.rs` `over_values`; `FactorFold`'s doc
+    (`fold_rules.rs`: "a `c` the graph proves zero ... a literal `0`, or a class merged with one, such as
+    `X - X`"); the plan's section 3.2 lowering bullet; BACKLOG E9. Each says it once where it lives and names
+    `FactorFold`'s doc or E9, as before.
+  - `the_annihilator_erases_the_domain_nan_of_a_zero_factored_fold` loops over the two spellings (`0`, `X - X`),
+    the spelling in every label; its doc says "a factor `z` the optimizer proves zero".
+- **2. A fold's count is not `hi - lo`** (reviewer): real. `guard.rs` builds `If(Lt(lo, hi), R, identity)`, so a
+  backwards pair is the empty fold, a count of 0, and `a_pair_that_runs_backwards_is_the_identity` pins `(5, 3)`.
+  A bound outside the domain has no count at all, so `max(hi - lo, 0)` would have been a second doubtful clause.
+  Deleted instead: the totality doc's paragraph now reads "so its count is known per call, or once per trip of the
+  enclosing fold whose index a bound is"; its table cell is `\|D\|` with the bounds' three kinds; the plan's
+  section 5 row says the same as the paragraph.
+- **3. The emit test doc is true of one bound kind each** (reviewer): real. Read: `select.rs` adds `+ 0.0` to the
+  seed only for a `Bound::Value` lo (:298-303); the latch compares against `self.bound(hi)`, a constant for a
+  literal `hi` and a looked-up lane for a value one; `ownership.rs` gives each `If` two regions of its own. The
+  reviewer's saved disassembly (`/home/user/scratch/a4-final2-q1/probe/{value,literal}.bin`, `objdump -D`) reads
+  as stated: the literal twin has 3 `je` (the loops' back edges), the value-bounded kernel 5, the same 3 and two
+  forward skips (0x96 to 0xee, 0xa2 to 0xda); the `ret` is at 0x17a and what follows is the constant pool. The
+  doc is split by bound: a value `lo` adds the seed's add of zero; a value `hi` adds a latch compare against a
+  register that may be reloaded at each trip; either adds the guard, its domain tests, its two selects and its
+  two arm tests ("arm tests" is the module doc's word, `emit/mod.rs:40`). `value_bounds_jit.rs`' row-fold test
+  doc says "the arm tests are read there".
+- **4. A pair's `hi` at 0 and a pair's `lo` at 1 are unpinned** (reviewer): real. Reproduced first: the reviewer's
+  P1 (the pair's hi lower bound 0 to 1, same op counts) passed the old suite on both tiers and the guard unit
+  tests. `a_pair_that_runs_backwards_is_the_identity` now also runs `(1, 0)` and `(1003, 1000)`, each for the four
+  monoids through `run_raw` and `run_linked`: 0 and 1000 at `hi`, 1 at `lo`.
+
+## Non-blocking, applied
+
+- **1. One uniform at both ends tests only NaN and 2.5 outside the domain** (reviewer): real; the reviewer's S1,
+  S2 and S3 passed the old suite. `one_value_at_both_ends_is_the_identity_in_the_domain_and_nan_outside` now
+  iterates 0, 7 and `2^24` and every value of `OUTSIDE`, with `names_a_count` as its oracle.
+- **2. The totality doc's `|D|` row does not render** (reviewer): real, `pandoc -f gfm -t html` showed a lone
+  backtick in the second cell. Escaped as `\|D\|` (the repo already does so in BACKLOG C1, C8); the same pandoc
+  run now renders the cell whole. Scanned every table row A4 added to a `.md` for an unescaped pipe inside a code
+  span: this was the only one.
+- **3. Craft: two tests repeat two blocks; five oracles restate the domain** (reviewer): real.
+  `a_value_lo_at_the_top_of_the_domain_beside_a_literal_hi` and
+  `a_pair_of_values_in_the_domain_runs_its_fold_up_to_the_top` are one test,
+  `a_value_lo_runs_its_fold_up_to_the_top_of_the_domain`, looping over `SPELLINGS` (`uniform`, `constant`) for
+  `hi` with the spelling in each label; the `Spelling` type moved to module level, so
+  `a_value_lo_of_negative_zero_starts_the_fold_at_positive_zero` uses the same constant. The five oracles
+  (`a_ragged_row_runs_the_guard_in_both_column_folds`, `a_bound_read_only_by_the_loop_reaches_its_latch`,
+  `a_bound_the_body_reads_too`, `a_literal_lo_beside_a_value_hi`, `each_monoid_runs_under_its_guard`) call
+  `names_a_count`; `grep -n "is_nan()\|fract()\|< 0.0"` on the file now finds only `names_a_count` itself,
+  `assert_plane`'s mask comparison, two test names and the one test that asserts NaN directly.
+
+## Skipped
+
+None.
+
+## Mutations (scratch copy `/home/user/scratch/a4-final2-q1`, driver `/home/user/scratch/a4-final2-fix/run.sh`; summary kept in `.wip/a4/run/final2/mutations.txt`)
+
+Baseline `M0_unmutated`: `value_bounds_jit` 35 tests pass on avx2 and avx512, guard unit tests pass. Each mutation
+keeps the guard's op counts (one constant or one arm moves), every guard unit test still passes, and each now
+fails on both tiers:
+
+| mutation | what it moves | fails |
+|---|---|---|
+| P1 | the pair's hi lower bound, 0 to 1 | `a_pair_that_runs_backwards_is_the_identity` (new) |
+| S1 | one id at both ends, lower bound 0 to -1 | `one_value_at_both_ends_is_the_identity_in_the_domain_and_nan_outside` (new values) |
+| S2 | one id at both ends, top to `2^24 + 2` | the same |
+| S3 | one id at both ends, top to `+inf` | the same |
+| MF | one id at both ends, top to 1000 | the same |
+| MA2, MC2 | the lone-lo arm's top to `2^24 - 1`, 1000 | `a_value_lo_runs_its_fold_up_to_the_top_of_the_domain` |
+| MB2 | the pair arm's top to `2^24 - 1` | the same |
+| MD2 | the pair arm's top to 1000 | the same, and `a_pair_that_runs_backwards_is_the_identity` |
+| P2 | the pair's lo lower bound, 0 to 1 | `a_value_lo_of_negative_zero_starts_the_fold_at_positive_zero` (unchanged) |
+
+`guard.rs` in the scratch copy is restored (`cmp` against this tree: equal).
+
+## Verification (TAG=a4-final2; outputs in .wip/a4/run/final2/ and .wip/gates/out/*.a4-final2.*)
+
+- Gates 1 (both tiers, 127 lines each), 1b (29), 2 (29), 2x (29): all exit 0, IDENTICAL to base. Gate 3 is not
+  scripted. `git status --short pixelflow-graphics` is empty (the probe file `tests.rs` is clean). LFS count 68.
+- `cargo test -p pixelflow-codegen`, PIXELFLOW_ISA=avx2 and =avx512: 213 passed, 0 failed each (`--lib` 102;
+  `tests/value_bounds_jit.rs` 35 each: the 36 of round 1, two tests merged into one). `-p pixelflow-ir` 397
+  passed, `-p pixelflow-search` 434 passed (doc-only changes in both).
+- `cargo +1.99.0 clippy -p pixelflow-ir -p pixelflow-search -p pixelflow-codegen --all-targets --all-features
+  -- -D warnings` (`CARGO_TARGET_DIR=/home/user/scratch/a3-close1/t199`): exit 0. `cargo fmt --all -- --check`:
+  clean (`cargo fmt -p pixelflow-codegen` reflowed the test file first).
+  `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p pixelflow-codegen --document-private-items`: ok; rustdoc
+  comparison against the a747770 bases: ir 38/38, search 28/28, NEW 0.
+- check-intent, check-doc-paths, check-cfg-encapsulation, check-emit-boundary, check-bin-declarations: exit 0.
+  Every `intent.md` within 80 lines. This round's added lines hold no `.wip` path, ruling label or model name
+  (`git diff` of the working tree against HEAD, outside `.wip`).
+- Not rerun: `measure.sh` and `check-feature-matrix.sh` (no emitted code, feature, cfg or dependency changed, and
+  gates 1, 1b, 2, 2x are identical), the two `--no-default-features` checks (the `ir` and `search` changes are
+  doc comments).

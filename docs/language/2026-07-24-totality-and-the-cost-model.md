@@ -109,7 +109,7 @@ Totality is the single rule — *every domain and every iteration count is fixed
 before the lattice is traversed, and none is a function of a coordinate* — showing
 up in four places. A fold's bounds are each a literal, a value known per call
 (a uniform, so one program serves every count), or an enclosing fold's index,
-so its count `hi − lo` is known per call, or once per trip of the enclosing
+so its count is known per call, or once per trip of the enclosing
 fold whose index a bound is ([a bound is a
 value](2026-10-20-a-bound-is-a-value.md)). The other three faces are static
 natural numbers: that plan's B1 makes the discrete-domain and typed-field
@@ -118,7 +118,7 @@ extents values known per call, and bounded iteration's trip count stays static.
 | Face | Fixed before the traversal |
 |---|---|
 | discrete domains | extent known at bake (static) |
-| reduction binder `⊕_{i∈D}` | `|D| = hi − lo`, each bound a literal, a value known per call, or an enclosing fold's index |
+| reduction binder `⊕_{i∈D}` | `\|D\|`, each bound a literal, a value known per call, or an enclosing fold's index |
 | bounded iteration (the "fixpoint") | trip count static |
 | typed fields | ground extents |
 

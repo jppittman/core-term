@@ -320,10 +320,11 @@ its edge.
 - `PeelFold`/`HalveFold` fire only on a known range; Peel plans `hi − s` as a new `Lit`.
   `EmptyFold` (`fold_rules.rs:319`) fires only on a known empty range (L6). `FactorFold`
   declines a known empty range only; under a value bound it factors, accepting the
-  infinite-`c` edge at a runtime `n = 0` (decision 5). Under `SUM` a literal zero `c` then
-  meets the `Mul` annihilator (`0·y → 0`), which removes the fold before the guard is
-  placed, so the optimized fold is `0` where the fold as written is NaN: the annihilation
-  rule's edge, in `FactorFold`'s doc and BACKLOG E9. `substitute`/`rebuild` (`fold_rules.rs`)
+  infinite-`c` edge at a runtime `n = 0` (decision 5). Under `SUM` a `c` the graph proves
+  zero (a literal `0`, or one such as `X − X`) then meets the `Mul` annihilator
+  (`0·y → 0`), which removes the fold before the guard is placed, so the optimized fold
+  is `0` where the fold as written is NaN: the annihilation rule's edge, in
+  `FactorFold`'s doc and BACKLOG E9. `substitute`/`rebuild` (`fold_rules.rs`)
   follow L7; `rebuild`'s comment (`fold_rules.rs:600-606`) is rewritten, since its premise
   ("its class's variance excludes it") now rests on L3 and L4 adds the bounds' bits.
   `ENode::variance` follows L4 in the same CL as the IR's; `insert` and `add` refuse L3 as
@@ -488,7 +489,7 @@ one program per font. "Hunk" names an open PR whose diff touches or abuts the li
 | `docs/DENOTATION.md:123-125`, `:140-142` | "Loop bounds, extents and ranges are never uniforms"; "the range is a static natural" | §1.1–§1.2 | A4 | none |
 | `docs/DENOTATION.md:246-248` | the lattice's extent is in the key | stands, with a pointer to §4's deferral | A1 | none |
 | totality doc `:97-99` | "Extents are concrete literals known at `bake` … we monomorphize on them regardless" | extents are values known per call; nothing monomorphizes on them | B1 | none |
-| totality doc, "One discipline, four faces" (the paragraph and its table) and consequence 5 | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; a fold's bounds each a literal, a per-call value or an enclosing index, so its count `hi − lo` is known per call, or once per trip of the enclosing fold whose index a bound is | A1 the rule; the paragraph, the reduction-binder row and consequence 5 A4 as built; the discrete-domain and typed-field rows B1 | none |
+| totality doc, "One discipline, four faces" (the paragraph and its table) and consequence 5 | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; a fold's bounds each a literal, a per-call value or an enclosing index, so its count is known per call, or once per trip of the enclosing fold whose index a bound is | A1 the rule; the paragraph, the reduction-binder row and consequence 5 A4 as built; the discrete-domain and typed-field rows B1 | none |
 | totality doc `:191-200` | "only dynamic *bounds* die … static max + early-out … cost is the static worst case `N`" | a per-call bound is a value, not a static max; the cost model's estimate is §1.5's | A4 | none |
 | `2026-10-15-kernels-evaluate-kernels.md:175` | "applying a discrete kernel over the wrong extent is a bake-time refusal by name" | a bind-time refusal | B1 | none |
 | the-language-is-kernel `:78-81`, §1.4 structural row, §1.5, §1.7, §1.6 `:296-314` | ranges constant; one program per piece count (2026-10-09); the host chooses a program by its piece count | a reversal note pointing here | A1 | none |

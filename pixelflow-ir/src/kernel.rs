@@ -791,11 +791,11 @@ impl Kernel {
     /// set to `2.5`, `−1`, NaN or `2²⁴ + 2` is none — makes the fold NaN (L5),
     /// and a pair that runs backwards at run time is the identity, up to the
     /// factoring edge `FactorFold` accepts at a runtime-empty range (decision
-    /// 5). The NaN has one exception on the optimized path: under
-    /// [`Monoid::SUM`], a body with a literal zero factor loses its fold to the
-    /// annihilation rule (`0·y → 0`, [`OpKind::annihilator`]), so no fold is
-    /// left for the guard to wrap and a bound that is no count gives `0`
-    /// (`FactorFold`'s doc).
+    /// 5). The NaN has an exception on the optimized path: under
+    /// [`Monoid::SUM`], a body factor the optimizer proves zero (a literal `0`,
+    /// or one such as `X − X`) loses its fold to the annihilation rule
+    /// (`0·y → 0`, [`OpKind::annihilator`]), so no fold is left for the guard
+    /// to wrap and a bound that is no count gives `0` (`FactorFold`'s doc).
     ///
     /// Constness is discovered, not declared: a bound that is a constant naming
     /// a count is the fold's data, so `over_values(⊕, 0, 4, f)` is
