@@ -1,0 +1,11 @@
+t.codegen.avx2         passed= 214 failed=0 ignored= 0 EXIT 0
+t.codegen.avx512       passed= 214 failed=0 ignored= 0 EXIT 0
+t.compiler             passed= 306 failed=0 ignored= 6 EXIT 0
+t.core                 passed= 136 failed=0 ignored= 1 EXIT 0
+t.graphics             passed= 239 failed=0 ignored=15 EXIT 0
+t.ir                   passed= 397 failed=0 ignored= 2 EXIT 0
+t.pipeline             passed= 228 failed=0 ignored= 2 EXIT 0
+t.runtime              passed= 152 failed=0 ignored= 6 EXIT 0
+t.search.allfeat       passed= 437 failed=0 ignored=15 EXIT 0
+t.search.default       passed= 434 failed=0 ignored=15 EXIT 0
+t.search.satel         passed= 437 failed=0 ignored=15 EXIT 0

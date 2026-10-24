@@ -1,0 +1,48 @@
+/dev/vda        252G   36G  3.7G  91% /
+built /home/user/scratch/gates-bin/bin.measure (from /home/user/pixelflow/target.noindex/release/deps/pixelflow_graphics-a88dd7d285dddc9d)
+callgrind -> /home/user/pixelflow/.wip/gates/out/cg.a4-f1.out
+{
+  "tag": "a4-f1",
+  "total_ir": 6315841748,
+  "saturate_inclusive_ir": 2075982919,
+  "extraction_inclusive_ir": 1139023257,
+  "median_peak_rss_kib": 96784,
+  "median_wall_ms": 979,
+  "peak_rss_kib_runs": [
+    96536,
+    97208,
+    96472,
+    96784,
+    99120
+  ],
+  "wall_ms_runs": [
+    954,
+    1075,
+    1061,
+    979,
+    979
+  ],
+  "matched": {
+    "saturate": [
+      {
+        "ir": 2075982919,
+        "name": "???:<pixelflow_search::egraph::graph::runner::Saturation>::saturate [/home/user/scratch/gates-bin/bin.measure]"
+      }
+    ],
+    "extraction": [
+      {
+        "ir": 1139023257,
+        "name": "???:pixelflow_search::egraph::extract::extract_dag_over::<pixelflow_search::egraph::cost::CostModel> [/home/user/scratch/gates-bin/bin.measure]"
+      }
+    ]
+  },
+  "vs_base": {
+    "total_ir": 0.089,
+    "saturate_inclusive_ir": -0.047,
+    "extraction_inclusive_ir": -0.043,
+    "median_peak_rss_kib": 0.257,
+    "median_wall_ms": -8.675,
+    "unit": "percent change from measure.base.txt"
+  }
+}
+EXIT 0

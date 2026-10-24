@@ -1,0 +1,3996 @@
++3. **The language is a DAG**: the fold is its one binder, and no fold's bound is a function of a
++   coordinate or of a lattice binder. A bound is a value placed by its variance: a per-call
++   count is a uniform, so one program serves every count; a count is an integer in `0..=2²⁴`,
++   and a fold with a bound that is not one is NaN; whether a constant fold is unrolled is the
++   e-graph's and extraction's choice (`PeelFold`, `HalveFold`). See
++   `docs/language/2026-10-20-a-bound-is-a-value.md`.
++  `Loop::trips` is a `Trips`: the body's runs per call when every bound is a
++  literal, an estimate otherwise. The verbs that once emitted it inline
++  (`Reduce` arm, `Scratch::REDUCE_TEMPS`) were deleted with the legacy driver
++  (D1).
++  a discrete kernel's lattice is in it, as an extent is. A fold's bound is placed by its variance like
++  any value (a-bound-is-a-value §1.2): a uniform bound is a per-call count, so one program serves every
++  count. The instruction chosen for a binding time (gather, broadcast, uniform load) is codegen's business.
++  time. "Uniform iterations", once "no where near the docket", are a bound
++  that is a value (`Kernel::over_values`), not a structural parameter.
++- **Follows:** every structural range is constant, so every read point's
++  range is known at construction, so a new tile extent or zoom recompiles
++  and is cached by key. A font's glyphs are drawn by one program per piece
++  count, chosen by the count, a structural parameter (C1, 2026-10-09); the
++  id tree whose threshold `k` raised "structural or uniform" is superseded.
++  binder and literal bounds are its identity, and its children are its body
++  and each bound that is a value. It is spelled
++  - Bounded by a coordinate or a lattice binder, or by its own binder (L3); a
++    per-call bound is a value, not a dynamic bound.
++  - A fold costs `n·body + (n−1)·combine` plus its value bounds once, `n` its
++    known length or `Fold::ESTIMATED_TRIPS`; unless every value bound is a count
++    (an integer in `0..=2²⁴`) the fold is NaN, by the guard `passes::legalize`
++    ends with, which is an `If` whose arm holds the loop.
++  `Scope::Fold` (`pixelflow-codegen/src/program/mod.rs`), the guard
++  (`pixelflow-ir/src/passes/guard.rs`) and `Trips`
++  (`pixelflow-codegen/src/emit/traffic.rs`);
++- **Is:** a fold's half-open `[lo, hi)` with a stride; each end a literal (node
++  data) or a value (a child): a per-call count or an enclosing fold's index.
++  The range is the half that carries the load: peeling over a range leaves the
++  body unchanged and therefore shared.
++- **Is not:** a function of a coordinate, a lattice binder or the fold's own
++  binder (L3). Past 2²⁴: a literal is refused at construction, a value makes
++  the fold NaN. Not implicitly zero-based. Not a value of its own in the IR: a
++  range node shared by sibling folds is decision 9 (a-glyph-is-a-formula §4.2).
++- **Follows:** a known range is in the key; a value bound keys as its child, a
++  uniform's dense slot, so one program serves every count. Constructors refuse
++  a literal range past 2²⁴ (`KnownRange::admits`). The allocator weighs carries
++  by `Trips`, an estimate for a loop whose range is not known.
++  `bucketed_trip_count`'s padding existed only because counts were syntax, and
++  goes (B2).
++  bounds, all by `KnownRange::of`; the guard
++  (`pixelflow-ir/src/passes/guard.rs`) and `Trips`
++  (`pixelflow-codegen/src/emit/traffic.rs`). Decided in a-fold-is-a-node §3,
++  a-bound-is-a-value §3.1. `bucketed_trip_count` still pads in
++- **Is not:** a language with `while`, `fix`, recursion, `mut`, or
++  coordinate-dependent trip counts (`Fix` was removed: "it could not be given a static extent").
++  fixpoint, so the optimizer is budget-only. Every trip count is fixed before
++  the lattice is traversed, so a program's cost is closed-form per call; a
++  per-call count is a value, never a coordinate, and the lattice's extent is
++  never a uniform. Complex numbers, quaternions, polar
++- **The language is a DAG**: the fold is its one binder, and no fold's bound is a function of a coordinate (X, Y) or of a lattice binder. A bound is a value placed by its variance: a literal is the fold's data, which extraction may unroll; a per-call count is a uniform, computed once per call, so one program serves every count; a count is an integer in `0..=2²⁴`, and a fold with a bound that is not one is NaN (docs/language/2026-10-20-a-bound-is-a-value.md).
++| [a bound is a value](language/2026-10-20-a-bound-is-a-value.md) | A0 ([baseline](results/2026-10-20-production-glyph-baseline.md)), A1 (the rule, in the docs §5 marks A1), A2a (one reader of a fold's range), A2b (bounds in the node, constants only), its header stored in 32 bits (measured; JP), A3 (value bounds in the IR and the e-graph), A4 (value bounds in codegen, and the key) | A1's the-language-is-kernel rows after #1323; **A5** (`<const N>` deleted); A6, A7; B1–B5 after typed-arena T3 and item 2 | A fold's bounds become operands placed by variance (any variance but a coordinate's); an index is a discrete kernel; one program per font at a tile extent. Ruling 6 (one program per font) lands with B2. |
++| **E8** | **Extraction picks one member per class, and a value bound's pick is unconstrained.** A class read as a fold's value bound whose cheapest member reads a coordinate the class does not vary with is materialized through that member, and `ExprArena::push_reduce` refuses the fold with `BoundVaries`, loudly (`fold_rules.rs` pins both the class with no lawful member and the class with a dearer lawful one). A4 decided to leave it loud: constraining the pick trades this failure for another, since a class read as a bound by some candidate with no member that keeps L3 never settles and every other user of the class fails with it, and the coordinate-reading member has to be the class's cheapest, which spells `X` with a cancellation and so carries extra operations; no kernel or profile shows one winning. Revisit with T6 (a bound gets a sort) or a kernel that hits it. | [a-bound-is-a-value](language/2026-10-20-a-bound-is-a-value.md) §6, A4 |
++| **E9** | **Annihilation erases a domain NaN.** The `Annihilator` rule (`0·y → 0`, `OpKind::annihilator`) holds whatever `y` is. Under a value-bounded `SUM`, `FactorFold` takes a literal zero factor out of the fold and annihilation removes the fold before `passes::legalize` places the guard, so a bound that is no count gives `0` through `jit_cache::compile` where the kernel as written is NaN (`value_bounds_jit.rs` pins both). The rule is older than a-bound-is-a-value and A4 does not special-case `FactorFold` for it. Revisit if a kernel's correctness depends on the NaN. | [a-bound-is-a-value](language/2026-10-20-a-bound-is-a-value.md) §3.2 |
++| **C8** | ~~**A fold's index is exact only to 2²⁴, and only `kernel!` refuses past it.**~~ **Done** (the-language-is-kernel B5): `RangeFold::admits` is the one statement of a range's contract, `RangeFold::EXACT_BOUND` its bound (`Fold::admits` and `Fold::EXACT_BOUND` since `RangeFold` folded back into `Fold` with the integral's deletion; `KnownRange::admits` since a fold's bounds became its node's, a-bound-is-a-value A2b); the constructors panic past it beside the reversed range, `FoldHeader::from_bits` refuses it, and lowering asks it and explains the refusal, so `Kernel::over` is covered by the refusal `kernel!` had. The index is an `f32` lane — the binder's `Var`, and the JIT's counter steps by `1.0` against the end loaded as an `f32` — so past 2²⁴ neighbouring indices round together (measured through `kernel!` before its refusal: `(16777100..16777300).map(\|i\| ((i as f32) - 16777000.0) * X).sum()` gave 39890 at `X = 1`, rustc 39900). Since a-bound-is-a-value A4 a bound that is a value is not refused at construction, where its count is not known: unless it is a count, an integer in `0..=2²⁴`, its fold is NaN in the language (L5, the guard `passes::legalize` ends with), and a host-written count is refused at its write in A6. | [the-language-is-kernel](language/2026-09-25-the-language-is-kernel.md), appendix |
++a function of a coordinate or of a lattice binder. A fold's bounds are values
++placed by their variance ([a bound is a
++value](language/2026-10-20-a-bound-is-a-value.md)), each fixed before the
++lattice is traversed. Every program's cost is a closed-form function of values
++known before the traversal, computable without running it; nothing evaluates it
++per call, and the static model prices a fold whose range is not a known
++constant at an estimate (`Fold::ESTIMATED_TRIPS`). "Estimatable by the cost
++model", "a valid shader" and "`bake` terminates" are one property. Total is not
++cheap: totality gives a number, and a value-bounded program is priced at the
++estimate, never reported over budget.
++instance, not the name and not the index. A uniform may bound a fold, as a
++per-call count ([a bound is a
++value](language/2026-10-20-a-bound-is-a-value.md) §1.2); it is never an
++extent, and the lattice's extent stays in the program and the key (§5).
++`⊕` is a monoid (`+`, `×`, `min`, `max`, `∧`, `∨`); each bound is a literal,
++which the node holds, or a term, a child after the body, fixed before the
++lattice is traversed and reading no coordinate and no lattice binder; the
++equation holds where every bound is a count, an integer in `0..=2²⁴`, and a
++fold over `+`, `×`, `min` or `max` with a bound that is none (a fraction, a
++negative, NaN, an infinity) is NaN, while `∧`, `∨` take literal bounds only;
++the monoid, the binder and the literal bounds are the node's identity, so
++hash-consing is on exactly the fold's meaning. `⊕` over a set has no
++accumulator and no order: that absence is what lets the e-graph reassociate
++it, and iteration is introduced by lowering, never by the term.
++  binder returns it returns with the fold's laws: every bound fixed before the
++  lattice is traversed, no indefinite integral, no bound that is a function of
++  a coordinate, no accumulation from one pixel into the next, and `at` never
++  touching a bound index.
++up in four places. A fold's bounds are each a literal, a value known per call
++(a uniform, so one program serves every count), or an enclosing fold's index,
++so its count `hi − lo` is known per call, or once per trip of the enclosing
++fold whose index a bound is ([a bound is a
++value](2026-10-20-a-bound-is-a-value.md)). The other three faces are static
++natural numbers: that plan's B1 makes the discrete-domain and typed-field
++extents values known per call, and bounded iteration's trip count stays static.
++| Face | Fixed before the traversal |
++| discrete domains | extent known at bake (static) |
++| reduction binder `⊕_{i∈D}` | `|D| = hi − lo`, each bound a literal, a value known per call, or an enclosing fold's index |
++- **Dynamic behavior survives; only coordinate-dependent *bounds* die.** A
++  per-call count is a value, not a static max: `Σ_{k<n}` with `n` a uniform is
++  one program for every `n`, priced at the cost model's estimate ([a bound is a
++  value](2026-10-20-a-bound-is-a-value.md) §1.5). A count that varies with the
++  pixel (ray-march until you hit the surface) still becomes **static max +
++  early-out**: iterate up to `N`, mask off finished lanes, and the cost is the
++  static worst case `N`. This is the same trick GPUs already play, so almost no
++  expressiveness is lost.
++   carries a bound fixed before the lattice is traversed, never a coordinate: a
++   fold's bounds are each a literal, a per-call value or an enclosing fold's
++   index, so the cost walk is closed-form in values known per call.
++  infinite-`c` edge at a runtime `n = 0` (decision 5). Under `SUM` a literal zero `c` then
++  meets the `Mul` annihilator (`0·y → 0`), which removes the fold before the guard is
++  placed, so the optimized fold is `0` where the fold as written is NaN: the annihilation
++  rule's edge, in `FactorFold`'s doc and BACKLOG E9. `substitute`/`rebuild` (`fold_rules.rs`)
++  (`emit/regalloc/local.rs:44-46`). The `Reduce` def's interval spans the loop: the latch's
++  compare reads `hi`, so the allocator keeps it live there by its own rule, and `operands()`
++  yields the bounds so the carve and ownership see them. A compare reads two registers, so a
++  `hi` the allocator does not carry is reloaded at every latch. A JIT test pins a `hi` read
++  only by the loop under a body that varies with X
++  (`a_bound_read_only_by_the_loop_reaches_its_latch`). Otherwise placement is today's: a
++  `CONST` bound lands in `Scope::Body`; a bound on an enclosing binder makes the inner
++  `Reduce` vary with it, and the existing carve places it in that fold.
++  arena nodes by the last pass of `pixelflow_ir::passes::legalize` (`passes/guard.rs`), so
++  every guard def takes its variance from `compute_arena_variance` (the alternative, following the
++- After `collapse`, lowering asserts that a value bound reads no lattice binder (L3 against
++  the `Write`s' binders) and that a value-bounded fold has exactly one reader, an `If` whose
++  true arm is the fold: the single-reader property placement rests on (pipeline-bug
++  panics). `FoldHeader::new` already refuses a stride other than 1 beside a value bound, so
++  no stride assert is added. A value bound the emitter holds as a mask (a comparison, or a
++  bitwise and/or of two such) is refused by name, at either end and on every tier, by
++  `ScheduledOp::is_mask`: a mask names no count (`BoundSort`). Without the refusal every tier
++  would read the mask's bits as a float: a value `lo` is seeded `lo + 0`, and AVX-512 widens
++  an opmask there (`vpmovm2d`), so all ones reads as NaN, which fails the guard's domain test,
++  and all zeros as the count 0. Any other bound whose value is
++  a mask, a select between two masks, is a lane read as a float on every tier alike, which
++  the guard turns into NaN or a count. The predicate and the AVX-512 selector share the
++  bitwise rule (`BinaryOp::on_masks`), and a test selects every op that reads a lane over a
++  mask and a number and holds the opmask file to the predicate's answer.
++- `Trips::{Known(u64), Estimated(u64)}` from selection, a nested fold's trips the product
++  of its parent's (an estimate at `u64::MAX` when the product passes `u64`); the allocator
++  reads the number through `Trips::weight`, and its sums of weights saturate, so a deep
++  nest is priced at the most it can weigh and still compiles. `EmitTraffic.trips` carries
++  the type, and `dynamic_memory_ops` is `None` over an estimate, so no measurement shows
++  an estimate as a count. `Display` prints a known count
++  as the bare number and an estimate as `~n`, so byte_probe's `trips=` text
++  (`examples/byte_probe.rs:306-307`) is unchanged and A4's gate compares like with like.
++| totality doc, "One discipline, four faces" (the paragraph and its table) and consequence 5 | every iteration count is a static natural; "extent known at bake" | fixed before the lattice is traversed; a fold's bounds each a literal, a per-call value or an enclosing index, so its count `hi − lo` is known per call, or once per trip of the enclosing fold whose index a bound is | A1 the rule; the paragraph, the reduction-binder row and consequence 5 A4 as built; the discrete-domain and typed-field rows B1 | none |
++  class's chosen literal through the fold's literal twin, and the key refused a value bound
++  until A4 gave it a marker.
++  and no production optimizer: the key then refused a value bound, so no production path
++  could carry one, and without `ConstantFold` a rule-made `0 + 1` stays the arithmetic it is,
++  `BoundVaries`, loudly, and A4 leaves it so: constraining a bound's pick would trade that
++  failure for another (a class read as a bound with no member that keeps L3 would never
++  settle, and every other user of the class would fail with it). Gate: byte_probe
++  `pixelflow-codegen/tests/` against scalar Rust, every tier: a uniform in the domain at
++  `hi` (0, 1, 7, 1000, `2²⁴`), at `lo` beside a literal `hi` (0, 1, 7, 1000 below 1003;
++  `2²⁴ − 2` and `2²⁴` below `2²⁴`), and at both ends of a pair (1000 and 1003; `2²⁴ − 2` and
++  `2²⁴`; `2²⁴` twice, and one uniform at both ends); a uniform outside it (`2²⁴ + 2`, NaN,
++  2.5, −1, ±∞, 10³⁰: NaN, no hang) at `hi`, at `lo` beside a literal `hi`, and at either end
++  of a pair; uniforms 5 and 3 as `lo` and `hi` (the identity); a triangular
++  `Σ_i Σ_{j<i}`; a uniform-bounded fold whose body reads no coordinate, so the guarded fold
++  is hoisted to `Scope::Body` and the carve sees the `If`, not the `Reduce`, as its def (the
++  single-reader assumption under placement), for `n` in the domain and for NaN, `+∞` and
++  `2²⁴ + 2`; a uniform-bounded fold that reads `Y` alone, in the row fold, for the same
++  kinds of `n`; a uniform-bounded fold whose body varies with X and whose `hi` is read only
++  `2²⁴ + 1` is not a case here: no `f32` names it (§1.4). **Done:** byte_probe empty in both
++  columns under `PIXELFLOW_ISA=avx512` and `=avx2`; the 29 font programs' keys, digests and
++  saturation telemetry, the extraction fields included, unchanged. The guard is
++  `pixelflow_ir::passes::legalize`'s last pass (`passes/guard.rs`); lowering asserts after
++  collapse that a value bound reads no lattice binder and that a value-bounded fold is read
++  only as its guard's true arm, and refuses a value bound the emitter holds as a mask by
++  name, at either end and on every tier (a mask names no count); `FoldHeader::new` already
++  refuses a stride other than 1 beside a value, so no stride assert is added. A value bound
++  is an operand of its fold: `lo` seeds the loop and `hi` is read at the latch, live there
++  by the allocator's own rule.
++  `Trips::{Known, Estimated}` each carry a number, an estimate printed `~n`, and
++  `EmitTraffic::dynamic_memory_ops` is `None` over an estimate. The key's marker is a count
++  field of all ones; the collapse corpus is v5 and the training corpus's schema names the
++  marker; the arena dumps stay v1, because no reader parses an `R` line. The JIT tests are
++  `pixelflow-codegen/tests/value_bounds_jit.rs`; NEON runs in CI's macOS job only. The
++  extraction decision is the one above: loud, with `BoundVaries` pinned in `fold_rules.rs`
++  for a class with no lawful member and for one whose cheapest member reads a coordinate
++  beside a dearer lawful one.
++`EmitTraffic`, `ScopeTraffic`, `Trips`), `isa` (`Isa`, `detect`), `jit_vector_bytes`,
++use crate::program::MaskOp;
++impl From<MaskOp> for KOp {
++    /// The mask-register form of a bitwise op on masks
++    /// ([`BinaryOp::on_masks`](crate::program::BinaryOp::on_masks)).
++    fn from(op: MaskOp) -> Self {
++            MaskOp::And => Self::And,
++            MaskOp::Or => Self::Or,
++/// vector file. `ScheduledOp::is_mask` asks the same question before selection,
++/// through the same `BinaryOp::on_masks`, and a test holds the two equal.
++/// Where an instruction reads the other file's lane it is first widened
++/// (`vpmovm2d`), or, when it has a form for the lane where it is (`vblendmps`,
++/// `kortestw`), it reads it there.
++    /// This lane as a mask, if it is held in the opmask file.
++    fn opmask(self) -> Option<Value<Opmask>> {
++        match self {
++            Lane::Vector(_) => None,
++            Lane::Opmask(k) => Some(k),
++        }
++    }
++            LaneOp::Binary(op, a, c) => match op.on_masks(a.opmask(), c.opmask()) {
++                Some((op, x, y)) => Lane::Opmask(emit(b, |dst| {
++                        op: op.into(),
++                None => {
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::emit::IsaBackend;
++    use crate::program::{BinaryOp, CompareOp, ScheduledOp, ShiftOp, UnaryOp, ValueId};
++    /// Whether `selected` lands in the opmask file exactly when `scheduled`
++    /// is a mask, value 0 of the schedule being the one mask operand.
++    fn is_where_is_mask_says(
++        b: &mut Builder<Avx512>,
++        selected: LaneOp<Avx512>,
++        scheduled: &ScheduledOp,
++    ) -> bool {
++        let lane = <Avx512 as X86>::lane(b, selected).expect("the op selects");
++        let in_opmask = matches!(lane, Lane::Opmask(_));
++        in_opmask == scheduled.is_mask(|value| value == ValueId(0))
++    }
++    /// Lowering refuses a fold's bound that is a mask (`ScheduledOp::is_mask`),
++    /// which names no count, by asking before selection which values this tier
++    /// will keep in the opmask file. The two answer one question: this
++    /// selects every op that reads a lane over a mask and a number in every
++    /// operand position (unary, shift, compare, binary, mul-add, the select,
++    /// gather and broadcast), and asks the file each result lands in. A
++    /// constant, the lane iota and a uniform read no lane, so they have no
++    /// operand to make a mask.
++    #[test]
++    fn a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask() {
++        let (mut b, entry) = Builder::<Avx512>::new();
++        <Avx512 as IsaBackend>::enter(&mut b);
++        let number = <Avx512 as X86>::lane(&mut b, LaneOp::Const(1.0)).expect("a constant selects");
++        let compared = LaneOp::Compare(CompareOp::Lt, number, number);
++        let mask = <Avx512 as X86>::lane(&mut b, compared).expect("a comparison selects");
++        assert!(matches!(mask, Lane::Opmask(_)));
++        // The schedule's view of the same two values.
++        let operands = [(mask, ValueId(0)), (number, ValueId(1))];
++        let mut every = |selected: LaneOp<Avx512>, scheduled: ScheduledOp| {
++            assert!(
++                is_where_is_mask_says(&mut b, selected, &scheduled),
++                "{scheduled:?}"
++            );
++        };
++        for &(x, x_id) in &operands {
++            for op in UnaryOp::ALL {
++                every(LaneOp::Unary(*op, x), ScheduledOp::Unary(*op, x_id));
++            }
++            for op in ShiftOp::ALL {
++                every(
++                    LaneOp::Shift(*op, x, 3),
++                    ScheduledOp::ShiftImm(*op, x_id, 3),
++                );
++            }
++            // The base is a pointer, the context's; the schedule names it by an
++            // id no lane can be.
++            let base = ValueId(2);
++            every(
++                LaneOp::Gather {
++                    base: entry.ctx,
++                    index: x,
++                },
++                ScheduledOp::Gather(x_id, base),
++            );
++            every(
++                LaneOp::Broadcast {
++                    base: entry.ctx,
++                    index: x,
++                },
++                ScheduledOp::Broadcast(x_id, base),
++            );
++            for &(y, y_id) in &operands {
++                for op in CompareOp::ALL {
++                    every(
++                        LaneOp::Compare(*op, x, y),
++                        ScheduledOp::Compare(*op, x_id, y_id),
++                    );
++                }
++                for op in BinaryOp::ALL {
++                    every(
++                        LaneOp::Binary(*op, x, y),
++                        ScheduledOp::Binary(*op, x_id, y_id),
++                    );
++                }
++                for &(z, z_id) in &operands {
++                    every(
++                        LaneOp::MulAdd(x, y, z),
++                        ScheduledOp::MulAdd(x_id, y_id, z_id),
++                    );
++                    every(
++                        LaneOp::Blend {
++                            cond: x,
++                            if_true: y,
++                            if_false: z,
++                        },
++                        ScheduledOp::If(x_id, y_id, z_id),
++                    );
++                }
++            }
++        }
++        // The agreement is not vacuous: a comparison and a bitwise op on two
++        // masks are masks, and the same op on a number is not.
++        let bitwise = |op| ScheduledOp::Binary(op, ValueId(0), ValueId(0));
++        let on_a_number = |op| ScheduledOp::Binary(op, ValueId(1), ValueId(0));
++        let is_mask = |scheduled: ScheduledOp| scheduled.is_mask(|value| value == ValueId(0));
++        assert!(is_mask(ScheduledOp::Compare(
++            CompareOp::Lt,
++            ValueId(1),
++            ValueId(1)
++        )));
++        for op in [BinaryOp::BitAnd, BinaryOp::BitOr] {
++            assert!(is_mask(bitwise(op)), "{op:?} on two masks is a mask");
++            assert!(!is_mask(on_a_number(op)), "{op:?} on a number is a number");
++        }
++    }
++}
++    Operand, Pushed, Scope, Selected, Spill, Target, Trips, Value, ValueName, operands,
++    pub(super) fn open_loop(&mut self, head: Label, parent: Option<usize>, trips: Trips) -> usize {
++`ScopeTraffic`, `Trips`, `CompileResult`; `pub(crate)` `native`, `vector_bytes`. Inside:
++//! A fold whose bound is a value arrives inside the guard
++//! [`pixelflow_ir::passes::legalize`] builds (an `If`'s arm): its counter
++//! starts at `lo`'s lane (plus zero, so a `-0.0` count starts at the integer 0
++//! a literal seeds) and its latch compares against `hi`'s, and the arm is
++//! skipped when the range is empty or a bound is not a count in `[0, 2²⁴]` (a
++//! fraction, NaN and an infinity are none). The latch's compare reads two
++//! registers, so `hi` is one the allocator carries across the loop or reloads
++//! at each latch, where a literal end is a constant placed again at its read.
++//!
++//! The guard's masks are the call's when the bounds are. Its arm tests sit
++//! where the fold does, in the innermost scope of the nest that the fold reads,
++//! and run as often as that scope does. The first of these that holds:
++//! - in an enclosing fold's scope, once per trip of it, when the fold's body or
++//!   bound reads that fold's index (the innermost such fold's);
++//! - in the column fold, in every batch of it, when it reads `X`;
++//! - in the row fold, once per row, when it reads `Y`;
++//! - in the body, once per call, when it reads none of these.
++//!
++//! A mask the register file cannot keep across the trips of that scope (an
++//! opmask, on AVX-512) is reloaded each time the scope runs.
++//!
++pub use traffic::{EmitTraffic, ScopeTraffic, Trips};
++    /// How many times its body runs per call, or an estimate's price where a
++    /// fold's range is not known: its own trips nested in its parent's.
++    trips: Trips,
++    /// A fold whose bound is a value, on every backend from this host: the
++    /// guard's arms around a loop whose counter starts at one lane and ends at
++    /// another. Three shapes that reach what a literal fold never does: a
++    /// seed that reads another loop's counter (`i + 0`, added where the fold
++    /// is entered), a bound read by nothing in the body that must live across
++    /// a wall of values, and a ragged row whose main and remainder column
++    /// folds both open the loop.
++    ///
++    /// NEON cannot run here; selection, allocation and assembly can. What a
++    /// value-bounded loop adds to a literal one is the seed's add of zero, a
++    /// latch compare against a register that may be reloaded at each trip, and
++    /// the guard around it: its domain tests, its two selects and the arm skip.
++    #[test]
++    fn every_backend_emits_a_fold_whose_bound_is_a_value() {
++        use pixelflow_ir::fold::Monoid;
++        use pixelflow_ir::{Kernel, Uniform};
++        // More values live at once than any tier's vector file holds.
++        const WALL: u32 = 48;
++        let (zero, eight) = (Kernel::constant(0.0), Kernel::constant(8.0));
++        let count = || Uniform::new(7.0).kernel();
++        let from_the_outer_index = Kernel::sum_over(8, |i| {
++            Kernel::over_values(Monoid::SUM, i, &eight, |j| Kernel::x().add(j))
++        });
++        let a_wall = Kernel::over_values(Monoid::SUM, &zero, &count(), |k| {
++            let terms: Vec<Kernel> = (1..=WALL)
++                .map(|m| Kernel::x().add(k).mul(&Kernel::constant(m as f32)))
++                .collect();
++            let up = terms[1..]
++                .iter()
++                .fold(terms[0].clone(), |acc, t| acc.add(t));
++            let down = terms
++                .iter()
++                .rev()
++                .skip(1)
++                .fold(terms[WALL as usize - 1].clone(), |acc, t| acc.add(t));
++            up.add(&down)
++        });
++        let ragged = Kernel::over_values(Monoid::SUM, &zero, &count(), |k| Kernel::x().add(k));
++        for (kernel, shape) in [
++            (from_the_outer_index, POINT),
++            (a_wall, LatticeShape::new([8, 2])),
++            (ragged, LatticeShape::new([37, 3])),
++        ] {
++            let (arena, root) = kernel.parts();
++            compile_for::<aarch64::Neon>(arena, root, shape).expect("NEON emit");
++            compile_for::<avx2::Avx2>(arena, root, shape).expect("AVX2 emit");
++            compile_for::<avx512::Avx512>(arena, root, shape).expect("AVX-512 emit");
++        }
++    }
++    /// How many times its body runs per call, an estimate's price for a fold
++    /// whose range is not known.
++                    trips: l.trips.weight(),
++            // The sum saturates. A read weighs its nest's trips, `u64::MAX` for
++            // a nest priced past `u64`, so adding two such reads would overflow;
++            // a value read that deep weighs the most a weight can and compiles.
++            let reloads = own[from..to]
++                .iter()
++                .map(|&p| trips_at[p])
++                .fold(0, usize::saturating_add);
++                weight: reloads.saturating_add(latch_stores),
++use super::traffic::{Trips, scope_ix};
++use pixelflow_ir::fold::{Binder, Bound, Fold, KnownRange, Monoid};
++/// The step beside a value bound: `FoldHeader::new` admits no other there.
++const UNIT_STRIDE: u64 = 1;
++    /// body runs per call, or an estimate's price where a fold's range is not
++    /// known.
++    loops: Vec<(usize, Trips)>,
++/// A surviving `Reduce` as selection meets it: one field per field of
++/// [`ScheduledOp::Reduce`].
++#[derive(Clone, Copy)]
++struct Looped {
++    fold: Fold,
++    lo: Bound<ValueId>,
++    hi: Bound<ValueId>,
++    body: ValueId,
++}
++            &ScheduledOp::Reduce { fold, lo, hi, body } => {
++                match self.fold(scope, j, Looped { fold, lo, hi, body })? {
++    ///
++    /// A value bound starts the counter at its lane plus zero and ends it at
++    /// its lane. The guard around this fold (an `If`'s arm, `passes::legalize`)
++    /// made the range non-empty and within `[0, 2²⁴]`, so the do-while runs
++    /// `hi − lo` trips; the counter and the end stay `f32` lanes, and no count
++    /// becomes an integer on any tier. The zero is what makes the count `-0.0`
++    /// the integer 0 a literal seeds: `-0.0 + 0.0` is `+0.0` under round to
++    /// nearest on every tier, so a body that sees the sign of zero sees the same
++    /// first index from a uniform as from a constant.
++        looped: Looped,
++        let Looped { fold, lo, hi, body } = looped;
++        let range = KnownRange::of(fold, lo, hi);
++            range.is_none_or(|range| !range.is_empty()),
++        let lo = match lo {
++            Bound::Lit(_) => self.bound(lo)?,
++            Bound::Value(_) => {
++                let seed = self.bound(lo)?;
++                let zero = self.constant(0.0)?;
++                self.binary(BinaryOp::Add, seed, zero)?
++            }
++        };
++            None => (None, Trips::ONCE),
++        let trips = Trips::of(range).nested_in(parent_trips);
++        let stride = range.map_or(UNIT_STRIDE, KnownRange::stride);
++        let stride = self.constant(stride as f32)?;
++        // After the body's frame has popped: a value `hi` resolves in the
++        // scope the fold sits in, or an enclosing one, never in the body's.
++        let end = self.bound(hi)?;
++    /// The lane of a fold's bound: a literal is a constant, a value is the
++    /// lane its scope (or an enclosing one) defined.
++    fn bound(&mut self, bound: Bound<ValueId>) -> Result<B::Lane, CompileError> {
++        match bound {
++            Bound::Lit(n) => self.constant(n as f32),
++            Bound::Value(value) => Ok(self.lookup(value)),
++        }
++    }
++use core::fmt;
++use pixelflow_ir::fold::{Fold, KnownRange};
++/// How many times a loop's body runs per call, and whether that is a count.
++///
++/// A fold whose bounds are literals runs a number of times the program states.
++/// One whose bound is a value runs a number the call decides, which nothing
++/// here knows: the static model prices it at [`Fold::ESTIMATED_TRIPS`], and
++/// that price is carried as an estimate, so that no measurement can read it as
++/// a count. A loop nested in an estimate is an estimate too, for it runs that
++/// many times that many times, and so is a nest of literals whose product
++/// passes `u64`.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Trips {
++    /// Every bound is a literal: the body runs exactly this many times.
++    Known(u64),
++    /// A bound is a value, here or in an enclosing fold, or the nest's product
++    /// passes `u64`: the body is priced as running this many times, and no
++    /// count is claimed.
++    Estimated(u64),
++}
++impl Trips {
++    /// What the body of a call runs: once.
++    pub(in crate::emit) const ONCE: Self = Self::Known(1);
++    /// The trips of a fold whose range is `range` (`None` when a bound is a
++    /// value), on their own and not yet nested in any loop.
++    pub(in crate::emit) fn of(range: Option<KnownRange>) -> Self {
++        match range {
++            Some(range) => Self::Known(range.len()),
++            None => Self::Estimated(Fold::ESTIMATED_TRIPS),
++        }
++    }
++    /// These trips of a loop inside `parent`: their product, an estimate if
++    /// either is. A product past `u64` is a weight, not a count to report, so
++    /// it is an estimate at `u64::MAX`; a weight is a price to add up, and the
++    /// allocator's sums of them saturate.
++    pub(in crate::emit) fn nested_in(self, parent: Self) -> Self {
++        let product = parent.weight().checked_mul(self.weight());
++        match (self, parent, product) {
++            (Self::Known(_), Self::Known(_), Some(count)) => Self::Known(count),
++            (_, _, product) => Self::Estimated(product.unwrap_or(u64::MAX)),
++        }
++    }
++    /// The number the allocator weighs a read in the loop by: the count, or
++    /// the estimate's price. A price, not a count: the allocator adds these up
++    /// and its sums saturate.
++    pub(in crate::emit) fn weight(self) -> u64 {
++        match self {
++            Self::Known(n) | Self::Estimated(n) => n,
++        }
++    }
++    /// The count, when it is one.
++    #[must_use]
++    pub fn known(self) -> Option<u64> {
++        match self {
++            Self::Known(n) => Some(n),
++            Self::Estimated(_) => None,
++        }
++    }
++}
++/// A known count prints as the bare number, with the formatter's width and
++/// fill honoured; an estimate prints as `~n`.
++impl fmt::Display for Trips {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Known(n) => fmt::Display::fmt(n, f),
++            Self::Estimated(n) => f.pad(&alloc::format!("~{n}")),
++        }
++    }
++}
++    /// body once, a fold its trip count times its parent's. A fold whose range
++    /// is not known, and every fold inside it, is an estimate.
++    pub trips: Vec<Trips>,
++        let mut trips = alloc::vec![Trips::ONCE; scopes.len()];
++    /// many times the call runs it. `None` when any scope's trips are an
++    /// estimate, so that no measurement shows an estimate as a count.
++    pub fn dynamic_memory_ops(&self) -> Option<u64> {
++            .map(|(s, trips)| Some(s.memory_ops() * trips.known()?))
++    use super::{EmitTraffic, ScopeTraffic, Trips};
++            trips: alloc::vec![Trips::Known(1), Trips::Known(6), Trips::Known(42)],
++        assert_eq!(traffic.dynamic_memory_ops(), Some(1 + 3 * 6 + 5 * 42));
++    }
++    /// A scope whose trips are an estimate has no count of memory operations,
++    /// and neither has the kernel: the sum is `None`, not a number a reader
++    /// could take for one.
++    #[test]
++    fn dynamic_memory_ops_is_no_count_over_an_estimate() {
++        let scope = ScopeTraffic {
++            loads: 1,
++            ..ScopeTraffic::default()
++        };
++        let traffic = EmitTraffic {
++            scopes: alloc::vec![scope, scope],
++            trips: alloc::vec![Trips::Known(1), Trips::Estimated(32)],
++            ..EmitTraffic::default()
++        };
++        assert_eq!(traffic.dynamic_memory_ops(), None);
++    }
++    /// `byte_probe` prints `trips={trips}` and `constant_traffic` a `{:>8}`
++    /// column: a known count must print as it did when it was a `u64`.
++    #[test]
++    fn a_known_trip_count_prints_as_its_number() {
++        assert_eq!(alloc::format!("{}", Trips::Known(42)), "42");
++        assert_eq!(alloc::format!("{:>5}", Trips::Known(42)), "   42");
++    }
++    #[test]
++    fn an_estimate_prints_marked() {
++        assert_eq!(alloc::format!("{}", Trips::Estimated(32)), "~32");
++        assert_eq!(alloc::format!("{:>5}", Trips::Estimated(32)), "  ~32");
++    }
++    /// A loop nested in a loop whose count is not known runs a number of times
++    /// that is not known either, and carries the product.
++    #[test]
++    fn nesting_an_estimate_is_an_estimate() {
++        assert_eq!(
++            Trips::Estimated(32).nested_in(Trips::Known(4)),
++            Trips::Estimated(128)
++        );
++        assert_eq!(
++            Trips::Known(4).nested_in(Trips::Estimated(32)),
++            Trips::Estimated(128)
++        );
++        assert_eq!(Trips::Known(3).nested_in(Trips::Known(4)), Trips::Known(12));
++    }
++    /// A product of literal trips past `u64` is not a count: it prices at the
++    /// most the allocator can weigh, and `dynamic_memory_ops` does not report it.
++    #[test]
++    fn a_product_past_u64_is_an_estimate() {
++        let nested = Trips::Known(u64::MAX).nested_in(Trips::Known(2));
++        assert_eq!(nested, Trips::Estimated(u64::MAX));
++        assert_eq!(nested.known(), None);
++/// beside it says what this construction's slots bind. A fold whose bound is a
++/// value compiles inside its guard (`Kernel::over_values`), and every count it
++/// is run with shares the one program.
++/// has a zero extent, which has no sample to compute, or if a fold's bound is
++/// a mask an emitter holds as one, which is refused by name (`BoundSort`) at
++/// either end on every tier, since a mask names no count.
++/// `Kernel::over_values` takes no such bound, but a kernel adopted with
++/// `Kernel::from_parts` can carry one. The assertions live one layer down, in
++/// [`emit::compile`], because that is the boundary every route to machine code
++/// passes through and this is only one of them.
++/// A fold's bound may be a value rather than a literal: the fold is then
++/// compiled inside its guard (`passes::legalize`), computing its fold or NaN
++/// on every tier. A bound is read as a number: a select between two masks is a
++/// mask in value but no emitter holds it as one, so its bits are read as a
++/// float, on every tier alike, which the guard turns into NaN or a count.
++///
++/// no sample to compute. A fold whose bound the emitter holds as a mask (a
++/// comparison, or a bitwise and/or of two such: `ScheduledOp::is_mask`) is
++/// refused too, by name (`BoundSort`), at either end and on every tier alike: a
++/// mask names no count.
++    use crate::pass::Pass;
++    /// Where the stages put a fold whose bound is a count: a lattice of two
++    /// rows of eight at four lanes, so the column fold is one fold and
++    /// nothing is left over to strip-mine (a width that is not a multiple of
++    /// the lanes makes a main fold and a remainder that share one store).
++    const TWO_BATCHES: LatticeShape = LatticeShape::new([8, 2]);
++    const FOUR_LANES: u32 = 4;
++    /// The scoped schedule of `kernel` at `TWO_BATCHES` and `FOUR_LANES`.
++    fn nest_of(kernel: &pixelflow_ir::Kernel) -> crate::program::ScopedSchedule<()> {
++        use crate::program::Nest;
++        let (a, root) = kernel.parts();
++        let schedule = schedule_for(a, root, TWO_BATCHES, FOUR_LANES);
++        Nest.run(schedule).expect("the schedule nests")
++    }
++    /// The `SUM` fold the kernel wrote, as the scope it opens and the scope
++    /// it sits in: not one of the lattice's, which are `SEQ`.
++    fn the_written_fold(
++        scoped: &crate::program::ScopedSchedule<()>,
++    ) -> &crate::program::ScopeFold<()> {
++        use crate::program::{ScheduledOp, Scope};
++        use pixelflow_ir::fold::Monoid;
++        let sits_in = |fold: &crate::program::ScopeFold<()>| match fold.parent {
++            Scope::Body => &scoped.body.schedule,
++            Scope::Fold(j) => &scoped.folds[j].schedule,
++        };
++        let mut written = scoped.folds.iter().filter(|fold| {
++            sits_in(fold).iter().any(|def| {
++                def.value == fold.reduce
++                    && matches!(def.op, ScheduledOp::Reduce { fold, .. } if fold.monoid() == Monoid::SUM)
++            })
++        });
++        let fold = written.next().expect("the kernel's own fold survives");
++        assert!(written.next().is_none(), "the kernel wrote one fold");
++        fold
++    }
++    /// How many `Compare` and `If` defs `schedule` holds, in that order.
++    fn count_guards(schedule: &[Def]) -> (usize, usize) {
++        use crate::program::ScheduledOp;
++        let compares = schedule
++            .iter()
++            .filter(|def| matches!(def.op, ScheduledOp::Compare(..)))
++            .count();
++        let ifs = schedule
++            .iter()
++            .filter(|def| matches!(def.op, ScheduledOp::If(..)))
++            .count();
++        (compares, ifs)
++    }
++    /// `X · Σ_{k<n} (X + k)`: the body varies with the column, the bound
++    /// with nothing. The guard's masks vary with nothing either, so they are
++    /// computed once per call, in the body, whichever scope the fold is in;
++    /// the fold and its two `If`s are the column fold's, which holds the
++    /// store, and read the masks from outside.
++    #[test]
++    fn a_guard_on_a_uniform_count_is_computed_once_per_call() {
++        use crate::program::Scope;
++        use pixelflow_ir::fold::Monoid;
++        use pixelflow_ir::{Kernel, Uniform};
++        let n = Uniform::new(7.0).kernel();
++        let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &n, |k| {
++            Kernel::x().add(k)
++        });
++        let scoped = nest_of(&Kernel::x().mul(&sum));
++        // Three tests of the domain (`0 <= n`, `n <= 2^24`, `floor(n) == n`) and
++        // the range's (`0 < n`).
++        let (compares, ifs) = count_guards(&scoped.body.schedule);
++        assert_eq!((compares, ifs), (4, 0), "the masks are the call's");
++        for fold in &scoped.folds {
++            assert_eq!(count_guards(&fold.schedule).0, 0, "no mask is the fold's");
++        }
++        let Scope::Fold(column) = the_written_fold(&scoped).parent else {
++            panic!("the fold is inside the lattice's, not in the body")
++        };
++        let stores = scoped.folds[column]
++            .schedule
++            .iter()
++            .any(|def| matches!(def.op, crate::program::ScheduledOp::Write { .. }));
++        assert!(stores, "the fold's parent is the column fold, which stores");
++        assert_eq!(
++            count_guards(&scoped.folds[column].schedule).1,
++            2,
++            "both guard `If`s sit in the column fold, beside the fold they own"
++        );
++    }
++    /// `X + Σ_{k<n} k`: nothing the fold reads varies with the lattice, so
++    /// the fold, its guard and its masks are all the call's. The carve sees
++    /// the outer `If`, not the `Reduce`, as the def a deeper fold reads: the
++    /// fold is its guard's alone and is carved at the body level, where the
++    /// arm blocks hold it.
++    #[test]
++    fn a_fold_whose_body_reads_no_coordinate_is_carved_in_the_body() {
++        use crate::program::{ScheduledOp, Scope};
++        use pixelflow_ir::fold::Monoid;
++        use pixelflow_ir::{Kernel, Uniform};
++        let n = Uniform::new(7.0).kernel();
++        let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &n, |k| k.clone());
++        let scoped = nest_of(&Kernel::x().add(&sum));
++        let written = the_written_fold(&scoped);
++        assert_eq!(written.parent, Scope::Body);
++        let (_, ifs) = count_guards(&scoped.body.schedule);
++        assert_eq!(ifs, 2, "the guard's two `If`s are the call's");
++        let guarded = scoped
++            .body
++            .schedule
++            .iter()
++            .find_map(|def| match def.op {
++                ScheduledOp::If(_, ran, _)
++                    if matches!(
++                        scoped.body.schedule.iter().find(|d| d.value == ran),
++                        Some(d) if matches!(d.op, ScheduledOp::If(..))
++                    ) =>
++                {
++                    Some(def.value)
++                }
++                _ => None,
++            })
++            .expect("the outer `If` of the guard");
++        let lattice = scoped.folds.iter().filter(|f| f.reduce != written.reduce);
++        let reads: Vec<_> = lattice
++            .flat_map(|fold| fold.outer.iter().copied())
++            .collect();
++        assert!(
++            reads.contains(&guarded),
++            "the lattice's folds read the outer `If`"
++        );
++        assert!(
++            !reads.contains(&written.reduce),
++            "and never the `Reduce`: it is read by its guard alone"
++        );
++    }
++  node's `lo` and `hi`; a value bound is an operand of the fold (`operands`),
++  its loop's seed and its latch's end, and selection reads a known range with
++  `KnownRange::of`.
++  `CompareOp` and `ShiftOp`, a value bound that reads a lattice binder, and a
++  value-bounded fold read other than once, as an `If`'s true arm: a bypassed
++  pipeline, not a refused kernel. A bound the emitter holds as a mask
++  (`ScheduledOp::is_mask`) is refused by name, `BoundSort`, on every tier.
++`UnaryOp`, `BinaryOp` and its `on_masks` and `MaskOp`, `CompareOp`, `ShiftOp`,
++`Legal`, `legal`), `Scope`,
++- Tests: the `*_fails_loudly` tests in `lower.rs` and
++  `a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask`; the carve in
++  `pipeline.rs`; through the emitter `pixelflow-codegen/tests/shared_arm_value.rs`,
++  `tests/collapse_paths.rs` and `tests/value_bounds_jit.rs`.
++use pixelflow_ir::arena::{ExprId, ExprNode, UniformId};
++use pixelflow_ir::fold::{Binder, Bound, BoundEnd, BoundRefusal, KNOWN_RANGE, KnownRange};
++/// What reads a fold whose bound is a value, as far as a schedule has met it.
++#[derive(Clone, Copy)]
++enum ValueFold {
++    /// Not such a fold.
++    Not,
++    /// Such a fold that nothing reachable has read yet.
++    Unread,
++    /// Such a fold, and the node that read it first.
++    ReadBy(ExprId),
++}
++/// The folds whose bound is a value that the schedule reaches, and who reads
++/// each: the single-reader property placement rests on.
++///
++/// A fold whose bound is a value arrives inside the guard `passes::legalize`
++/// ends with, `If(dom, If(Lt(lo, hi), fold, identity), NaN)`, and the fold's
++/// one reader is the inner `If`, as its true arm. That makes the fold the
++/// arm's alone to own, so its loop sits in an arm block and runs only for a
++/// bound that names a count. A second reader, of any shape, would own the
++/// fold at the two readers' lowest common ancestor, outside the arm, and the
++/// loop would run unguarded: a bound of `+∞` or `2²⁴ + 2` stalls its counter
++/// at `2²⁴`, which never reaches the end.
++struct ValueFolds {
++    /// By arena id; empty when no reachable fold has a value bound.
++    readers: Vec<ValueFold>,
++}
++impl ValueFolds {
++    /// The folds `ids`, in an arena of `len` nodes, none read yet.
++    fn unread(len: usize, ids: &[ExprId]) -> Self {
++        if ids.is_empty() {
++            return Self {
++                readers: Vec::new(),
++            };
++        }
++        let mut readers = alloc::vec![ValueFold::Not; len];
++        for id in ids {
++            readers[id.0 as usize] = ValueFold::Unread;
++        }
++        Self { readers }
++    }
++    /// Record `reader`'s reads of these folds, and check each.
++    ///
++    /// # Panics
++    ///
++    /// If `reader` is a second reader of a fold, or reads one other than as
++    /// the true arm of an `If` (not the mask, and not the false arm too):
++    /// the arena was not legalized, which is a pipeline bug and not a
++    /// kernel's.
++    fn read_by(&mut self, arena: &pixelflow_ir::arena::ExprArena, reader: ExprId) {
++        // An empty fold's children are not reached (`mark_reachable`).
++        if self.readers.is_empty() || is_empty_fold(arena, reader) {
++            return;
++        }
++        for fold in arena.children(reader) {
++            match self.readers[fold.0 as usize] {
++                ValueFold::Not => continue,
++                ValueFold::ReadBy(first) => panic!(
++                    "arena_to_schedule: {fold:?}, a fold whose bound is a value, is read by \
++                     {first:?} and by {reader:?}: exactly one reader, an If's true arm, is the \
++                     guard that owns it (passes::legalize ends with the guard, L5)"
++                ),
++                ValueFold::Unread => self.readers[fold.0 as usize] = ValueFold::ReadBy(reader),
++            }
++            let as_an_arm = matches!(
++                arena.node(reader),
++                ExprNode::Ternary(OpKind::If, mask, if_true, if_false)
++                    if if_true == fold && mask != fold && if_false != fold
++            );
++            assert!(
++                as_an_arm,
++                "arena_to_schedule: {fold:?}, a fold whose bound is a value, is read by \
++                 {reader:?} other than as an If's true arm: an arena that was not legalized \
++                 (passes::legalize ends with the guard that owns such a fold, L5)"
++            );
++        }
++    }
++    /// Check, after the walk, that every value-bounded fold found a reader.
++    ///
++    /// # Panics
++    ///
++    /// If a fold was read by nothing: it is the root, or its readers were not
++    /// reached, and either way no guard owns it.
++    fn assert_every_fold_was_read(&self) {
++        let unread = self
++            .readers
++            .iter()
++            .position(|fold| matches!(fold, ValueFold::Unread));
++        if let Some(fold) = unread {
++            panic!(
++                "arena_to_schedule: ExprId({fold}), a fold whose bound is a value, is read by \
++                 nothing: an arena that was not legalized (passes::legalize ends with the \
++                 guard that owns such a fold, L5)"
++            );
++        }
++    }
++}
++/// L3 after collapse: a fold's bound varies with no binder of the lattice.
++///
++/// A bound reads no lattice binder, so it is fixed before the lattice is
++/// traversed: one value for the call or, where it is an enclosing fold's index,
++/// one value per trip of that fold, and either way one value in every lane of a
++/// batch. `collapse` picks the lattice's binder slots from those no reachable
++/// `Var` or fold uses, so this cannot fail on a legalized arena. It is also
++/// what keeps every lane of a guard's mask and of a latch's compare at one
++/// value: the lane binder would vary them within a batch, and a guard's arm
++/// would run on some of its lanes; the row and column binders would vary them
++/// between batches, which the law forbids all the same.
++fn assert_off_the_lattice(end: BoundEnd, reads: Variance, lattice: Variance) {
++    let shared = reads.intersection(lattice);
++    assert!(
++        shared.is_const(),
++        "arena_to_schedule: a fold's {end} bound varies with {shared:?}, a lattice binder's: \
++         L3 after collapse (docs/language/2026-10-20-a-bound-is-a-value.md); a pipeline bug, \
++         not a kernel's"
++    );
++}
++/// Which values of a schedule are masks ([`ScheduledOp::is_mask`]), worked out
++/// as far as a fold's bound asks, in schedule order.
++struct MaskValues(Vec<bool>);
++impl MaskValues {
++    /// Whether `value`, a def of `schedule`, is a mask.
++    fn is_mask(&mut self, schedule: &[Def], value: ValueId) -> bool {
++        for def in &schedule[self.0.len()..] {
++            assert_eq!(
++                def.value.0 as usize,
++                self.0.len(),
++                "a schedule numbers its defs in order"
++            );
++            let mask = def.op.is_mask(|operand| self.0[operand.0 as usize]);
++            self.0.push(mask);
++        }
++        self.0[value.0 as usize]
++    }
++}
++/// A fold whose bound is a value arrives inside its guard (`passes::legalize`'s
++/// last pass): its bounds are operands ([`operands`](super::operands)), and it
++/// is read only as an `If`'s true arm.
++///
++///
++/// It also panics, for a fold whose bound is a value, when a bound reads a
++/// binder of the lattice (L3 after collapse) or the fold is read other than
++/// once, as an `If`'s true arm: an arena that was not legalized, a pipeline
++/// bug and not a kernel's. A bound the emitter holds as a mask
++/// (`ScheduledOp::is_mask`: a comparison, or a bitwise and/or of two such) is
++/// refused by name (`BoundSort`), at either end and on every tier alike: a mask
++/// names no count.
++    // folds on `collapse`'s), asserted rather than assumed. The same scan
++    // reads which binders the lattice's folds bind (a `Write` names all
++    // three), and which folds have a bound that is a value.
++    let mut lattice = Variance::CONST;
++    let mut value_folds = Vec::new();
++        let id = ExprId(idx as u32);
++        match arena.node(id) {
++            ExprNode::Write {
++                row, col, lane: l, ..
++            } => {
++                match lane {
++                    None => lane = Some(l),
++                    Some(seen) => assert_eq!(
++                        seen, l,
++                        "two Writes name different lane binders; a lattice has one lane fold"
++                    ),
++                }
++                for binder in [row, col, l] {
++                    lattice = lattice.union(Variance::from_var(binder.var()));
++                }
++            ExprNode::Reduce { lo, hi, .. } if lo.value().is_some() || hi.value().is_some() => {
++                value_folds.push(id);
++            }
++            _ => {}
++    let mut folds = ValueFolds::unread(len, &value_folds);
++    let mut masks = MaskValues(Vec::new());
++        // Before the `Write` skip: a store of the fold itself is a read of it.
++        folds.read_by(arena, expr_id);
++            // that resolves it as an operand (see `ScheduledOp::Reduce`). A
++            // value bound is an operand of its fold (`operands`): `lo` seeds
++            // the loop and `hi` is read at its latch.
++            ExprNode::Reduce { fold, lo, hi, body } => {
++                for (end, bound) in [(BoundEnd::Lo, lo), (BoundEnd::Hi, hi)] {
++                    let Bound::Value(term) = bound else { continue };
++                    let reads = variance[term.0 as usize];
++                    if let Err(refusal) = fold.admits_bound(end, reads) {
++                        panic!("arena_to_schedule: {refusal}");
++                    }
++                    assert_off_the_lattice(end, reads, lattice);
++                    // A mask names no count, at either end, in whichever
++                    // file a target keeps it: `is_mask` asks, before
++                    // selection, what the emitter will hold as one.
++                    assert!(
++                        !masks.is_mask(&schedule, map_child(term)),
++                        "arena_to_schedule: {}: the bound is a mask (a comparison, or a \
++                         bitwise op on masks), which names no count; until a bound is typed \
++                         (T6 of docs/language/2026-10-17-the-arena-is-typed.md) it is refused \
++                         here, on every tier",
++                        BoundRefusal::BoundSort { end }
++                    );
++                }
++                ScheduledOp::Reduce {
++                    fold,
++                    lo: lo.map(map_child),
++                    hi: hi.map(map_child),
++                    body: map_child(body),
++                }
++            }
++    folds.assert_every_fold_was_read();
++    use crate::program::operands;
++    /// The uniform slots after the one a test below declares for a count, so
++    /// that the count is not read as an origin axis.
++    const AFTER_ONE_UNIFORM: [UniformId; 2] = [UniformId(1), UniformId(2)];
++    /// The bound that is the count itself.
++    fn the_count(_: &mut ExprArena, count: ExprId) -> ExprId {
++        count
++    }
++    /// The literal at the end of a range a test bounds by a value at the other.
++    const OTHER_END: u64 = 8;
++    /// A count, a fold bounded at `at` by `end(count)`, and a guard around it:
++    /// `If(Lt(0, count), Σ_i i, 0)`, as `(arena, count, fold, root)`. The fold's
++    /// other bound is a literal: `0` below, [`OTHER_END`] above. The `If`'s test
++    /// is a stand-in, not the `Lt(lo, hi)` that `passes::legalize` builds:
++    /// lowering asks only that the fold has one reader, an `If`'s true arm.
++    fn a_guarded_fold(
++        at: BoundEnd,
++        end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId,
++    ) -> (ExprArena, ExprId, ExprId, ExprId) {
++        let end = Bound::Value(end(&mut a, count));
++        let (lo, hi) = match at {
++            BoundEnd::Lo => (end, Bound::Lit(OTHER_END)),
++            BoundEnd::Hi => (Bound::Lit(0), end),
++        };
++        let fold = a.push_reduce(Fold::new(Monoid::SUM, binder), lo, hi, i);
++        let zero = a.push_const(0.0);
++        let runs = a.push_binary(OpKind::Lt, zero, count);
++        let root = a.push_ternary(OpKind::If, runs, fold, zero);
++        (a, count, fold, root)
++    }
++    /// A bound that is a value is an operand of its fold, so the carve,
++    /// ownership and the closure check see it as a read of the `Reduce`.
++    #[test]
++    fn a_value_bound_is_an_operand_of_its_fold() {
++        let (a, _, _, root) = a_guarded_fold(BoundEnd::Hi, the_count);
++        let schedule = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
++        let reduce = schedule
++            .iter()
++            .find(|def| matches!(def.op, ScheduledOp::Reduce { .. }))
++            .expect("the fold survives");
++        let ScheduledOp::Reduce { lo, hi, .. } = reduce.op else {
++            unreachable!("matched a Reduce above")
++        };
++        let Bound::Value(count) = hi else {
++            panic!("the end is the count: {hi:?}")
++        };
++        assert_eq!(lo, Bound::Lit(0));
++        let loads = schedule
++            .iter()
++            .find(|def| def.value == count)
++            .map(|d| &d.op);
++        assert!(
++            matches!(loads, Some(ScheduledOp::Uniform(..))),
++            "the end names the uniform's load, not a copy: {loads:?}"
++        );
++        assert_eq!(operands(&reduce.op).collect::<Vec<_>>(), [count]);
++    }
++    /// A value-bounded fold read by an `Add` is one nothing guarded, and the
++    /// loop would run for any count: the arena was not legalized.
++    #[test]
++    #[should_panic(expected = "other than as an If's true arm")]
++    fn an_unguarded_value_bounded_fold_fails_loudly() {
++        let (mut a, _, fold, _) = a_guarded_fold(BoundEnd::Hi, the_count);
++        let one = a.push_const(1.0);
++        let root = a.push_binary(OpKind::Add, fold, one);
++        let _ = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
++    }
++    /// An `If`'s false arm is not its true arm: the guard skips the loop for
++    /// the wrong mask.
++    #[test]
++    #[should_panic(expected = "other than as an If's true arm")]
++    fn a_value_bounded_fold_in_the_false_arm_fails_loudly() {
++        let (mut a, count, fold, _) = a_guarded_fold(BoundEnd::Hi, the_count);
++        let zero = a.push_const(0.0);
++        let runs = a.push_binary(OpKind::Lt, zero, count);
++        let root = a.push_ternary(OpKind::If, runs, zero, fold);
++        let _ = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
++    }
++    /// Two `If`s that both read the fold as their true arm each pass the
++    /// shape check, and own the fold between them at their common ancestor,
++    /// outside both arms: the loop would run unguarded, and a count of `+∞`
++    /// would stall its counter at `2²⁴` for ever. The reader count is what
++    /// catches it, whatever the readers' shape.
++    #[test]
++    #[should_panic(expected = "and by")]
++    fn a_value_bounded_fold_with_two_guards_fails_loudly() {
++        let (mut a, count, fold, guarded) = a_guarded_fold(BoundEnd::Hi, the_count);
++        let one = a.push_const(1.0);
++        let runs = a.push_binary(OpKind::Lt, one, count);
++        let other = a.push_ternary(OpKind::If, runs, fold, one);
++        let root = a.push_binary(OpKind::Add, guarded, other);
++        let _ = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
++    }
++    /// A value-bounded fold that is the root has no reader at all.
++    #[test]
++    #[should_panic(expected = "is read by nothing")]
++    fn a_value_bounded_fold_nothing_reads_fails_loudly() {
++        let (a, _, fold, _) = a_guarded_fold(BoundEnd::Hi, the_count);
++        let _ = arena_to_schedule(&a, fold, AFTER_ONE_UNIFORM);
++    }
++    /// The fold's own guard is in the arena but unreachable from the root:
++    /// what a rebuilt arena leaves behind (`rebuild_arena` appends and keeps
++    /// the nodes it replaced). Only reachable readers count.
++    #[test]
++    fn a_reader_that_is_not_reachable_is_not_a_reader() {
++        let (mut a, _, fold, guarded) = a_guarded_fold(BoundEnd::Hi, the_count);
++        let one = a.push_const(1.0);
++        let _stale = a.push_binary(OpKind::Add, fold, one);
++        let _ = arena_to_schedule(&a, guarded, AFTER_ONE_UNIFORM);
++    }
++    /// L3 after collapse: a bound is fixed before the lattice is traversed, so
++    /// it reads none of the lattice's binders. Only the lane binder would vary
++    /// a guard's mask within a batch; `row` and `col` would vary it between
++    /// batches, which is refused all the same. `collapse` picks its binders
++    /// from slots nothing else uses, so no pipeline builds this; it is built by
++    /// hand, through the term vocabulary, because the arena's own `push_write`
++    /// is not for a crate that is not the IR.
++    ///
++    /// `Σ_{i<row} i` stored at `(row, col, lane)`, `row` being the lattice's.
++    #[test]
++    #[should_panic(expected = "a lattice binder's")]
++    fn a_bound_on_a_lattice_binder_fails_loudly() {
++        use pixelflow_ir::{Ir, Shape};
++        let slot = |n| Binder::from_slot(n).expect("the slot exists");
++        let (i, row, col, lane) = (slot(0), slot(1), slot(2), slot(3));
++        let mut a = ExprArena::new();
++        let index = a.push_var(i.var());
++        let rows = a.push_var(row.var());
++        let fold = a.push_reduce(
++            Fold::new(Monoid::SUM, i),
++            Bound::Lit(0),
++            Bound::Value(rows),
++            index,
++        );
++        let zero = a.push_const(0.0);
++        let runs = a.push_binary(OpKind::Lt, zero, rows);
++        let value = a.push_ternary(OpKind::If, runs, fold, zero);
++        let store = a.embed(Shape::Write {
++            row,
++            col,
++            lane,
++            value,
++        });
++            Fold::new(Monoid::SEQ, lane),
++            Bound::Lit(4),
++            store,
++    /// What lowering a fold bounded at `at` by `end(count)` panics with, or
++    /// `None` if it lowers.
++    fn refusal_of_the_end(
++        at: BoundEnd,
++        end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId,
++    ) -> Option<String> {
++        let (a, _, _, root) = a_guarded_fold(at, end);
++        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            let _ = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
++        }))
++        .err()?;
++        let message = match payload.downcast::<String>() {
++            Ok(message) => *message,
++            Err(payload) => payload
++                .downcast_ref::<&str>()
++                .map_or_else(String::new, |message| (*message).to_owned()),
++        };
++        Some(message)
++    }
++    /// Whether lowering refuses a fold bounded at `at` by `end(count)` by
++    /// name, as a mask, and not for some other reason.
++    fn is_refused_as_a_mask(
++        at: BoundEnd,
++        end: impl FnOnce(&mut ExprArena, ExprId) -> ExprId,
++    ) -> bool {
++        refusal_of_the_end(at, end).is_some_and(|message| message.contains("BoundSort"))
++    }
++    /// A mask names no count, so a bound the emitter holds as one is refused
++    /// at either end and on every tier alike, by `ScheduledOp::is_mask`, which
++    /// AVX-512's selector is held to: a comparison, a bitwise op on two masks, a
++    /// reinterpretation of either. A bitwise op on a mask and a number is a
++    /// number, and a count.
++    #[test]
++    fn a_bound_is_refused_exactly_when_the_emitter_holds_it_as_a_mask() {
++        let lt = |a: &mut ExprArena, c| {
++            let zero = a.push_const(0.0);
++            a.push_binary(OpKind::Lt, zero, c)
++        };
++        let gt = |a: &mut ExprArena, c| {
++            let one = a.push_const(1.0);
++            a.push_binary(OpKind::Gt, c, one)
++        };
++        for at in [BoundEnd::Lo, BoundEnd::Hi] {
++            assert!(is_refused_as_a_mask(at, lt), "{at}: a comparison is a mask");
++            assert!(
++                is_refused_as_a_mask(at, |a, c| {
++                    let (x, y) = (lt(a, c), gt(a, c));
++                    a.push_binary(OpKind::BitAnd, x, y)
++                }),
++                "{at}: a bitwise and of two masks is a mask"
++            );
++            assert!(
++                is_refused_as_a_mask(at, |a, c| {
++                    let (x, y) = (lt(a, c), gt(a, c));
++                    let both = a.push_binary(OpKind::BitOr, x, y);
++                    let wider = a.push_binary(OpKind::BitAnd, both, y);
++                    a.push_binary(OpKind::BitOr, wider, x)
++                }),
++                "{at}: a bitwise op on masks is a mask, however deep"
++            );
++            assert!(
++                is_refused_as_a_mask(at, |a, c| {
++                    let mask = lt(a, c);
++                    a.push_unary(OpKind::Bits, mask)
++                }),
++                "{at}: a reinterpretation defines no value: it is its operand, a mask"
++            );
++            assert_eq!(
++                refusal_of_the_end(at, |a, c| {
++                    let mask = lt(a, c);
++                    let three = a.push_const(3.0);
++                    a.push_binary(OpKind::BitAnd, mask, three)
++                }),
++                None,
++                "{at}: a mask and a number is a number: 3 where it holds, 0 where it does not"
++            );
++            assert_eq!(
++                refusal_of_the_end(at, |a, c| {
++                    let one = a.push_const(1.0);
++                    a.push_binary(OpKind::Add, c, one)
++                }),
++                None,
++                "{at}: arithmetic is a number"
++            );
++            assert_eq!(
++                refusal_of_the_end(at, the_count),
++                None,
++                "{at}: a uniform is a number"
++            );
++        }
++    }
++    /// The refusal names the law: a mask names no count.
++    #[test]
++    #[should_panic(expected = "BoundSort")]
++    fn a_bound_that_is_a_mask_fails_by_name() {
++        let (a, _, _, root) = a_guarded_fold(BoundEnd::Hi, |a, count| {
++            let zero = a.push_const(0.0);
++            a.push_binary(OpKind::Lt, zero, count)
++        });
++        let _ = arena_to_schedule(&a, root, AFTER_ONE_UNIFORM);
++    }
++    /// hand (`lower::arena_to_schedule`). A literal is selection's constant; a
++    /// value is an operand ([`operands`]): `lo` is the loop's seed, read where
++    /// the loop is entered, and `hi` is read at its latch, both in the scope
++    /// this def sits in. Selection reads a known range with `KnownRange::of`.
++        #[cfg(test)]
++        impl $name {
++            /// Every op of this type, for a test that must cover each.
++            pub(crate) const ALL: &'static [Self] = &[$(Self::$op),+];
++        }
++/// A bitwise op on two masks that leaves a mask: the part of [`BinaryOp`] a
++/// target with a register file for masks spells in it ([`BinaryOp::on_masks`]).
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub(crate) enum MaskOp {
++    And,
++    Or,
++}
++impl BinaryOp {
++    /// The mask op this op is on `a` and `b`, each its operand as a mask when
++    /// it is one, with the two masks: a bitwise op on two masks leaves a mask,
++    /// and every other pairing yields a number, or a bit pattern read as one.
++    /// A comparison is a mask whatever it compares, so it takes no operands to
++    /// say so.
++    ///
++    /// The one place that says which binary ops keep a mask a mask. A
++    /// selector that holds masks apart from numbers (AVX-512's opmasks) hands
++    /// it each operand it holds as one and takes the file of the result from
++    /// the answer; [`ScheduledOp::is_mask`] hands it what the schedule says of
++    /// each operand, to ask that choice before a selector is reached.
++    pub(crate) fn on_masks<M>(self, a: Option<M>, b: Option<M>) -> Option<(MaskOp, M, M)> {
++        let op = match self {
++            Self::BitAnd => MaskOp::And,
++            Self::BitOr => MaskOp::Or,
++            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Min | Self::Max | Self::IAdd => {
++                return None;
++            }
++        };
++        Some((op, a?, b?))
++    }
++}
++impl ScheduledOp {
++    /// Whether the value this op defines is a mask: a comparison, or a
++    /// bitwise op on two operands that are masks ([`BinaryOp::on_masks`]),
++    /// `operand_is_mask` saying which. A reinterpretation defines no value
++    /// (lowering maps it to its operand), so it keeps its operand's answer.
++    ///
++    /// A mask is a bit pattern, not a number, and a target may hold it in a
++    /// file of its own (AVX-512's opmasks), so
++    /// what a position that needs a number may take is asked here, before any
++    /// target is chosen. The bitwise rule is the selector's own (`on_masks`);
++    /// that a comparison is a mask, and that nothing else is, is the selector's
++    /// choice of file restated, and the AVX-512 test
++    /// `a_value_is_an_opmask_exactly_when_is_mask_says_it_is_a_mask` holds the
++    /// two equal.
++    pub(crate) fn is_mask(&self, operand_is_mask: impl Fn(ValueId) -> bool) -> bool {
++        match self {
++            Self::Compare(..) => true,
++            Self::Binary(op, a, b) => op
++                .on_masks(
++                    operand_is_mask(*a).then_some(()),
++                    operand_is_mask(*b).then_some(()),
++                )
++                .is_some(),
++            _ => false,
++        }
++    }
++}
++/// A `Reduce`'s operands are its value bounds, the seed and the end its loop
++/// reads; its body is not an operand: by the time one reaches a schedule this
++/// function walks, `scopes::extract_folds` has already carved its body out
++/// into its own `ScopeFold`; the `ValueId` `ScheduledOp::Reduce` still
++/// carries names that scope's root, never an operand this scope's allocation
++/// resolves. What the loop it opens reads from this scope is a dependency
++/// all the same, and the ownership has it as one (`ownership::FoldReads`). A
++/// `Seq` sequences two effects and reads no register; a `Write` reads the one
++/// value it stores — its row and column are binders, found where their folds
++/// keep them, not operands.
++        ScheduledOp::Reduce { lo, hi, .. } => (lo.value(), hi.value(), None),
++/// plus the body a `Reduce` folds (its value bounds are operands already) and
++/// the two effects a `Seq` orders — the children a walk of the DAG's
++/// structure follows, as opposed to the registers an instruction reads
++/// ([`operands`]).
++/// To [`operands`](crate::program::operands) a `Reduce` def reads its value
++/// bounds, the seed and the end its loop reads (none for a literal fold), and
++/// never its body: once `scopes::extract_folds` has carved a fold's body into
++/// a scope of its own, the def is where the loop opens. But the loop *runs*
++/// there, and its body reads this scope: a sibling fold's result from its
++/// accumulator slot, a value invariant in the fold from the park this scope
++/// leaves it in. Without these edges a guard could skip a fold whose result a
++/// sibling fold's body still reads, or a value a fold reads, which the fold
++/// then finds unwritten (`pixelflow-core/tests/guard_sibling_fold.rs` pins
++/// both).
++        // follows, yields it, and its value bounds, which a deeper fold may
++        // compute — so the recursion below can carve it out again
++//! A fold whose bound is a value runs, on every tier, and computes its fold or
++//! NaN: never a hang, never a trip count converted to an integer, never a read
++//! past a buffer (docs/language/2026-10-20-a-bound-is-a-value.md, L2 and L5).
++//!
++//! For a bound `v` at run time, `v` is a count when `0 <= v <= 2^24` and
++//! `floor(v) == v`. Then the fold is `⊕_{k ∈ [lo, hi)}`, the monoid's identity
++//! over a range that runs backwards; and for any other `v` — a fraction, a
++//! negative, NaN, an infinity, `2^24 + 2` — the fold is NaN. The guard that
++//! says so is `passes::legalize`'s last pass, and the oracles here are
++//! explicit folds in scalar Rust, from the monoid's identity.
++//!
++//! Every count is an integer below `2^24` and every sample is an integer, so
++//! each sum is exact in any order of summation (the optimizer may reassociate)
++//! and the answer is compared bit for bit where it is finite.
++//!
++//! A kernel runs two ways. `run_raw` compiles the arena as written, through
++//! `emit::compile`: the loops are the ones written, and the guard and the
++//! allocator are what is under test. `run_linked` goes through
++//! `jit_cache::compile`, the optimizer first: it may peel a fold or factor an
++//! invariant operand out of it, and the answer must not change.
++#![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
++use std::sync::Arc;
++use std::sync::mpsc::{self, RecvTimeoutError};
++use std::time::Duration;
++use pixelflow_codegen::emit::{self, EmitTraffic, Trips};
++use pixelflow_codegen::isa::{self, Isa};
++use pixelflow_codegen::jit_cache;
++use pixelflow_ir::fold::{Binder, Bound, Fold, Monoid};
++use pixelflow_ir::{ExprArena, ExprId, Kernel, LatticeShape, OpKind, Uniform};
++/// Wide enough for a main column fold at every lane count (4, 8 and 16), and
++/// several rows so the row fold is a loop around the columns.
++const SHAPE: LatticeShape = LatticeShape::new([64, 4]);
++/// A width that leaves a remainder at every lane count, so the column fold is
++/// strip-mined and the same `Write` is stored by a main fold and a remainder.
++const RAGGED: LatticeShape = LatticeShape::new([37, 3]);
++/// Where the lattice's sample `(0, 0)` lies: integers, so every sample is.
++const ORIGIN: [f32; 2] = [1.0, 2.0];
++/// The most a test waits for a kernel before it calls it a hang.
++const HANG: Duration = Duration::from_secs(60);
++/// `2^24`, the largest count: the last integer to which an `f32` names every
++/// integer.
++const TOP: f32 = 16_777_216.0;
++/// One value of each kind that names no count: past `2^24`, NaN, a fraction, a
++/// negative, both infinities and a huge finite one. No subnormal: whether one
++/// reads as 0 depends on the thread's denormal mode, not on the guard.
++const OUTSIDE: [f32; 7] = [
++    TOP + 2.0,
++    f32::NAN,
++    2.5,
++    -1.0,
++    f32::INFINITY,
++    f32::NEG_INFINITY,
++    1e30,
++];
++/// A per-call count: a uniform holding `v`.
++fn count(v: f32) -> Kernel {
++    Uniform::new(v).kernel()
++}
++/// `0` as a bound.
++fn zero() -> Kernel {
++    Kernel::constant(0.0)
++}
++/// Whether `v` is a count, the domain a bound's guard admits: an integer in
++/// `0..=2^24`.
++fn names_a_count(v: f32) -> bool {
++    (0.0..=TOP).contains(&v) && v.fract() == 0.0
++}
++/// Run `f` on a thread and wait for it a minute: a fold that hangs is a failed
++/// assertion, not a CI timeout. A panic in `f` is the caller's panic, with its
++/// message.
++fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
++    let (tx, rx) = mpsc::channel();
++    let worker = std::thread::spawn(move || {
++        if let Err(gone) = tx.send(f()) {
++            panic!("the test stopped listening before its kernel returned: {gone}");
++        }
++    });
++    match rx.recv_timeout(HANG) {
++        Ok(value) => value,
++        Err(RecvTimeoutError::Timeout) => {
++            panic!("a fold whose bound is outside its domain never hangs: no answer in {HANG:?}")
++        }
++        Err(RecvTimeoutError::Disconnected) => match worker.join() {
++            Err(panic) => std::panic::resume_unwind(panic),
++            Ok(()) => unreachable!("a worker that sent its answer is not disconnected"),
++        },
++    }
++}
++/// `arena` compiled as written at `shape`, called with `block` as its uniform
++/// block, and the plane it fills with the traffic the compile counted.
++fn run_arena(
++    arena: &ExprArena,
++    root: ExprId,
++    shape: LatticeShape,
++    block: &[f32],
++) -> (Vec<f32>, EmitTraffic) {
++    let compiled = emit::compile(arena, root, shape).expect("the kernel compiles");
++    (call(&compiled.code, block, shape), compiled.traffic)
++}
++/// The plane `code` fills at `shape`, its uniform block `block`.
++fn call(code: &emit::CompiledKernel, block: &[f32], shape: LatticeShape) -> Vec<f32> {
++    let [width, height] = shape.extent().map(|n| n as usize);
++    let mut out = vec![f32::NAN; width * height];
++    // No buffers: the uniform block, then the origin's.
++    let ctx: [*const f32; 2] = [block.as_ptr(), ORIGIN.as_ptr()];
++    // SAFETY: the kernels here declare no buffer, `ctx` holds the uniform
++    // block they were linked against and the origin block, each live for the
++    // call, and `out` is the whole plane of the extent they were compiled at.
++    unsafe { code.call(ctx.as_ptr(), out.as_mut_ptr(), width) };
++    out
++}
++/// `kernel` as written, with the uniforms at their defaults.
++fn run_raw(kernel: &Kernel, shape: LatticeShape) -> (Vec<f32>, EmitTraffic) {
++    let (arena, root) = kernel.parts();
++    let block: Vec<f32> = arena.uniforms().iter().map(|d| d.default).collect();
++    run_arena(arena, root, shape, &block)
++}
++/// `kernel` through the optimizer and the shape-keyed cache, with the uniforms
++/// at their defaults in the link's order.
++fn run_linked(kernel: &Kernel, shape: LatticeShape) -> Vec<f32> {
++    let linked = jit_cache::compile(kernel, shape).expect("the kernel compiles");
++    let block: Vec<f32> = linked.uniforms.iter().map(|d| d.default).collect();
++    call(&linked.kernel, &block, shape)
++}
++/// What a sample's `(x, y)` is, at `(col, row)`.
++fn at(shape: LatticeShape, i: usize) -> (f32, f32) {
++    let width = shape.extent()[0] as usize;
++    (
++        ORIGIN[0] + (i % width) as f32,
++        ORIGIN[1] + (i / width) as f32,
++    )
++}
++/// A built kernel's answer on both paths, labelled, each inside the watchdog.
++fn both(
++    shape: LatticeShape,
++    build: impl Fn() -> Kernel + Send + Copy + 'static,
++) -> [(&'static str, Vec<f32>); 2] {
++    [
++        ("as written", within(move || run_raw(&build(), shape).0)),
++        ("optimized", within(move || run_linked(&build(), shape))),
++    ]
++}
++/// Every sample of both paths is `want(x, y)`, bit for bit; a NaN is only a
++/// NaN.
++#[track_caller]
++fn assert_plane<const PATHS: usize>(
++    shape: LatticeShape,
++    planes: [(&'static str, Vec<f32>); PATHS],
++    context: &str,
++    want: impl Fn(f32, f32) -> f32,
++) {
++    for (path, plane) in planes {
++        assert_eq!(
++            plane.len(),
++            (shape.extent()[0] * shape.extent()[1]) as usize
++        );
++        for (i, &got) in plane.iter().enumerate() {
++            let (x, y) = at(shape, i);
++            let want = want(x, y);
++            let same = match want.is_nan() {
++                true => got.is_nan(),
++                false => got.to_bits() == want.to_bits(),
++            };
++            assert!(
++                same,
++                "{context} ({path}) at ({x}, {y}): got {got} ({:#010x}), want {want} ({:#010x})",
++                got.to_bits(),
++                want.to_bits()
++            );
++        }
++    }
++}
++/// `Σ_{k<n} (X + k)`, one program for every `n`.
++fn sum_of_x_plus_k(n: f32) -> Kernel {
++    Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| Kernel::x().add(k))
++}
++/// The oracle for [`sum_of_x_plus_k`] and its relatives: an explicit fold from
++/// the monoid's identity over `lo..hi`, of `term(k)`.
++fn fold_of(monoid: Monoid, lo: u64, hi: u64, term: impl Fn(f32) -> f32) -> f32 {
++    let identity = f32::from_bits(monoid.identity().bits());
++    let combine = |a: f32, b: f32| match monoid {
++        Monoid::SUM => a + b,
++        Monoid::PRODUCT => a * b,
++        Monoid::MIN => a.min(b),
++        Monoid::MAX => a.max(b),
++        _ => unreachable!("a value bound takes SUM, PRODUCT, MIN or MAX"),
++    };
++    (lo..hi).fold(identity, |acc, k| combine(acc, term(k as f32)))
++}
++/// A count in the domain runs its fold: `n` trips, `n = 0` and `-0.0` the
++/// identity.
++#[test]
++fn a_count_in_the_domain_runs_its_fold() {
++    for n in [0.0f32, -0.0, 1.0, 7.0, 1000.0] {
++        let planes = both(SHAPE, move || sum_of_x_plus_k(n));
++        assert_plane(SHAPE, planes, &format!("Σ_{{k<{n}}} (X + k)"), |x, _| {
++            fold_of(Monoid::SUM, 0, n as u64, |k| x + k)
++        });
++    }
++}
++/// The column fold's remainder stores the same value as its main fold, and
++/// both read the one guard.
++#[test]
++fn a_ragged_row_runs_the_guard_in_both_column_folds() {
++    for n in [0.0f32, 7.0, f32::NAN] {
++        let planes = both(RAGGED, move || sum_of_x_plus_k(n));
++        assert_plane(
++            RAGGED,
++            planes,
++            &format!("ragged, n = {n}"),
++            |x, _| match n.is_nan() {
++                true => f32::NAN,
++                false => fold_of(Monoid::SUM, 0, n as u64, |k| x + k),
++            },
++        );
++    }
++}
++/// `2^24` is the last count: the counter reaches it exactly, and the latch's
++/// compare fires there. The body is constant, so the loop runs once per call.
++#[test]
++fn a_count_at_the_exact_bound_runs_every_trip() {
++    let build =
++        || Kernel::over_values(Monoid::SUM, &zero(), &count(TOP), |_| Kernel::constant(1.0));
++    let planes = both(LatticeShape::POINT, build);
++    assert_plane(LatticeShape::POINT, planes, "Σ_{k<2^24} 1", |_, _| TOP);
++}
++/// Outside the domain the fold is NaN, and the loop is not entered. Unguarded,
++/// a `hi` of `+∞`, `1e30` or `2^24 + 2` stalls an `f32` counter at `2^24` for
++/// ever, on every tier. A NaN `hi` hangs it too where the latch's compare is
++/// ordered (NEON's `FCMGE`); x86's is unordered, so a NaN end exits after one
++/// trip there. The watchdog turns a hang into a failure.
++#[test]
++fn a_count_outside_the_domain_is_nan_and_never_hangs() {
++    for n in OUTSIDE {
++        let planes = both(SHAPE, move || sum_of_x_plus_k(n));
++        assert_plane(SHAPE, planes, &format!("n = {n}"), |_, _| f32::NAN);
++    }
++}
++/// `Σ_{k<n} 0·(X + k)`: `FactorFold` takes the literal zero out of the fold and
++/// the `Mul` annihilator (`0·y → 0`) removes the fold, so the optimizer leaves
++/// no fold for the guard to wrap. In the domain both paths give `0`. Outside
++/// it the fold as written is NaN, and the optimized kernel is exactly `+0.0`:
++/// the annihilation rule's answer, not the guard's, which `Kernel::over_values`
++/// documents.
++#[test]
++fn the_annihilator_erases_the_domain_nan_of_a_zero_factored_fold() {
++    fn zero_times(n: f32) -> Kernel {
++        Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| {
++            zero().mul(&Kernel::x().add(k))
++        })
++    }
++    for n in [0.0f32, 3.0] {
++        let planes = both(SHAPE, move || zero_times(n));
++        assert_plane(SHAPE, planes, &format!("n = {n}"), |_, _| 0.0);
++    }
++    for n in [f32::NAN, 2.5] {
++        let written = within(move || run_raw(&zero_times(n), SHAPE).0);
++        assert_plane(
++            SHAPE,
++            [("as written", written)],
++            &format!("n = {n}"),
++            |_, _| f32::NAN,
++        );
++        let optimized = within(move || run_linked(&zero_times(n), SHAPE));
++        assert_plane(
++            SHAPE,
++            [("optimized", optimized)],
++            &format!("n = {n}"),
++            |_, _| 0.0,
++        );
++    }
++}
++/// A value `lo` outside the domain beside a literal `hi` is NaN too, and the
++/// loop is not entered: the guard tests `lo` although `hi` is a count already.
++/// Unguarded, `-∞` hangs on every tier, for `-∞ + 1` never reaches `9`. A NaN
++/// `lo` hangs too where the latch's compare is ordered (NEON), and exits after
++/// one trip on x86, where it is unordered.
++#[test]
++fn a_value_lo_outside_the_domain_is_nan_and_never_hangs() {
++    for lo in OUTSIDE {
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::SUM, &count(lo), &Kernel::constant(9.0), |k| {
++                Kernel::x().add(k)
++            })
++        });
++        assert_plane(SHAPE, planes, &format!("[{lo}, 9)"), |_, _| f32::NAN);
++    }
++}
++/// A pair of two values, one outside the domain and the other in it, is NaN
++/// whichever end is outside: each end is tested, not only the nearer one.
++#[test]
++fn a_pair_with_one_value_outside_the_domain_is_nan() {
++    for outside in OUTSIDE {
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::SUM, &count(outside), &count(9.0), |k| {
++                Kernel::x().add(k)
++            })
++        });
++        assert_plane(SHAPE, planes, &format!("[{outside}, 9)"), |_, _| f32::NAN);
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::SUM, &count(3.0), &count(outside), |k| {
++                Kernel::x().add(k)
++            })
++        });
++        assert_plane(SHAPE, planes, &format!("[3, {outside})"), |_, _| f32::NAN);
++    }
++}
++/// The four monoids a value bound takes, each with its identity.
++const MONOIDS: [(Monoid, f32); 4] = [
++    (Monoid::SUM, 0.0),
++    (Monoid::PRODUCT, 1.0),
++    (Monoid::MIN, f32::INFINITY),
++    (Monoid::MAX, f32::NEG_INFINITY),
++];
++/// A value `lo` in the domain beside a literal `hi` runs its fold from there:
++/// `Σ_{k ∈ [lo, 1003)} (X + k)` for `lo` at 0, 1, 7 and 1000.
++#[test]
++fn a_value_lo_in_the_domain_beside_a_literal_hi_runs_its_fold() {
++    const HI: u64 = 1003;
++    for lo in [0.0f32, 1.0, 7.0, 1000.0] {
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::SUM, &count(lo), &Kernel::constant(HI as f32), |k| {
++                Kernel::x().add(k)
++            })
++        });
++        assert_plane(SHAPE, planes, &format!("[{lo}, {HI})"), |x, _| {
++            fold_of(Monoid::SUM, lo as u64, HI, |k| x + k)
++        });
++    }
++}
++/// The top of the domain at `lo`, beside a literal `hi` of `2^24`: `2^24 - 2`
++/// leaves two trips, the counter reaches `2^24` exactly and the latch fires
++/// there, so `MAX` of the index is `2^24 - 1`; and `2^24` is a count, the
++/// range empty, so each monoid gives its identity.
++#[test]
++fn a_value_lo_at_the_top_of_the_domain_beside_a_literal_hi() {
++    let planes = both(SHAPE, || {
++        Kernel::over_values(
++            Monoid::MAX,
++            &count(TOP - 2.0),
++            &Kernel::constant(TOP),
++            |k| k.clone(),
++        )
++    });
++    assert_plane(SHAPE, planes, "MAX_{k ∈ [2^24 - 2, 2^24)} k", |_, _| {
++        TOP - 1.0
++    });
++    for (monoid, identity) in MONOIDS {
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(monoid, &count(TOP), &Kernel::constant(TOP), |k| {
++                Kernel::x().add(k)
++            })
++        });
++        assert_plane(
++            SHAPE,
++            planes,
++            &format!("{monoid:?} [2^24, 2^24)"),
++            |_, _| identity,
++        );
++    }
++}
++/// A pair of values in the domain runs its fold, at 1000 and at the top: three
++/// trips from 1000, two trips to `2^24` (`MAX` of the index is `2^24 - 1`), and
++/// `[2^24, 2^24)`, which is each monoid's identity.
++#[test]
++fn a_pair_of_values_in_the_domain_runs_its_fold_up_to_the_top() {
++    let planes = both(SHAPE, || {
++        Kernel::over_values(Monoid::SUM, &count(1000.0), &count(1003.0), |k| {
++            Kernel::x().add(k)
++        })
++    });
++    assert_plane(SHAPE, planes, "[1000, 1003)", |x, _| {
++        fold_of(Monoid::SUM, 1000, 1003, |k| x + k)
++    });
++    let planes = both(SHAPE, || {
++        Kernel::over_values(Monoid::MAX, &count(TOP - 2.0), &count(TOP), |k| k.clone())
++    });
++    assert_plane(SHAPE, planes, "MAX_{k ∈ [2^24 - 2, 2^24)} k", |_, _| {
++        TOP - 1.0
++    });
++    for (monoid, identity) in MONOIDS {
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(monoid, &count(TOP), &count(TOP), |k| Kernel::x().add(k))
++        });
++        assert_plane(
++            SHAPE,
++            planes,
++            &format!("{monoid:?} [2^24, 2^24)"),
++            |_, _| identity,
++        );
++    }
++}
++/// One uniform at both ends is the empty range where it is a count, and NaN
++/// where it is none: the range is not empty by being `[v, v)`, so the guard
++/// tests `v`.
++#[test]
++fn one_value_at_both_ends_is_the_identity_in_the_domain_and_nan_outside() {
++    for v in [0.0f32, 7.0, TOP, f32::NAN, 2.5] {
++        let planes = both(SHAPE, move || {
++            let n = Uniform::new(v);
++            Kernel::over_values(Monoid::SUM, &n.kernel(), &n.kernel(), |k| {
++                Kernel::x().add(k)
++            })
++        });
++        assert_plane(
++            SHAPE,
++            planes,
++            &format!("[{v}, {v})"),
++            |_, _| match names_a_count(v) {
++                true => 0.0,
++                false => f32::NAN,
++            },
++        );
++    }
++}
++/// `2^24 + 1` is not a case: no `f32` names it, and `16777217.0` rounds to
++/// `2^24`, which is a count.
++#[test]
++fn the_f32_nearest_two_to_the_24_plus_one_is_two_to_the_24() {
++    assert_eq!(16_777_217.0f32, TOP);
++}
++/// A bound a rule or a hand made from a real that names no count is kept a
++/// value, not refused (the arena's `push_reduce`), and its guard makes the
++/// fold NaN rather than a panic.
++#[test]
++fn a_literal_a_rule_made_outside_the_domain_is_nan() {
++    let mut a = ExprArena::new();
++    let binder = Binder::from_slot(0).expect("slot 0 exists");
++    let (x, k) = (a.push_var(0), a.push_var(binder.var()));
++    let body = a.push_binary(OpKind::Add, x, k);
++    let hi = a.push_const(2.5);
++    let root = a.push_reduce(
++        Fold::new(Monoid::SUM, binder),
++        Bound::Lit(0),
++        Bound::Value(hi),
++        body,
++    );
++    let (plane, _) = within(move || run_arena(&a, root, SHAPE, &[]));
++    assert!(plane.iter().all(|v| v.is_nan()), "{plane:?}");
++}
++/// A pair that runs backwards at run time is the monoid's identity, for each
++/// monoid a value bound takes.
++#[test]
++fn a_pair_that_runs_backwards_is_the_identity() {
++    for (monoid, identity) in MONOIDS {
++        for (lo, hi) in [(5.0f32, 3.0f32), (4.0, 4.0)] {
++            let planes = both(SHAPE, move || {
++                Kernel::over_values(monoid, &count(lo), &count(hi), |k| Kernel::x().add(k))
++            });
++            assert_plane(
++                SHAPE,
++                planes,
++                &format!("{monoid:?} [{lo}, {hi})"),
++                |_, _| identity,
++            );
++        }
++    }
++}
++/// A value `lo` starts the fold there: the counter is seeded with its lane (plus
++/// zero, which only the sign of a zero count shows).
++#[test]
++fn a_value_lo_starts_the_fold() {
++    let planes = both(SHAPE, || {
++        Kernel::over_values(Monoid::SUM, &count(3.0), &count(7.0), |k| {
++            Kernel::x().add(k)
++        })
++    });
++    assert_plane(SHAPE, planes, "Σ_{k=3}^{6} (X + k)", |x, _| {
++        fold_of(Monoid::SUM, 3, 7, |k| x + k)
++    });
++}
++/// `-0.0` is the count 0 at `lo`, and the fold starts at the integer 0, `+0.0`,
++/// whether the count is a uniform or a constant (`Bound::discover` turns a
++/// literal `-0.0` into `Lit(0)`). A body that sees the sign of zero tells them
++/// apart: `1/k` is `+∞` at `+0.0` and `-∞` at `-0.0`, and a `MAX` over one trip
++/// keeps the sign of the index it was given.
++#[test]
++fn a_value_lo_of_negative_zero_starts_the_fold_at_positive_zero() {
++    /// How a count is spelled: as a uniform, or as a constant.
++    type Spelling = fn(f32) -> Kernel;
++    let spellings: [(&str, Spelling); 2] = [("uniform", count), ("constant", Kernel::constant)];
++    for (kind, lo_of) in spellings {
++        for lo in [-0.0f32, 0.0] {
++            let planes = both(SHAPE, move || {
++                Kernel::over_values(Monoid::MIN, &lo_of(lo), &count(1.0), |k| {
++                    Kernel::constant(1.0).div(k)
++                })
++            });
++            assert_plane(
++                SHAPE,
++                planes,
++                &format!("MIN_{{k ∈ [{kind} {lo:?}, 1)}} 1/k"),
++                |_, _| f32::INFINITY,
++            );
++            let planes = both(SHAPE, move || {
++                Kernel::over_values(Monoid::MAX, &lo_of(lo), &count(1.0), |k| k.clone())
++            });
++            assert_plane(
++                SHAPE,
++                planes,
++                &format!("MAX_{{k ∈ [{kind} {lo:?}, 1)}} k"),
++                |_, _| 0.0,
++            );
++        }
++    }
++}
++/// `Σ_{i<8} Σ_{j<i} (X + j)`: the inner `hi` is the outer fold's index, so
++/// the guard runs once per outer trip. As written the inner bound stays a
++/// value; optimized, the outer fold may peel and make it known (L8).
++#[test]
++fn a_triangular_sum_runs_each_inner_fold_to_its_outer_index() {
++    let build = || {
++        Kernel::sum_over(8, |i| {
++            Kernel::over_values(Monoid::SUM, &zero(), i, |j| Kernel::x().add(j))
++        })
++    };
++    let planes = both(SHAPE, build);
++    assert_plane(SHAPE, planes, "Σ_i Σ_{j<i} (X + j)", |x, _| {
++        fold_of(Monoid::SUM, 0, 8, |i| {
++            fold_of(Monoid::SUM, 0, i as u64, |j| x + j)
++        })
++    });
++}
++/// The same under a per-call count for the outer bound: `n = 0` and `5`, and
++/// NaN, `+∞` and `2^24 + 2`, which are none.
++#[test]
++fn a_triangular_sum_under_a_count() {
++    for n in [0.0f32, 5.0, f32::NAN, f32::INFINITY, TOP + 2.0] {
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::SUM, &zero(), &count(n), |i| {
++                Kernel::over_values(Monoid::SUM, &zero(), i, |j| Kernel::x().add(j))
++            })
++        });
++        assert_plane(
++            SHAPE,
++            planes,
++            &format!("outer n = {n}"),
++            |x, _| match names_a_count(n) {
++                true => fold_of(Monoid::SUM, 0, n as u64, |i| {
++                    fold_of(Monoid::SUM, 0, i as u64, |j| x + j)
++                }),
++                false => f32::NAN,
++            },
++        );
++    }
++}
++/// Two folds each over a count of its own, the inner one inside the outer's
++/// body: the inner guard is the outer loop's, run once per outer trip, and
++/// either count outside the domain makes the whole NaN.
++#[test]
++fn two_counts_nest() {
++    let (nan, inf, past) = (f32::NAN, f32::INFINITY, TOP + 2.0);
++    for (n, m) in [
++        (0.0f32, 3.0f32),
++        (3.0, 0.0),
++        (3.0, 4.0),
++        (nan, 4.0),
++        (3.0, nan),
++        (inf, 4.0),
++        (3.0, inf),
++        (past, 4.0),
++        (3.0, past),
++    ] {
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::SUM, &zero(), &count(n), |i| {
++                Kernel::over_values(Monoid::SUM, &zero(), &count(m), |j| {
++                    Kernel::x().add(i).add(j)
++                })
++            })
++        });
++        assert_plane(SHAPE, planes, &format!("n = {n}, m = {m}"), |x, _| {
++            match names_a_count(n) && names_a_count(m) {
++                true => fold_of(Monoid::SUM, 0, n as u64, |i| {
++                    fold_of(Monoid::SUM, 0, m as u64, |j| x + i + j)
++                }),
++                false => f32::NAN,
++            }
++        });
++    }
++}
++/// A bound the body reads as well: `Σ_{k<n} k·n`, one uniform, two readers.
++#[test]
++fn a_bound_the_body_reads_too() {
++    for n in [0.0f32, 1.0, 7.0, 2.5] {
++        let planes = both(SHAPE, move || {
++            let n = Uniform::new(n);
++            Kernel::over_values(Monoid::SUM, &zero(), &n.kernel(), |k| k.mul(&n.kernel()))
++        });
++        assert_plane(SHAPE, planes, &format!("n = {n}"), |_, _| {
++            match n.fract() != 0.0 {
++                true => f32::NAN,
++                false => fold_of(Monoid::SUM, 0, n as u64, |k| k * n),
++            }
++        });
++    }
++}
++/// A literal `lo` beside a value `hi`: only the value is in the domain test.
++#[test]
++fn a_literal_lo_beside_a_value_hi() {
++    for n in [0.0f32, 2.0, 3.0, 9.0, -1.0] {
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::SUM, &Kernel::constant(2.0), &count(n), |k| {
++                Kernel::x().add(k)
++            })
++        });
++        assert_plane(SHAPE, planes, &format!("[2, {n})"), |x, _| match n < 0.0 {
++            true => f32::NAN,
++            false => fold_of(Monoid::SUM, 2, n as u64, |k| x + k),
++        });
++    }
++}
++/// `Σ_{i<8} Σ_{j∈[i,8)} (X + j)`: a value `lo` that is an enclosing index.
++/// The inner counter is seeded with `i + 0.0`, a fresh value (a value `lo` is
++/// always seeded its lane plus zero), so the inner loop's entry argument is
++/// not the outer counter itself, which the outer latch steps. Each trip of
++/// the outer fold starts the inner one at that trip's index.
++#[test]
++fn an_inner_fold_starting_at_the_outer_index() {
++    let build = || {
++        Kernel::sum_over(8, |i| {
++            Kernel::over_values(Monoid::SUM, i, &Kernel::constant(8.0), |j| {
++                Kernel::x().add(j)
++            })
++        })
++    };
++    let planes = both(SHAPE, build);
++    assert_plane(SHAPE, planes, "Σ_i Σ_{j∈[i,8)} (X + j)", |x, _| {
++        fold_of(Monoid::SUM, 0, 8, |i| {
++            fold_of(Monoid::SUM, i as u64, 8, |j| x + j)
++        })
++    });
++}
++/// `X + Σ_{k<n} k`: the fold reads no coordinate, so its guard and its loop
++/// are call-invariant and the carve gives them the body, under the guard's
++/// arms. The loop runs once per call, not once per sample.
++#[test]
++fn a_fold_that_reads_no_coordinate_is_guarded_once_per_call() {
++    for n in [0.0f32, 7.0, f32::NAN, f32::INFINITY, TOP + 2.0] {
++        let (plane, traffic) = within(move || {
++            let sum = Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| k.clone());
++            run_raw(&Kernel::x().add(&sum), SHAPE)
++        });
++        let want = |x: f32| match names_a_count(n) {
++            true => x + fold_of(Monoid::SUM, 0, n as u64, |k| k),
++            false => f32::NAN,
++        };
++        assert_plane(
++            SHAPE,
++            [("as written", plane)],
++            &format!("n = {n}"),
++            |x, _| want(x),
++        );
++        let estimates: Vec<_> = traffic
++            .trips
++            .iter()
++            .filter(|t| matches!(t, Trips::Estimated(_)))
++            .collect();
++        assert_eq!(
++            estimates,
++            [&Trips::Estimated(Fold::ESTIMATED_TRIPS)],
++            "the one loop with a bound that is a value runs once per call: {:?}",
++            traffic.trips
++        );
++        assert_eq!(traffic.dynamic_memory_ops(), None);
++    }
++}
++/// More values live at once than any tier's vector file holds.
++const WALL: u32 = 48;
++/// `Σ_m (k + X)·(m + 1)` summed in both orders: [`WALL`] products all live
++/// until the last is added, so every vector register is reused inside a loop
++/// whose body this is.
++fn a_wall_of_values(k: &Kernel) -> Kernel {
++    let terms: Vec<Kernel> = (0..WALL)
++        .map(|m| Kernel::x().add(k).mul(&Kernel::constant((m + 1) as f32)))
++        .collect();
++    let chain = |terms: &[Kernel]| {
++        terms[1..]
++            .iter()
++            .fold(terms[0].clone(), |acc, term| acc.add(term))
++    };
++    let reversed: Vec<Kernel> = terms.iter().rev().cloned().collect();
++    chain(&terms).add(&chain(&reversed))
++}
++/// A wall of values live at once, so `hi`, which the body does not read,
++/// survives to the latch only if its interval spans the loop.
++///
++/// `Σ_{k<n} Σ_m (X + k)·(m + 1)`, twice over.
++#[test]
++fn a_bound_read_only_by_the_loop_reaches_its_latch() {
++    for n in [0.0f32, 1.0, 7.0, f32::NAN] {
++        let (plane, _) = within(move || {
++            run_raw(
++                &Kernel::over_values(Monoid::SUM, &zero(), &count(n), a_wall_of_values),
++                SHAPE,
++            )
++        });
++        let weight: f32 = (1..=WALL).map(|m| m as f32).sum();
++        assert_plane(
++            SHAPE,
++            [("as written", plane)],
++            &format!("n = {n}"),
++            |x, _| match n.is_nan() {
++                true => f32::NAN,
++                false => fold_of(Monoid::SUM, 0, n as u64, |k| 2.0 * weight * (x + k)),
++            },
++        );
++    }
++}
++/// The depth at which a nest of per-call counts, each priced at
++/// [`Fold::ESTIMATED_TRIPS`], is priced past `u64`.
++const PAST_U64: usize = (u64::BITS / Fold::ESTIMATED_TRIPS.ilog2()) as usize + 1;
++/// `depth` folds, each `Σ_{i<n}` over one per-call count, around `X + Σ i`.
++fn nested_counts(depth: usize, n: &Uniform, acc: Kernel) -> Kernel {
++    if depth == 0 {
++        return Kernel::x().add(&acc);
++    }
++    let again = *n;
++    Kernel::over_values(Monoid::SUM, &zero(), &n.kernel(), move |i| {
++        nested_counts(depth - 1, &again, acc.add(i))
++    })
++}
++/// A frame, wide and tall enough that a nest a few levels shallower than
++/// [`PAST_U64`] is priced past `u64` once the row and column folds are in.
++const FRAME: LatticeShape = LatticeShape::new([1920, 1080]);
++/// A nest priced past `u64` compiles: the allocator weighs a read by the nest's
++/// price and adds the weights of a value's reads, so the sum saturates where it
++/// would otherwise overflow. Every count is `1`, so the nest runs each body
++/// once and the answer is `X`.
++#[test]
++fn a_nest_priced_past_u64_still_compiles() {
++    let shapes_and_depths = [
++        (LatticeShape::POINT, PAST_U64 - 1),
++        (LatticeShape::POINT, PAST_U64),
++        (LatticeShape::POINT, PAST_U64 + 1),
++        (FRAME, PAST_U64 - 2),
++    ];
++    for (shape, depth) in shapes_and_depths {
++        let planes = both(shape, move || {
++            nested_counts(depth, &Uniform::new(1.0), Kernel::constant(0.0))
++        });
++        assert_plane(
++            shape,
++            planes,
++            &format!("{depth} nested counts of 1 at {:?}", shape.extent()),
++            |x, _| x,
++        );
++    }
++}
++/// What the compile counted for `kernel` as written at [`SHAPE`], and the
++/// frame it needed.
++fn traffic_of(kernel: &Kernel) -> (EmitTraffic, u64) {
++    let (arena, root) = kernel.parts();
++    let compiled = emit::compile(arena, root, SHAPE).expect("the kernel compiles");
++    (compiled.traffic, compiled.frame_bytes)
++}
++/// How many lanes one batch of the column fold holds on this host.
++fn lanes() -> u64 {
++    u64::try_from(pixelflow_codegen::jit_vector_bytes() / size_of::<f32>())
++        .expect("a lane count fits u64")
++}
++/// How many times the column fold's body runs per call at [`SHAPE`]: once per
++/// batch of every row. [`SHAPE`]'s width divides by every lane count, so no
++/// remainder fold runs beside it.
++fn column_trips() -> u64 {
++    let [width, rows] = SHAPE.extent().map(u64::from);
++    rows * width.div_ceil(lanes())
++}
++/// The scope of `traffic` whose body runs `trips` times per call. A value
++/// bound and its literal twin have one nest, so a scope found in the twin,
++/// where every count is known, names the same fold in both. A scope is found by
++/// how often it runs and not by being the most run: which fold runs most
++/// depends on the lane count.
++#[track_caller]
++fn scope_running(traffic: &EmitTraffic, trips: u64) -> usize {
++    let mut running =
++        (0..traffic.trips.len()).filter(|&at| traffic.trips[at] == Trips::Known(trips));
++    match (running.next(), running.next()) {
++        (Some(scope), None) => scope,
++        _ => panic!(
++            "exactly one scope runs {trips} times per call: {:?}",
++            traffic.trips
++        ),
++    }
++}
++/// The wall over `hi` trips when `hi` is a count, and over a literal seven
++/// when it is `None`: the kernel a value bound is compared with.
++fn the_wall_over(hi: Option<f32>) -> Kernel {
++    match hi {
++        Some(n) => Kernel::over_values(Monoid::SUM, &zero(), &count(n), a_wall_of_values),
++        None => Kernel::sum_over(7, a_wall_of_values),
++    }
++}
++/// A value `hi` that the allocator does not keep in a register across the
++/// loop is reloaded at every latch: the latch's compare reads a register, so
++/// it is one load in the fold's scope per trip. A literal `hi` is a constant
++/// the allocator places again at its read, and costs none.
++#[test]
++fn a_bound_that_is_not_carried_is_reloaded_at_every_latch() {
++    let (value, _) = traffic_of(&the_wall_over(Some(7.0)));
++    let (literal, _) = traffic_of(&the_wall_over(None));
++    let fold = |t: &EmitTraffic| *t.scopes.last().expect("a nest has a body");
++    assert_eq!(
++        fold(&value).loads,
++        fold(&literal).loads + 1,
++        "the fold's scope reloads its end once more than a literal's"
++    );
++    assert_eq!(
++        value.trips.last().map(|t| t.known()),
++        Some(None),
++        "the loop's trips are an estimate: {:?}",
++        value.trips
++    );
++}
++/// A guard whose masks are the call's but whose fold is the column's: its two
++/// masks are computed once, live across every batch, and are read again by
++/// the guard's two `If`s in each, on every tier. Where they live between
++/// batches is the tier's: the opmask file (AVX-512) has no register to keep
++/// them in, so each batch reloads them and the frame grows by the slots they
++/// live in, narrow ones among them; NEON's vector file keeps them resident.
++#[test]
++fn a_guard_computed_once_per_call_is_read_again_in_every_batch() {
++    let over = |hi: Option<f32>| match hi {
++        Some(n) => Kernel::x().mul(&sum_of_x_plus_k(n)),
++        None => Kernel::x().mul(&Kernel::sum_over(7, |k| Kernel::x().add(k))),
++    };
++    let (value, value_frame) = traffic_of(&over(Some(7.0)));
++    let (literal, literal_frame) = traffic_of(&over(None));
++    let column = |t: &EmitTraffic| t.scopes[2];
++    assert_eq!(
++        column(&value).instructions,
++        column(&literal).instructions + 2,
++        "the column fold's every batch runs the guard's two selects, one per mask: \
++         {:?} against {:?}",
++        column(&value),
++        column(&literal)
++    );
++    if isa::detect() != Isa::Avx512 {
++        return;
++    }
++    assert!(
++        column(&value).loads > column(&literal).loads,
++        "each batch reads the opmasks back: {:?} against {:?}",
++        column(&value),
++        column(&literal)
++    );
++    assert!(
++        value_frame > literal_frame,
++        "the opmasks are slots in the frame: {value_frame} against {literal_frame}"
++    );
++}
++/// `Y·Σ_{k<n} (Y + k)`: a fold that reads `Y` alone, so it sits in the row fold.
++fn y_times_a_sum_over_y(n: f32) -> Kernel {
++    Kernel::y().mul(&Kernel::over_values(Monoid::SUM, &zero(), &count(n), |k| {
++        Kernel::y().add(k)
++    }))
++}
++/// The same guard around a fold that reads `Y` alone sits in the row fold: its
++/// two selects run once per row, and the column fold, which runs in every
++/// batch, gains nothing. A guard goes where its fold goes, not to the column
++/// fold by default.
++#[test]
++fn a_guard_around_a_fold_that_reads_only_y_is_the_row_folds() {
++    let over = |hi: Option<f32>| match hi {
++        Some(n) => y_times_a_sum_over_y(n),
++        None => Kernel::y().mul(&Kernel::sum_over(7, |k| Kernel::y().add(k))),
++    };
++    let (value, _) = traffic_of(&over(Some(7.0)));
++    let (literal, _) = traffic_of(&over(None));
++    // The row fold runs once per row and the column fold once per batch of
++    // each. The fold over `k` runs seven times in every row, so a wide enough
++    // batch makes it, and not the column fold, the nest's most-run scope.
++    let rows = u64::from(SHAPE.extent()[1]);
++    let row = scope_running(&literal, rows);
++    let column = scope_running(&literal, column_trips());
++    assert_eq!(value.trips[row], Trips::Known(rows), "{:?}", value.trips);
++    assert_eq!(
++        value.scopes[row].instructions,
++        literal.scopes[row].instructions + 2,
++        "the row fold runs the guard's two selects, one per mask: {:?} against {:?}",
++        value.scopes[row],
++        literal.scopes[row]
++    );
++    assert_eq!(
++        value.scopes[column].instructions, literal.scopes[column].instructions,
++        "the column fold, run in every batch, runs none of the guard: {:?} against {:?}",
++        value.scopes[column], literal.scopes[column]
++    );
++}
++/// The row fold's guard computes the fold in the domain and is NaN outside
++/// it, and does not hang: the guard sits in the row fold's scope, once per
++/// row, and the arm test is read there.
++#[test]
++fn a_guard_in_the_row_fold_computes_its_fold_or_nan() {
++    for n in [0.0f32, 7.0, f32::NAN, f32::INFINITY, TOP + 2.0] {
++        let planes = both(SHAPE, move || y_times_a_sum_over_y(n));
++        assert_plane(
++            SHAPE,
++            planes,
++            &format!("Y·Σ_{{k<{n}}} (Y + k)"),
++            |_, y| match names_a_count(n) {
++                true => y * fold_of(Monoid::SUM, 0, n as u64, |k| y + k),
++                false => f32::NAN,
++            },
++        );
++    }
++}
++/// A guard around a fold that reads an enclosing fold's index sits in that
++/// fold's scope, once per trip of it, although the fold also reads `X`:
++/// `Σ_{i<8} Σ_{j<8} (X + j + i)` with the inner count a value, against its
++/// literal twin. The enclosing fold's scope gains the guard's two selects, and
++/// where the masks cannot stay in registers across its trips (AVX-512's
++/// opmasks), the reloads; the column fold, which runs in every batch, gains
++/// nothing.
++#[test]
++fn a_guard_around_a_fold_that_reads_an_enclosing_index_is_that_folds() {
++    const OUTER: u32 = 8;
++    let over = |inner: Option<f32>| {
++        Kernel::sum_over(OUTER, |i| match inner {
++            Some(n) => Kernel::over_values(Monoid::SUM, &zero(), &count(n), |j| {
++                Kernel::x().add(j).add(i)
++            }),
++            None => Kernel::sum_over(8, |j| Kernel::x().add(j).add(i)),
++        })
++    };
++    let (value, _) = traffic_of(&over(Some(8.0)));
++    let (literal, _) = traffic_of(&over(None));
++    let column = scope_running(&literal, column_trips());
++    let outer = scope_running(&literal, column_trips() * u64::from(OUTER));
++    assert_eq!(
++        value.trips[outer], literal.trips[outer],
++        "the enclosing fold is the same loop: {:?} against {:?}",
++        value.trips, literal.trips
++    );
++    assert_eq!(
++        value.scopes[outer].instructions,
++        literal.scopes[outer].instructions + 2,
++        "the enclosing fold runs the guard's two selects, one per mask, in every trip: \
++         {:?} against {:?}",
++        value.scopes[outer],
++        literal.scopes[outer]
++    );
++    assert_eq!(
++        value.scopes[column].instructions, literal.scopes[column].instructions,
++        "the column fold, run in every batch, runs none of the guard: {:?} against {:?}",
++        value.scopes[column], literal.scopes[column]
++    );
++    if isa::detect() != Isa::Avx512 {
++        return;
++    }
++    assert!(
++        value.scopes[outer].loads > literal.scopes[outer].loads,
++        "each trip reads the opmasks back: {:?} against {:?}",
++        value.scopes[outer],
++        literal.scopes[outer]
++    );
++}
++/// One program and one code pointer for every `n`: a fresh uniform per count,
++/// the cache keyed on structure, and each kernel computing its own `n`.
++#[test]
++fn every_count_is_one_program() {
++    let linked: Vec<_> = [0.0f32, 1.0, 7.0, 1000.0]
++        .into_iter()
++        .map(|n| {
++            let linked = within(move || {
++                jit_cache::compile(&sum_of_x_plus_k(n), SHAPE).expect("the kernel compiles")
++            });
++            (n, linked)
++        })
++        .collect();
++    let (_, first) = &linked[0];
++    for (n, each) in &linked {
++        assert!(
++            Arc::ptr_eq(&first.kernel, &each.kernel),
++            "n = {n} compiled to a program of its own"
++        );
++        let block: Vec<f32> = each.uniforms.iter().map(|d| d.default).collect();
++        let code = Arc::clone(&each.kernel);
++        let plane = within(move || call(&code, &block, SHAPE));
++        let planes = [("shared code", plane)];
++        assert_plane(SHAPE, planes, &format!("n = {n}"), |x, _| {
++            fold_of(Monoid::SUM, 0, *n as u64, |k| x + k)
++        });
++    }
++}
++/// The other three monoids a value bound takes, under the guard. At `n = 0`
++/// the fold is the monoid's identity, `−∞` for `MAX` and `+∞` for `MIN`, not
++/// the formula that holds for `n ≥ 1`.
++#[test]
++fn each_monoid_runs_under_its_guard() {
++    for n in [0.0f32, 1.0, 7.0, 2.5] {
++        let outside = n.fract() != 0.0;
++        let trips = n as u64;
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::MAX, &zero(), &count(n), |k| Kernel::x().sub(k))
++        });
++        assert_plane(SHAPE, planes, &format!("MAX, n = {n}"), |x, _| {
++            match (outside, n == 0.0) {
++                (true, _) => f32::NAN,
++                (false, true) => f32::NEG_INFINITY,
++                (false, false) => x,
++            }
++        });
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::MIN, &zero(), &count(n), |k| Kernel::x().sub(k))
++        });
++        assert_plane(SHAPE, planes, &format!("MIN, n = {n}"), |x, _| {
++            match (outside, n == 0.0) {
++                (true, _) => f32::NAN,
++                (false, true) => f32::INFINITY,
++                (false, false) => x - (n - 1.0),
++            }
++        });
++        let planes = both(SHAPE, move || {
++            Kernel::over_values(Monoid::PRODUCT, &zero(), &count(n), |k| {
++                k.add(&Kernel::constant(1.0))
++            })
++        });
++        assert_plane(
++            SHAPE,
++            planes,
++            &format!("PRODUCT, n = {n}"),
++            |_, _| match outside {
++                true => f32::NAN,
++                false => fold_of(Monoid::PRODUCT, 0, trips, |k| k + 1.0),
++            },
++        );
++    }
++}
++/// A bound that is a mask and a number is a count: `3` where the mask holds
++/// and `0` where it does not. `ScheduledOp::is_mask` calls it a number, so it
++/// is not refused, and it runs on every tier, at `lo` and at `hi`.
++#[test]
++fn a_mask_and_a_number_is_a_count_on_every_tier() {
++    for (u, trips) in [(5.0f32, 3u64), (-1.0, 0)] {
++        let mut a = ExprArena::new();
++        let slot = a.declare_uniform(Uniform::new(u).decl());
++        let uniform = a.push_uniform(slot);
++        let (zero, three) = (a.push_const(0.0), a.push_const(3.0));
++        let positive = a.push_binary(OpKind::Lt, zero, uniform);
++        let number = a.push_binary(OpKind::BitAnd, positive, three);
++        let binder = Binder::from_slot(0).expect("slot 0 exists");
++        let (x, k) = (a.push_var(0), a.push_var(binder.var()));
++        let body = a.push_binary(OpKind::Add, x, k);
++        let ends = a.push_reduce(
++            Fold::new(Monoid::SUM, binder),
++            Bound::Lit(0),
++            Bound::Value(number),
++            body,
++        );
++        let starts = a.push_reduce(
++            Fold::new(Monoid::SUM, binder),
++            Bound::Value(number),
++            Bound::Lit(3),
++            body,
++        );
++        let root = a.push_binary(OpKind::Add, ends, starts);
++        let (plane, _) = within(move || run_arena(&a, root, SHAPE, &[u]));
++        let planes = [("as written", plane)];
++        assert_plane(SHAPE, planes, &format!("u = {u}"), |x, _| {
++            fold_of(Monoid::SUM, 0, trips, |k| x + k) + fold_of(Monoid::SUM, trips, 3, |k| x + k)
++        });
++    }
++}
++/// `Σ_{k ∈ [0 < u, 3)} (X + k)`, written by hand: the low bound is the mask
++/// `0 < u`, which `Kernel::over_values` takes no spelling of.
++fn a_fold_that_starts_at_a_mask() -> (ExprArena, ExprId) {
++    let mut a = ExprArena::new();
++    let slot = a.declare_uniform(Uniform::new(5.0).decl());
++    let uniform = a.push_uniform(slot);
++    let zero = a.push_const(0.0);
++    let positive = a.push_binary(OpKind::Lt, zero, uniform);
++    let binder = Binder::from_slot(0).expect("slot 0 exists");
++    let (x, k) = (a.push_var(0), a.push_var(binder.var()));
++    let body = a.push_binary(OpKind::Add, x, k);
++    let root = a.push_reduce(
++        Fold::new(Monoid::SUM, binder),
++        Bound::Value(positive),
++        Bound::Lit(3),
++        body,
++    );
++    (a, root)
++}
++/// A bound the emitter holds as a mask is refused by name, at either end and
++/// on every tier alike: a mask names no count. This one is a `lo`.
++#[test]
++#[should_panic(expected = "BoundSort")]
++fn a_bound_that_is_a_mask_is_refused_by_name() {
++    let (a, root) = a_fold_that_starts_at_a_mask();
++    let _refused = emit::compile(&a, root, SHAPE);
++}
++/// The cache's entry reaches the same refusal: `Kernel::over_values` takes no
++/// computed bound, but `Kernel::from_parts` adopts any arena.
++#[test]
++#[should_panic(expected = "BoundSort")]
++fn a_mask_bound_adopted_whole_is_refused_by_name_through_the_cache() {
++    let (a, root) = a_fold_that_starts_at_a_mask();
++    let _refused = jit_cache::compile(&Kernel::from_parts(a, root), SHAPE);
++}
++/// A select between two masks is a mask in value, but no emitter holds it as
++/// one, so it is not refused: until a bound is typed, its bits are read as a
++/// float on every tier alike. All ones is a NaN, which makes the fold NaN, and
++/// all zeros is the count `0`, the identity.
++#[test]
++fn a_select_between_masks_is_read_as_a_float_on_every_tier() {
++    for (u, want) in [(5.0f32, f32::NAN), (-1.0, 0.0)] {
++        let mut a = ExprArena::new();
++        let slot = a.declare_uniform(Uniform::new(u).decl());
++        let uniform = a.push_uniform(slot);
++        let (zero, one) = (a.push_const(0.0), a.push_const(1.0));
++        let positive = a.push_binary(OpKind::Lt, zero, uniform);
++        let above_one = a.push_binary(OpKind::Lt, one, uniform);
++        let hi = a.push_ternary(OpKind::If, positive, positive, above_one);
++        let binder = Binder::from_slot(0).expect("slot 0 exists");
++        let (x, k) = (a.push_var(0), a.push_var(binder.var()));
++        let body = a.push_binary(OpKind::Add, x, k);
++        let root = a.push_reduce(
++            Fold::new(Monoid::SUM, binder),
++            Bound::Lit(0),
++            Bound::Value(hi),
++            body,
++        );
++        let (plane, _) = within(move || run_arena(&a, root, SHAPE, &[u]));
++        assert_plane(
++            SHAPE,
++            [("as written", plane)],
++            &format!("u = {u}"),
++            |_, _| want,
++        );
++    }
++}
++use pixelflow_ir::{Bound, Fold, Lit, OpKind};
++        ExprNode::Reduce { lo, hi, body, .. } => {
++            // structure, and takes its range from this instantiation. A fold
++            // with a bound that is a value has no known range, so it is never
++            // open.
++            let hole = arena
++                .known_range(id)
++                .and_then(|range| context.holes.range_of(range));
++            match hole {
++                None => {
++                    // A bound that is a value is a child after the body, `lo`'s
++                    // first, as the header's bits say.
++                    let values: Vec<Ident> = [lo, hi]
++                        .into_iter()
++                        .filter_map(Bound::value)
++                        .map(node_var)
++                        .collect();
++                    let children = match values.as_slice() {
++                        [] => quote! { ::core::iter::empty() },
++                        _ => quote! { [#(#values),*] },
++                    };
++                    quote! {{
++                        let __header = #decoded;
++                        let (__lo, __hi) = __header.attach(#children);
++                        __arena.push_reduce(__header.fold(), __lo, __hi, #body)
++                    }}
++                }
++    /// `Σ_{k<hi} k` as an arena, the fold's id, and the uniform that is its
++    /// `hi` when it is a value.
++    fn sum_to(count: Option<u64>) -> (ExprArena, ExprId, ExprId) {
++        let mut arena = ExprArena::new();
++        let slot = arena.declare_uniform(pixelflow_ir::Uniform::new(3.0).decl());
++        let uniform = arena.push_uniform(slot);
++        let binder = pixelflow_ir::Binder::from_slot(0).expect("the first binder");
++        let index = arena.push_var(binder.var());
++        let hi = count.map_or(Bound::Value(uniform), Bound::Lit);
++        let fold = arena.push_reduce(
++            Fold::new(pixelflow_ir::Monoid::SUM, binder),
++            Bound::Lit(0),
++            hi,
++            index,
++        );
++        (arena, fold, uniform)
++    }
++    /// A fold with a bound that is a value rebuilds it with the bound's
++    /// child, which the header's bits cannot hold.
++    #[test]
++    fn a_value_bounded_fold_emits_its_children() {
++        let (arena, fold, uniform) = sum_to(None);
++        let context = EntryContext {
++            arguments: vec![quote!(3.0f32)],
++            structural: &[],
++            holes: &Holes::default(),
++        };
++        let code = node(&arena, fold, &context).to_string();
++        let child = node_var(uniform);
++        assert!(code.contains(&format!("attach ([{child}])")), "{code}");
++    }
++    /// A fold whose bounds are literals emits what it always did: no children.
++    #[test]
++    fn a_literal_fold_emits_no_children() {
++        let (arena, fold, _) = sum_to(Some(3));
++        let context = EntryContext {
++            arguments: vec![quote!(3.0f32)],
++            structural: &[],
++            holes: &Holes::default(),
++        };
++        let code = node(&arena, fold, &context).to_string();
++        assert!(
++            code.contains("attach (:: core :: iter :: empty ())"),
++            "{code}"
++        );
++    }
++A reduction's bounds are values: a literal, a per-call count (`Kernel::over_values` with a
++`Uniform`), or an enclosing reduction's index, and none may be a function of a coordinate or of a
++lattice binder. One compiled program serves every count; a count is an integer in `0..=2²⁴`, and a
++reduction with a bound that is not one is NaN. General unbounded recursion is intentionally outside the
++language: **the language is a DAG**, and the fold is its one binder ([a bound is a
++value](../docs/language/2026-10-20-a-bound-is-a-value.md)).
++            .map_or_else(|| "an estimate".to_owned(), |n| n.to_string())
++    /// A value bound is a child of its fold, so the dump names it: the `R`
++    /// line is the header's bits, the body, then the bound's child.
++    #[test]
++    fn the_dump_writes_a_value_bounds_child() {
++        use pixelflow_core::{Kernel, Monoid, Uniform};
++        let count = Uniform::new(3.0);
++        let kernel =
++            Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &count.kernel(), |i| {
++                Kernel::x().mul(i)
++            });
++        let (arena, root) = kernel.parts();
++        // Per-process, as the corpus tests' paths are: two test processes at
++        // once must not write and remove one file between them.
++        let path = std::env::temp_dir().join(format!(
++            "the_dump_writes_a_value_bounds_child_{}.arena",
++            std::process::id()
++        ));
++        dump_arena(arena, root, "value-bound", &path);
++        let text = std::fs::read_to_string(&path).expect("read the dump back");
++        std::fs::remove_file(&path).expect("remove the dump");
++        let nodes: Vec<Vec<&str>> = text
++            .lines()
++            .map(|line| line.split_whitespace().collect::<Vec<_>>())
++            .filter(|f| !matches!(f[0], "#" | "name" | "buf" | "uni" | "root"))
++            .collect();
++        let uniform = nodes.iter().position(|f| f[0] == "Un").expect("an Un line");
++        let [fold] = nodes
++            .iter()
++            .filter(|f| f[0] == "R")
++            .collect::<Vec<_>>()
++            .try_into()
++            .expect("one R line");
++        assert_eq!(
++            fold.len(),
++            4,
++            "R, the header's bits, the body, the bound: {fold:?}"
++        );
++        assert_eq!(
++            fold[3],
++            uniform.to_string(),
++            "the bound's child is the uniform's dense id"
++        );
++    }
++        use pixelflow_ir::Bound;
++                // A value bound's child follows the body, as the header's
++                // marker says (`FoldHeader::to_bits`).
++                ExprNode::Reduce { lo, hi, body, .. } => {
++                    let values: std::string::String = [lo, hi]
++                        .into_iter()
++                        .filter_map(Bound::value)
++                        .map(|child| format!(" {}", d(&dense, child)))
++                        .collect();
++                        "R {} {}{values}",
++#[test]
++fn a_value_bound_is_in_the_program_digest() {
++    use pixelflow_ir::{Binder, Bound, Fold, Monoid, Uniform};
++    /// `Σ_{k<n} k`, with `n` the `slot`-th of two declared uniforms. Both are
++    /// leaves of the arena, so the arenas differ in one child edge and nothing
++    /// else.
++    fn counted_by(slot: usize) -> (ExprArena, ExprId) {
++        let mut arena = ExprArena::new();
++        let slots = [3.0, 5.0].map(|default| arena.declare_uniform(Uniform::new(default).decl()));
++        let counts = slots.map(|slot| arena.push_uniform(slot));
++        let count = counts[slot];
++        let binder = Binder::from_slot(0).expect("the first binder");
++        let index = arena.push_var(binder.var());
++        let root = arena.push_reduce(
++            Fold::new(Monoid::SUM, binder),
++            Bound::Lit(0),
++            Bound::Value(count),
++            index,
++        );
++        (arena, root)
++    }
++    let (by_first, first_root) = counted_by(0);
++    let (by_second, second_root) = counted_by(1);
++    assert_ne!(
++        program_digest(&by_first, first_root),
++        program_digest(&by_second, second_root),
++        "the digest reads the bound's child"
++    );
++    let (again, again_root) = counted_by(0);
++    assert_eq!(
++        program_digest(&by_first, first_root),
++        program_digest(&again, again_root),
++        "and is a function of the program"
++    );
++}
++use pixelflow_ir::{Bound, LatticeShape};
++            // A value bound's child follows the body, as the header's marker
++            // says (`FoldHeader::to_bits`).
++            ExprNode::Reduce { lo, hi, body, .. } => {
++                let values: String = [lo, hi]
++                    .into_iter()
++                    .filter_map(Bound::value)
++                    .map(|child| format!(" {}", d(&dense, child)))
++                    .collect();
++                    "R {} {}{values}",
++/// A value bound is a child of its fold, so the dump names it: the `R` line is
++/// the header's bits, the body, then the bound's child.
++#[test]
++fn the_dump_writes_a_value_bounds_child() {
++    use pixelflow_ir::{Kernel, Monoid, Uniform};
++    let count = Uniform::new(3.0);
++    let kernel = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &count.kernel(), |i| {
++        Kernel::x().mul(i)
++    });
++    let (arena, root) = kernel.parts();
++    // Per-process, as the corpus tests' paths are: two test processes at once
++    // must not write and remove one file between them.
++    let path = std::env::temp_dir().join(format!(
++        "production_glyph_arena_dump_a_value_bounds_child_{}.arena",
++        std::process::id()
++    ));
++    dump_arena(arena, root, "value-bound", &path);
++    let text = std::fs::read_to_string(&path).expect("read the dump back");
++    std::fs::remove_file(&path).expect("remove the dump");
++    let nodes: Vec<Vec<&str>> = text
++        .lines()
++        .map(|line| line.split_whitespace().collect::<Vec<_>>())
++        .filter(|f| !matches!(f[0], "#" | "name" | "buf" | "root"))
++        .collect();
++    let uniform = nodes.iter().position(|f| f[0] == "Un").expect("an Un line");
++    let [fold] = nodes
++        .iter()
++        .filter(|f| f[0] == "R")
++        .collect::<Vec<_>>()
++        .try_into()
++        .expect("one R line");
++    assert_eq!(
++        fold.len(),
++        4,
++        "R, the header's bits, the body, the bound: {fold:?}"
++    );
++    assert_eq!(
++        fold[3],
++        uniform.to_string(),
++        "the bound's child is the uniform's dense id"
++    );
++}
++- The meaning of a fold (`Fold`: monoid, binder, stride; `Bound`: a literal or a
++  child; NaN unless each bound is a count in `0..=2²⁴`), of a constant (`Lit`: a
++  real by its bits or a mask by its truth, never a lane whose bits mean one or
++  the other by convention), of a reinterpretation (`Bits`/`Float`: the same bits
++  read as the other sort, compiling to nothing), of the bitwise domain
++  (`is_bitwise_domain`), and of a name (`KernelKey`, `Ref`).
++- `Var(u8)` means an axis or a binder by range; `Binder` a `u8`, against the
++  64-bit control-plane rule.
++    /// bound, whose guard makes the fold NaN (L5: the guard `passes::legalize`
++    /// ends with): a literal a rule or the folder made never panics here.
++    /// `Kernel::over_values` refuses one by name
++    /// hand-built call makes one; `over_values` takes a leaf) is admitted here.
++    /// If the folder turns it into a mask literal, materializing it panics with
++    /// the same refusal, loudly, and lowering refuses one the emitter holds as a
++    /// mask by that refusal too. Giving a bound a sort (T6) closes the rest.
++    /// (`passes::legalize`'s guard), so a literal a rule made never panics.
++    /// A bound of a sort the fold cannot take (§1.4): a mask, which names no
++    /// count, at either end under any fold; or any value bound under `ANY`,
++    /// `ALL` or `SEQ`, whose sorts have no out-of-domain answer (decision 8) or
++    /// whose ranges stay constant (the lattice's). The fold is in the panic's
++    /// The sort is read off the term as written where a fold is built: a mask
++    /// *literal* is refused there, and a computed bound that is a mask is not a
++    /// literal and is admitted. Lowering refuses it by this same variant once
++    /// the emitter holds it as one (`ScheduledOp::is_mask`: a comparison, or a
++    /// bitwise and/or of two such), on every tier; a select between two masks
++    /// is read as a float. The arena giving a bound a sort (T6) closes the
++    /// rest.
++/// are equal in every field `Eq`, `Hash` and `Ord` read, and writes the all-ones
++/// marker in its bits. The fields are declared in the order `Fold` derived `Ord`
++/// while it held the ends — monoid, binder, `lo`, `hi`, stride — so the derived
++/// order on a literal fold is the old one.
++    /// ([`FoldHeader::known`], `FoldHeader::new`'s value arm and
++    /// [`FoldHeader::from_bits`]'s) have.
++    /// Total. A bound that is a value writes the all-ones count field
++    /// (`VALUE_FIELD`), which no literal reaches. The child it marks is not in
++    /// the bits: it is the node's next edge after the body, for whoever
++    /// serializes the node's children to write ([`FoldHeader::arity`] says how
++    /// many follow).
++            | u128::from(count_field(self.lo())) << 32
++            | u128::from(count_field(self.hi()))
++    /// generates no algebra, an index outside the binder space, a zero stride
++    /// or one past [`Fold::EXACT_BOUND`], a literal range [`KnownRange::admits`]
++    /// does not (reversed, or ending past the bound) or that the stride does
++    /// not divide exactly, or a value bound (`VALUE_FIELD`, a count field of
++    /// all ones) its fold cannot take: under `ANY`, `ALL` or `SEQ`, at a stride
++    /// other than 1, or beside a literal past the bound.
++    /// rather than a fold that means something else. A literal never decodes
++    /// as a value (no count is all ones) and a value never as a literal.
++        let lo = field_bound(((bits >> 32) & 0xffff_ffff) as u32);
++        let hi = field_bound((bits & 0xffff_ffff) as u32);
++        let fold = Fold::strided(monoid, binder, stride);
++        // A value bound settles the header by what the fold asks of one; the
++        // rest is a literal range.
++        let (Bound::Lit(first), Bound::Lit(end)) = (lo, hi) else {
++            return admits_a_value(fold, lo, hi).then(|| Self::store(fold, lo, hi));
++        };
++        (KnownRange::admits(&(first..end)) && (end - first).is_multiple_of(stride)).then(|| {
++            let range = KnownRange {
++                lo: first,
++                hi: end,
++                stride,
++            };
++            Self::known(fold, range)
++/// A count field's bits when its bound is a value: all ones, which no count
++/// reaches (the assert below), so a literal and a value never share a field.
++/// The value's child is the node's next edge after the body, written by whoever
++/// writes the node's children.
++const VALUE_FIELD: u32 = u32::MAX;
++/// A bound's count field in [`FoldHeader::to_bits`]: its count, or
++/// `VALUE_FIELD`.
++fn count_field(bound: Bound<()>) -> u32 {
++    match bound {
++        Bound::Lit(count) => field(count),
++        Bound::Value(()) => VALUE_FIELD,
++    }
++}
++/// The bound a count field of [`FoldHeader::to_bits`] names: the inverse of
++/// `count_field`. A field of `VALUE_FIELD` is a value; any other is a literal,
++/// whose range [`FoldHeader::from_bits`] checks.
++fn field_bound(field: u32) -> Bound<()> {
++    match field {
++        VALUE_FIELD => Bound::Value(()),
++        count => Bound::Lit(u64::from(count)),
++    }
++}
++/// What a bound that is a value asks of its fold, as one predicate: its
++/// monoid takes one (`Monoid::takes_a_value_bound`), its stride is 1, and a
++/// literal beside it is one an `f32` counter holds ([`Fold::is_exact`]).
++/// [`FoldHeader::from_bits`] refuses where it fails, and `with_a_value` panics
++/// there naming which part; `new_panics_exactly_where_the_predicate_refuses`
++/// holds the two equal.
++fn admits_a_value(fold: Fold, lo: Bound<()>, hi: Bound<()>) -> bool {
++    fold.monoid.takes_a_value_bound()
++        && fold.stride == 1
++        && [lo.lit(), hi.lit()]
++            .into_iter()
++            .flatten()
++            .all(Fold::is_exact)
++}
++// left over: that is the value marker (`VALUE_FIELD`), which no count reaches.
++// They are also what a header stores (`FoldHeader::store` narrows through
++// `field`), so a count that does not fit is impossible while this holds.
++// Lifting `EXACT_BOUND` to the marker is the key-format change `to_bits`
++// documents, and this is where a build says so.
++const _: () = assert!(Fold::EXACT_BOUND < VALUE_FIELD as u64);
++/// bounds only), a production glyph's before B2, or a test's own literal fold.
++/// One grep target for the steps that make the `None` reachable there.
++pub const KNOWN_RANGE: &str = "this fold's bounds are literals: a lattice's fold, a production \
++     glyph's before B2, or a test's (docs/language/2026-10-20-a-bound-is-a-value.md)";
++    /// The monoid's byte in a header's bits: its code.
++    fn monoid_byte(monoid: Monoid) -> u8 {
++        let [byte] = monoid.marshal().to_bytes();
++        byte
++    }
++    /// An end field of all ones is the mark of a value bound, wherever it
++    /// stands: nothing in the domain is `u32::MAX` (the build asserts it), so
++    /// no literal shares it.
++    fn an_end_field_of_all_ones_is_a_value_bound() {
++        let fold = Fold::new(Monoid::SUM, b);
++        let bits = header(fold, 0, 4).to_bits();
++        assert_eq!(
++            FoldHeader::from_bits(hi_ones),
++            Some(FoldHeader::new(fold, Bound::Lit(0), Bound::Value(()))),
++            "hi"
++        );
++        assert_eq!(
++            FoldHeader::from_bits(lo_ones),
++            Some(FoldHeader::new(fold, Bound::Value(()), Bound::Lit(4))),
++            "lo"
++        );
++    /// The same layout with a bound that is a value, assembled by hand: stride 1
++    /// at bit 80, `Add` at 72, slot 0 at 64, `lo = 0`, and `hi` a count field of
++    /// all ones. The mark is a field no count reaches, so a header writes it and
++    /// reads it back as a value, not as a literal.
++    #[test]
++    fn a_value_header_decodes_from_its_layout_assembled_by_hand() {
++        let marked: u128 = 0x0000_0000_0001_0200_0000_0000_ffff_ffff;
++        let want = FoldHeader::new(sum(0), Bound::Lit(0), Bound::Value(()));
++        assert_eq!(FoldHeader::from_bits(marked), Some(want));
++        assert_eq!(want.to_bits(), marked, "and a header still writes it");
++        let lo_marked: u128 = 0x0000_0000_0001_0200_ffff_ffff_0000_0003;
++        let want = FoldHeader::new(sum(0), Bound::Value(()), Bound::Lit(3));
++        assert_eq!(FoldHeader::from_bits(lo_marked), Some(want));
++        assert_eq!(want.to_bits(), lo_marked);
++    }
++    /// A value bound writes the all-ones mark in its count field and reads back
++    /// as a value; the mark stands in for a child the bits do not hold, and no
++    /// literal writes it.
++    fn a_value_bound_writes_the_marker_and_reads_back() {
++        let marker = u128::from(u32::MAX);
++        for (lo, hi) in [
++            (Bound::Value(()), Bound::Lit(4)),
++            (Bound::Lit(3), Bound::Value(())),
++            (Bound::Value(()), Bound::Value(())),
++        ] {
++            let value = FoldHeader::new(sum(0), lo, hi);
++            let bits = value.to_bits();
++            assert_eq!(FoldHeader::from_bits(bits), Some(value), "{value}");
++            let (lo_field, hi_field) = ((bits >> 32) & marker, bits & marker);
++            assert_eq!(lo_field == marker, lo.value().is_some(), "{value}: lo");
++            assert_eq!(hi_field == marker, hi.value().is_some(), "{value}: hi");
++        }
++        let literal = header(sum(0), 3, Fold::EXACT_BOUND);
++        assert_ne!(
++            literal.to_bits() & marker,
++            marker,
++            "the largest count is not the mark"
++        );
++    }
++    /// The mark means a value only where the fold can hold one: not under a fold
++    /// of masks or the lattice's, not at a stride other than 1, and not beside a
++    /// literal past the domain. A field one short of the mark is a count past
++    /// the bound, not the mark.
++    #[test]
++    fn from_bits_refuses_a_marker_its_fold_cannot_take() {
++        let marked = |monoid, stride: u32, lo: u64, hi: Option<u64>| {
++            let fold = u128::from(stride) << 80
++                | u128::from(monoid_byte(monoid)) << 72
++                | u128::from(lo) << 32
++                | hi.map_or(u128::from(u32::MAX), u128::from);
++            FoldHeader::from_bits(fold)
++        };
++        assert!(marked(Monoid::SUM, 1, 0, None).is_some(), "the control");
++        for monoid in [Monoid::ANY, Monoid::ALL, Monoid::SEQ] {
++            assert_eq!(marked(monoid, 1, 0, None), None, "{monoid:?}");
++        }
++        assert_eq!(marked(Monoid::SUM, 2, 0, None), None, "stride 2");
++        assert_eq!(
++            marked(Monoid::SUM, 1, Fold::EXACT_BOUND + 1, None),
++            None,
++            "a literal past the bound"
++        );
++        assert!(marked(Monoid::SUM, 1, Fold::EXACT_BOUND, None).is_some());
++        assert_eq!(
++            marked(Monoid::SUM, 1, 0, Some(u64::from(u32::MAX) - 1)),
++            None,
++            "one short of the mark is a count past the bound"
++        );
++    }
++    /// What a value bound asks of its fold is stated twice: as one predicate,
++    /// which `from_bits` asks, and a part at a time, which `new` asserts to say
++    /// which part failed. They agree on every monoid, stride and pair of
++    /// bounds with a value in it, the literal beside it inside the domain and
++    /// just outside it.
++    #[cfg(feature = "std")]
++    #[test]
++    fn new_panics_exactly_where_the_predicate_refuses() {
++        let past = Fold::EXACT_BOUND + 1;
++        for monoid in [
++            Monoid::SUM,
++            Monoid::PRODUCT,
++            Monoid::MIN,
++            Monoid::MAX,
++            Monoid::ANY,
++            Monoid::ALL,
++            Monoid::SEQ,
++        ] {
++            for stride in [1, 2] {
++                for (lo, hi) in [
++                    (Bound::Value(()), Bound::Value(())),
++                    (Bound::Lit(0), Bound::Value(())),
++                    (Bound::Value(()), Bound::Lit(Fold::EXACT_BOUND)),
++                    (Bound::Lit(past), Bound::Value(())),
++                    (Bound::Value(()), Bound::Lit(past)),
++                ] {
++                    let fold = Fold::strided(monoid, b(0), stride);
++                    let built = std::panic::catch_unwind(|| FoldHeader::new(fold, lo, hi));
++                    assert_eq!(
++                        built.is_ok(),
++                        admits_a_value(fold, lo, hi),
++                        "{monoid:?} step {stride} from {lo:?} to {hi:?}"
++                    );
++                }
++            }
++        }
++    }
++    /// `from_bits` inverts `to_bits` for every header `FoldHeader::new` admits:
++    /// each monoid that takes a value beside a literal pair, a value at either
++    /// end, and both.
++    #[test]
++    fn from_bits_inverts_to_bits_on_every_header_shape() {
++        let shapes = [
++            (Bound::Lit(0), Bound::Lit(8)),
++            (Bound::Lit(3), Bound::Lit(3)),
++            (Bound::Lit(0), Bound::Lit(Fold::EXACT_BOUND)),
++            (Bound::Value(()), Bound::Lit(4)),
++            (Bound::Lit(3), Bound::Value(())),
++            (Bound::Value(()), Bound::Value(())),
++            (Bound::Lit(Fold::EXACT_BOUND), Bound::Value(())),
++        ];
++        for monoid in [
++            Monoid::SUM,
++            Monoid::PRODUCT,
++            Monoid::MIN,
++            Monoid::MAX,
++            Monoid::ANY,
++            Monoid::ALL,
++            Monoid::SEQ,
++        ] {
++            for (lo, hi) in shapes {
++                let holds_a_value = lo.value().is_some() || hi.value().is_some();
++                if holds_a_value && !monoid.takes_a_value_bound() {
++                    continue;
++                }
++                let value = FoldHeader::new(Fold::new(monoid, b(2)), lo, hi);
++                assert_eq!(
++                    FoldHeader::from_bits(value.to_bits()),
++                    Some(value),
++                    "{monoid:?} {value}"
++                );
++            }
++        }
++    /// range; a bound that is a value is [`Kernel::over_values`]'s. Either way
++    /// A bound that is a value is read per call: `n` a [`Uniform`] is one
++    /// compiled program for every `n`, and the fold runs `n` trips. A bound that
++    /// is no count at run time — a count is an integer in `0..=2²⁴`; a uniform
++    /// set to `2.5`, `−1`, NaN or `2²⁴ + 2` is none — makes the fold NaN (L5),
++    /// and a pair that runs backwards at run time is the identity, up to the
++    /// factoring edge `FactorFold` accepts at a runtime-empty range (decision
++    /// 5). The NaN has one exception on the optimized path: under
++    /// [`Monoid::SUM`], a body with a literal zero factor loses its fold to the
++    /// annihilation rule (`0·y → 0`, [`OpKind::annihilator`]), so no fold is
++    /// left for the guard to wrap and a bound that is no count gives `0`
++    /// (`FactorFold`'s doc).
++    ///
++    ///
++    /// ```
++    /// use pixelflow_ir::{Kernel, Monoid, Uniform};
++    ///
++    /// let n = Uniform::new(8.0);
++    /// // Σ_{i < n} X·i, one program for every n.
++    /// let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &n.kernel(), |i| {
++    ///     Kernel::x().mul(i)
++    /// });
++    /// assert_eq!(sum.uniforms().len(), 1);
++    /// ```
++    pub fn over_values(
++/// length given its payload (an n-ary node carries its count, a fold's header
++/// says how many children follow it,
++/// [`FoldHeader::arity`](crate::fold::FoldHeader::arity)), and the root is the
++/// last node emitted: it cannot equal an earlier one, because that one would
++/// be its own descendant. So the bytes parse back into exactly one tree over
++/// (tag, payload, dense slot), and two programs with different unfoldings have
++            // value writes its header field's marker and its child's key after
++            // the body's. Two folds over the same body under different
++            // algebras, binders or ranges are different kernels, and this is
++            // where that is said. A known bound is header data at its
++            // `to_bits` field, so a fold over literals keys as it always has.
++            // A uniform bound contributes its dense slot, not its default, so
++            // every count is one key (L9).
++    /// `Σ_{k ∈ [lo, hi)} k` over binder slot 1, each bound the literal it is
++    /// or the uniform its declaration names.
++    fn counted(
++        lo: crate::Bound<UniformDecl>,
++        hi: crate::Bound<UniformDecl>,
++    ) -> (ExprArena, ExprId) {
++        use crate::fold::{Binder, Fold, Monoid};
++        let mut a = ExprArena::new();
++        let slot1 = Binder::from_slot(1).expect("a binder slot");
++        let body = a.push_var(slot1.var());
++        let mut leaf = |bound: crate::Bound<UniformDecl>| {
++            bound.map(|decl| {
++                let slot = a.uniform_slot_for(decl);
++                a.push_uniform(slot)
++            })
++        };
++        let (lo, hi) = (leaf(lo), leaf(hi));
++        let r = a.push_reduce(Fold::new(Monoid::SUM, slot1), lo, hi, body);
++        (a, r)
++    }
++    /// A fold whose bound is a value keys as tag ten, its header's bits with the
++    /// bound's count field all ones, the body's canonical id, then the bound's:
++    /// the record assembled by hand, beside the two leaves it names.
++    #[test]
++    fn a_value_bounded_folds_key_record_is_tag_ten_its_bits_and_its_children() {
++        use crate::Bound;
++        let u = crate::Uniform::new(8.0);
++        let (a, r) = counted(Bound::Lit(0), Bound::Value(u.decl()));
++        let mut want = vec![0u8, crate::fold::Binder::from_slot(1).expect("slot").var()];
++        // The uniform, at its dense slot 0.
++        want.push(8);
++        want.extend_from_slice(&0u64.to_le_bytes());
++        want.push(10);
++        want.extend_from_slice(&0x0000_0000_0001_0201_0000_0000_ffff_ffffu128.to_le_bytes());
++        // The body (canonical 0), then the bound (canonical 1).
++        want.extend_from_slice(&0u32.to_le_bytes());
++        want.extend_from_slice(&1u32.to_le_bytes());
++        assert_eq!(canonical(&a, r).key, want);
++    }
++    /// A count is not part of the program: two uniform instances bounding one
++    /// fold are one canonical shape however their defaults differ, which is
++    /// what the JIT cache keys on. Their [`KernelKey`]s differ, as every two
++    /// uniform instances' do, because the instance is part of a kernel's
++    /// identity and the shape is not.
++    #[test]
++    fn every_count_is_one_key() {
++        use crate::Bound;
++        let (a, ra) = counted(Bound::Lit(0), Bound::Value(crate::Uniform::new(0.0).decl()));
++        let (b, rb) = counted(Bound::Lit(0), Bound::Value(crate::Uniform::new(7.0).decl()));
++        let (shape_a, shape_b) = (canonical(&a, ra), canonical(&b, rb));
++        assert_eq!(shape_a.key, shape_b.key);
++        assert_eq!(shape_a.uniforms.len(), 1);
++        assert_ne!(shape_a.uniforms, shape_b.uniforms);
++        assert_ne!(KernelKey::of(&a, ra), KernelKey::of(&b, rb));
++    }
++    /// Which end is a value, and whether the other is the literal 0 or a value
++    /// too, each tell two folds apart: the mark sits in the field it bounds.
++    #[test]
++    fn which_end_is_a_value_is_in_the_key() {
++        use crate::Bound;
++        let u = crate::Uniform::new(4.0).decl();
++        let shape = |lo, hi| {
++            let (a, r) = counted(lo, hi);
++            canonical(&a, r).key
++        };
++        let value_below = shape(Bound::Value(u), Bound::Lit(4));
++        let value_above = shape(Bound::Lit(0), Bound::Value(u));
++        let literal = shape(Bound::Lit(0), Bound::Lit(4));
++        let both = shape(Bound::Value(u), Bound::Value(u));
++        let keys = [&value_below, &value_above, &literal, &both];
++        for (i, one) in keys.iter().enumerate() {
++            for other in &keys[i + 1..] {
++                assert_ne!(one, other);
++            }
++        }
++    }
++//! [`legalize`] runs seven passes, each `(arena, root) -> (arena, root)`, each
++//! | `guard` (crate-private, `passes/guard.rs`) | a `Reduce` with a value bound | `If(dom, If(Lt(lo, hi), Reduce, identity), NaN)`: NaN unless every value bound is a count, an integer in `0..=2²⁴`, and the identity over an empty range (L5, L2) |
++//! (docs/archive/plans/2026-09-16-collapse-is-a-fold.md §2.3). The guard goes
++//! last, so no pass after it rebuilds the `If` lowering relies on. Every pass
++//! but the guard and the two lattice passes is idempotent: the guard wraps every
++//! value-bounded fold it meets, its own output's included, `collapse` wraps its
++//! input in the lattice's folds, and `pack` takes `collapse`'s own output and
++//! nothing else, so `legalize` runs each of the three once. Every pass but the
++//! lattice passes has an identity fast-path, so running one that has nothing to
++//! do is free (the guard leaves a kernel whose bounds are all literals
++//! untouched); the two lattice passes always wrap: after them no coordinate
++//! `Var` exists and the root is a `Reduce` over the unit monoid whose body is a
++//! `Write`. That is the shape every backend emits, and the only shape.
++mod guard;
++/// A fold whose bound is a value comes back inside its guard: NaN where a
++/// bound is not a count (an integer in `0..=2²⁴`), and the monoid's identity
++/// where the range is empty.
++///
++    let (arena, root) = expand_transcendentals_owned(&arena, root);
++    // The guard is last: nothing after it rebuilds the `If` that holds a
++    // value-bounded fold's loop, and lowering asserts that shape.
++    Ok(guard::guard_value_bounds_owned(arena, root))
++#[cfg(test)]
++mod guard_tests {
++    use super::*;
++    use crate::fold::{Binder, Bound, Fold, KNOWN_RANGE, Monoid};
++    use crate::lit::Lit;
++    /// `legalize` of `X + Σ_{k<u} k` at `[4, 2]` with four lanes: the kernel
++    /// comes back wrapped in the lattice's three folds, whose ranges are
++    /// literal, and the `Write`'s value reads the sum only through its guard.
++    #[test]
++    fn legalize_guards_a_value_bounded_fold_inside_the_lattice() {
++        use crate::variance::LatticeShape;
++        let mut a = ExprArena::new();
++        let slot = a.declare_uniform(crate::Uniform::new(8.0).decl());
++        let u = a.push_uniform(slot);
++        let binder = Binder::from_slot(0).expect("slot 0 exists");
++        let k = a.push_var(binder.var());
++        let sum = a.push_reduce(
++            Fold::new(Monoid::SUM, binder),
++            Bound::Lit(0),
++            Bound::Value(u),
++            k,
++        );
++        let x = a.push_var(0);
++        let root = a.push_binary(OpKind::Add, x, sum);
++        let origin = |default| crate::Uniform::new(default).decl();
++        let collapse = lattice::Collapse {
++            domain: lattice::Domain {
++                shape: LatticeShape::new([4, 2]),
++                origin: [origin(0.0), origin(0.0)],
++            },
++            lanes: 4,
++        };
++        let (legalized, new_root) = legalize(&a, root, &collapse).expect("legalize");
++        // An arena keeps the nodes a rebuild replaced, so only what the root
++        // reaches is the legalized kernel.
++        let mut seen = alloc::vec![false; legalized.len()];
++        let mut stack = alloc::vec![new_root];
++        let mut reachable = Vec::new();
++        while let Some(id) = stack.pop() {
++            if !core::mem::replace(&mut seen[id.0 as usize], true) {
++                reachable.push(id);
++                stack.extend(legalized.children(id));
++            }
++        }
++        let (valued, lattice): (Vec<ExprId>, Vec<ExprId>) = reachable
++            .iter()
++            .copied()
++            .filter(|id| matches!(legalized.node(*id), ExprNode::Reduce { .. }))
++            .partition(|id| legalized.known_range(*id).is_none());
++        assert_eq!(
++            valued.len(),
++            1,
++            "the kernel's fold is the one whose range is a value"
++        );
++        assert_eq!(lattice.len(), 3, "the row, column and lane folds");
++        for fold in lattice {
++            let range = legalized.known_range(fold).expect(KNOWN_RANGE);
++            assert!(!range.is_empty());
++        }
++        let write = reachable
++            .iter()
++            .find_map(|id| match legalized.node(*id) {
++                ExprNode::Write { value, .. } => Some(value),
++                _ => None,
++            })
++            .expect("the lattice's store");
++        let ExprNode::Binary(OpKind::Add, _, guarded) = legalized.node(write) else {
++            panic!("the store's value is `x + sum`");
++        };
++        let ExprNode::Ternary(OpKind::If, _, ran, nan) = legalized.node(guarded) else {
++            panic!("the sum reaches the store through its guard");
++        };
++        assert!(matches!(
++            legalized.node(nan),
++            ExprNode::Const(Lit::Real(v)) if v.is_nan()
++        ));
++        let ExprNode::Ternary(OpKind::If, _, fold, _) = legalized.node(ran) else {
++            panic!("the guard's true arm is the range test");
++        };
++        assert_eq!(fold, valued[0]);
++    }
++}
++//! The guard: what a fold whose bound is a value computes outside the domain
++//! of a count.
++//!
++//! A bound that is a value is read per call, so nothing at compile time knows
++//! it names a count. This pass is L5 and L2 of
++//! docs/language/2026-10-20-a-bound-is-a-value.md written in the language's own
++//! ops: every reachable fold `R` with a value bound comes back as
++//!
++//! ```text
++//! If(dom, If(Lt(lo, hi), R, identity), NaN)
++//! ```
++//!
++//! where `dom` says every value bound is a count, `0 ≤ v ∧ v ≤ 2²⁴ ∧ ⌊v⌋ = v`
++//! (a literal bound is one by construction and adds no conjunct). Outside the
++//! domain the fold is NaN, and a count that runs backwards is the monoid's
++//! identity. The tests use only ordered `Le` and `Lt`, exact `Eq` and `Floor`,
++//! none of which is in CLAUDE.md's table of what differs by target, so NaN, ±∞
++//! and everything past 2²⁴ fail on every tier the same way.
++//!
++//! **Why an `If`.** `If(m, a, b)` runs the true arm's own block only if any
++//! lane of `m` is set, so the loop that is `R` sits in an arm and does not run
++//! at all outside the domain. That is what keeps an out-of-domain count from
++//! hanging a counter that never reaches its end: an `f32` counter stalls at
++//! 2²⁴, and at `-∞` from the start, and on a target whose latch compare is
++//! ordered it never meets a NaN end. The arm skip is dispatch, not a fold, and
++//! it is the dispatch wanted here. A bound reads no lattice binder (L3), so
++//! every lane of every mask here holds one value: no batch is mixed, and the
++//! arm runs on every lane or on none.
++//!
++//! **Why last.** Nothing after this pass rebuilds the `If`, so lowering
++//! asserts the shape this pass produced (`R` read only as an `If`'s true arm).
++//! Built as arena nodes, every def of the guard takes its variance from the
++//! arena's own transfer, like any other node.
++//!
++//! **Not idempotent.** Run twice, the pass wraps the already-guarded fold
++//! again, which is correct and redundant (the outer guard passes exactly when
++//! the inner does). [`super::legalize`] runs it once.
++use super::rebuild_arena;
++use crate::arena::{ExprArena, ExprId, ExprNode};
++use crate::fold::{Bound, Fold};
++use crate::kind::OpKind;
++/// The last pass of [`super::legalize`]: every reachable fold with a value
++/// bound, in its guard (L5, L2). Takes the arena by value, so the identity (no
++/// node of the arena is such a fold) moves it back untouched, with no clone and
++/// no rebuild to re-order its nodes.
++pub(crate) fn guard_value_bounds_owned(mut arena: ExprArena, root: ExprId) -> (ExprArena, ExprId) {
++    if !arena.nodes().any(|(_, node)| has_a_value_bound(&node)) {
++        return (arena, root);
++    }
++    let root = rebuild_arena(&mut arena, root, |arena, node, m| {
++        let &ExprNode::Reduce { fold, lo, hi, body } = node else {
++            return None;
++        };
++        if !has_a_value_bound(node) {
++            return None;
++        }
++        let folded = arena.push_reduce(fold, lo.map(m), hi.map(m), m(body));
++        Some(guard(arena, folded))
++    });
++    (arena, root)
++}
++/// Whether `node` is a fold with a bound that is a value.
++fn has_a_value_bound(node: &ExprNode) -> bool {
++    match node {
++        ExprNode::Reduce { lo, hi, .. } => lo.value().is_some() || hi.value().is_some(),
++        _ => false,
++    }
++}
++/// `folded`, a fold already rebuilt, inside its guard. The nodes are pushed in
++/// the order they are read, the fold first and the outer `If` last, so that
++/// every value an arm reads was constructed before the arm (the order `Layout`
++/// relies on).
++fn guard(arena: &mut ExprArena, folded: ExprId) -> ExprId {
++    // `push_reduce` discovers constness again, so the bounds are read from the
++    // node it kept, and a pair that came out literal needs no guard.
++    let ExprNode::Reduce { fold, lo, hi, .. } = arena.node(folded) else {
++        unreachable!("push_reduce pushes a Reduce");
++    };
++    let domain = match (lo.value(), hi.value()) {
++        (Some(low), Some(high)) if low != high => {
++            let low = in_domain(arena, low);
++            let high = in_domain(arena, high);
++            arena.push_binary(OpKind::BitAnd, low, high)
++        }
++        (Some(term), _) | (None, Some(term)) => in_domain(arena, term),
++        (None, None) => return folded,
++    };
++    let start = term(arena, lo);
++    let end = term(arena, hi);
++    let runs = arena.push_binary(OpKind::Lt, start, end);
++    let identity = arena.push_lit(fold.monoid().identity());
++    let ran = arena.push_ternary(OpKind::If, runs, folded, identity);
++    let nan = arena.push_const(f32::NAN);
++    arena.push_ternary(OpKind::If, domain, ran, nan)
++}
++/// The mask that says `v` names a count: `0 ≤ v ∧ v ≤ 2²⁴ ∧ ⌊v⌋ = v`, with
++/// ordered `≤` and exact `=`. NaN fails all three.
++fn in_domain(arena: &mut ExprArena, v: ExprId) -> ExprId {
++    let zero = arena.push_const(0.0);
++    let top = arena.push_const(Fold::EXACT_BOUND as f32);
++    let not_below = arena.push_binary(OpKind::Le, zero, v);
++    let not_above = arena.push_binary(OpKind::Le, v, top);
++    let floor = arena.push_unary(OpKind::Floor, v);
++    let whole = arena.push_binary(OpKind::Eq, floor, v);
++    let in_range = arena.push_binary(OpKind::BitAnd, not_below, not_above);
++    arena.push_binary(OpKind::BitAnd, in_range, whole)
++}
++/// A bound as a term: its child, or a `Const` of the literal (at most 2²⁴, so
++/// exact as an `f32`).
++fn term(arena: &mut ExprArena, bound: Bound<ExprId>) -> ExprId {
++    match bound {
++        Bound::Lit(count) => arena.push_const(count as f32),
++        Bound::Value(child) => child,
++    }
++}
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::fold::{Binder, Monoid};
++    use crate::lit::Lit;
++    use crate::variance::{Variance, compute_arena_variance};
++    use alloc::vec::Vec;
++    /// A fresh uniform's leaf in `arena`.
++    fn uniform(arena: &mut ExprArena, default: f32) -> ExprId {
++        let slot = arena.declare_uniform(crate::Uniform::new(default).decl());
++        arena.push_uniform(slot)
++    }
++    /// `⊕_{k ∈ [lo, hi)} (X + k)` over binder slot 0.
++    fn counted(
++        monoid: Monoid,
++        arena: &mut ExprArena,
++        lo: Bound<ExprId>,
++        hi: Bound<ExprId>,
++    ) -> ExprId {
++        let binder = Binder::from_slot(0).expect("slot 0 exists");
++        let (x, k) = (arena.push_var(0), arena.push_var(binder.var()));
++        let body = arena.push_binary(OpKind::Add, x, k);
++        arena.push_reduce(Fold::new(monoid, binder), lo, hi, body)
++    }
++    /// The nodes reachable from `root`.
++    fn reachable(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
++        let mut seen = alloc::vec![false; arena.len()];
++        let mut stack = alloc::vec![root];
++        let mut order = Vec::new();
++        while let Some(id) = stack.pop() {
++            if core::mem::replace(&mut seen[id.0 as usize], true) {
++                continue;
++            }
++            order.push(id);
++            stack.extend(arena.children(id));
++        }
++        order
++    }
++    /// How many reachable nodes read `id` as a child, counted per edge.
++    fn readers(arena: &ExprArena, root: ExprId, id: ExprId) -> usize {
++        reachable(arena, root)
++            .into_iter()
++            .map(|parent| arena.children(parent).filter(|child| *child == id).count())
++            .sum()
++    }
++    /// The reachable nodes under `root` that apply `op`.
++    fn count_of(arena: &ExprArena, root: ExprId, op: OpKind) -> usize {
++        reachable(arena, root)
++            .into_iter()
++            .filter(|id| match arena.node(*id) {
++                ExprNode::Unary(o, ..) | ExprNode::Binary(o, ..) | ExprNode::Ternary(o, ..) => {
++                    o == op
++                }
++                _ => false,
++            })
++            .count()
++    }
++    /// A guard taken apart: `If(domain, If(runs, fold, identity), nan)`.
++    struct Guard {
++        domain: ExprId,
++        runs: ExprId,
++        fold: ExprId,
++        identity: ExprId,
++        nan: ExprId,
++    }
++    impl Guard {
++        fn of(arena: &ExprArena, guarded: ExprId) -> Self {
++            let ExprNode::Ternary(OpKind::If, domain, ran, nan) = arena.node(guarded) else {
++                panic!("the guard is an If");
++            };
++            let ExprNode::Ternary(OpKind::If, runs, fold, identity) = arena.node(ran) else {
++                panic!("the guard's true arm is an If");
++            };
++            Self {
++                domain,
++                runs,
++                fold,
++                identity,
++                nan,
++            }
++        }
++    }
++    /// With no value bound there is nothing to guard, and the arena moves back
++    /// as it came: not cloned, not rebuilt, not re-ordered.
++    #[test]
++    fn a_kernel_with_no_value_bound_moves_back_untouched() {
++        let mut arena = ExprArena::new();
++        let sum = counted(Monoid::SUM, &mut arena, Bound::Lit(0), Bound::Lit(8));
++        let before = arena.len();
++        let (arena, root) = guard_value_bounds_owned(arena, sum);
++        assert_eq!((arena.len(), root), (before, sum));
++    }
++    /// The fold is `R`, the original node, and nothing reads it but the
++    /// guard's true arm: the property lowering places the loop by.
++    #[test]
++    fn a_value_bounded_fold_is_read_only_by_its_guard() {
++        let mut arena = ExprArena::new();
++        let u = uniform(&mut arena, 8.0);
++        let fold = counted(Monoid::SUM, &mut arena, Bound::Lit(0), Bound::Value(u));
++        let (arena, root) = guard_value_bounds_owned(arena, fold);
++        let guard = Guard::of(&arena, root);
++        assert_eq!(guard.fold, fold, "the fold is the original node");
++        assert_eq!(readers(&arena, root, fold), 1, "and has one reader");
++        assert_eq!(arena.node(guard.identity), ExprNode::Const(Lit::Real(0.0)));
++        assert!(matches!(
++            arena.node(guard.nan),
++            ExprNode::Const(Lit::Real(v)) if v.is_nan()
++        ));
++        let ExprNode::Binary(OpKind::Lt, start, end) = arena.node(guard.runs) else {
++            panic!("the arm runs while lo < hi");
++        };
++        assert_eq!(arena.node(start), ExprNode::Const(Lit::Real(0.0)));
++        assert_eq!(end, u);
++    }
++    /// A literal bound is a count already: only a value is tested, so `[0, u)`
++    /// has the domain test of `u` alone, two `≤`.
++    #[test]
++    fn a_literal_bound_adds_no_domain_test() {
++        let mut arena = ExprArena::new();
++        let u = uniform(&mut arena, 8.0);
++        let fold = counted(Monoid::SUM, &mut arena, Bound::Lit(0), Bound::Value(u));
++        let (arena, root) = guard_value_bounds_owned(arena, fold);
++        let domain = Guard::of(&arena, root).domain;
++        assert_eq!(count_of(&arena, domain, OpKind::Le), 2);
++        assert_eq!(count_of(&arena, domain, OpKind::Floor), 1);
++        assert_eq!(count_of(&arena, domain, OpKind::Eq), 1);
++        assert_eq!(count_of(&arena, domain, OpKind::BitAnd), 2);
++    }
++    /// The same for a value `lo` beside a literal `hi`: `[u, 8)` has the domain
++    /// test of `u` alone, so that a `u` outside the domain is NaN though the end
++    /// is a count already.
++    #[test]
++    fn a_value_lo_beside_a_literal_hi_has_the_domain_test_of_lo() {
++        let mut arena = ExprArena::new();
++        let u = uniform(&mut arena, 3.0);
++        let fold = counted(Monoid::SUM, &mut arena, Bound::Value(u), Bound::Lit(8));
++        let (arena, root) = guard_value_bounds_owned(arena, fold);
++        let guard = Guard::of(&arena, root);
++        assert!(
++            reachable(&arena, guard.domain).contains(&u),
++            "the domain reads u"
++        );
++        assert_eq!(count_of(&arena, guard.domain, OpKind::Le), 2);
++        assert_eq!(count_of(&arena, guard.domain, OpKind::Floor), 1);
++        assert_eq!(count_of(&arena, guard.domain, OpKind::Eq), 1);
++        assert_eq!(count_of(&arena, guard.domain, OpKind::BitAnd), 2);
++        let ExprNode::Binary(OpKind::Lt, start, end) = arena.node(guard.runs) else {
++            panic!("the arm runs while lo < hi");
++        };
++        assert_eq!(start, u);
++        assert_eq!(arena.node(end), ExprNode::Const(Lit::Real(8.0)));
++    }
++    /// Each value bound is tested, once however often it is read: `[m, n)` tests
++    /// both and joins the tests, `[u, u)` tests the one.
++    #[test]
++    fn two_value_bounds_are_each_in_the_domain() {
++        let mut arena = ExprArena::new();
++        let m = uniform(&mut arena, 2.0);
++        let n = uniform(&mut arena, 6.0);
++        let both = counted(Monoid::SUM, &mut arena, Bound::Value(m), Bound::Value(n));
++        let (arena, root) = guard_value_bounds_owned(arena, both);
++        let guard = Guard::of(&arena, root);
++        let ExprNode::Binary(OpKind::BitAnd, low, high) = arena.node(guard.domain) else {
++            panic!("the two tests are joined");
++        };
++        assert_eq!(count_of(&arena, low, OpKind::Floor), 1);
++        assert_eq!(count_of(&arena, high, OpKind::Floor), 1);
++        assert_eq!(arena.node(guard.runs), ExprNode::Binary(OpKind::Lt, m, n));
++        assert_eq!(count_of(&arena, guard.domain, OpKind::Le), 4);
++        let mut arena = ExprArena::new();
++        let u = uniform(&mut arena, 3.0);
++        let same = counted(Monoid::SUM, &mut arena, Bound::Value(u), Bound::Value(u));
++        let (arena, root) = guard_value_bounds_owned(arena, same);
++        let domain = Guard::of(&arena, root).domain;
++        assert_eq!(count_of(&arena, domain, OpKind::Le), 2, "one test of u");
++    }
++    /// The guard varies with its bounds and the fold with its body, so that the
++    /// tests of a uniform are computed once per call while the loop over `X`
++    /// runs per sample: every def takes the variance of the arena's transfer.
++    #[test]
++    fn the_guard_varies_with_the_bounds_and_the_fold_with_its_body() {
++        let mut arena = ExprArena::new();
++        let u = uniform(&mut arena, 8.0);
++        let fold = counted(Monoid::SUM, &mut arena, Bound::Lit(0), Bound::Value(u));
++        let (arena, root) = guard_value_bounds_owned(arena, fold);
++        let variance = compute_arena_variance(&arena);
++        let guard = Guard::of(&arena, root);
++        let at = |id: ExprId| variance[id.0 as usize];
++        assert_eq!(at(guard.domain), Variance::CONST);
++        assert_eq!(at(guard.runs), Variance::CONST);
++        assert_eq!(at(guard.fold), Variance::X, "the body reads X");
++        assert_eq!(at(root), at(guard.fold), "and so does the guard around it");
++    }
++    /// A bound on an enclosing fold's index varies with that fold's binder, so
++    /// the tests of the inner count are the outer fold's and run once per outer
++    /// trip, and the outer fold stays the root.
++    #[test]
++    fn a_bound_on_an_enclosing_index_is_guarded_inside_that_fold() {
++        let mut arena = ExprArena::new();
++        let outer = Binder::from_slot(1).expect("slot 1 exists");
++        let i = arena.push_var(outer.var());
++        let inner = counted(Monoid::SUM, &mut arena, Bound::Lit(0), Bound::Value(i));
++        let fold = Fold::new(Monoid::SUM, outer);
++        let root = arena.push_reduce(fold, Bound::Lit(0), Bound::Lit(8), inner);
++        let (arena, root) = guard_value_bounds_owned(arena, root);
++        let ExprNode::Reduce { body, .. } = arena.node(root) else {
++            panic!("the outer fold stays the root");
++        };
++        let guard = Guard::of(&arena, body);
++        assert_eq!(guard.fold, inner);
++        assert_eq!(readers(&arena, root, inner), 1);
++        let variance = compute_arena_variance(&arena);
++        assert_eq!(
++            variance[guard.domain.0 as usize],
++            Variance::from_var(outer.var())
++        );
++    }
++    /// A bound that names no count is a value for the guard to make NaN: it is
++    /// tested like any term, and nothing here panics.
++    #[test]
++    fn a_literal_outside_the_domain_is_still_guarded() {
++        let mut arena = ExprArena::new();
++        let half = arena.push_const(2.5);
++        let fold = counted(Monoid::SUM, &mut arena, Bound::Lit(0), Bound::Value(half));
++        let (arena, root) = guard_value_bounds_owned(arena, fold);
++        let guard = Guard::of(&arena, root);
++        assert_eq!(count_of(&arena, guard.domain, OpKind::Floor), 1);
++        let ExprNode::Binary(OpKind::Lt, _, end) = arena.node(guard.runs) else {
++            panic!("the arm runs while lo < hi");
++        };
++        assert_eq!(end, half);
++    }
++    /// The arm that is not the loop is the monoid's identity, whatever the
++    /// monoid: what an empty range folds to.
++    #[test]
++    fn the_identity_arm_is_the_monoids() {
++        for (monoid, identity) in [
++            (Monoid::SUM, 0.0),
++            (Monoid::PRODUCT, 1.0),
++            (Monoid::MIN, f32::INFINITY),
++            (Monoid::MAX, f32::NEG_INFINITY),
++        ] {
++            let mut arena = ExprArena::new();
++            let u = uniform(&mut arena, 8.0);
++            let fold = counted(monoid, &mut arena, Bound::Lit(0), Bound::Value(u));
++            let (arena, root) = guard_value_bounds_owned(arena, fold);
++            let arm = Guard::of(&arena, root).identity;
++            assert_eq!(arena.node(arm), ExprNode::Const(Lit::Real(identity)));
++        }
++    }
++    /// Everything above the fold is rebuilt over its guard: a parent that read
++    /// the fold reads the guarded fold, and the fold has no reader but the guard.
++    #[test]
++    fn a_parent_of_the_fold_reads_its_guard() {
++        let mut arena = ExprArena::new();
++        let u = uniform(&mut arena, 8.0);
++        let fold = counted(Monoid::SUM, &mut arena, Bound::Lit(0), Bound::Value(u));
++        let two = arena.push_const(2.0);
++        let product = arena.push_binary(OpKind::Mul, fold, two);
++        let (arena, root) = guard_value_bounds_owned(arena, product);
++        let ExprNode::Binary(OpKind::Mul, guarded, _) = arena.node(root) else {
++            panic!("the product survives");
++        };
++        assert_eq!(Guard::of(&arena, guarded).fold, fold);
++        assert_eq!(readers(&arena, root, fold), 1);
++        assert_eq!(count_of(&arena, root, OpKind::If), 2);
++    }
++}
++//! asks the public API about it. The rooted variance walk is pinned in the
++//! crate's own unit tests.
++use pixelflow_ir::key::canonical;
++use pixelflow_ir::passes::lattice::{Collapse, Domain};
++use pixelflow_ir::passes::legalize;
++use pixelflow_ir::variance::{LatticeShape, Variance, compute_arena_variance};
++    fixture_counting(2.0)
++}
++/// The fixture with its uniform `u` declared holding `default`.
++fn fixture_counting(default: f32) -> Fixture {
++    let decl = arena.declare_uniform(Uniform::new(default).decl());
++/// A key is a fold's header and its children's keys, and a bound that is a
++/// value is the header's marker and a child. The shape is one canonical form
++/// however the uniform it reads is set (one compiled program for every count),
++/// and two instances of that uniform are two kernels: the instance is in the
++/// kernel's identity, the default only in the block.
++fn a_value_bounded_kernel_has_a_key() {
++    let (one, other) = (fixture_counting(2.0), fixture_counting(9.0));
++    let (shape_one, shape_other) = (
++        canonical(&one.arena, one.outer),
++        canonical(&other.arena, other.outer),
++    );
++    assert_eq!(shape_one.key, shape_other.key);
++    assert_ne!(shape_one.uniforms, shape_other.uniforms);
++    assert_ne!(
++        KernelKey::of(&one.arena, one.outer),
++        KernelKey::of(&other.arena, other.outer)
++    );
++    assert_eq!(
++        KernelKey::of(&one.arena, one.outer),
++        KernelKey::of(&one.arena, one.outer),
++        "and a key is a function of its kernel"
++    );
++/// `over_values` is the user's door to a value bound: a uniform count is one
++/// `Reduce` whose `hi` is a child, not a literal.
++#[test]
++fn over_values_is_public() {
++    let count = Uniform::new(8.0);
++    let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &count.kernel(), |i| {
++        i.clone()
++    });
++    let (arena, root) = sum.parts();
++    let ExprNode::Reduce { lo, hi, .. } = arena.node(root) else {
++        panic!("a fold, got {}", arena.display(root));
++    };
++    assert_eq!(lo, Bound::Lit(0));
++    assert!(matches!(hi, Bound::Value(_)));
++    assert_eq!(sum.uniforms(), [count.decl()]);
++}
++/// Until bounds are `Int`, a bound is a leaf: arithmetic is refused by name at
++/// the public surface, where a bound could round into the domain.
++#[test]
++#[should_panic(expected = "BoundArithmetic")]
++fn over_values_refuses_arithmetic_at_the_public_surface() {
++    let count = Uniform::new(8.0).kernel();
++    let hi = count.add(&Kernel::constant(1.0));
++    let _refused = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &hi, |i| i.clone());
++}
++/// A fold a user built with a value bound leaves `legalize` inside its guard,
++/// and nothing else reads it: `If(dom, If(lo < hi, fold, identity), NaN)`.
++#[test]
++fn legalize_guards_what_over_values_built() {
++    let count = Uniform::new(8.0);
++    let sum = Kernel::over_values(Monoid::SUM, &Kernel::constant(0.0), &count.kernel(), |i| {
++        Kernel::x().mul(i)
++    });
++    let (arena, root) = sum.parts();
++    let origin = |default| Uniform::new(default).decl();
++    let collapse = Collapse {
++        domain: Domain {
++            shape: LatticeShape::new([4, 2]),
++            origin: [origin(0.0), origin(0.0)],
++        },
++        lanes: 4,
++    };
++    let (legalized, root) = legalize(arena, root, &collapse).expect("a kernel with no Dwrt");
++    let reachable = reachable(&legalized, root);
++    let valued: Vec<ExprId> = reachable
++        .iter()
++        .copied()
++        .filter(|id| {
++            matches!(
++                legalized.node(*id),
++                ExprNode::Reduce {
++                    hi: Bound::Value(_),
++                    ..
++                }
++            )
++        })
++        .collect();
++    let [fold] = valued[..] else {
++        panic!("one fold with a value bound, got {valued:?}");
++    };
++    let readers: Vec<ExprId> = reachable
++        .iter()
++        .copied()
++        .filter(|id| legalized.children(*id).any(|child| child == fold))
++        .collect();
++    let [reader] = readers[..] else {
++        panic!("the fold has one reader, got {readers:?}");
++    };
++    let ExprNode::Ternary(OpKind::If, _, arm, _) = legalized.node(reader) else {
++        panic!("read by {}", legalized.display(reader));
++    };
++    assert_eq!(
++        arm, fold,
++        "as the true arm of the guard around the range test"
++    );
++}
++/// The nodes reachable from `root`.
++fn reachable(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
++    let mut seen = vec![false; arena.len()];
++    let mut stack = vec![root];
++    let mut order = Vec::new();
++    while let Some(id) = stack.pop() {
++        if !std::mem::replace(&mut seen[id.0 as usize], true) {
++            order.push(id);
++            stack.extend(arena.children(id));
++        }
++    }
++    order
++}
++//! `KernelKey` the JIT cache keys on writes for the node, so a different literal
++//! trip count is a different program. One program for the whole font therefore
++//! needs every glyph padded to the font-wide maximum, and every glyph then pays
++//! the worst glyph's work at every pixel, because a constant trip count cannot
++//! exit early and an `If` computes both arms. A count that is a value is one
++//! program for every count (docs/language/2026-10-20-a-bound-is-a-value.md); a
++//! production glyph's counts are literals until it moves them there.
++use pixelflow_ir::{Bound, ExprArena, ExprId, Lit, OpKind};
++        /// A fold's identity is its metadata plus its children: the bits are
++        /// the metadata, and the ids are its body and each bound that is a
++        /// value, in that order.
++        Reduce(u128, Vec<u32>),
++            ExprNode::Reduce { lo, hi, body, .. } => {
++                let values: Vec<ExprId> = [lo, hi]
++                    .into_iter()
++                    .filter_map(Bound::value)
++                    .map(|child| ExprId(m(child, &map)))
++                    .collect();
++                // The key is the header's bits and the children's ids.
++                let ids = std::iter::once(body)
++                    .chain(values.iter().copied())
++                    .map(|child| child.0)
++                    .collect();
++                let (lo, hi) = header.attach(values);
++                    Key::Reduce(header.to_bits(), ids),
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use pixelflow_ir::{Binder, Fold, Monoid, Uniform};
++    /// `Σ_{i<count} i`, the bound a uniform's slot.
++    fn counted_by(arena: &mut ExprArena, count: ExprId) -> ExprId {
++        let binder = Binder::from_slot(0).expect("the first binder");
++        let index = arena.push_var(binder.var());
++        arena.push_reduce(
++            Fold::new(Monoid::SUM, binder),
++            Bound::Lit(0),
++            Bound::Value(count),
++            index,
++        )
++    }
++    /// Two folds that differ only in their bound's child are two nodes, not
++    /// one: the key holds the children's ids beside the header's bits.
++    #[test]
++    fn hash_cons_keeps_a_value_bound() {
++        let mut arena = ExprArena::new();
++        let u = arena.declare_uniform(Uniform::new(3.0).decl());
++        let v = arena.declare_uniform(Uniform::new(5.0).decl());
++        let (u, v) = (arena.push_uniform(u), arena.push_uniform(v));
++        let (by_u, by_v) = (counted_by(&mut arena, u), counted_by(&mut arena, v));
++        let root = arena.push_binary(OpKind::Add, by_u, by_v);
++        let (consed, root) = hash_cons(&arena, root);
++        let ExprNode::Binary(OpKind::Add, a, b) = consed.node(root) else {
++            panic!("the root is still the sum of the two folds");
++        };
++        assert_ne!(a, b, "folds over different counts merged");
++        for fold in [a, b] {
++            assert!(
++                matches!(
++                    consed.node(fold),
++                    ExprNode::Reduce {
++                        hi: Bound::Value(_),
++                        ..
++                    }
++                ),
++                "a fold kept its value bound"
++            );
++        }
++    }
++}
++use pixelflow_ir::fold::{Bound, FoldHeader};
++//
++// v5 lets an `R` line name a fold's value bounds: the header's bits mark a bound
++// that is a value (a count field of all ones, `FoldHeader::to_bits`) and the line
++// then names that bound's child after the body, `lo`'s first. A v4 `R` line held
++// a fold's body alone, so a fold whose bound is a value had no child to name.
++const HEADER: &str = "# pixelflow collapse corpus v5";
++    (
++        "# pixelflow collapse corpus v4",
++        "v4's `R` line held a fold's body alone, so a fold whose bound is a value had no child \
++         to name",
++    ),
++            // nodes. A bound that is a value is marked in those bits and its
++            // child follows the body, `lo`'s first.
++            ExprNode::Reduce { lo, hi, body, .. } => {
++                let values: String = [lo, hi]
++                    .into_iter()
++                    .filter_map(Bound::value)
++                    .map(|child| format!(" {}", d(&dense, child)))
++                    .collect();
++                    "R {} {}{values}",
++            ["R", bits, body, values @ ..] => {
++                // The header says how many children follow the body.
++                assert_eq!(
++                    values.len(),
++                    header.arity() - 1,
++                    "{}: fold bits {bits} name {} value bounds and the line gives {}",
++                    path.display(),
++                    header.arity() - 1,
++                    values.len()
++                );
++                let (lo, hi) = header.attach(values.iter().map(|v| id(v)));
++    use pixelflow_ir::fold::{Binder, Fold, Monoid};
++    /// A stale v4 corpus — the format before a fold's value bounds had a child
++    /// to name — must say so too.
++    #[test]
++    #[should_panic(expected = "v4's `R` line held a fold's body alone")]
++    fn a_v4_corpus_names_the_version_it_is() {
++        let dir = std::env::temp_dir().join(format!(
++            "pixelflow-collapse-corpus-v4-{}",
++            std::process::id()
++        ));
++        std::fs::create_dir_all(&dir).expect("temp dir");
++        let path = dir.join("stale.txt");
++        // Index 3 is v4, per `SUPERSEDED_HEADERS`'s declaration order.
++        let (header, _) = SUPERSEDED_HEADERS[3];
++        std::fs::write(
++            &path,
++            format!("{header}\nname stale\nfamily wide\nextent 8 2\nV 0\nroot 0\n"),
++        )
++        .expect("write");
++        let _ = decode(&path);
++    }
++    /// `Σ_{i<n} X·i` with `n` a kernel argument: the fold's `hi` is a value.
++    fn counted_by_an_argument() -> CollapseKernel {
++        let mut arena = ExprArena::new();
++        let count = arena.declare_uniform(pixelflow_ir::Uniform::new(4.0).decl());
++        let hi = arena.push_uniform(count);
++        let binder = Binder::from_slot(0).expect("the first binder");
++        let index = arena.push_var(binder.var());
++        let x = arena.push_var(0);
++        let body = arena.push_binary(OpKind::Mul, x, index);
++        let root = arena.push_reduce(
++            Fold::new(Monoid::SUM, binder),
++            Bound::Lit(0),
++            Bound::Value(hi),
++            body,
++        );
++        CollapseKernel {
++            name: "counted_by_an_argument".to_string(),
++            family: "fold".to_string(),
++            arena,
++            root,
++            extent: [8, 2],
++            buffer_data: Vec::new(),
++        }
++    }
++    /// A kernel with an `A` line and `[0, A)` round trips through the fixture
++    /// text. The oracle is the encoding, as for every kernel here: `decode`
++    /// declares each `A` line a fresh uniform, so the two arenas are not
++    /// `subtree_eq` and are the same kernel all the same.
++    #[test]
++    fn a_value_bounded_kernel_round_trips() {
++        let kernel = counted_by_an_argument();
++        let text = encode(&kernel);
++        let fold = text
++            .lines()
++            .find(|line| line.starts_with("R "))
++            .expect("an R line");
++        assert_eq!(
++            fold.split_whitespace().count(),
++            4,
++            "R, the header's bits, the body, the bound's child: {fold}"
++        );
++        let dir = std::env::temp_dir().join(format!(
++            "pixelflow-collapse-corpus-value-bound-{}",
++            std::process::id()
++        ));
++        write_dir(&dir, std::slice::from_ref(&kernel));
++        let decoded = &read_dir(&dir)[0];
++        std::fs::remove_dir_all(&dir).expect("clean up");
++        assert_eq!(
++            text,
++            encode(decoded),
++            "a value-bounded kernel did not round trip"
++        );
++        assert!(
++            matches!(
++                decoded.arena.node(decoded.root),
++                ExprNode::Reduce {
++                    lo: Bound::Lit(0),
++                    hi: Bound::Value(_),
++                    ..
++                }
++            ),
++            "the bound is still a value after the round trip"
++        );
++    }
++    /// A fold line is refused, naming the file, when it gives a different
++    /// number of value bounds than its header's bits mark.
++    #[test]
++    #[should_panic(expected = "wrong_count.txt: fold bits")]
++    fn a_fold_line_with_too_few_value_bounds_is_refused_naming_the_file() {
++        let dir = std::env::temp_dir().join(format!(
++            "pixelflow-collapse-corpus-value-count-{}",
++            std::process::id()
++        ));
++        std::fs::create_dir_all(&dir).expect("temp dir");
++        let path = dir.join("wrong_count.txt");
++        let binder = Binder::from_slot(0).expect("the first binder");
++        let bits = FoldHeader::new(
++            Fold::new(Monoid::SUM, binder),
++            Bound::Lit(0),
++            Bound::Value(()),
++        )
++        .to_bits();
++        std::fs::write(
++            &path,
++            format!("{HEADER}\nname bad\nfamily fold\nextent 8 2\nV 0\nR {bits} 0\nroot 1\n"),
++        )
++        .expect("write");
++        let _ = decode(&path);
++    }
++- No estimate shown as a count: `features_of` panics on a kernel with a fold
++  whose range is not known, so a value-bounded kernel is refused at measurement.
++/// Why `features_of` may read a trip count as a number: a measurement that
++/// weights a scope by its trips needs them known, and a value-bounded fold has
++/// only an estimate.
++const LITERAL_FOLDS: &str = "a collapse corpus kernel's folds have known ranges: its kernels \
++     are production glyphs and the synthetic families, every bound a literal, until B2 measures a \
++     glyph whose bound is a value";
++///
++/// # Panics
++///
++/// If a fold's range is not known: its trip count is an estimate there, and no
++/// measurement shows an estimate as a count.
++            .map(|(s, trips)| pick(s) * trips.known().expect(LITERAL_FOLDS))
++        dyn_memory_ops: t.dynamic_memory_ops().expect(LITERAL_FOLDS),
++//!   tag: u8  (0=Var, 1=Const, 2=Param, 3=Unary, 4=Binary, 5=Ternary, 6=Nary,
++//!   7=Buffer (refused at write), 9=Reduce)
++//!   A `Reduce` is its [`FoldHeader`]'s bits, its body, then one `ExprId` per
++//!   bound that is a value, `lo`'s first: the bits mark such a bound (a count
++//!   field of all ones) and say how many follow.
++use pixelflow_ir::fold::{Bound, FoldHeader};
++    // could seat a DEV/FINAL-equivalent expression in TRAIN (P1(d)); and a fold's
++    // bound that is a value was given a place in the record (tag 9).
++        9=Reduce(FoldHeader::to_bits u128 le: a count field of all ones marks a bound \
++        that is a value; body ExprId le; then one ExprId le per bound so marked, lo's \
++        first); \
++        // The fold's header as opaque bits: a literal bound travels in them, a
++        // bound that is a value is marked there and its child follows the body,
++        // `lo`'s first.
++            for child in [lo, hi].into_iter().filter_map(Bound::value) {
++                w.write_all(&child.0.to_le_bytes())?;
++            }
++            // The header says how many children follow the body.
++            let values = (1..header.arity())
++                .map(|_| resolve_child(id_map, r.read_u32()?))
++                .collect::<io::Result<Vec<_>>>()?;
++            let (lo, hi) = header.attach(values);
++    use pixelflow_ir::fold::{Binder, Fold, Monoid};
++    /// A record whose end field is all ones marks a bound that is a value, and
++    /// the child it names follows the body.
++    fn a_fold_record_marking_a_value_reads_its_child() {
++        let value_hi = 0x0000_0000_0001_0201_0000_0003_ffff_ffff_u128;
++        bytes.extend_from_slice(&value_hi.to_le_bytes());
++        bytes.extend_from_slice(&0u32.to_le_bytes());
++        bytes.extend_from_slice(&1u32.to_le_bytes());
++        let mut arena = ExprArena::new();
++        let body = arena.push_var(0);
++        // Not a count, so it stays a value; it reads no coordinate, so it is
++        // a lawful bound.
++        let hi = arena.push_const(2.5);
++        let fold = read_node_into(&mut Cursor::new(&bytes), &mut arena, &[body, hi])
++            .expect("a value bound's child follows the body");
++        assert!(
++            matches!(
++                arena.node(fold),
++                ExprNode::Reduce {
++                    lo: Bound::Lit(3),
++                    hi: Bound::Value(child),
++                    ..
++                } if child == hi
++            ),
++            "the record names a fold over [3, 2.5)"
++        );
++    }
++    /// The same record without its child is a short record, as any is.
++    #[test]
++    fn a_fold_record_missing_its_value_child_is_unexpected_eof() {
++        let value_hi = 0x0000_0000_0001_0201_0000_0003_ffff_ffff_u128;
++        let mut bytes = vec![TAG_REDUCE];
++        bytes.extend_from_slice(&value_hi.to_le_bytes());
++        bytes.extend_from_slice(&0u32.to_le_bytes());
++        let mut arena = ExprArena::new();
++        let body = arena.push_var(0);
++        let err = read_node_into(&mut Cursor::new(&bytes), &mut arena, &[body])
++            .expect_err("the marked bound has no child to read");
++        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
++        assert_eq!(arena.len(), 1, "the short record entered nothing");
++    }
++    /// A literal end past the bound the format can hold names no fold,
++    /// rather than reading as a bound.
++    #[test]
++    fn a_fold_record_with_an_end_past_the_bound_names_no_fold() {
++        let past_the_bound = 0x0000_0000_0001_0201_0000_0003_0100_0001_u128;
++        let mut bytes = vec![TAG_REDUCE];
++        bytes.extend_from_slice(&past_the_bound.to_le_bytes());
++            .expect_err("an end past the bound is no literal bound");
++    /// `Σ_{i<4} Σ_{j<i} j`: the inner fold's end is the outer fold's index, a
++    /// value, and survives a write and a read.
++    #[test]
++    fn round_trip_a_value_bounded_fold() {
++        let mut arena = ExprArena::new();
++        let outer_binder = Binder::from_slot(0).expect("the first binder");
++        let inner_binder = Binder::from_slot(1).expect("the second binder");
++        let i = arena.push_var(outer_binder.var());
++        let j = arena.push_var(inner_binder.var());
++        let inner = arena.push_reduce(
++            Fold::new(Monoid::SUM, inner_binder),
++            Bound::Lit(0),
++            Bound::Value(i),
++            j,
++        );
++        let root = arena.push_reduce(
++            Fold::new(Monoid::SUM, outer_binder),
++            Bound::Lit(0),
++            Bound::Lit(4),
++            inner,
++        );
++        let tmp = unique_tmp("value_bounded_fold");
++        write_corpus(&tmp, &[("triangle".to_string(), arena.clone(), root)]).expect("write");
++        let loaded = read_corpus(&tmp).expect("read");
++        std::fs::remove_file(&tmp).expect("clean up");
++        let [(name, loaded_arena, loaded_root)] = loaded.as_slice() else {
++            panic!("one entry was written");
++        };
++        assert_eq!(name, "triangle");
++        assert!(
++            loaded_arena.subtree_eq(*loaded_root, &arena, root),
++            "a value-bounded fold did not round trip"
++        );
++    }
++/// **Under [`Monoid::SUM`], a literal zero `c` takes its fold with it.** The
++/// `Mul` annihilator (`0·y → 0`, `OpKind::annihilator`) rewrites `0 · Σ f` to
++/// `0`, so no fold is left for the guard `passes::legalize` builds to wrap, and
++/// a bound that is no count (NaN, a fraction, past 2²⁴) gives `0` where the
++/// fold as written is NaN. For a finite body the answers agree in the domain.
++/// That is the annihilation rule's edge, not this rule's (BACKLOG E9).
++///
++/// guard `passes::legalize` ends with). A pair it makes known runs forwards (L2
++/// of the same plan: `[k, j)` with `k > j` is the empty range at `k`), which
++    /// domain, decline (L5: such a fold is NaN, by the guard `passes::legalize`
++    /// ends with).
++    /// the fold with `BoundVaries`. Nothing is silent, and it is left so:
++    /// constraining a bound's pick would trade this failure for another, since
++    /// a class read as a bound with no member that keeps L3 would never settle
++    /// and every other user of the class would fail with it.
++    /// no rules, so nothing does. The cheaper spelling carries an extra
++    /// subtraction to cancel the coordinate, which no kernel or profile shows
++    /// winning, so the pick is left unconstrained and the failure loud.
++- A value bound's pick is unconstrained: a class read as a bound can settle on a member that reads a coordinate,
++  and `ExprArena::push_reduce` refuses it by name; pinned in `fold_rules.rs`, left loud until a kernel hits it.

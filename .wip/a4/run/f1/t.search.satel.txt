@@ -1,0 +1,574 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/lib.rs (target.noindex/debug/deps/pixelflow_search-b1be34034f280121)
+
+running 405 tests
+test egraph::anytime::tests::live_checkpoints_land_exactly_on_their_target ... ok
+test egraph::anytime::tests::curve_has_one_row_per_grid_target_and_monotone_cost ... ok
+test egraph::candidate::tests::budget_fraction_can_exceed_one_past_the_registered_budget ... ok
+test egraph::candidate::tests::candidate_features_observe_is_deterministic_and_matches_its_own_key ... ok
+test egraph::candidate::tests::class_content_key_changes_when_a_rule_adds_a_node ... ok
+test egraph::candidate::tests::class_content_key_is_stable_under_reflexive_recomputation ... ok
+test egraph::candidate::tests::class_content_key_names_operands_by_their_surviving_class ... ok
+test egraph::candidate::tests::observe_zero_registered_budget_yields_zero_fraction_not_nan_or_inf ... ok
+test egraph::cost::cost_model_accessors::a_fold_whose_range_is_not_known_is_priced_at_the_estimate ... ok
+test egraph::candidate::tests::repeated_idempotent_refires_share_a_candidate_key ... ok
+test egraph::anytime::tests::a_guided_curve_is_the_same_curve_with_a_guide_attached ... ok
+test egraph::cost::cost_model_accessors::cost_by_kind_trait_method_delegates_to_cost ... ok
+test egraph::cost::cost_model_accessors::costs_accessor_reflects_the_latency_prior_table ... ok
+test egraph::cost::cost_model_accessors::costs_mut_edits_are_visible_through_cost ... ok
+test egraph::cost::cost_model_accessors::depth_cost_charges_penalty_per_level_past_the_threshold ... ok
+test egraph::cost::cost_model_accessors::depth_cost_is_zero_at_and_below_the_threshold ... ok
+test egraph::cost::cost_model_accessors::node_cost_trait_method_delegates_to_node_op_cost ... ok
+test egraph::cost::cost_model_accessors::node_op_cost_prices_a_dwrt_node_dearly_but_finitely ... ok
+test egraph::cost::cost_model_accessors::node_op_cost_prices_an_ordinary_op_node_from_the_cost_table ... ok
+test egraph::cost::cost_model_accessors::node_op_cost_should_price_var_const_and_buffer_leaves_at_zero ... ok
+test egraph::cost::cost_model_accessors::set_cost_then_cost_returns_the_value_just_set_without_disturbing_other_ops ... ok
+test egraph::cost::cost_model_accessors::shallow_keeps_latency_prior_op_costs_but_tightens_the_depth_penalty ... ok
+test egraph::cost::every_op_is_priceable::cost_by_name_matches_cost_for_every_sampled_op ... ok
+test egraph::cost::cost_model_accessors::the_extractor_prices_a_fold_at_fold_cost ... ok
+test egraph::cost::every_op_is_priceable::every_op_can_be_priced ... ok
+test egraph::cost::every_op_is_priceable::zero_prices_every_op_at_zero_cost ... ok
+test egraph::cost::every_op_is_priceable::the_prohibitive_prices_are_actually_prohibitive ... ok
+test egraph::extract::tests::a_backfilled_hand_map_materializes_what_production_extracts ... ok
+test egraph::extract::tests::a_bound_that_picks_no_count_is_priced_at_the_estimate ... ok
+test egraph::extract::tests::a_chosen_term_classifies_a_known_variance_mix_as_its_arena_does ... ok
+test egraph::extract::tests::a_class_used_many_times_is_one_node_of_the_term ... ok
+test egraph::extract::tests::a_grown_reach_set_is_the_set_built_whole ... ok
+test egraph::extract::tests::a_cyclic_choice_map_has_no_price ... ok
+test egraph::extract::tests::a_materialized_selection_records_the_edge_stream_of_its_arena ... ok
+test egraph::extract::tests::a_one_child_row_costs_what_the_walk_over_its_childs_set_costs ... ok
+test egraph::extract::tests::a_selection_is_refused_for_a_cyclic_choice_set ... ok
+test egraph::extract::tests::a_prohibitive_chain_saturates ... ok
+test egraph::extract::tests::a_selection_is_refused_for_an_incomplete_or_out_of_range_choice_set ... ok
+test egraph::extract::tests::a_selection_materializes_in_post_order ... ok
+test egraph::extract::tests::a_shared_class_materializes_once ... ok
+test egraph::extract::tests::a_self_referential_candidate_is_never_the_pick_however_dear_the_alternative ... ok
+test egraph::extract::tests::a_shift_materializes_with_its_count_at_its_position_and_shares_the_literal ... ok
+test egraph::extract::tests::a_shift_under_a_fold_body_materializes_with_its_count ... ok
+test egraph::extract::tests::a_union_pays_for_each_class_once_from_a_sparse_or_a_dense_largest_set ... ok
+test egraph::extract::tests::both_twins_of_a_fold_price_at_the_count_their_bound_names ... ok
+test egraph::extract::tests::canonical_tie_break_is_independent_of_insertion_order ... ok
+test egraph::extract::tests::dag_cost_equals_the_materialized_arenas_cost ... ok
+test egraph::extract::tests::edge_trace_records_a_reload_for_a_shared_subexpression ... ok
+test egraph::extract::tests::extract_dag_is_never_worse_than_the_tree_objective_it_replaced ... ok
+test egraph::extract::tests::extract_latency_prior_picks_cheaper_equivalent_form ... ok
+test egraph::extract::tests::extract_simple ... ok
+test egraph::extract::tests::extract_with_ops ... ok
+test egraph::cost::cost_model_accessors::cost_by_kind_default_trait_method_panics_when_not_overridden - should panic ... ok
+test egraph::extract::tests::an_extraction_refuses_to_select_a_cyclic_choice_set - should panic ... ok
+test egraph::extract::tests::extraction_constructors_refuse_a_cyclic_choice_set - should panic ... ok
+test egraph::extract::tests::production_extraction_of_a_cyclic_capable_graph_picks_the_leaf ... ok
+test egraph::extract::tests::reach_forms_agree ... ok
+test egraph::extract::tests::scope_weighting_unfuses_an_fma_to_hoist_the_z_term ... ok
+test egraph::extract::tests::insertion_tie_break_is_productions_extraction ... ok
+test egraph::anytime::tests::clamped_rows_freeze_the_final_state ... ok
+test egraph::extract::tests::swap_search_bootstrap_survives_a_merge_reordered_class ... ok
+test egraph::extract::tests::swap_search_reproduces_extract_dags_choice_on_a_cost_ambiguous_class ... ok
+test egraph::extract::tests::settlement_order_is_pinned ... ok
+test egraph::extract::tests::shared_pass_matches_the_dense_reference_on_a_saturated_graph ... ok
+test egraph::extract::tests::the_claim_is_exact_on_the_graph_a_dfs_order_could_not_price ... ok
+test egraph::extract::tests::the_budget_fallback_reports_the_tree_scale_it_actually_used ... ok
+test egraph::extract::tests::shared_pass_over_budget_is_abandoned_loudly ... ok
+test egraph::extract::tests::the_fixpoint_prices_a_class_the_post_order_dp_left_at_the_sentinel ... ok
+test egraph::extract::tests::the_shared_dp_prices_a_doubly_reached_class_exactly_once ... ok
+test egraph::extract::tests::the_sharing_objective_picks_the_form_that_reuses_a_subterm ... ok
+test egraph::extract::tests::the_dp_map_is_well_founded ... ok
+test egraph::extract::tests::the_two_objectives_agree_when_nothing_is_shared ... ok
+test egraph::extract::tests::tree_cost_prices_a_shared_subterm_once_per_use_and_dag_cost_once ... ok
+test egraph::fold_rules::production_shape_tests::a_table_reading_fold_prices_consistently_at_a_frame ... ok
+test egraph::extract::tests::the_tree_arms_objective_is_astronomical_on_a_real_sized_graph ... ok
+test egraph::fold_rules::production_shape_tests::a_table_reading_fold_unrolls ... ok
+test egraph::fold_rules::tests::a_fold_in_a_bound_class_is_skipped_for_the_next_member ... ok
+test egraph::fold_rules::tests::a_literal_joining_a_bound_class_makes_the_range_known ... ok
+test egraph::fold_rules::tests::a_nested_bound_is_rebuilt_through_the_member_that_keeps_l3 ... ok
+test egraph::fold_rules::tests::a_nested_bound_with_no_member_that_keeps_l3_declines ... ok
+test egraph::fold_rules::production_shape_tests::production_keeps_the_loop_over_a_table_fold ... ok
+test egraph::fold_rules::tests::a_peel_names_a_class_the_fact_clears ... ok
+test egraph::fold_rules::tests::a_peel_names_a_rebinding_fold_with_a_value_bound ... ok
+test egraph::fold_rules::tests::a_peel_shares_the_body_it_folds ... ok
+test egraph::fold_rules::tests::a_peel_stops_at_a_fold_that_rebinds_its_slot ... ok
+test egraph::fold_rules::tests::a_peel_makes_an_inner_bound_known ... ok
+test egraph::fold_rules::tests::a_peel_substitutes_into_a_nested_folds_bound ... ok
+test egraph::fold_rules::tests::a_rebuilt_bound_that_lands_in_a_stale_class_is_declined ... ok
+test egraph::fold_rules::tests::a_shift_in_a_fold_body_is_copied_with_its_direction_and_count ... ok
+test egraph::fold_rules::tests::a_triangular_fold_halves_with_a_rule_made_bound ... ok
+test egraph::fold_rules::tests::a_wholly_invariant_body_keeps_its_right_operand_inside ... ok
+test egraph::fold_rules::tests::an_unknown_range_is_not_unrolled ... ok
+test egraph::fold_rules::tests::combiner_op_covers_every_constructible_monoid ... ok
+test egraph::fold_rules::tests::extracting_a_bound_class_with_no_member_that_keeps_l3_is_refused_by_name - should panic ... ok
+test egraph::fold_rules::tests::factor_fold_declines_an_empty_fold ... ok
+test egraph::fold_rules::tests::extracting_a_bound_class_whose_cheapest_member_reads_a_coordinate_is_refused_by_name - should panic ... ok
+test egraph::fold_rules::tests::factor_fold_declines_when_both_operands_read_the_binder ... ok
+test egraph::fold_rules::tests::factor_fold_declines_an_operator_that_does_not_distribute ... ok
+test egraph::fold_rules::tests::factor_fold_factors_under_a_value_bound ... ok
+test egraph::fold_rules::tests::factor_fold_finds_the_factor_on_either_side ... ok
+test egraph::fold_rules::tests::factor_fold_is_in_the_runtime_set_only ... ok
+test egraph::fold_rules::tests::factor_fold_moves_an_invariant_factor_out_of_a_sum ... ok
+test egraph::fold_rules::tests::factor_fold_moves_an_invariant_offset_out_of_min_and_max ... ok
+test egraph::fold_rules::tests::factor_fold_reads_the_class_fact_not_the_representative ... ok
+test egraph::fold_rules::tests::factor_fold_takes_one_operand_per_firing ... ok
+test egraph::fold_rules::tests::known_bound_declines_a_count_out_of_domain ... ok
+test egraph::fold_rules::tests::halve_doubles_the_body_sharing_it_when_the_binder_is_unused ... ok
+test egraph::fold_rules::tests::known_bound_declines_a_literal_fold ... ok
+test egraph::fold_rules::tests::known_bound_declines_a_mask ... ok
+test egraph::fold_rules::tests::known_bound_makes_a_range_known_from_a_class_holding_a_count ... ok
+test egraph::fold_rules::tests::known_bound_is_the_last_fold_rule ... ok
+test egraph::fold_rules::tests::known_bound_runs_a_discovered_pair_forwards ... ok
+test egraph::fold_rules::tests::peel_fold_declines_exactly_when_halve_fold_would_apply ... ok
+test egraph::extract::tests::the_dp_claim_prices_the_term_the_arm_returns ... ok
+test egraph::graph::runner::tests::a_mask_whose_ordinal_never_fires_changes_nothing ... ok
+test egraph::graph::runner::tests::all_matching_candidate_mask_skips_every_re_derivation ... ok
+test egraph::graph::runner::tests::an_unobserved_graph_keeps_no_journal_and_runs_the_same ... ok
+test egraph::graph::runner::tests::dirty_tracking_still_finds_a_rewrite_two_hops_below_a_changed_grandchild ... ok
+test egraph::graph::runner::tests::everything_an_application_minted_or_merged_is_attributed_to_it ... ok
+test egraph::graph::runner::tests::leave_one_out_mask_skips_exactly_one_application ... ok
+test egraph::graph::runner::tests::withholding_a_real_application_changes_the_run ... ok
+test egraph::graph::tests::a_canonical_node_reads_every_operand_through_find ... ok
+test egraph::graph::tests::a_clone_owns_its_member_lists ... ok
+test egraph::graph::tests::a_frozen_graph_keeps_what_extraction_reads ... ok
+test egraph::graph::tests::a_merged_away_class_is_not_a_candidate ... ok
+test egraph::graph::tests::a_node_whose_union_is_refused_leaves_its_class ... ok
+test egraph::graph::tests::a_prediction_ignores_what_the_scratch_held ... ok
+test egraph::graph::tests::a_rebuild_item_that_loses_gives_prior_then_later_absorbed_then_kept ... ok
+test egraph::graph::tests::a_rebuild_item_that_survives_gives_absorbed_then_kept ... ok
+test egraph::graph::tests::a_rebuild_item_that_survives_then_loses_gives_prior_then_absorbed_then_kept ... ok
+test egraph::graph::tests::a_retired_founder_leaves_the_members_after_it ... ok
+test egraph::graph::tests::a_retired_middle_member_leaves_its_neighbours_adjacent ... ok
+test egraph::graph::tests::candidate_classes_are_the_live_classes_that_can_root_the_rule ... ok
+test egraph::graph::tests::complex_inverse ... ok
+test egraph::graph::tests::depth_aware_extraction ... ok
+test egraph::graph::tests::depth_cost_should_apply_linear_penalty_only_above_threshold ... ok
+test egraph::graph::tests::discriminant_structure ... ok
+test egraph::graph::tests::freezing_moves_the_arena ... ok
+test egraph::graph::tests::inverse_add ... ok
+test egraph::graph::tests::inverse_mul ... ok
+test egraph::graph::tests::mul_sub_pattern ... ok
+test egraph::graph::tests::mul_sub_pattern_with_fma ... ok
+test egraph::graph::tests::mul_sub_pattern_with_vars ... ok
+test egraph::graph::tests::nested_subtraction ... ok
+test egraph::fold_rules::tests::the_runtime_rules_saturate_a_graph_with_a_stale_bound_class ... ok
+test egraph::graph::tests::provenance_chain_rule_b_consumes_rule_a_product ... ok
+test egraph::graph::tests::provenance_overhead_timing ... ignored
+test egraph::graph::tests::provenance_tiny_expression_one_rewrite_matches_hand_derivation ... ok
+test egraph::graph::tests::provenance_union_driven_case_includes_congruence_union_event ... ok
+test egraph::graph::tests::rebuild_budgeted_does_not_drop_nodes_when_current_class_survives_union ... ok
+test egraph::graph::tests::rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away ... ok
+test egraph::graph::tests::saturation_at_any_budget_never_removes_an_equality ... ok
+test egraph::graph::tests::shallow_should_set_aggressive_depth_threshold_and_penalty ... ok
+test egraph::graph::tests::union_gives_the_parent_then_the_child ... ok
+test egraph::graph::variance_fact_tests::a_class_is_free_of_what_any_member_is_free_of ... ok
+test egraph::graph::variance_fact_tests::a_clone_keeps_the_facts ... ok
+test egraph::graph::variance_fact_tests::a_cycle_does_not_certify_invariance ... ok
+test egraph::graph::variance_fact_tests::a_fold_removes_its_binder ... ok
+test egraph::graph::variance_fact_tests::a_journal_cannot_be_dropped_from_a_populated_graph - should panic ... ok
+test egraph::graph::variance_fact_tests::a_plan_whose_bound_lands_in_a_varying_class_is_declined_and_predicted_so ... ok
+test egraph::graph::variance_fact_tests::add_refuses_a_bound_reading_its_own_binder - should panic ... ok
+test egraph::graph::variance_fact_tests::add_refuses_a_bound_varying_with_x - should panic ... ok
+test egraph::graph::variance_fact_tests::add_takes_a_bound_reading_an_enclosing_binder ... ok
+test egraph::graph::variance_fact_tests::two_disjoint_members_leave_nothing ... ok
+test egraph::guided::tests::dedup_keeps_the_guide_from_ever_rescoring_a_resolved_candidate_key ... ok
+test egraph::guided::tests::quiescence_must_mean_an_unguided_sweep_finds_nothing_left ... ok
+test egraph::guided::tests::rule_embed_defaults_to_zero_and_is_keyed_by_rule_identity ... ok
+test egraph::guided::tests::the_application_budget_is_a_delta_from_the_current_count ... ok
+test egraph::insert::tests::a_ref_to_an_unadmitted_unit_is_refused - should panic ... ok
+test egraph::insert::tests::a_shift_by_anything_but_a_valid_literal_is_declined ... ok
+test egraph::insert::tests::a_shift_by_negative_zero_is_a_shift_by_the_count_zero ... ok
+test egraph::insert::tests::a_shift_inserts_its_count_as_a_parameter_not_a_class ... ok
+test egraph::insert::tests::a_shift_is_hash_consed_on_its_count ... ok
+test egraph::insert::tests::a_tuple_is_declined_by_every_vocabulary ... ok
+test egraph::insert::tests::a_unit_admitted_with_two_variances_is_refused - should panic ... ok
+test egraph::insert::tests::a_unit_is_admitted_with_one_variance ... ok
+test egraph::insert::tests::an_admitted_unit_is_a_leaf_varying_as_it_was_admitted ... ok
+test egraph::insert::tests::an_op_with_the_wrong_operand_count_is_declined_not_built ... ok
+test egraph::insert::tests::an_open_unit_is_refused - should panic ... ok
+test egraph::insert::tests::insert_reads_a_literal_bound_into_the_node ... ok
+test egraph::insert::tests::insert_refuses_a_mask_bound - should panic ... ok
+test egraph::insert::tests::only_the_runtime_vocabulary_holds_a_unit ... ok
+test egraph::extract::tests::the_arms_are_compared_on_the_price_not_on_their_claims ... ok
+test egraph::labeler::tests::chain_both_applications_load_bearing ... ok
+test egraph::labeler::tests::hand_derivable_load_bearing_vs_wasted ... ok
+test egraph::labeler::tests::strict_bound_agrees_on_single_hop_and_is_never_a_superset ... ok
+test egraph::graph::tests::over_budget_growth_cannot_assert_a_false_equality ... ok
+test egraph::node::tests::a_class_id_at_u32_max_round_trips ... ok
+test egraph::node::tests::a_class_id_past_u32_max_is_refused - should panic ... ok
+test egraph::node::tests::a_fold_node_holds_a_value_bound_after_its_body ... ok
+test egraph::node::tests::a_folds_body_is_reached_through_the_mutable_slice ... ok
+test egraph::node::tests::a_folds_variance_is_its_bodys_less_its_index_and_its_bounds ... ok
+test egraph::node::tests::a_leaf_kind_is_not_an_operation - should panic ... ok
+test egraph::node::tests::a_literal_folds_children_are_its_body ... ok
+test egraph::node::tests::a_shift_has_one_child_and_names_its_op ... ok
+test egraph::node::tests::a_shift_is_not_an_operation_over_operand_classes - should panic ... ok
+test egraph::node::tests::a_var_leaf_names_its_own_bit ... ok
+test egraph::node::tests::an_enode_is_measured_not_budgeted ... ok
+test egraph::node::tests::an_operation_applied_to_too_few_operands_is_refused - should panic ... ok
+test egraph::node::tests::an_operation_applied_to_too_many_operands_is_refused - should panic ... ok
+test egraph::node::tests::nodes_are_equal_exactly_when_op_and_operands_are ... ok
+test egraph::node::tests::operands_are_exactly_the_live_prefix ... ok
+test egraph::ops::tests::a_template_names_what_it_always_named ... ok
+test egraph::ops::tests::each_vocabulary_admits_what_it_always_admitted ... ok
+test egraph::ops::tests::every_admitted_operation_fits_an_inline_node ... ok
+test egraph::optimizer::tests::a_guided_or_masked_run_has_no_key ... ok
+test egraph::optimizer::tests::an_observer_needs_a_graph_that_keeps_a_journal - should panic ... ok
+test egraph::optimizer::tests::extracting_over_a_frozen_graph_refuses_a_reranker - should panic ... ok
+test egraph::optimizer::tests::the_saturation_key_covers_the_rules_and_the_budget ... ok
+test egraph::provenance::tests::application_ids_are_sequential ... ok
+test egraph::provenance::tests::derivation_ancestors_chain ... ok
+test egraph::provenance::tests::derivation_ancestors_single_hop ... ok
+test egraph::provenance::tests::format_trace_orders_by_step ... ok
+test egraph::provenance::tests::format_trace_unknown_rule_falls_back_to_index ... ok
+test egraph::provenance::tests::origin_roundtrip ... ok
+test egraph::rule_order::tests::numeric_first_is_a_reordering_of_the_same_62_rules ... ok
+test egraph::rule_order::tests::numeric_first_order_is_a_permutation ... ok
+test egraph::rule_order::tests::numeric_first_order_is_pinned ... ok
+test egraph::rule_order::tests::production_order_is_all_rules_verbatim ... ok
+test egraph::rule_order::tests::shuffled_orders_are_a_reordering_and_differ_by_seed ... ok
+test egraph::rules::tests::every_production_rule_has_a_distinct_id ... ok
+test egraph::rules::tests::family_names_alias_but_labels_do_not ... ok
+test egraph::rules::tests::fingerprint_covers_order ... ok
+test egraph::rules::tests::fingerprint_is_reproducible ... ok
+test egraph::rules::tests::label_round_trips_to_id ... ok
+test egraph::saturate::tests::saturate_with_budget_exhausted ... ok
+test egraph::saturate::tests::saturate_with_budget_simple ... ok
+test egraph::saturate::tests::saturation_result_growth_ratio ... ok
+test egraph::shift::tests::a_direction_names_its_op_and_only_shifts_have_one ... ok
+test egraph::template::tests::compose_matches_a_deeper_pattern_with_a_repeated_metavariable ... ok
+test egraph::template::tests::dag_builder_template_rewrite ... ok
+test egraph::template::tests::matches_and_instantiates_a_two_level_pattern ... ok
+test extraction_gap::extraction_gap_measurement ... ignored, offline measurement: PIXELFLOW_EXTRACTION_GAP_ARENA_DIR=<dir of .arena dumps> cargo test -p pixelflow-search --release --lib -- --ignored extraction_gap_measurement
+test extraction_gap::extraction_objective_measurement ... ignored, offline measurement: PIXELFLOW_EXTRACTION_GAP_ARENA_DIR=<dir of .arena dumps> cargo test -p pixelflow-search --release --lib -- --ignored extraction_objective_measurement
+test egraph::labeler::tests::the_three_bounds_are_ordered_and_all_well_formed ... ok
+test extraction_gap::self_check::exact_never_loses_to_greedy ... ok
+test extraction_gap::self_check::tree_optimal_matches_the_dp_on_an_acyclic_graph ... ok
+test math::algebra::platform_specific_fold_tests::a_nan_is_not_a_mask_to_the_folder ... ok
+test math::algebra::platform_specific_fold_tests::a_shift_folds_by_the_count_its_node_carries ... ok
+test math::algebra::platform_specific_fold_tests::comparison_folds_produce_masks ... ok
+test math::algebra::platform_specific_fold_tests::declines_platform_specific_nan_min_max ... ok
+test math::algebra::platform_specific_fold_tests::declines_platform_specific_rounding_ties ... ok
+test math::algebra::platform_specific_fold_tests::declines_round_folds_that_lose_the_sign_of_zero ... ok
+test math::algebra::platform_specific_fold_tests::declines_signed_zero_min_max ... ok
+test math::algebra::platform_specific_fold_tests::every_operation_fits_the_folders_argument_buffer ... ok
+test math::algebra::platform_specific_fold_tests::folds_muladd_unconditionally_with_one_rounding ... ok
+test math::algebra::platform_specific_fold_tests::never_folds_reciprocal_estimates ... ok
+test math::inflate::tests::append_and_interleave_fingerprint_differently_for_the_same_content ... ok
+test math::inflate::tests::base_only_orders_fingerprint_differently_from_each_other_and_from_production ... ok
+test math::inflate::tests::base_order_specs_parse_and_round_trip_through_build_rule_set ... ok
+test math::inflate::tests::composition_pool_is_nonempty_and_deterministic ... ok
+test egraph::fold_rules::tests::the_runtime_rules_saturate_a_triangular_fold_with_a_varying_spelling ... ok
+test math::inflate::tests::duplicate_grid_never_pads ... ok
+test math::inflate::tests::duplicate_names_itself_after_its_inner_rule_and_matches_identically ... ok
+test math::inflate::tests::fingerprint_is_stable_and_order_sensitive ... ok
+test math::inflate::tests::new_rule_set_never_shuffles_base_at_the_grid_point_content ... ok
+test math::inflate::tests::new_rules_grid_matches_experimental_rules_len ... ok
+test math::inflate::tests::composition_rule_set_grid_never_pads ... ok
+test math::inflate::tests::order_matched_base_rejects_a_total_below_the_base_count - should panic ... ok
+test math::inflate::tests::parse_accepts_the_documented_forms ... ok
+test math::inflate::tests::parse_defaults_to_interleave_and_accepts_append_and_explicit_seed ... ok
+test math::inflate::tests::shuffled_base_permutes_without_changing_membership ... ok
+test math::inflate::tests::static_reorder_numeric_first_is_pinned ... ok
+test math::inflate::tests::the_62_rule_point_is_never_reordered ... ok
+test math::inflate::tests::order_matched_base_is_the_interleaved_subsequence_and_mode_independent ... ok
+test math::inflate::tests::v3_base_only_orders_panic_rather_than_silently_no_op_when_applied_to_an_inflated_set - should panic ... ok
+test math::inflate::tests::v2_grid_fingerprints_are_pinned ... ok
+test math::round2_rules::tests::experimental_rules_count_and_names_are_unique ... ok
+test math::round2_rules::tests::experimental_rules_not_in_all_rules ... ok
+test math::round2_rules::tests::experimental_rules_saturate_without_panicking ... ok
+test math::tests::all_rules_count ... ok
+test math::tests::associativity_templates ... ok
+test nnue::factored::tests::latency_prior_init_seeds_dimension_zero_from_the_static_table ... ok
+test nnue::factored::tests::pe_slot_clamps_into_the_table ... ok
+test nnue::factored::tests::trace_binds_sibling_slots_to_distinct_pe_rows ... ok
+test nnue::factored::tests::trace_records_one_reload_edge_per_extra_reference_to_a_shared_node ... ok
+test nnue::factored::tests::variance_histogram_classifies_a_pure_constant_arena_as_all_const ... ok
+test nnue::factored::tests::variance_histogram_splits_pixel_and_scanline_nodes_correctly ... ok
+test nnue::guide::accumulator::tests::add_2hop_edge_should_write_the_exact_triple_product_into_the_2hop_section ... ok
+test nnue::guide::accumulator::tests::add_2hop_edge_then_remove_2hop_edge_should_return_to_the_previous_state ... ok
+test nnue::guide::accumulator::tests::add_edge_at_depth_should_write_the_exact_marginal_and_binding_values ... ok
+test nnue::guide::accumulator::tests::add_edge_at_depth_then_remove_edge_at_depth_should_return_to_the_previous_state ... ok
+test nnue::guide::accumulator::tests::add_leaf_should_increment_node_count_by_exactly_one ... ok
+test nnue::guide::accumulator::tests::add_op_node_at_depth_should_increment_node_count_once_even_with_zero_children ... ok
+test nnue::guide::accumulator::tests::add_op_node_at_depth_should_increment_node_count_once_regardless_of_child_count ... ok
+test nnue::guide::accumulator::tests::add_op_node_should_match_add_op_node_at_depth_one ... ok
+test nnue::guide::accumulator::tests::normalize_in_place_should_leave_a_section_below_the_guard_threshold_untouched ... ok
+test nnue::guide::accumulator::tests::normalize_in_place_should_match_normalized ... ok
+test nnue::guide::accumulator::tests::normalize_in_place_should_normalize_a_section_whose_norm_is_exactly_the_guard_threshold ... ok
+test nnue::guide::accumulator::tests::normalize_in_place_should_normalize_the_2hop_section_when_populated ... ok
+test nnue::guide::accumulator::tests::normalized_should_be_idempotent ... ok
+test nnue::guide::accumulator::tests::normalized_should_be_invariant_to_input_scale ... ok
+test nnue::guide::accumulator::tests::normalized_should_give_each_section_unit_norm ... ok
+test nnue::guide::accumulator::tests::normalized_should_leave_an_all_zero_accumulator_untouched ... ok
+test nnue::guide::accumulator::tests::normalized_should_preserve_the_scalar_fields ... ok
+test nnue::guide::accumulator::tests::remove_2hop_edge_should_subtract_the_exact_triple_product ... ok
+test nnue::guide::accumulator::tests::remove_edge_at_depth_should_subtract_the_exact_marginal_and_binding_values ... ok
+test nnue::guide::accumulator::tests::remove_edge_should_match_remove_edge_at_depth_one ... ok
+test nnue::guide::accumulator::tests::remove_leaf_should_decrement_node_count_by_exactly_one_when_nonzero ... ok
+test nnue::guide::accumulator::tests::remove_leaf_should_saturate_at_zero ... ok
+test nnue::guide::accumulator::tests::remove_op_node_at_depth_should_decrement_node_count_by_exactly_one ... ok
+test nnue::guide::accumulator::tests::remove_op_node_should_match_remove_op_node_at_depth_one_and_return_to_zero ... ok
+test nnue::guide::accumulator::tests::reset_should_zero_values_and_counts_but_preserve_budgets ... ok
+test nnue::guide::bilinear::tests::a_trained_bilinear_should_be_able_to_reorder_two_rules_between_two_contexts ... ok
+test nnue::guide::bilinear::tests::a_trained_checkpoint_should_round_trip_bit_exactly_through_the_deployed_guide ... ok
+test nnue::guide::bilinear::tests::forward_should_refuse_a_candidate_whose_rule_embed_it_did_not_produce ... ok
+test nnue::guide::bilinear::tests::new_should_refuse_a_wrong_length_parameter_vector ... ok
+test nnue::guide::bilinear::tests::new_should_refuse_weights_from_a_different_rule_vocabulary ... ok
+test nnue::guide::bilinear::tests::the_rule_encoder_should_separate_every_rule_that_has_a_template ... ok
+test nnue::guide::bilinear::tests::the_rule_encoding_rank_should_be_reported_and_near_full ... ok
+test nnue::guide::bilinear::tests::training_should_separate_a_rule_the_loss_pushes_up_from_one_it_pushes_down ... ok
+test nnue::guide::diversity::tests::different_candidates_should_usually_disagree_under_the_same_seed ... ok
+test nnue::guide::diversity::tests::different_seeds_should_usually_disagree ... ok
+test nnue::guide::diversity::tests::empty_batch_scores_to_empty ... ok
+test nnue::guide::diversity::tests::same_seed_and_candidate_always_scores_identically ... ok
+test nnue::guide::diversity::tests::scores_are_finite_and_within_unit_range ... ok
+test nnue::guide::linear::tests::a_same_length_reorder_is_refused ... ok
+test nnue::guide::linear::tests::both_arms_are_saturation_guides ... ok
+test nnue::guide::linear::tests::per_rule_rate_guide_ignores_everything_but_the_rule ... ok
+test nnue::guide::linear::tests::scores_a_hand_computed_logit ... ok
+test nnue::guide::linear::tests::weights_missing_a_rule_are_refused_before_any_candidate_is_scored ... ok
+test nnue::guide::scoring::backward::tests::accumulate_should_sum_over_samples_rather_than_overwrite ... ok
+test nnue::guide::scoring::backward::tests::activations_score_should_equal_score_candidate ... ok
+test nnue::guide::scoring::backward::tests::apply_sgd_should_decay_every_weight_not_only_the_ones_a_sample_touched ... ok
+test nnue::guide::scoring::backward::tests::apply_sgd_should_move_the_score_downhill_for_a_positive_loss_gradient ... ok
+test nnue::guide::scoring::backward::tests::backward_should_scale_linearly_with_the_loss_gradient ... ok
+test nnue::guide::scoring::backward::tests::clear_should_zero_every_accumulated_tensor ... ok
+test nnue::guide::scoring::backward::tests::every_relu_on_the_path_should_be_open_at_the_fixture_point ... ok
+test nnue::guide::scoring::backward::tests::every_trained_parameter_should_be_reachable_from_the_flat_vector ... ok
+test nnue::guide::scoring::backward::tests::numerical_gradient_check_candidate_projection_and_trunk ... ok
+test nnue::guide::scoring::backward::tests::numerical_gradient_check_candidate_tower_including_every_scalar_row ... ok
+test nnue::guide::scoring::backward::tests::numerical_gradient_check_interaction_matrix ... ok
+test nnue::guide::scoring::backward::tests::numerical_gradient_check_mask_bias_proj ... ok
+test nnue::guide::scoring::backward::tests::numerical_gradient_check_mask_mlp ... ok
+test nnue::guide::scoring::backward::tests::numerical_gradient_check_rule_projection ... ok
+test nnue::guide::scoring::backward::tests::the_step_size_must_keep_the_roundoff_floor_under_the_tolerance ... ok
+test nnue::guide::scoring::backward::tests::trained_parameters_should_round_trip_through_the_flat_vector ... ok
+test nnue::guide::scoring::representation::additive_guide_budget_term_should_shift_every_score_equally_and_reorder_nothing ... ok
+test nnue::guide::scoring::representation::additive_guide_should_have_an_identically_zero_rule_by_context_interaction ... ok
+test nnue::guide::scoring::representation::additive_guide_should_induce_the_same_rule_order_in_every_context ... ok
+test nnue::guide::scoring::representation::bilinear_head_should_reorder_two_rules_between_two_contexts ... ok
+test nnue::guide::scoring::representation::both_model_classes_score_the_same_candidate_sets_through_one_trait ... ok
+test nnue::guide::scoring::tests::bilinear_score_should_match_manual_computation_for_all_ones_vectors ... ok
+test nnue::guide::scoring::tests::bilinear_score_should_respect_the_interaction_orientation_and_the_bias_lane ... ok
+test nnue::guide::scoring::tests::bilinear_score_should_respond_to_bias_addition_and_rule_embed_scaling ... ok
+test nnue::guide::scoring::tests::compute_candidate_embed_should_index_the_projection_by_both_hidden_lane_and_column ... ok
+test nnue::guide::scoring::tests::compute_graph_embed_should_index_the_projection_by_both_hidden_lane_and_column ... ok
+test nnue::guide::scoring::tests::compute_graph_embed_should_match_a_hand_computed_value_for_constant_inputs ... ok
+test nnue::guide::scoring::tests::compute_mask_features_should_index_both_mlp_layers_by_lane_and_column ... ok
+test nnue::guide::scoring::tests::compute_mask_features_should_match_a_hand_computed_value_for_constant_inputs ... ok
+test nnue::guide::scoring::tests::encode_rule_should_be_deterministic_and_order_sensitive ... ok
+test nnue::guide::scoring::tests::encode_rule_should_place_the_elementwise_difference_at_the_third_concat_block ... ok
+test nnue::guide::scoring::tests::encode_rule_should_place_the_elementwise_product_at_the_fourth_concat_block ... ok
+test nnue::guide::scoring::tests::encode_rule_should_place_the_lhs_embedding_at_the_first_concat_block ... ok
+test nnue::guide::scoring::tests::encode_rule_should_place_the_rhs_embedding_at_the_second_concat_block ... ok
+test nnue::guide::scoring::tests::encode_rule_should_start_the_projection_from_the_rule_bias ... ok
+test nnue::guide::scoring::tests::forward_candidate_should_be_finite_for_an_empty_neighborhood ... ok
+test nnue::guide::scoring::tests::forward_candidate_should_index_the_op_weight_matrix_by_both_lane_and_column ... ok
+test nnue::guide::scoring::tests::forward_candidate_should_scale_by_one_over_sqrt_of_neighborhood_size ... ok
+test nnue::guide::scoring::tests::forward_candidate_should_use_a_scale_of_one_when_the_neighborhood_is_empty ... ok
+test nnue::guide::scoring::tests::forward_graph_should_clamp_a_negative_preactivation_before_the_trunk ... ok
+test nnue::guide::scoring::tests::forward_graph_should_index_the_weight_matrix_by_both_lane_and_hidden_column ... ok
+test nnue::guide::scoring::tests::forward_graph_should_match_a_hand_computed_value_when_node_count_is_positive ... ok
+test nnue::guide::scoring::tests::forward_graph_should_produce_finite_hidden_embed_and_scores ... ok
+test nnue::guide::scoring::tests::forward_graph_should_use_a_scale_of_one_when_node_count_is_zero ... ok
+test nnue::guide::scoring::tests::graph_input_dim_should_equal_graph_acc_dim_plus_the_scalar_feature_count ... ok
+test nnue::guide::scoring::tests::mask_score_all_rules_graph_should_compose_the_graph_tower_projection_and_scorer ... ok
+test nnue::guide::scoring::tests::randomize_should_be_deterministic_and_finite_with_a_near_identity_diagonal ... ok
+test nnue::guide::scoring::tests::randomize_should_leave_the_trunk_near_identity ... ok
+test nnue::guide::scoring::tests::randomize_should_match_a_hand_recomputed_he_initialization_reference ... ok
+test nnue::guide::scoring::tests::score_candidate_should_compose_forward_candidate_embed_and_bilinear_score ... ok
+test nnue::guide::scoring::tests::score_candidate_should_distinguish_different_budget_fractions ... ok
+test nnue::guide::tests::candidate_summary_new_should_round_trip_features_and_rule_embed ... ok
+test nnue::guide::tests::guide_score_candidates_should_distinguish_different_neighborhoods ... ok
+test nnue::guide::tests::guide_score_candidates_should_return_empty_for_empty_candidates ... ok
+test nnue::guide::tests::guide_score_candidates_should_return_one_finite_score_per_candidate ... ok
+test nnue::guide::tests::shift1_should_equal_shift_by_one ... ok
+test nnue::guide::tests::shift_by_should_match_shift_by_one_at_k_plus_one ... ok
+test nnue::guide::tests::shift_by_should_not_overflow_near_usize_max_and_should_match_its_residue_mod_k ... ok
+test nnue::guide::tests::shift_by_should_return_the_identity_for_a_zero_amount ... ok
+test nnue::guide::tests::shift_by_should_rotate_almost_all_the_way_around_for_k_minus_one ... ok
+test nnue::guide::tests::shift_by_should_rotate_every_element_left_by_one_for_an_amount_of_one ... ok
+test nnue::guide::tests::shift_by_should_wrap_back_to_the_identity_at_k ... ok
+test nnue::tests::bwd_generator_has_fused_ops ... ok
+test nnue::tests::bwd_generator_produces_valid_pairs ... ok
+test egraph::labeler::tests::aggregate_counts_reconcile ... ok
+test runtime::congruence_gap_probe::missing_congruence_measurement ... ignored, offline measurement: PIXELFLOW_CONGRUENCE_ARENA_DIR=<dir of .arena dumps> cargo test -p pixelflow-search --release --lib -- --ignored missing_congruence_measurement
+test runtime::congruence_gap_probe::repair_writeback_blast_radius ... ignored, offline measurement: PIXELFLOW_CONGRUENCE_ARENA_DIR=<dir of .arena dumps> PIXELFLOW_REPAIR_WRITEBACK_OUT=<csv> cargo test -p pixelflow-search --release --lib -- --ignored repair_writeback_blast_radius --nocapture
+test runtime::congruence_gap_probe::saturation_strands_no_enodes ... ignored, corpus invariant, needs the arena dumps: PIXELFLOW_CONGRUENCE_ARENA_DIR=<dir of .arena dumps> cargo test -p pixelflow-search --release --lib -- --ignored saturation_strands_no_enodes
+test runtime::production_equivalence::production_extraction_digest ... ignored, equivalence check: PIXELFLOW_EQUIV_DIR=<dumps> PIXELFLOW_EQUIV_OUT=<tsv> cargo test -p pixelflow-search --release -- --ignored production_extraction_digest --nocapture
+test runtime::production_telemetry::production_saturation_telemetry ... ignored, measurement: PIXELFLOW_TELEMETRY_DIR=<dumps> PIXELFLOW_TELEMETRY_OUT=<tsv> cargo test -p pixelflow-search --release -- --ignored production_saturation_telemetry --nocapture --test-threads=1
+{"tier":"runtime","inserted_classes":3,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":2,"classes_at_stop":4,"application_count":3,"union_count":1,"extracted_latency_prior_cost":4,"extraction_objective":"tree_cheaper","live_classes":3,"shared_pass_bytes":16,"wall_clock_us":268,"kernel_label":null}
+{"tier":"runtime","declined":"Op(Seq)"}
+test nnue::tests::bwd_generator_should_apply_rewrites_from_templates ... ok
+test runtime::tests::a_differentiated_reference_is_linked_before_insertion ... ok
+{"tier":"runtime","inserted_classes":35,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4260,"union_count":1690,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":308,"shared_pass_bytes":7732,"wall_clock_us":48305,"kernel_label":null}
+{"tier":"runtime","inserted_classes":1,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":1,"classes_at_stop":1,"application_count":0,"union_count":0,"extracted_latency_prior_cost":0,"extraction_objective":"tree_cheaper","live_classes":1,"shared_pass_bytes":4,"wall_clock_us":111,"kernel_label":null}
+test runtime::tests::a_lone_named_body_optimizes_to_the_body_s_own_term ... ok
+{"tier":"runtime","inserted_classes":9,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":3,"classes_at_stop":19,"application_count":30,"union_count":8,"extracted_latency_prior_cost":29,"extraction_objective":"tree_cheaper","live_classes":11,"shared_pass_bytes":68,"wall_clock_us":577,"kernel_label":null}
+test runtime::tests::a_second_composition_of_one_structure_keeps_its_own_names ... ok
+{"tier":"runtime","declined":"ShiftCount(Left)"}
+{"tier":"runtime","declined":"ShiftCount(Left)"}
+{"tier":"runtime","declined":"ShiftCount(Left)"}
+{"tier":"runtime","declined":"ShiftCount(Left)"}
+{"tier":"runtime","declined":"ShiftCount(Left)"}
+{"tier":"runtime","declined":"ShiftCount(Left)"}
+{"tier":"runtime","declined":"ShiftCount(Left)"}
+{"tier":"runtime","declined":"ShiftCount(Left)"}
+{"tier":"runtime","inserted_classes":2,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":1,"classes_at_stop":2,"application_count":0,"union_count":0,"extracted_latency_prior_cost":1,"extraction_objective":"tree_cheaper","live_classes":2,"shared_pass_bytes":12,"wall_clock_us":113,"kernel_label":null}
+{"tier":"runtime","declined":"ShiftCount(Right)"}
+{"tier":"runtime","declined":"ShiftCount(Right)"}
+{"tier":"runtime","declined":"ShiftCount(Right)"}
+{"tier":"runtime","declined":"ShiftCount(Right)"}
+{"tier":"runtime","declined":"ShiftCount(Right)"}
+{"tier":"runtime","declined":"ShiftCount(Right)"}
+{"tier":"runtime","declined":"ShiftCount(Right)"}
+{"tier":"runtime","declined":"ShiftCount(Right)"}
+{"tier":"runtime","inserted_classes":2,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":1,"classes_at_stop":2,"application_count":0,"union_count":0,"extracted_latency_prior_cost":1,"extraction_objective":"tree_cheaper","live_classes":2,"shared_pass_bytes":12,"wall_clock_us":104,"kernel_label":null}
+test runtime::tests::a_shift_by_no_literal_count_is_declined_and_a_valid_one_optimizes ... ok
+{"tier":"runtime","inserted_classes":5,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":2,"classes_at_stop":7,"application_count":7,"union_count":2,"extracted_latency_prior_cost":20,"extraction_objective":"tree_cheaper","live_classes":5,"shared_pass_bytes":32,"wall_clock_us":271,"kernel_label":null}
+{"tier":"runtime","inserted_classes":5,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"iteration_ceiling","iterations":20,"classes_at_stop":496,"application_count":6876,"union_count":454,"extracted_latency_prior_cost":0,"extraction_objective":"tree_cheaper","live_classes":42,"shared_pass_bytes":320,"wall_clock_us":69283,"kernel_label":null}
+{"tier":"runtime","inserted_classes":4,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"class_cap","iterations":4,"classes_at_stop":500,"application_count":801,"union_count":380,"extracted_latency_prior_cost":5,"extraction_objective":"tree_cheaper","live_classes":120,"shared_pass_bytes":1728,"wall_clock_us":8131,"kernel_label":null}
+test runtime::tests::a_declining_unit_does_not_cost_the_others_their_optimization ... ok
+test runtime::tests::a_unit_is_hoisted_out_of_a_fold_it_does_not_read ... ok
+test runtime::tests::a_unit_that_reads_an_escaped_fold_index_is_refused - should panic ... ok
+{"tier":"runtime","inserted_classes":7,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":2,"classes_at_stop":8,"application_count":3,"union_count":1,"extracted_latency_prior_cost":24,"extraction_objective":"tree_cheaper","live_classes":7,"shared_pass_bytes":40,"wall_clock_us":233,"kernel_label":null}
+test runtime::tests::optimization_preserves_buffer_slot_order ... ok
+{"tier":"runtime","inserted_classes":18,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"quiesced","iterations":1,"classes_at_stop":18,"application_count":0,"union_count":0,"extracted_latency_prior_cost":28,"extraction_objective":"tree_cheaper","live_classes":18,"shared_pass_bytes":104,"wall_clock_us":285,"kernel_label":null}
+{"tier":"runtime","inserted_classes":37,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4175,"union_count":1674,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":324,"shared_pass_bytes":8912,"wall_clock_us":59277,"kernel_label":null}
+{"tier":"runtime","inserted_classes":37,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4175,"union_count":1674,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":324,"shared_pass_bytes":8912,"wall_clock_us":46478,"kernel_label":null}
+{"tier":"runtime","inserted_classes":36,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4248,"union_count":1682,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":316,"shared_pass_bytes":7964,"wall_clock_us":60906,"kernel_label":null}
+{"tier":"runtime","inserted_classes":78,"max_iterations":100,"max_classes":5000,"max_applications":200000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":5000,"application_count":10256,"union_count":4222,"extracted_latency_prior_cost":39,"extraction_objective":"tree_cheaper","live_classes":776,"shared_pass_bytes":24712,"wall_clock_us":207799,"kernel_label":null}
+test runtime::tests::repeated_bake_of_the_same_kernel_hits_the_cache ... ok
+test tier::tests::only_a_runtime_record_may_lead_with_a_brace ... ok
+{"tier":"runtime","inserted_classes":37,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4175,"union_count":1674,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":324,"shared_pass_bytes":8912,"wall_clock_us":47963,"kernel_label":null}
+{"tier":"runtime","inserted_classes":37,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4175,"union_count":1674,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":324,"shared_pass_bytes":8912,"wall_clock_us":44526,"kernel_label":null}
+{"tier":"runtime","inserted_classes":18,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"quiesced","iterations":1,"classes_at_stop":18,"application_count":0,"union_count":0,"extracted_latency_prior_cost":28,"extraction_objective":"tree_cheaper","live_classes":18,"shared_pass_bytes":104,"wall_clock_us":308,"kernel_label":null}
+{"tier":"runtime","inserted_classes":37,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4175,"union_count":1674,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":324,"shared_pass_bytes":8912,"wall_clock_us":45040,"kernel_label":null}
+{"tier":"runtime","inserted_classes":37,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4175,"union_count":1674,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":324,"shared_pass_bytes":8912,"wall_clock_us":45173,"kernel_label":null}
+{"tier":"runtime","inserted_classes":36,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4248,"union_count":1682,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":316,"shared_pass_bytes":7964,"wall_clock_us":114206,"kernel_label":null}
+{"tier":"runtime","inserted_classes":37,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4175,"union_count":1674,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":324,"shared_pass_bytes":8912,"wall_clock_us":112645,"kernel_label":null}
+{"tier":"runtime","inserted_classes":37,"max_iterations":50,"max_classes":2000,"max_applications":80000,"stop_reason":"class_cap","iterations":3,"classes_at_stop":2000,"application_count":4175,"union_count":1674,"extracted_latency_prior_cost":27,"extraction_objective":"shared","live_classes":324,"shared_pass_bytes":8912,"wall_clock_us":121162,"kernel_label":null}
+test runtime::tests::the_worker_count_does_not_reach_the_program ... ok
+test extraction_gap::self_check::branch_and_bound_agrees_with_exhaustive_enumeration ... ok
+test math::pict_rewrite_tests::pict_rewrite_rules_preserve_semantics ... ok
+
+test result: ok. 397 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 43.88s
+
+     Running tests/fold_exactness.rs (target.noindex/debug/deps/fold_exactness-868b0c61dfea7455)
+
+running 5 tests
+test a_mask_and_the_nan_sharing_its_lane_are_two_classes ... ok
+test refusal_survives_rebuild_congruence ... ok
+{"tier":"runtime","inserted_classes":3,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":2,"classes_at_stop":6,"application_count":12,"union_count":3,"extracted_latency_prior_cost":0,"extraction_objective":"tree_cheaper","live_classes":3,"shared_pass_bytes":12,"wall_clock_us":248,"kernel_label":null}
+{"tier":"runtime","inserted_classes":3,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":2,"classes_at_stop":5,"application_count":6,"union_count":2,"extracted_latency_prior_cost":0,"extraction_objective":"tree_cheaper","live_classes":3,"shared_pass_bytes":12,"wall_clock_us":518,"kernel_label":null}
+test exact_and_ordinary_folds_still_fold ... ok
+{"tier":"runtime","inserted_classes":4,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"class_cap","iterations":7,"classes_at_stop":500,"application_count":2920,"union_count":433,"extracted_latency_prior_cost":0,"extraction_objective":"tree_cheaper","live_classes":53,"shared_pass_bytes":256,"wall_clock_us":17737,"kernel_label":null}
+{"tier":"runtime","inserted_classes":6,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"class_cap","iterations":6,"classes_at_stop":500,"application_count":2713,"union_count":437,"extracted_latency_prior_cost":0,"extraction_objective":"tree_cheaper","live_classes":47,"shared_pass_bytes":188,"wall_clock_us":15365,"kernel_label":null}
+test cancellation_extracts_one_consistent_constant ... ok
+test refused_union_is_journaled ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/growth_prediction_exactness.rs (target.noindex/debug/deps/growth_prediction_exactness-69a147fb0098ce94)
+
+running 1 test
+test predicted_growth_matches_measured_growth_on_real_shaders ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/growth_telemetry_determinism.rs (target.noindex/debug/deps/growth_telemetry_determinism-d41afa8b14b129d6)
+
+running 2 tests
+test growth_telemetry_does_not_move_saturation_under_a_tight_budget ... ok
+test growth_telemetry_does_not_move_saturation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/ir_insert.rs (target.noindex/debug/deps/ir_insert-4686d6f7b27ce196)
+
+running 13 tests
+test a_param_is_held_by_the_macro_vocabulary_and_declined_by_the_runtime_one ... ok
+test a_reference_is_declined_by_every_vocabulary ... ok
+test a_write_and_a_seq_are_declined_by_every_vocabulary ... ok
+test embed_declares_one_slot_per_buffer_identity ... ok
+test gather_is_holdable_everywhere_and_nameable_nowhere ... ok
+test insertion_ignores_unreachable_nodes ... ok
+test project_then_embed_round_trips ... ok
+test templates_vocabulary_refuses_the_runtime_only_ops ... ok
+test projection_reports_arity ... ok
+test unrepresentable_input_declines_rather_than_panicking ... ok
+test uniform_inserts_and_hash_conses_by_identity ... ok
+test a_pushed_arena_inserts_to_as_many_classes_as_it_reaches ... {"tier":"runtime","inserted_classes":1,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":1,"classes_at_stop":1,"application_count":0,"union_count":0,"extracted_latency_prior_cost":0,"extraction_objective":"tree_cheaper","live_classes":1,"shared_pass_bytes":4,"wall_clock_us":160,"kernel_label":null}
+ok
+{"tier":"runtime","inserted_classes":5,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"iteration_ceiling","iterations":20,"classes_at_stop":496,"application_count":6876,"union_count":454,"extracted_latency_prior_cost":0,"extraction_objective":"tree_cheaper","live_classes":42,"shared_pass_bytes":320,"wall_clock_us":65675,"kernel_label":null}
+test the_runtime_pipeline_optimizes_a_named_body ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/latency_prior_regression.rs (target.noindex/debug/deps/latency_prior_regression-e6ae2fd4fdd4230c)
+
+running 2 tests
+{"tier":"runtime","inserted_classes":3,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":2,"classes_at_stop":4,"application_count":2,"union_count":1,"extracted_latency_prior_cost":21,"extraction_objective":"tree_cheaper","live_classes":3,"shared_pass_bytes":16,"wall_clock_us":240,"kernel_label":null}
+{"tier":"runtime","inserted_classes":3,"max_iterations":20,"max_classes":500,"max_applications":20000,"stop_reason":"quiesced","iterations":2,"classes_at_stop":4,"application_count":2,"union_count":1,"extracted_latency_prior_cost":15,"extraction_objective":"tree_cheaper","live_classes":3,"shared_pass_bytes":16,"wall_clock_us":300,"kernel_label":null}
+test pow_neg_half_does_not_survive_as_pow ... ok
+test pow_half_extracts_to_hardware_sqrt ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/production_budget_determinism.rs (target.noindex/debug/deps/production_budget_determinism-2b656fcb19322a6d)
+
+running 7 tests
+test class_and_iteration_caps_are_pinned ... ok
+test production_limits_key_on_the_inserted_class_count ... ok
+test the_application_budget_exceeds_every_calibrated_deterministic_stop ... ok
+test the_classical_cap_grows_with_the_inserted_input ... ok
+test a_size_keyed_budget_refuses_a_graph_already_rewritten - should panic ... ok
+test the_tier_is_read_off_the_graph ... ok
+test saturation_is_deterministic_under_cpu_contention ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
+
+     Running tests/root_shapes.rs (target.noindex/debug/deps/root_shapes-8b5203a332013a12)
+
+running 1 test
+test no_rule_matches_a_node_outside_its_root_shapes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.32s
+
+     Running tests/saturation_ceiling_env.rs (target.noindex/debug/deps/saturation_ceiling_env-307c2052f60d966c)
+
+running 2 tests
+test an_unparsable_override_panics_rather_than_picking_a_default ... ok
+test the_override_changes_only_whether_run_panics_never_what_it_computes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+
+     Running tests/saturation_stop.rs (target.noindex/debug/deps/saturation_stop-cd9aa6b7a32d70e6)
+
+running 7 tests
+test expired_deadline_is_timeout ... ok
+test class_cap_reports_class_cap_not_quiesced ... ok
+test full_sweep_with_zero_unions_is_quiesced ... ok
+test productive_but_class_capped_final_sweep_is_class_cap ... ok
+test zero_iterations_is_iteration_ceiling ... ok
+test deadline_elapsing_inside_a_rule_apply_is_timeout ... ok
+test busy_expression_under_production_cap_is_class_capped ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+
+   Doc-tests pixelflow_search
+
+running 6 tests
+test pixelflow-search/src/egraph/cost.rs - egraph::cost::CostFunction (line 196) ... ignored
+test pixelflow-search/src/egraph/rewrite.rs - egraph::rewrite::Rewrite::lhs_template (line 343) ... ignored
+test pixelflow-search/src/egraph/rewrite.rs - egraph::rewrite::Rewrite::rhs_template (line 358) ... ignored
+test pixelflow-search/src/egraph/saturate.rs - egraph::saturate (line 9) ... ignored
+test pixelflow-search/src/egraph/saturate.rs - egraph::saturate::SaturationConfig::compatibility (line 329) ... ignored
+test pixelflow-search/src/egraph/saturate.rs - egraph::saturate::saturate_with_budget (line 108) ... ignored
+
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test pixelflow-search/src/egraph/optimizer.rs - egraph::optimizer::Optimizer (line 328) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.18s; merged doctests compilation took 0.18s
+EXIT 0

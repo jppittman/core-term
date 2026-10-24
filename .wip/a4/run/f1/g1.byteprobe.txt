@@ -1,0 +1,9 @@
+/dev/vda        252G   36G  3.7G  91% /
+avx512: wrote /home/user/pixelflow/.wip/gates/out/byteprobe.a4-f1.avx512.txt (127 lines, sha256 11636fa51e4ea172...)
+== avx512
+IDENTICAL to byteprobe.base.avx512.txt
+/dev/vda        252G   36G  3.7G  91% /
+avx2: wrote /home/user/pixelflow/.wip/gates/out/byteprobe.a4-f1.avx2.txt (127 lines, sha256 4b65f46998718aa1...)
+== avx2
+IDENTICAL to byteprobe.base.avx2.txt
+EXIT 0
