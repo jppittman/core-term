@@ -557,7 +557,7 @@ pub struct Staged {
     /// How many variables have been named: every one is fresh.
     named: u64,
     /// The folds open, innermost last: the variable holding each open fold,
-    /// and the `FoldTerms` it closes into.
+    /// and the code building the `FoldTerms` it is closed with.
     open: Vec<(Ident, TokenStream)>,
 }
 

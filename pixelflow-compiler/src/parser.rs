@@ -94,12 +94,12 @@
 //! (plan §1.5) denotes ⊕ of its body over `i ∈ [a, b)`, and its monoid's
 //! identity when the range is empty; the syntax never unrolls it.
 //!
-//! Binding times (plan §1.4). An `f32` parameter is a **uniform**, a record
-//! is one per field, and the host function's arguments are their values for
+//! Binding times (plan §1.4). An entry's `f32` parameter is a **uniform**, a
+//! record one per field, and the host function's arguments are their values for
 //! that call — never constants folded in; a kernel-typed parameter is a
 //! kernel, not a uniform. A record is written by name: a parameter, a `let`
 //! alias of one (`let q = p;`), an argument passed on, or the base of a field
-//! read. A count is a literal or a `usize` const; no `fn` takes generics
+//! read. No `fn` takes generics: a count makes no program of its own
 //! (§1.2 of docs/language/2026-10-20-a-bound-is-a-value.md).
 //!
 //! The language has no collection types (plan §1.3, §1.6): no array, slice,
@@ -644,8 +644,7 @@ fn generic_refusal(param: &syn::GenericParam) -> String {
         syn::GenericParam::Const(_) => format!(
             "a `const` generic in a `kernel!` block\n\
              \n\
-             note: a count does not make a program of its own: an entry is one program, \
-             whatever its counts (§1.2 of {BOUND_PLAN})\n\
+             note: a count does not make a program of its own (§1.2 of {BOUND_PLAN})\n\
              help: write the count as a literal, or as a `usize` const of the block: \
              `const N: usize = 4;`"
         ),
@@ -669,13 +668,13 @@ fn generic_arguments_refusal(arguments: &syn::PathArguments) -> syn::Error {
              \n\
              note: nothing in a kernel is generic, so no `fn` takes generic arguments \
              (§1.3 of {PLAN})\n\
-             help: a count is a literal, or a `usize` const of the block"
+             help: write a count with literals and the block's `usize` consts"
         ),
     )
 }
 
 /// The type arguments a method names, if it names any: `::<>` names none, as
-/// it names none on a path, so it is the method without it.
+/// it names none on a name in a body, so it is the method without it.
 fn turbofish_of(call: &syn::ExprMethodCall) -> Option<&syn::AngleBracketedGenericArguments> {
     call.turbofish
         .as_ref()
@@ -2723,12 +2722,12 @@ mod tests {
     }
 
     /// No `fn` takes generics, and no name in a body takes generic arguments.
-    /// A `const` generic is refused by saying what a count is — a literal or a
-    /// `usize` const, an entry being one program whatever its counts — naming
-    /// the plan that made a bound a value; any other generic names what the
-    /// language's values are; generic arguments on a name, whatever they are
-    /// and whether the name is called or read, say that nothing in a kernel is
-    /// generic. Empty ones (`h::<>`) carry no arguments and read as the name.
+    /// A `const` generic is refused by saying that a count makes no program
+    /// of its own and how to write one, naming the plan that made a bound a
+    /// value; any other generic names what the language's values are; generic
+    /// arguments on a name, whatever they are and whether the name is called
+    /// or read, say that nothing in a kernel is generic. Empty ones (`h::<>`)
+    /// carry no arguments and read as the name.
     #[test]
     fn generics_are_refused_and_a_const_generic_says_what_a_count_is() {
         for input in [
@@ -2776,7 +2775,7 @@ mod tests {
                 err.contains("generic arguments in a `kernel!` block")
                     && err.contains("no `fn` takes generic arguments")
                     && err.contains("§1.3 of docs/language/2026-09-25-the-language-is-kernel.md")
-                    && err.contains("a count is a literal, or a `usize` const of the block"),
+                    && err.contains("write a count with literals and the block's `usize` consts"),
                 "got: {err}"
             );
         }

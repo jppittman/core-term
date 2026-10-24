@@ -490,7 +490,7 @@ one program per font. "Hunk" names an open PR whose diff touches or abuts the li
 | `2026-10-15-kernels-evaluate-kernels.md:175` | "applying a discrete kernel over the wrong extent is a bake-time refusal by name" | a bind-time refusal | B1 | none |
 | the-language-is-kernel `:78-81`, §1.4 structural row, §1.5, §1.7, §1.6 `:296-314` | ranges constant; one program per piece count (2026-10-09); the host chooses a program by its piece count | a reversal note pointing here | A1 | none |
 | the-language-is-kernel §1.3 `:179` | `usize` is "a fold binder or a structural count" | a fold binder or a count (a literal or a `usize` const) | A5 (a literal or a `usize` const), A6 (a per-call count) | none |
-| the-language-is-kernel §1.3 `:186` | a count "is how many instances the host composed" | a count is a value | A1 | none |
+| the-language-is-kernel §1.3 `:186` | a count "is how many instances the host composed" | a count is a value | A5 (A1's, after #1431) | none |
 | the-language-is-kernel D1 `:643`, D3 `:645`, D9 `:651` | structural binding time; "a count is how many instances the host composed"; "one per piece count" | a reversal note pointing here | A1, after #1323 | #1323 `:644-650` holds `:645`; `:643`, `:651` abut it |
 | `2026-10-17-the-arena-is-typed.md` §1.1 `Reduce` row, §4 T6 | `Reduce`: `⊕ : S × S → S`, body `: S`; T6 types the binder only | `Reduce` with value bounds `Real × Real × S → S`, `Int × Int × S → S` at T6; T6 retypes the bounds with the binder, lifts `BoundArithmetic`, measured. A known bound is node data, so T6 re-keys no bound literal | A3 | none |
 | BACKLOG plan table; `docs/README.md` "The language" | no row, no entry for this plan | a row ("landed — / next A0, A1"); an entry | A1 | none |
@@ -532,8 +532,8 @@ shares files with A2–A4 but no hunk. #1427 rewrites the compiler's `ast`/`pars
 `kernel_typed_parameters.rs` and `items_block.rs`, and keeps the structural path A5 deletes
 (made `pub(crate)`).
 
-Order: A0 goes now. A1 goes now, except its the-language-is-kernel `:186` row and its
-D-table rows, which follow #1323 (§5's "Hunk" column). A2a goes
+Order: A0 goes now. A1 goes now, except its the-language-is-kernel D-table rows, which
+follow #1323 (§5's "Hunk" column). A2a goes
 against main with #1431 still open (2026-10-22), so #1431 rebases onto A2a. A2a leaves the
 `fold.monoid().identity()` lines alone; the emptiness guard above two of them and a few import
 lines still conflict, each resolved by keeping both sides. A2b–A4 rebase onto #1431 once
@@ -556,8 +556,8 @@ A5's deletion, which removes code #1427 only re-scopes.
   defs, a 1.4 KiB frame.
 - **A1. Docs.** §5's rows marked A1, under the order above; the docs/README.md entry and
   the BACKLOG plan-table row. Gate: `scripts/check-doc-paths.sh`. **Done** except
-  the-language-is-kernel §1.3's "how many instances the host composed" sentence (§5's `:186`,
-  `:199` after A1) and its D-table rows, after #1323.
+  the-language-is-kernel's D-table rows, after #1323; §1.3's "how many instances the host
+  composed" sentence (§5's `:186`) was A5's, once #1431 had landed.
 - **A2a. One reader of a fold's range.** A `KnownRange` value (`fold.rs`: `lo`, `hi`,
   `stride`) owns `len`, `is_empty`, `peel`, `peel_back`, `halve` and `admits`, and `Fold`
   loses them. One reader per representation that will hold bounds hands it out:
@@ -692,8 +692,8 @@ A5's deletion, which removes code #1427 only re-scopes.
   beside a dearer lawful one.
 - **A5. `<const N: usize>` is deleted**, and with it §3.4's structural path, which it was
   the only producer of. No production user: tests (`kernel_typed_parameters.rs`,
-  `rustc_is_the_oracle.rs`, `items_block.rs`, `binding_times.rs`, `sema.rs` and `emit.rs`
-  unit tests) and docs rewritten. It comes before A6 because the obvious lowering of a
+  `rustc_is_the_oracle.rs`, `items_block.rs`, `binding_times.rs`, and the `parser.rs`,
+  `sema.rs`, `lower.rs` and `emit.rs` unit tests) and docs rewritten. It comes before A6 because the obvious lowering of a
   structural bound, a `Param` leaf, is `Variance::ALL` (`variance.rs`'s `Param` arm) and L3
   refuses it.
   **Done:** `kernel!` refuses a generic on any `fn` at parse, a `const` one naming §1.2; the

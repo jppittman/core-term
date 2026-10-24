@@ -55,8 +55,8 @@
   `kernel!`'s `const N: usize` (2026-10): where this document has an entry's structural
   parameters, a template instantiated with structural values or a range over them (§1.1's
   diagram and binding-time bullet, §1.5's "Ranges are constant", §1.6's and §1.7's choice by
-  a structural parameter, "What the macro emits"), `kernel!` has none: an entry is one
-  program, and a count is a literal or a `usize` const.
+  a structural parameter, "What the macro emits"), `kernel!` has none: a count makes no
+  program of its own.
 - **Created**: 2026-09-25
 - **Verified against**: `8b7b75a`, in two rounds.
   - A four-way inventory of every use of the `Kernel` builder, a
@@ -201,7 +201,8 @@ sugar for a block with one entry.
 
 **No collection types** (JP, 2026-10-01: *"No arrays at all."*). The
 language has no arrays, families, lists or tables. A count of things is not
-a type. It is how many instances the host composed (§1.7).
+a type. It is a fold's bound, a value
+([a bound is a value](2026-10-20-a-bound-is-a-value.md) §1.2).
 
 **Masks are typed.** Today `X.select(Y, 7.0)` compiles and blends a number as
 a mask. F: probe p16 gives 5. After this plan it is a type error.

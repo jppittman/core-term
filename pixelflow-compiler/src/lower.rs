@@ -30,7 +30,7 @@
 //! over it. Nothing here unrolls: that is the e-graph's (`HalveFold`,
 //! `PeelFold`), when the kernel is baked.
 //!
-//! An entry's parameters are its uniforms
+//! An entry's `f32` and record parameters are its uniforms
 //! (docs/language/2026-09-25-the-language-is-kernel.md §1.4): each scalar — an
 //! `f32` parameter, or one field of a record parameter — is declared as a
 //! uniform, in [`AnalyzedKernel::parameters`]' order, and read through its

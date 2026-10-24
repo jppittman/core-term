@@ -27,8 +27,8 @@
 //! 5. **Folds**: a fold's bounds are constant and run forwards
 //!    ([`range_bounds`]), and its body is a term of its monoid, an `f32` or
 //!    a `bool`, in a scope where the closure's parameter is the index.
-//! 6. **Binding times** (plan §1.4): every `f32` and record parameter is a
-//!    uniform, and a kernel-typed one is a kernel (item 8) —
+//! 6. **Binding times** (plan §1.4): every `f32` and record parameter of an
+//!    entry is a uniform, and a kernel-typed one is a kernel (item 8) —
 //!    [`AnalyzedKernel::parameters`] is the uniforms' order of declaration.
 //! 7. **Tuple `let`s** (D7's front half): a tuple `let` types every
 //!    expression before it binds any name.
@@ -127,7 +127,10 @@ impl Ty {
         let Type::Path(path) = ty else {
             return None;
         };
-        if path.qself.is_some() || path.path.segments.len() != 1 {
+        if path.qself.is_some()
+            || path.path.leading_colon.is_some()
+            || path.path.segments.len() != 1
+        {
             return None;
         }
         let segment = &path.path.segments[0];
@@ -2816,6 +2819,17 @@ mod tests {
             let err = refusal(input);
             assert!(err.contains(expected), "expected `{expected}`, got: {err}");
         }
+    }
+
+    /// A type path from the crate root names no type of the block's: emission
+    /// spells a declared type back out, so `::f32` would reach rustc as a crate.
+    #[test]
+    fn a_type_named_from_the_crate_root_is_refused() {
+        let err = refusal(quote! { pub fn f(x: ::f32) -> f32 { x } });
+        assert!(
+            err.contains("a kernel parameter is an `f32` or a `bool`"),
+            "got: {err}"
+        );
     }
 
     /// A `usize` is a count, not a value: no parameter, `let` or `fn`

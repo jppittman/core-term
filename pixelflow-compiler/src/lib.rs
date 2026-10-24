@@ -253,7 +253,7 @@ pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value
 ///
 /// # Binding times
 ///
-/// Every value a program reads is bound at one of two times (§1.4):
+/// An entry's parameters are bound at one of two times (§1.4):
 ///
 /// - **Uniform**: every `f32` and record parameter. An `f32` is one uniform
 ///   and a record is one per field; the kernel an entry returns declares
@@ -275,9 +275,10 @@ pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value
 ///   once, where it first appears. Its key is the composed term's. It has
 ///   no `Args` record: binding a composed program is O3 of the plan.
 ///
-/// A count — a fold's bound, or `N as f32` — is a literal or a `usize` const,
-/// evaluated at expansion: it makes no program of its own, and no `fn` takes
-/// generics (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
+/// A count — a fold's bound, or `N as f32` — is built from literals and
+/// `usize` consts with `+ - * /`, evaluated at expansion: it makes no program
+/// of its own, and no `fn` takes generics
+/// (docs/language/2026-10-20-a-bound-is-a-value.md §1.2).
 ///
 /// ```ignore
 /// use pixelflow_compiler::kernel;

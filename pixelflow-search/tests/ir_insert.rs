@@ -146,8 +146,8 @@ fn unrepresentable_input_declines_rather_than_panicking() {
 /// question `Vocabulary` exists to answer.
 ///
 /// `Templates` holds the slot, so it inserts as the opaque leaf `ENode::Param`,
-/// alongside `Buffer` and `Uniform`. `Runtime` declines it: a slot with no
-/// value has no meaning in a kernel that is built.
+/// alongside `Buffer` and `Uniform`. `Runtime` declines it, so a slot with no
+/// value never reaches the emitter.
 ///
 /// Both halves are asserted here because the interesting property is the
 /// *difference*: a test that only checked the `Runtime` half would pass just

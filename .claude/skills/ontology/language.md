@@ -74,8 +74,9 @@
 - **Lives:** `pixelflow-compiler/src/` (`lib.rs`, `parser.rs`, `sema.rs`,
   `lower.rs`, `emit.rs`); the-language-is-kernel §1.1–§1.2. Today
   `kernel_raw!`, `macro_tier()` and `DwrtFree` are still in `lib.rs`, and
-  `kernel!` is `expand(input, &mut macro_tier())`: it saturates at expansion
-  unless the term carries a `Dwrt` (an entry that takes a kernel is lowered
+  `kernel!` is `expand(input, &mut macro_tier())`: it offers each term to the
+  optimizer at expansion, which declines one carrying a `Dwrt` or an op the
+  template vocabulary cannot hold (an entry that takes a kernel is lowered
   when called, and optimized at bake). That
   contradicts "nothing is optimized at expansion". `parse_expr` is still in
   `pixelflow-pipeline/src/training/factored.rs`.
@@ -84,10 +85,9 @@
 
 - **Is:**
   - An **entry** is a `pub fn`. The macro emits a host function for it that
-    returns the `Kernel`. It rebuilds its lowered arena, saturated at
-    expansion unless it carries a `Dwrt` or the macro is `kernel_raw!`; an
-    entry that takes a kernel runs lowering's steps when it is called
-    (`Staged`).
+    returns the `Kernel`. It rebuilds its lowered arena as the macro's
+    optimizer left it at expansion; an entry that takes a kernel runs
+    lowering's steps when it is called (`Staged`).
   - A **helper** is a private `fn`. Lowering inlines it (β-reduction), and
     it takes coordinates as arguments.
   - A **record** is a `struct` of named `f32` fields. It is flattened at
@@ -126,9 +126,7 @@
   - `Ref`, bound at link. A discrete kernel is a kernel, so it binds here too;
     there is no memory to bind (kernels-evaluate-kernels §2).
 
-  An author sees two binding times: **uniform** and **kernel-typed**. A
-  count is a literal or a `usize` const, known at expansion
-  (a-bound-is-a-value §1.2).
+  An author sees two binding times: **uniform** and **kernel-typed**.
 - **Is not:** kinds of thing that passes may tell apart. "A pass may ask
   when a name is bound and must not care what it names." That is what makes
   `contains_gather` unstatable rather than merely discouraged. Not decided

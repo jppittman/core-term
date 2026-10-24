@@ -51,9 +51,9 @@ pub enum Declined {
     ShiftCount(ShiftDirection),
     /// An unbound scalar slot, under a [`Vocabulary`] that may not hold one.
     ///
-    /// Only [`Vocabulary::Runtime`] declines it: a `Param` has no value, and
-    /// the runtime tier builds kernels. [`Vocabulary::Templates`] holds one as
-    /// [`ENode::Param`].
+    /// Only [`Vocabulary::Runtime`] declines it, so a slot with no value never
+    /// reaches the emitter. [`Vocabulary::Templates`] still holds one as
+    /// [`ENode::Param`]: nothing has deleted it (the-language-is-kernel D2).
     Param(u8),
     /// A kernel named by content, which the graph was not told is a unit.
     ///
@@ -85,8 +85,8 @@ pub enum Declined {
 ///
 /// `Buffer` and `Uniform` leaves insert as themselves, carrying their
 /// declarations, and under [`Vocabulary::Templates`] so does `Param`. Under
-/// [`Vocabulary::Runtime`] a `Param` declines: it has no value, and the
-/// runtime tier builds kernels. Which vocabulary may hold which leaf is the
+/// [`Vocabulary::Runtime`] a `Param` declines, so a slot with no value never
+/// reaches the emitter. Which vocabulary may hold which leaf is the
 /// job `Vocabulary` exists for. A `Ref` inserts as an opaque [`ENode::Ref`]
 /// leaf under [`Vocabulary::Runtime`] when the graph has admitted it as a
 /// unit (`EGraph::admit_unit`, which carries the variance its body is not

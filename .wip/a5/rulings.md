@@ -213,3 +213,53 @@ mentions a builder, a template hole, substitution or specialization.
 - **R2C-3:** the three method sites treat an empty turbofish as absent (`arguments.args.is_empty()`), as
   the name arms do, so `::<>` means no arguments everywhere in the front end. Add a case to the parser test
   if one fits.
+
+## Round 3 (reviews `review3.{docs,code}.md`, on 08047ae): applied by the coordinator
+
+Applied directly rather than delegated: each fix is a sentence, and the last two rounds showed that a
+delegated rewording writes new claims. Each edit deletes or narrows a claim; none adds one the code does not
+back.
+
+- **D3-1:** "saturates at expansion unless … `Dwrt`" is false: the template vocabulary declines ops it cannot
+  hold. The wording is now "offers … to the optimizer at expansion", in the ontology's Entry *Is* and
+  `kernel!` *Lives*, and in intent.md's Behind.
+- **D3-2:** "every `f32` and record parameter (of an entry) is a uniform", in binding_times.rs, sema.rs and
+  parser.rs. lib.rs's list is headed "An entry's parameters", and lower.rs says "An entry's `f32` and record
+  parameters" (**D3-11**, **D3-12**).
+- **D3-3:** "an entry is one program" is deleted from the `const` generic note, its test doc and the
+  the-language-is-kernel banner; "a count makes no program of its own" stands. binding_times.rs's test doc
+  says "this entry". The test name is unchanged: it names its subject, not a universal claim.
+- **D3-4:**
+  - **What happened:** A5's round-2 edit had moved `:186` into the "after #1323" clause. Its blocker was #1431,
+    which has landed.
+  - **The edit itself:** A5 now does `:186`. the-language-is-kernel:204 reads "a fold's bound, a value". §5's
+    row marks it A5's.
+  - **The record:** A1's Done line, the Order paragraph and BACKLOG's next cell now say only the D-table rows
+    wait on #1323.
+- **D3-5:** the ontology's Binding time loses its count sentence. It contradicted the entry's own Follows and
+  §1.2.
+- **D3-6:** compiler.md's Program: "Emission produces a template". An entry that takes no kernel replays one
+  program.
+- **D3-7:**
+  - **Comment:** variance.rs's `Param` arm now says ALL is the conservative choice, made despite a derivative of
+    zero, so no hoist or bound rests on a slot with no value.
+  - **Pre-existing split, left as is:** the e-graph classes a `Param` CONST and the IR classes it ALL. No
+    `Param` reaches either, and its deletion is D2's.
+- **D3-8:** intent.md: "a refusal that cites a plan names it by `PLAN` or `BOUND_PLAN`".
+- **D3-9:** insert.rs (both docs) and ir_insert.rs give the true reason: Runtime declines a `Param` so that a
+  slot with no value never reaches the emitter, and Templates still holds one because nothing has deleted it
+  (D2).
+- **D3-10:** a count is "built from literals and `usize` consts with `+ - * /`" in lib.rs and intent.md. The
+  parser module doc drops its count sentence. R6's help becomes "write a count with literals and the block's
+  `usize` consts", and its test assert follows.
+- **D3-13:** the A5 bullet lists the parser.rs and lower.rs unit tests.
+- **D3-14:** `Staged::open`: "the code building the `FoldTerms` it is closed with". The code is
+  `close_fold(#fold, #body, #terms)`.
+- **R3C-1, accepted:** `Ty::from_syn` refuses a leading `::`. Emission spells a declared type back out, so
+  `::f32` reached rustc as a crate path, which is a stage accepting what a later one refuses.
+  - **Pin:** sema test `a_type_named_from_the_crate_root_is_refused`.
+  - **Mutation check:** the test fails with the guard removed.
+  - **Count:** compiler `#[test]` goes from 298 to 299.
+- **R3C-2, refused:** `f32<>` and `Bx<>` in type position are refused, with a cause that names arguments
+  that are not there. That is loud, at the author's token, and gives no wrong value. Instead,
+  `turbofish_of`'s doc is narrowed to "on a name in a body".

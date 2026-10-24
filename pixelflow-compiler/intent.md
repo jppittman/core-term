@@ -7,11 +7,12 @@ that term to is an `Optimize` value, never a branch (§8).
 
 ## Owns
 - The surface: grammar, types (`Ty`: `f32`, `bool`, `usize`, record, kernel)
-  and refusals, each citing its plan section (`PLAN`, `BOUND_PLAN`). The IR
-  keeps one lane for a number and a mask; the difference lives here.
+  and refusals; a refusal that cites a plan names it by `PLAN` or
+  `BOUND_PLAN`. The IR keeps one lane for a number and a mask; the difference
+  lives here.
 - Binding times as the host sees them (uniform, kernel-typed), the host `fn`,
-  the `Args` record, and `const` evaluation: a count is a literal or a `usize`
-  const.
+  the `Args` record, and `const` evaluation: a count is built from literals
+  and `usize` consts at expansion.
 - Which `Optimize` each macro hands `expand` (`kernel!` saturates, `kernel_raw!`
   is `Identity`), and which entries no optimizer sees.
 
@@ -51,7 +52,7 @@ optimizer)`. Behind them: `parser.rs` (tokens to `ast.rs`),
 
 ## Behind
 - `macro_tier`, `DwrtFree` and `kernel_raw!` are in `lib.rs`, and `kernel!`
-  saturates any entry with no kernel-typed parameter and no `Dwrt`; the plan
+  offers every entry that takes no kernel to the optimizer at expansion; the plan
   optimizes nothing at expansion unless the instance is declared, and deletes
   all three (the-language-is-kernel §1.8, D2, D14).
 
