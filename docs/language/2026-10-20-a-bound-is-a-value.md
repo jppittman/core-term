@@ -132,8 +132,8 @@ After T6 an `Int`-sorted fold has no NaN either and falls under decision 8.
 
 A count the host writes is refused where it is written, by `KnownRange::admits` turned into a
 predicate on one count value: at `kernel!`'s host write of a per-call count, an entry's
-`n: usize` (decision 2), by its host function and by its `Args` record's `write_into`
-(A6), and at bind for a discrete-kernel argument's extent (B1). `2²⁴ + 1` can be refused
+`n: usize` (decision 2), by its host function and, if it has one, by its `Args` record's
+`write_into` (A6), and at bind for a discrete-kernel argument's extent (B1). `2²⁴ + 1` can be refused
 only there: no `f32` names it, and a uniform written as `16777217.0` is `2²⁴`, which is in
 the domain. The NaN is the in-language backstop.
 
@@ -415,8 +415,8 @@ typed before its arithmetic is judged, and a non-leaf value bound (`0..i + 1`) i
 until T6 (§1.4). `lower_fold` resolves `lo`/`hi` before `open_fold`, which takes them,
 and `Site::close_fold` hands them to the IR. A known bound keeps the expansion-time
 checks it has (reversed, past 2²⁴), and a known end beside a value is checked alone
-against 2²⁴. A count the host writes is refused past 2²⁴ by the entry's host function and
-its `Args` record (§1.4); a helper and the closure form take no count. The structural
+against 2²⁴. A count the host writes is refused past 2²⁴ by the entry's host function and,
+if it has one, its `Args` record (§1.4); a helper and the closure form take no count. The structural
 path went with `<const N: usize>`, its only producer, in A5: `Count::Structural`,
 `StructuralRange`, `instantiated_range`, `FoldRange`, `Holes`, `OPEN_RANGE`,
 `HOLE_STRIDE`, `ExpansionFold`, the lowering's `Param` hole and the macro tier's
@@ -723,8 +723,8 @@ A5's deletion, which removes code #1427 only re-scopes.
   `all` (decision 8), a known end past 2²⁴, and a `usize` parameter of a helper or of the
   closure form. The host function panics on a count past 2²⁴, and `Args::write_into`
   panics on one before writing anything; a raw block write that names no count makes the
-  fold NaN by the guard, up to the two optimizer edges `Kernel::over_values` documents
-  (BACKLOG E9's annihilation, decision 5's factoring). `rustc_is_the_oracle.rs` has the
+  fold NaN by the guard, up to the annihilation edge `Kernel::over_values` documents
+  (BACKLOG E9). `rustc_is_the_oracle.rs` has the
   triangular and per-call cases, and `fold_is_kernel_over.rs` the same two against
   `over_values`. byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and
   `=avx2`; the 29 font programs' keys, digests and saturation telemetry, the extraction

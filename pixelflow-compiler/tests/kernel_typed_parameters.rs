@@ -283,6 +283,15 @@ fn a_fold_over_a_usize_const_applies_its_argument() {
     assert_eq!(bake(&mean_down_one(&k)), 8.0);
 }
 
+/// A staged entry's host function refuses a count past 2²⁴ before it builds
+/// anything, as one that takes no kernel does.
+#[test]
+#[should_panic(expected = "past 16777216 (2^24)")]
+fn a_staged_entry_refuses_a_count_past_the_domain() {
+    let k = kernel!(|s: f32| X * s)(2.0);
+    drop(columns_to(&k, 16_777_217));
+}
+
 /// An entry that takes a kernel and a count is built when its host function is
 /// called, and is one program for every count, as one that takes no kernel is:
 /// the count is the composed program's own uniform, declared first.

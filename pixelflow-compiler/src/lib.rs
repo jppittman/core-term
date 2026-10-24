@@ -72,8 +72,7 @@ use proc_macro::TokenStream;
 /// refusal of one names the phase that brings it.
 pub(crate) const PLAN: &str = "docs/language/2026-09-25-the-language-is-kernel.md";
 
-/// The plan that made a fold's bound a value: a refusal about a count or a
-/// bound names it.
+/// The plan that made a fold's bound a value.
 pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value.md";
 
 /// The `kernel!` macro: the language, as a block of items or as a closure,
@@ -159,8 +158,8 @@ pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value
 /// `(a..b).map(|i| e).sum()` is Σ of `e` over `i ∈ [a, b)`; `.product()`,
 /// `.fold(f32::INFINITY, f32::min)` and `.fold(f32::NEG_INFINITY, f32::max)`
 /// are Π, min and max, and `(a..b).any(|i| m)` and `.all(|i| m)` are ∃ and ∀
-/// of `bool`s. An empty range gives the monoid's identity, up to two
-/// optimizer edges `Kernel::over_values` documents. Each bound is a
+/// of `bool`s. An empty range gives the monoid's identity, up to the
+/// factoring edge `Kernel::over_values` documents. Each bound is a
 /// `usize`: an integer, a `usize` const or `+ - * /` over them, known at
 /// expansion; an enclosing fold's index, for a triangular `(0..i)`; or an
 /// entry's count parameter, `n: usize`, bound per call. A bound that is a
@@ -168,7 +167,8 @@ pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value
 /// as integers — and no bound reads `X` or `Y`. The index `i` is a `usize`,
 /// which a body reads only as `i as f32`: there is no arithmetic on an index
 /// and nothing to index. A fold lowers to one `Reduce`, the node
-/// `Kernel::over` builds; unrolling it is the e-graph's choice, at bake time.
+/// `Kernel::over` builds, or `Kernel::over_values` for a bound that is a
+/// value; unrolling it is the e-graph's choice, at bake time.
 /// A closure is the body of a fold and appears nowhere else.
 ///
 /// `if` is the choice. `.select(a, b)` still lowers to the same node this
@@ -272,8 +272,8 @@ pub(crate) const BOUND_PLAN: &str = "docs/language/2026-10-20-a-bound-is-a-value
 ///   a block the program made with `write_into`, which allocates nothing
 ///   once the block is the caller's alone. A kernel the entry's is composed
 ///   into still rebinds from it, its declarations the entry's in order
-///   beside argument-free kernels; beside other arguments the count differs,
-///   and `write_into` refuses. A count past 2²⁴ is refused where the host
+///   beside argument-free kernels; beside other arguments the number of
+///   arguments differs, and `write_into` refuses. A count past 2²⁴ is refused where the host
 ///   writes it: the host function panics, and so does `write_into`, writing
 ///   nothing. A constant is a `const` item.
 /// - **Kernel-typed**: an argument the host passes when it calls the entry.

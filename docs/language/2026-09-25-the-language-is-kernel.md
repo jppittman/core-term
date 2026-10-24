@@ -56,8 +56,8 @@
   parameters, a template instantiated with structural values or a range over them (§1.1's
   diagram and binding-time bullet, §1.5's "Ranges are constant", §1.6's and §1.7's choice by
   a structural parameter, "What the macro emits"), `kernel!` has none: a count makes no
-  program of its own. A6 made a `kernel!` bound a value: an enclosing fold's index, or an
-  entry's `n: usize`.
+  program of its own. A-bound-is-a-value's A6 made a `kernel!` bound a value: an enclosing
+  fold's index, or an entry's `n: usize`.
 - **Created**: 2026-09-25
 - **Verified against**: `8b7b75a`, in two rounds.
   - A four-way inventory of every use of the `Kernel` builder, a
@@ -110,8 +110,8 @@
 atlas sentence is reversed ([a bound is a value](2026-10-20-a-bound-is-a-value.md), rulings
 1, 3 and 6): a count is to have any variance but a coordinate's (its A4), and a font at a
 tile extent is to be one program (its B2). Until then the quote's rule, constant ranges, is
-what the tree does for a font; a `kernel!` bound has been a value since A6: an enclosing fold's
-index, or an entry's `n: usize`.
+what the tree does for a font; a `kernel!` bound has been a value since that plan's A6: an
+enclosing fold's index, or an entry's `n: usize`.
 
 ---
 
@@ -196,7 +196,7 @@ sugar for a block with one entry.
 |---|---|---|
 | `f32` | a value | an `f32` lane |
 | `bool` | a mask; comparisons produce it; `&` and `\|` combine it | an all-ones or all-zero lane; a constant one is `Lit::Mask(bool)` |
-| `usize` | a fold binder or a count (built from literals and `usize` consts with `+ - * /`, or an entry's per-call parameter `n: usize`) | a binder's `Var(REDUCE_BINDER_BASE + slot)`, a `usize` const's `Const`, a count parameter's `Uniform`; converted by an explicit `i as f32` |
+| `usize` | a fold binder or a count (built from literals and `usize` consts with `+ - * /`, or an entry's per-call parameter `n: usize`) | a binder's `Var(REDUCE_BINDER_BASE + slot)`, a `usize` const's `Const` (as a value) or literal bound, a count parameter's `Uniform`; converted by an explicit `i as f32` |
 | records | named `f32` fields | flattened at lowering |
 | `impl Fn(f32, f32) -> f32` | a kernel-typed parameter: a kernel the host passes at run time, applied `k(x, y)` (Phase D-a, done) | none of its own: each application splices the argument's term, `k[X := x, Y := y]` (`ExprArena::apply`) |
 | `u32` bits | packed words (Phase D) | `Bits` ops |

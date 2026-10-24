@@ -178,7 +178,7 @@ impl SymbolTable {
         table
     }
 
-    /// Register a parameter symbol: `r: f32`, a record, or an entry's count `n: usize`.
+    /// Register a parameter symbol of the type its declaration names.
     pub fn register_parameter(&mut self, name: &str, ty: Ty) {
         self.bind(name, SymbolKind::Parameter, ty);
     }

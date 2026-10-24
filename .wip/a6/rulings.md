@@ -98,3 +98,61 @@ ruling and the spec differ, the ruling wins. The design's R-A6 section was alrea
   - A declined term compiles as written.
   - `kernel!` offers each entry to the optimizer at expansion.
 - **Never commit while a gate runs:** the gate scripts append a probe to a tracked file.
+
+## Round 1 (reviews `review1.{laws,stages,docs,complete}.md`, on 6c60dfa): applied by the coordinator
+
+No behavioural defect. The laws and stages were probed through the real `kernel!` on both x86 tiers; the
+blockers are doc sentences, several of them ruling text copied verbatim.
+
+- **S1/D6/B1 (blocking):** the grammar gets `bound ::= … | '(' bound ')'`, since `(0..(n))` is accepted.
+- **D1/B2 (blocking):** the-language-is-kernel's "A6" now names the plan, "a-bound-is-a-value's A6"
+  (`:59`) and "that plan's A6" (`:113`). That document's own A6 is the `Select`/`If` rename.
+- **D2 (blocking):** `fold_bounds`' doc and the lowering test's doc. Sema refuses the names and decision 8
+  first, and the 2²⁴ checks on a known end are lowering's alone.
+- **D3 (blocking):** each law has one edge. L2 (identity) has the factoring edge, at lib.rs `# Folds` and the
+  oracle test's doc. L5 (NaN) has the annihilation edge, in the plan's Done line. ast.rs's `FoldExpr` doc
+  points once to `# Folds` (complete N4).
+- **D4 (blocking):** `# Folds`: "the node `Kernel::over` builds, or `Kernel::over_values` for a bound that
+  is a value".
+- **D5 (blocking):** `BOUND_PLAN`'s doc is cut to "The plan that made a fold's bound a value." The clause
+  went because it was false.
+- **D7 (blocking):** M1's note: "its trip count the same at every sample". The triangular fold's inner
+  count changes per outer trip.
+- **D8:** `range_bounds`: "decided at run time (L2)".
+- **D9 (blocking):** `not_a_usize_bound`'s doc says the help is chosen by what the name is, which is what
+  the code does.
+- **N1:** core README's NaN sentence gets "(up to BACKLOG E9's annihilation)".
+- **N2:** fold_is_kernel_over.rs: the lead sentence names `over_values`, and `Fold::Range` becomes `Fold`.
+- **N3:** lib.rs: "the number of arguments differs".
+- **N4:** "and, if it has one, its `Args` record". This is in count_parameter's doc and plan §1.4/§3.4.
+  M7's note drops the `Args` record, since the closure form's subject is the host function.
+- **N5:** `param_type`'s unknown-type refusal lists "an entry's count `n: usize`".
+- **N6:** `register_parameter`'s doc: "of the type its declaration names".
+- **N7:** `BoundRefusal`'s doc: a count the host writes is refused at the write, before it is a value.
+- **N8:** M3's help adds "arithmetic on an index waits for bounds typed as integers".
+- **S2:** lowering's const-first lookup is documented as relying on sema's refusal of a binding that shadows a
+  const.
+- **S3 (subtract):** `RangeScope::usize_named`'s `F32` arm was unreachable, because both callers judge an
+  `f32` const first. It is folded into the `Name` arm, and `Count::Name` is "no `usize` const". The f32-const
+  bound row in sema's test still pins M2's help.
+- **S4, refused:** the span of a literal end past 2²⁴ beside a value. J13 put the domain check in lowering,
+  and BACKLOG C12 covers spans.
+- **complete N1 (pins):**
+  - The emit test asserts `write_into`'s own `# Panics` and its domain text.
+  - New `a_staged_entry_refuses_a_count_past_the_domain` (`kernel_typed_parameters.rs`, `#[should_panic]`).
+  - The compiler goes from 318 to 319 tests.
+- **complete N2:** public-surface. A6 adds no public item: `git diff 29980bf -- pixelflow-core/src` is
+  empty, and the generated host function's and `write_into`'s `# Panics` sections are the only surface change.
+- **complete N3:** intent.md's count sentence names the entry's host function and its `Args` record's
+  `write_into`.
+- **L-2:** the pre-existing nest-depth gap goes in BACKLOG C13.
+- **Polish:** `COUNT_DOMAIN`'s inner colon becomes a semicolon, so the generated text reads
+  "past 2^24: a count is …; `2^24 + 1` …".
+
+Checks after round 1:
+- `PIXELFLOW_ISA=avx2` and `=avx512` compiler tests: 319 + 319 passed.
+- IR lib: 310 passed.
+- clippy 1.99 on the compiler and IR, all targets and all features: exit 0.
+- Rustdoc: NEW 0 for compiler, IR and core.
+- fmt, check-intent and check-doc-paths: OK.
+- Gates `a6-fix1` (byteprobe, gate1b, gate2, gate2x): all exit 0, identical to base.

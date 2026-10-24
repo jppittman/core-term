@@ -677,7 +677,9 @@ impl<S: Site> Lowering<'_, S> {
     /// frame — an enclosing fold's index, or an entry's count parameter — and
     /// nothing else: a coordinate, an `f32`, a record. Asked of every name
     /// before any arithmetic over them is, as `sema` asks it, so `0..X + 1`
-    /// is a coordinate in a bound and not arithmetic on a value.
+    /// is a coordinate in a bound and not arithmetic on a value. A const is
+    /// looked up before a binding, where sema looks innermost first; the two
+    /// agree because sema refuses a binding that shadows a const.
     fn refuse_a_bound_that_is_no_count(&self, name: &Ident) -> Result<(), String> {
         let consts = &self.program.analyzed.consts;
         if let Some(ConstValue::Usize(_)) = consts.get(&name.to_string()) {
@@ -702,8 +704,9 @@ impl<S: Site> Lowering<'_, S> {
     /// A fold's bounds as the IR takes them: a known pair if
     /// [`KnownRange::admits`] it; otherwise each end a literal checked alone,
     /// or the term the name is bound to. A value bound under `any` or `all`
-    /// is refused (decision 8). All of it without relying on `sema`, which
-    /// refuses the same first.
+    /// is refused (decision 8). The names and decision 8 are refused here
+    /// without relying on `sema`, which refuses them first; the 2²⁴ checks on a
+    /// known end are lowering's alone.
     fn fold_bounds(
         &self,
         reduction: Reduction,
@@ -1279,8 +1282,9 @@ mod tests {
         assert!(!holds_a_placeholder(&arena));
     }
 
-    /// Lowering refuses a bound that is no count by itself, as `sema` does,
-    /// without relying on it: the names first, as `sema` judges them, so a
+    /// Lowering refuses a bound that is no count by itself, as `sema` does for
+    /// the names and decision 8 (the domain is lowering's alone), without
+    /// relying on it: the names first, as `sema` judges them, so a
     /// coordinate or an `f32` under arithmetic is a name that is no bound and
     /// not arithmetic on a value.
     #[test]

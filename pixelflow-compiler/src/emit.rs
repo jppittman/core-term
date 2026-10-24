@@ -264,7 +264,7 @@ fn count_parameters<'a>(entry: &'a FnItem, analyzed: &'a AnalyzedKernel) -> Vec<
 /// a count. Written as the `f32` its uniform holds, `2^24 + 1` is `2^24`, a
 /// count, and a fold bounded by it would run one trip short with no NaN to
 /// say so, which only the host can refuse (plan §1.4).
-const COUNT_DOMAIN: &str = "a count is an integer in `0..=2^24`: `2^24 + 1` would be written as \
+const COUNT_DOMAIN: &str = "a count is an integer in `0..=2^24`; `2^24 + 1` would be written as \
     `2^24`, a fold bounded by it would run one trip short with no NaN, and a larger count would \
     name none";
 
@@ -1071,6 +1071,15 @@ mod tests {
         assert!(
             refused < written,
             "refused before anything is written: {code}"
+        );
+        let args = &code[code
+            .find("impl SumToArgs")
+            .expect("the `Args` record's impl")..];
+        let write_into = &args[..args.find("fn write_into").expect("write_into")];
+        assert!(
+            write_into.contains("# Panics")
+                && write_into.contains("a count in this record is past 2^24"),
+            "write_into documents its panic: {write_into}"
         );
         assert!(
             !code.contains("ColumnsArgs"),

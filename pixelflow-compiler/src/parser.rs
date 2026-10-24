@@ -68,7 +68,7 @@
 //!           | range '.all' '(' binder expr ')'                           -- ∀, of bools
 //! range   ::= '(' bound '..' bound ')'     -- half-open
 //! bound   ::= iexpr | INDEX | COUNT        -- known at expansion; or an enclosing
-//!                                          -- fold's index or an entry's count,
+//!           | '(' bound ')'                -- fold's index or an entry's count,
 //!                                          -- alone (§1.4 of the bound plan)
 //! binder  ::= '|' IDENT '|'                -- the index: a `usize`
 //! F32     ::= '::' '<' 'f32' '>'

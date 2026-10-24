@@ -1,10 +1,11 @@
-//! A fold written in `kernel!` is the fold `Kernel::over` builds: the same
+//! A fold written in `kernel!` is the fold `Kernel::over` (or, for a bound that
+//! is a value, `Kernel::over_values`) builds: the same
 //! arena, by `pixelflow_ir::key::canonical`, for every monoid
 //! (docs/language/2026-09-25-the-language-is-kernel.md §1.5; B7's equivalence
 //! gate, in miniature).
 //!
 //! What a fold *means* is pinned against rustc in `rustc_is_the_oracle.rs`.
-//! This file pins what it *is*: one `Reduce` over a `Fold::Range`, its binder
+//! This file pins what it *is*: one `Reduce` over a `Fold`, its binder
 //! chosen as the builder chooses it — inside-out, the lowest slot no fold in
 //! the body binds — so that a program written in the syntax and the same
 //! program built with the builder are one program, and share a JIT cache

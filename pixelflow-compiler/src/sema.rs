@@ -654,8 +654,8 @@ impl<'a> Items<'a> {
             return Err(syn::Error::new_spanned(
                 &param.ty,
                 format!(
-                    "a kernel parameter is an `f32` or a `bool`, or one of this block's \
-                     records, and `{name}` is none of them\n\
+                    "a kernel parameter is an `f32` or a `bool`, an entry's count \
+                     `n: usize`, or one of this block's records, and `{name}` is none of them\n\
                      \n\
                      note: a block sees only its own items: a record declared in another \
                      `kernel!` block, or a Rust struct, is not in scope (D6 of {PLAN})"
@@ -680,9 +680,9 @@ impl<'a> Items<'a> {
     }
 
     /// `n: usize`: a count that changes per call, an entry's in the items
-    /// form (decision 2 of the bound plan), whose host function and `Args`
-    /// record refuse a count past 2²⁴ where the host writes it (§1.4 of the
-    /// bound plan). A helper is inlined and takes a count's value as an
+    /// form (decision 2 of the bound plan), whose host function and, if it has
+    /// one, `Args` record refuse a count past 2²⁴ where the host writes it
+    /// (§1.4 of the bound plan). A helper is inlined and takes a count's value as an
     /// argument, and the closure form's program is rebound by position with
     /// `f32`s, so neither takes one.
     fn count_parameter(&self, param: &Param, role: Role) -> syn::Result<Ty> {
@@ -694,8 +694,8 @@ impl<'a> Items<'a> {
                     "the closure form's parameter is an `f32`\n\
                      \n\
                      note: a count parameter `n: usize` is an entry's in the items form, whose \
-                     host function and `Args` record refuse a count past 2^24 where the host \
-                     writes it (§1.4 of {BOUND_PLAN}); the closure form's program is rebound by \
+                     host function refuses a count past 2^24 where the host writes it \
+                     (§1.4 of {BOUND_PLAN}); the closure form's program is rebound by \
                      position, with `f32`s, which cannot refuse one\n\
                      help: {WRITE_AN_ENTRY}"
                 ),
@@ -994,8 +994,9 @@ impl<'a> FnAnalyzer<'a> {
     }
 
     /// A name in a range's bound that is in scope and no `usize`. The help is
-    /// the fix an `f32` has: a count that changes per call is an entry's
-    /// `n: usize`, which the closure form and a helper cannot take.
+    /// by what the name is: an `f32` const's is `const N: usize`; an entry's
+    /// `f32` parameter's is the per-call count `n: usize` (the items form's);
+    /// any other has none.
     fn not_a_usize_bound(&self, name: &Ident, kind: SymbolKind, ty: Ty) -> syn::Error {
         let found = self.items.name_of(ty);
         let help = match (kind, ty, self.role, self.items.def.spelling) {
@@ -1766,7 +1767,7 @@ fn a_coordinate_bounds_no_fold(name: &Ident) -> syn::Error {
             "mismatched types: expected `usize`, found `f32`\n\
              \n\
              note: `{name}` is a coordinate, and a range's bound reads no coordinate: every \
-             sample runs the same loop, its trip count fixed before the lattice is traversed \
+             sample runs the same loop, its trip count the same at every sample \
              (L3 of {BOUND_PLAN})"
         ),
     )
@@ -1786,7 +1787,8 @@ fn bound_arithmetic(name: &Ident, binary: &BinaryExpr) -> syn::Error {
              of trips with no NaN to say so, until bounds are typed integers (§1.4 of \
              {BOUND_PLAN})\n\
              help: a count known at expansion is a `usize` const, which takes `+ - * /`; one \
-             that changes per call is computed by the host and passed as a parameter of its own"
+             that changes per call is computed by the host and passed as a parameter of its own; \
+             arithmetic on an index waits for bounds typed as integers"
         ),
     )
 }
@@ -1805,7 +1807,7 @@ pub(crate) enum Count {
     /// Evaluated at expansion, each operation checked: an integer literal, a
     /// `usize` const, or `+ - * /` over them.
     Known(u64),
-    /// A name that is no `const`. What it names is the scope's to say: `sema`
+    /// A name that is no `usize` const. What it names is the scope's to say: `sema`
     /// has typed every name in the bound before it is evaluated, and lowering
     /// resolves it to the term it is bound to.
     Name(Ident),
@@ -1949,7 +1951,7 @@ pub(crate) fn bound_names(bound: &Expr) -> Vec<&Ident> {
 /// fold it would be in Rust: an empty range is written `a..a`, and `b..a` is
 /// almost always a slip (clippy's `reversed_empty_ranges` is deny-by-default
 /// for the same reason), and the IR's own `KnownRange::new` refuses one. A
-/// pair with a value is decided per call (L2).
+/// pair with a value is decided at run time (L2).
 pub(crate) fn range_bounds(range: &RangeExpr, scope: RangeScope<'_>) -> syn::Result<[Count; 2]> {
     let mut scope = scope;
     let bounds = [scope.eval_usize(&range.lo)?, scope.eval_usize(&range.hi)?];
@@ -2004,17 +2006,10 @@ impl UsizeScope for RangeScope<'_> {
     fn usize_named(&mut self, name: &Ident) -> syn::Result<Count> {
         match self.consts.get(&name.to_string()) {
             Some(ConstValue::Usize(value)) => Ok(Count::Known(*value)),
-            Some(ConstValue::F32(_)) => Err(syn::Error::new(
-                name.span(),
-                format!(
-                    "`{name}` is an `f32` const, and a range's bounds are `usize`s\n\
-                     \n\
-                     help: declare the count as `const {name}: usize`"
-                ),
-            )),
-            // No `const` of that name: one the program binds. Whether it is a
-            // count, and what it is bound to, is the caller's scope's to say.
-            None => Ok(Count::Name(name.clone())),
+            // No `usize` const of that name. Both callers have judged every
+            // name in the bound first (an `f32` const among them), so this is
+            // one the program binds, and what it is bound to is theirs to say.
+            Some(ConstValue::F32(_)) | None => Ok(Count::Name(name.clone())),
         }
     }
 
