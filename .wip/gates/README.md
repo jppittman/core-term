@@ -23,7 +23,15 @@ same bases, so the byte, key and saturation bases stand and A4 is byte-identical
 details"). The tree at the time was `2f61e7c`, which differs from `7e9531e` only by `.wip/` (checked with
 `git diff --quiet 7e9531e HEAD -- . ':!.wip'`). The rustdoc base for A5 is
 `/home/user/pixelflow/.wip/a5/rustdoc-base.pixelflow-compiler.txt` (`pixelflow-compiler` 4 warnings, 3 distinct),
-normalized by `.wip/a5/rustdoc_norm.py`.
+normalized by `.wip/a5/rustdoc_norm.py` (that directory is archived in `/home/user/scratch/a5-wip-archive/.wip/a5/`).
+Verified again at `29980bf` (main after A5, #1449; tag `a6-main`): gates 1, 1b, 2 and 2x each exit 0, identical to the
+same bases, so the byte, key and saturation bases stand and A5 is byte-identical on today's kernels. The gate 5
+(`measure`) base was re-recorded there with `GATES_REBASE=1` (A5 moved total Ir by +0.020 percent; figures under "Gate 5
+details"). The tree at the time was `bc1c011`, which differs from `29980bf` only by `.wip/` (checked with
+`git diff --quiet 29980bf HEAD -- . ':!.wip'`). The rustdoc bases for A6 are
+`/home/user/pixelflow/.wip/a6/rustdoc-base.<crate>.txt` (`pixelflow-compiler` 4 warnings, 3 distinct; `pixelflow-core`
+5, 4 distinct; `pixelflow-ir` 38, 35 distinct), normalized by `.wip/a6/rustdoc_norm.py`. The `pixelflow-compiler` and
+`pixelflow-ir` bases are identical to A5's and A4's, and the normalizer is unchanged.
 Host: 4 cores, 15 GB, AVX-512 capable (`avx512f/dq/bw/cd/vl`), valgrind 3.22, Python 3.11, no `/usr/bin/time`.
 
 ## Using the scripts
@@ -98,16 +106,22 @@ five native runs for median peak RSS (`ru_maxrss`, KiB) and median wall ms (repo
 - Under callgrind the test runs on a spawned thread (libtest does that even with `--test-threads=1`); callgrind sums
   threads into the one file.
 
-Base (tree `7e9531e`, re-recorded): total Ir 6,315,838,727; `Saturation::saturate` inclusive 2,075,982,919 (32.9 percent);
-`extract_dag_over` inclusive 1,139,023,257 (18.0 percent); median peak RSS 97,592 KiB; median wall 1,000 ms.
+Base (tree `29980bf`, re-recorded): total Ir 6,317,091,756; `Saturation::saturate` inclusive 2,076,022,575 (32.9 percent);
+`extract_dag_over` inclusive 1,139,268,582 (18.0 percent); median peak RSS 96,824 KiB; median wall 1,203 ms.
 
-Previous base (tree `a747770`; the old `measure.base.txt` and `cg.base.*` are copied to
+Previous base (tree `7e9531e`; the old `measure.base.txt` and `cg.base.*` are copied to
+`/home/user/scratch/gates-old-base-7e9531e/`): total Ir 6,315,838,727; `Saturation::saturate` inclusive 2,075,982,919
+(32.9 percent); `extract_dag_over` inclusive 1,139,023,257 (18.0 percent); median peak RSS 97,592 KiB; median wall
+1,000 ms. A5 moved total Ir by +0.020 percent, `saturate` by +0.002 percent and `extract_dag_over` by +0.022 percent;
+peak RSS moved -0.8 percent and the wall figure +20 percent between sessions (VM drift, never decisive).
+
+Earlier base (tree `a747770`; the old `measure.base.txt` and `cg.base.*` are copied to
 `/home/user/scratch/gates-old-base-a747770/`): total Ir 6,310,238,494; `Saturation::saturate` inclusive 2,076,952,032
 (32.9 percent); `extract_dag_over` inclusive 1,139,515,928 (18.1 percent); median peak RSS 96,536 KiB; median wall
 1,072 ms. A4 moved total Ir by +0.089 percent, `saturate` by -0.047 percent and `extract_dag_over` by -0.043 percent;
 peak RSS moved +1.1 percent and the wall figure -6.7 percent between sessions (VM drift, never decisive).
 
-Earlier base (tree `3bfdaded`, kept for the record; the old `measure.base.txt` and `cg.base.*` are copied to
+Earlier still (tree `3bfdaded`, kept for the record; the old `measure.base.txt` and `cg.base.*` are copied to
 `/home/user/scratch/gates-old-base-3bfdaded/`): total Ir 6,295,969,957; `Saturation::saturate` inclusive 2,079,429,510
 (33.0 percent); `extract_dag_over` inclusive 1,123,555,965 (17.8 percent); median peak RSS 96,476 KiB; median wall 956 ms.
 A3 moved total Ir by +0.227 percent, `saturate` by -0.119 percent and `extract_dag_over` by +1.420 percent; the wall
