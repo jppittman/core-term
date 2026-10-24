@@ -29,7 +29,8 @@ pub enum ExprData {
     Var(u8),
     /// A literal: a number or a mask.
     Const(Lit),
-    /// Macro parameter placeholder (0..). Valid only before kernel compilation.
+    /// Unbound slot of a rewrite-rule template (0..). Valid only before kernel
+    /// compilation.
     Param(u8),
     /// Memory buffer reference.
     Buffer(BufferId),

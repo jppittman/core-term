@@ -27,10 +27,10 @@ R8, R9, R12, R14. No `.md` file other than this one was edited by this pass (the
   program of its own ... (§1.2 of {BOUND_PLAN})" and carries the unchanged help line; any other generic says "nothing in a
   kernel is generic" (§1.3 of {PLAN}); a `where` clause says "there are no generics to bound". `convert_const` keeps its
   `refuse_generics` call (R7); the doc says syn gives a generic `const` the item refusal first.
-- R6: the `Expr::Call` arm refuses a one-segment callee whose segment carries arguments, at the segment: "generic arguments at
-  a call in a `kernel!` block / note: nothing in a kernel is generic, so no `fn` takes generic arguments (§1.3 of {PLAN}) /
-  help: a count is a literal, or a `usize` const of the block". One message, no branch on the argument's kind.
-  `leading_colon` is untouched.
+- R6: the `Expr::Call` arm refuses a one-segment callee whose segment carries arguments, at the arguments (`::<4>`, not the
+  segment: amended in Round 1, F4): "generic arguments in a `kernel!` block / note: nothing in a kernel is generic, so no `fn`
+  takes generic arguments (§1.3 of {PLAN}) / help: a count is a literal, or a `usize` const of the block" (the header said "at a
+  call" until Round 1, S4). One message, no branch on the argument's kind. `leading_colon` is untouched.
 - Tests: `an_entrys_const_generics_are_its_structural_parameters` deleted; collection case 2 rewritten to
   `pub fn f(pieces: [Row; 4])`; `a_fn_signature_is_plain` keeps 3 cases; new
   `generics_are_refused_and_a_const_generic_says_what_a_count_is` (spec §5.3 verbatim, plus R6's three call-site pins).
@@ -107,9 +107,8 @@ R8, R9, R12, R14. No `.md` file other than this one was edited by this pass (the
    `/home/user/pixelflow/.wip/a5/r14-probe.md`.
 4. **`CheckedOp`'s doc says "two counts", not "two known counts"** (the spec marks the item K, not its words). Reason: after
    this change every count is known, so "known" carries nothing.
-5. **`refuse_shadowing_an_item`'s `match` keeps one arm** (`Some(SymbolKind::Const)` then `_ => None`) after the spec's deletion
-   of the structural arm. Not collapsed further: the spec says delete the arm, and the shape is one `match` away from a
-   future kind. Clippy was not run (see section 4).
+5. **`refuse_shadowing_an_item`'s `match` kept one arm** (`Some(SymbolKind::Const)` then `_ => None`) after the spec's deletion
+   of the structural arm. Superseded in Round 1 (C3): it is now the `is_some_and` guard the `fn` check below it already was.
 6. **No other departures.** Every row of §2.1 to §2.8 was applied as written, R1 and R4 to R9 verbatim.
 
 ## 3. R14: the hygiene test's reason
@@ -117,10 +116,18 @@ R8, R9, R12, R14. No `.md` file other than this one was edited by this pass (the
 `a_structural_parameter_named_as_the_emissions_locals_is_its_own` is deleted with `mod lower_case`. Its subject, a `const`
 generic captured as a constant pattern by `instantiated_range`'s `__lo`/`__hi`, went with the generic.
 
-**Reason recorded (the ruling's):** the emission's own `__`-prefixed locals can still meet a block's `pub const __lo`, which
-rustc reads as a constant pattern, so the failure survives A5 in `node`'s `Reduce` arm (`let __header = ..; let (__lo, __hi) =
-__header.attach(..)`). It predates A5 and is a compile error at the author's `kernel!` call, loud, so by CLAUDE.md's priority
-it earns no type and no new refusal.
+**Reason recorded (corrected by the probe in Round 1):** a block's `pub const` is emitted as a module item, so it is in scope in
+every host `fn` the block emits, and a `let` of the same name in the emission is then a constant pattern, which rustc refuses
+as **E0308** ("`__lo` is interpreted as a constant, not a new binding"). The names that collide:
+
+- `__lo`, `__hi` and `__header`, from the `Reduce` arm's `let __header = ..; let (__lo, __hi) = __header.attach(..)`, so only
+  beside an entry with a fold;
+- `__arena` (E0530 + E0308) and `__root` (E0308), beside any entry, fold or not;
+- the numbered locals (`__u<n>`, `__e<n>`, `__t<n>`, `__f<n>`, `__k<n>`) have the same shape in the code and were not probed.
+
+Measured on the base for all but the numbered locals, and again on the A5 tree for every collision but `__root`. It predates A5, and
+it is a compile error at the author's `kernel!` call (the span is the whole call, not the `const`), loud, so by CLAUDE.md's
+priority it earns no type and no new refusal. BACKLOG C11 holds the repro.
 
 **Pinned, on the base and again on this tree** (scratch crate `/home/user/scratch/a5-r14-probe`, one integration-test target
 per case; the A5 run is after every edit above):
@@ -138,11 +145,10 @@ per case; the A5 run is after every edit above):
 The base was re-run here for `control` and `const_lo` before editing (E0308 reproduced); the other base cells are the
 coordinator's `r14-probe.md`. The A5 column was measured here after the edits, not inferred, for `control`, `const_lo`,
 `const_hi`, `const_header`, `const_arena_no_fold`, `param_lo` and `param_arena`; `param_hi` and `param_header` were not
-re-run on the A5 tree (their base cells stand from `r14-probe.md`). Corrections to the
-ruling's wording, all from the probe: the code is **E0308** (E0530 only where the emission's binding is `let mut`, i.e.
-`__arena`; E0005 appears nowhere); the hazard is the whole `__`-family and `__arena`/`__root` need no fold; a parameter
-named `__lo`/`__hi`/`__header` is fine. Read from the code, not measured: only a `pub const` is emitted by `emit_kernel`
-(its `filter(is_pub)`), so a private `const __lo` reaches no emitted scope.
+re-run on the A5 tree (their base cells stand from `r14-probe.md`). The ruling's original wording said E0530/E0005; the probe
+found E0308 (E0530 only where the emission's binding is `let mut`, i.e. `__arena`; E0005 appears nowhere), and a parameter named
+`__lo`/`__hi`/`__header` is fine (only `__arena` collides with one). Read from the code, not measured: only a `pub const` is
+emitted by `emit_kernel` (its `filter(is_pub)`), so a private `const __lo` reaches no emitted scope.
 
 ## 4. Test counts
 
@@ -219,3 +225,123 @@ shared target directory's free space (5.6 GB at the end).
 - **G9**: nothing.
 - **G10** (live docs): not mine; the docs agent's.
 - Scratch probes only under `/home/user/scratch`; nothing under `/tmp/claude-0` or `.wip` deleted.
+
+## Round 1 (rulings `rulings.md` "Round 1", reviews `review1.{closure,semantics,fidelity}.md`)
+
+**Tree:** `38703e0` (the A5 commit) plus the working-tree edits below, 18 files, nothing committed, stashed or reset. Paths are
+`/home/user/pixelflow/<path>`, line numbers are of the tree now.
+
+### C1 (blocking): the four `Param` docs
+
+Grep of who builds a `Param`: `kernel!` builds none (`push_param|ExprNode::Param` in `pixelflow-compiler` hits only `emit.rs`'s
+panic arm); the producers left are `arena_pat!`'s `par N` leaf in the rule-template DSL (`pixelflow-search/src/egraph/rewrite.rs:42`,
+used by no rule today), the corpus reader's `TAG_PARAM`, and copies (`term_arena.rs`, `nnue/mod.rs`, `extract.rs:958`). The consumers:
+`insert.rs:129-130` (held under `Vocabulary::Templates`, `Declined::Param` under `Runtime`), `graph.rs:1847` (derivative zero),
+`graph.rs:1720` (a rewrite's right-hand side panics on one), `codegen/src/program/lower.rs:373` and `compiler/src/emit.rs:440` (both
+panic). Each sentence below says only that.
+
+- `pixelflow-ir/src/kind.rs:219` `OpKind::Param`: "An unbound scalar slot of a rewrite-rule template", then `kernel!` builds none,
+  the JIT emitter and the compiler's emission panic on one, the e-graph holds one only under `Vocabulary::Templates` and
+  `Runtime` declines it. The "means a builder was never called" clause is gone.
+- `pixelflow-search/src/egraph/node.rs:248` `ENode::Param`: same, and "A builder substitutes it away ... so only the macro tier's
+  ..." is replaced by the panics and "Only a `Vocabulary::Templates` graph may hold one".
+- `pixelflow-search/src/egraph/insert.rs:52` `Declined::Param`: "the macro tier holds params natively" is now
+  "`Vocabulary::Templates` holds one as `ENode::Param`"; the `insert` fn doc beside it (`:89`) lost "a builder should have
+  substituted it" for the same reason (it is in the file being edited and said the same thing).
+- `pixelflow-search/src/runtime.rs:150`: "an unbound slot of a rewrite-rule template".
+- `ir_insert.rs:174`'s message is not changed, as ruled.
+
+**Departure 1 (words):** the docs say "an unbound slot of a rewrite-rule template", not "a rewrite rule's metavariable", and
+do not say "substituted". Reason: a template's metavariables are `Var(N)` (`arena_pat!`'s doc, `collect_metavars_arena`, which skips
+`Param`), `unify` never binds a `Param` (`template.rs:456`), and nothing in the tree substitutes one, so those two words would be
+false of the code. The ruling's other phrase, "an unbound slot of a rule template", is the one used.
+
+**Departure 2 (siblings, same defect, doc-only):** A5 made each of these false as well, so each is reworded; none changes behaviour.
+`pixelflow-ir/src/expr.rs:32` and `term.rs:104` (`ExprData::Param`, `Shape::Param`: "Macro parameter placeholder"); `fold.rs:466`
+(`BoundNotANumber`'s doc) and `fold.rs:502` (its message: "a builder's slot ... a `Param` is filled before a kernel exists" is
+"an unbound slot ... a `Param` has no value"; the one test that reads the text, `fold.rs:2151`, checks the prefix
+`BoundNotANumber`, the word `` `Param` `` and "a fold's hi bound", which the new text keeps); `kernel.rs:2010` (a test doc);
+`pixelflow-search/src/egraph/node.rs:599`, `extract.rs:957`, `graph.rs:1845` (comments); `tests/ir_insert.rs:148` (the test's doc;
+its two assertion messages, `:167` and `:174`, still say "builder" and are left as ruled).
+
+**Not changed, for the coordinator:** (a) `compiler/src/emit.rs:442` (R1's text) and `codegen/src/program/lower.rs:374` (§2.8's text)
+call a `Param` "a rewrite rule's metavariable", which departure 1 shows is not what the code calls it; both are ruled text, and G3
+constrains `emit.rs`'s. (b) The ontology's `Param` entry (`.claude/skills/ontology/language.md:356-360`) still says "an unbound
+scalar slot of a builder template ... exists only before the builder is called", and quotes 2026-09-10 text on `Declined::Param`.
+(c) `docs/codegen/2026-09-10-a-surviving-reduce-is-a-loop.md:600` is dated history.
+
+### C2/F2 and F1 (blocking): the A5 Done line
+
+`docs/language/2026-10-20-a-bound-is-a-value.md:698-707`. "which only the template set" is "which only the template set past 1"
+(at the base every constructor wrote `stride: 1` but `ExpansionFold::Hole`'s). The test-template sentence is now: the ones that take
+no kernel (`ramp`, `rings`, `swept`, `mean_index`, `emit.rs`'s `counted`) are written over `usize` consts and are offered to the
+macro tier at expansion; the two that take one (`applied`, `mean_down`) stay `Staged`. Checked against `git diff 7e9531e 38703e0`: the
+other base templates were deleted with their tests (`grid`, `span`, `mean`) or rewritten without a const (`inside`), and
+`rust_mean_index` is a host function. The gate clause is appended as ruled: byte_probe empty in both columns under
+`PIXELFLOW_ISA=avx512` and `=avx2`; the 29 font programs' keys, digests and saturation telemetry, the extraction fields included,
+unchanged (gates compared to the base verified at main `7e9531e`). It rests on `gates-impl.md`'s `a5-impl` outputs, taken on
+`38703e0`'s code; this round changes no path an accepted program takes, only refusal texts and spans, docs and one comment-only
+reflow, and the gates were not re-run.
+
+### S1/F3 and S2 (blocking): the parser's docs
+
+- `pixelflow-compiler/src/parser.rs:120-125` (module doc): "a generic or a `where` clause on a `fn` (a `const` generic by a message
+  saying a count is a literal or a `usize` const, §1.2 of the bound plan), and on a `const`, which syn hands over as an unknown
+  item and the item refusal names; generic arguments on a name, at a call or not". The last clause is S4's.
+- `parser.rs:640` `generic_refusal`'s doc: "a `const` one was a count, which a block now writes as a literal or a `usize` const".
+- The new test's doc (`parser.rs:2711`) drops "and no `const`". No generic-`const` case (R7).
+
+### C3, C4
+
+- C3: `pixelflow-compiler/src/sema.rs:756-768`, `refuse_shadowing_an_item` is the `is_some_and(|symbol| symbol.kind ==
+  SymbolKind::Const)` guard; the message is unchanged (`an_item_is_not_shadowed` holds).
+- C4: reflowed `compiler/src/lower.rs:795-797`, `pixelflow-ir/src/arena.rs:167-170`, `pixelflow-ir/src/fold.rs:536-541`.
+
+### S3, S4, S5, F4: refusal shapes and the test
+
+- S3: the `Expr::Call` arm tests `!segment.arguments.is_empty()` (`parser.rs:781`), so `h::<>(X)` is `h(X)`, as the `Path` arm
+  already read `N::<>`.
+- S4: the `Path` arm refuses a one-segment unqualified path with non-empty arguments (`N::<4>`, `X::<f32>`) at `parser.rs:685-686`.
+  `generic_arguments_refusal` (`parser.rs:665`) is the one function that builds the error; both arms call it. It is spanned on the
+  arguments (`::<4>`).
+- **Departure 3 (S4, R6's header):** the message's header is "generic arguments in a `kernel!` block", not "... at a call in ...".
+  Reason: the one message now stands at a value position too (`N::<4> as f32`, `X::<f32>`), where "at a call" is false. The note
+  and the help line are R6's, word for word.
+- S5: `parser.rs:633`, a `where` clause is refused at `where_clause.where_token.span` with `syn::Error::new`. syn's `ToTokens` prints
+  an empty clause as nothing (`generics.rs:1312`), which is why the span of the clause fell back to the call site.
+- F4: the new test (`parser.rs:2719`) asserts the plan path in the non-`const` generic message (§1.3 of
+  `docs/language/2026-09-25-the-language-is-kernel.md`) and in the generic-arguments message, and has the Path-arm cases
+  (`N::<4> as f32` over a block `const`, `X::<f32>`) beside the three call cases. It also pins S3: `h::<>(X)`, `N::<>` and `X::<>`
+  parse. No `#[test]` was added.
+- **R6 amended, as ruled:** the refusal is spanned on the segment's arguments, not the segment. Spans stay unpinned in the crate's
+  tests. Measured outside them, in a scratch crate (`/home/user/scratch/a5-round1-probe`, the repo's `Cargo.lock`, so syn 2.0.101):
+  an empty `where` is underlined at `where`; `N::<4>` at `::<4>`; `X::<f32>` at `::<f32>`; `h::<4>(X)` at `::<4>`; `(0..N::<4>)`
+  at `::<4>`; and `h::<>(X)`, `(0..N::<>)`, `N::<> as f32` and `X::<>` build and run.
+- BACKLOG `docs/BACKLOG.md:170`, row **C12** (one row, in "Correctness and CI" after C11): refusal spans are unpinned, the two ways a
+  span-observing check could be built, and the empty `where` as the wrong span it would have caught. "S5" is not named in the row.
+
+### F5, R14
+
+- F5: `pixelflow-compiler/src/emit.rs:563`, `Staged::open`'s doc: "the variable holding each open fold, and the `FoldTerms` it
+  closes into". Checked: the `Ident` pushed is `fold`, bound to `__arena.open_fold(#depth)`, an `OpenFold` (`emit.rs:703-712`).
+  R8 is amended to that text.
+- R14: section 3 above now records the probe's corrections (E0308, the whole `__` family, `__arena`/`__root` beside any entry, a
+  parameter named `__lo`/`__hi`/`__header` fine).
+
+### Commands, in this order, after the last edit unless said
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` (before the build) then `cargo fmt --all -- --check` | clean |
+| `cargo test -p pixelflow-compiler --lib` | `142 passed; 0 failed` |
+| `PIXELFLOW_ISA=avx2 cargo test -p pixelflow-compiler` | 14 targets ok: 142 + 5 + 7 + 6 + 14 + 6 + 12 + 5 + 6 + 30 + 16 + 10 + 30 + 9 = **298** passed, 0 failed; doc-tests 6 ignored |
+| `PIXELFLOW_ISA=avx512 cargo test -p pixelflow-compiler` | identical, **298** passed, 0 failed |
+| `cargo test -p pixelflow-ir` | 310, 1, 75 (1 ignored), 9, 1, doc 1 (1 ignored): 397 passed, 0 failed |
+| `cargo test -p pixelflow-search --features provenance-journal` | 397 (8 ignored), 5, 13, 2, 7, 1, 2, 7: 434 passed, 0 failed; doc-tests 6 + 1 ignored |
+| `cargo clippy -p pixelflow-compiler --no-deps --all-targets -- -D warnings` (default toolchain) | clean |
+| `cargo doc --no-deps --document-private-items` on `pixelflow-ir`, `-search`, `-compiler` | no warning at any line this round touched (the existing ones are elsewhere) |
+| `scripts/check-doc-paths.sh`, `scripts/check-intent.sh` | OK |
+
+Test count: 298, unchanged (no `#[test]` added or removed; the new assertions are inside the existing parser test). The edit to
+`pixelflow-ir` (docs and one message) changed the build of everything above it; `cargo test -p pixelflow-core` and `-graphics` were
+not re-run because nothing they compile changed in meaning. `df -h /` before each build: 5.3 GB free, 5.0 GB after the scratch probe.

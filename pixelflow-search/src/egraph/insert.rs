@@ -49,13 +49,12 @@ pub enum Declined {
     /// `ShiftCount` as such, a count that is not a literal as "must be a
     /// Const".
     ShiftCount(ShiftDirection),
-    /// A macro-parameter slot, under a [`Vocabulary`] that may not hold one.
+    /// An unbound slot of a rewrite-rule template, under a [`Vocabulary`] that
+    /// may not hold one.
     ///
-    /// Only [`Vocabulary::Runtime`] declines it: a `Param` at bake time means
-    /// a builder was never called, and the term reached compilation without
-    /// being specialized. The macro tier holds params natively as
-    /// [`ENode::Param`], because an unbound slot
-    /// is what a builder *is*.
+    /// Only [`Vocabulary::Runtime`] declines it: a `Param` has no value, and
+    /// the runtime tier builds kernels. [`Vocabulary::Templates`] holds one as
+    /// [`ENode::Param`].
     Param(u8),
     /// A kernel named by content, which the graph was not told is a unit.
     ///
@@ -87,14 +86,13 @@ pub enum Declined {
 ///
 /// `Buffer` and `Uniform` leaves insert as themselves, carrying their
 /// declarations, and under [`Vocabulary::Templates`] so does `Param`. Under
-/// [`Vocabulary::Runtime`] a `Param` declines: by bake time a builder should
-/// have substituted it, so one surviving is a term that was never
-/// specialized. Which vocabulary may hold which leaf is the job `Vocabulary`
-/// exists for, and saying it there is what stopped the macro tier from
-/// smuggling params past this gate disguised as `Var`s. A `Ref` inserts as
-/// an opaque [`ENode::Ref`] leaf under [`Vocabulary::Runtime`] when the graph
-/// has admitted it as a unit (`EGraph::admit_unit`, which carries the
-/// variance its body is not here to give), and declines otherwise.
+/// [`Vocabulary::Runtime`] a `Param` declines: it has no value, and the
+/// runtime tier builds kernels. Which vocabulary may hold which leaf is the
+/// job `Vocabulary` exists for, and saying it there is what stopped the macro
+/// tier from smuggling params past this gate disguised as `Var`s. A `Ref`
+/// inserts as an opaque [`ENode::Ref`] leaf under [`Vocabulary::Runtime`] when
+/// the graph has admitted it as a unit (`EGraph::admit_unit`, which carries
+/// the variance its body is not here to give), and declines otherwise.
 ///
 /// **Reachable-only.** A term representation may hold nodes no longer reached
 /// from `root` — an arena accumulates construction garbage — and inserting

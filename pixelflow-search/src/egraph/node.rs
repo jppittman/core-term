@@ -245,13 +245,14 @@ pub enum ENode {
     /// `Const`, so it is never folded; its gain in the e-graph is CSE of the
     /// arithmetic that depends on it alone.
     Uniform(UniformDecl),
-    /// Unbound scalar slot of a `kernel!` builder, hash-consed by index.
+    /// Unbound scalar slot of a rewrite-rule template, hash-consed by index.
     ///
     /// The same opaque leaf as [`ENode::Uniform`], one tier earlier: no rule
     /// matches it, nothing folds it, its derivative is zero, and its gain in
-    /// the e-graph is CSE of the arithmetic depending on it alone. A builder
-    /// substitutes it away before anything is compiled, so only the macro
-    /// tier's [`Vocabulary::Templates`](super::ops::Vocabulary) may hold one.
+    /// the e-graph is CSE of the arithmetic depending on it alone. `kernel!`
+    /// builds none, and the JIT emitter and the compiler's emission both
+    /// panic on one. Only a
+    /// [`Vocabulary::Templates`](super::ops::Vocabulary) graph may hold one.
     ///
     /// Before this leaf existed the e-graph refused `Param` outright, and
     /// each macro-side caller smuggled one past as something else — as
@@ -595,7 +596,7 @@ impl ENode {
             // A buffer's contents are fixed for the kernel's lifetime — a
             // read of one varies with its index, which is the `Gather`'s
             // other children, unioned by the `Op` arm. A uniform or a
-            // builder's parameter is one number for the whole lattice.
+            // `Param` is one number for the whole lattice.
             ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) | ENode::Param(_) => {
                 Variance::CONST
             }

@@ -118,11 +118,12 @@
 //! `const` or a `fn`; a record that is generic, a tuple struct or a unit
 //! struct, and a `repr` or a `cfg` on a record or its field (§1.3); an
 //! attribute other than a doc comment on a `const` or a `fn`; a generic or a
-//! `where` clause on a `fn` or a `const` (a `const` generic by a message
-//! saying a count is a literal or a `usize` const, §1.2 of the bound plan),
-//! and generic arguments at a call; a function, spelled any way, as a
-//! parameter of the closure form (rustc's E0562 of an `impl` type: an entry
-//! of the items form takes a kernel);
+//! `where` clause on a `fn` (a `const` generic by a message saying a count is
+//! a literal or a `usize` const, §1.2 of the bound plan), and on a `const`,
+//! which syn hands over as an unknown item and the item refusal names;
+//! generic arguments on a name, at a call or not; a function, spelled any
+//! way, as a parameter of the closure form (rustc's E0562 of an `impl` type:
+//! an entry of the items form takes a kernel);
 //! a `fn` without a declared return type; an `if` without an
 //! `else` or an `if let`; `loop`/`while`/`for`; assignment; `return`; a
 //! closure anywhere but a fold's; a tuple
@@ -626,8 +627,10 @@ fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
         return Err(syn::Error::new_spanned(param, generic_refusal(param)));
     }
     if let Some(where_clause) = &generics.where_clause {
-        return Err(syn::Error::new_spanned(
-            where_clause,
+        // At the keyword: a clause without predicates prints as no tokens,
+        // and a span over it falls back to the whole invocation.
+        return Err(syn::Error::new(
+            where_clause.where_token.span,
             "a `where` clause in a `kernel!` block: there are no generics to bound",
         ));
     }
@@ -635,8 +638,8 @@ fn refuse_generics(generics: &syn::Generics) -> syn::Result<()> {
 }
 
 /// The refusal of a generic, by what it would have meant: a `const` one was a
-/// count, which is a value now, and any other names a type the language does
-/// not have.
+/// count, which a block now writes as a literal or a `usize` const, and any
+/// other names a type the language does not have.
 fn generic_refusal(param: &syn::GenericParam) -> String {
     match param {
         syn::GenericParam::Const(_) => format!(
@@ -656,6 +659,22 @@ fn generic_refusal(param: &syn::GenericParam) -> String {
     }
 }
 
+/// The refusal of generic arguments on a name in a body, at a call or in a
+/// value position alike: nothing in a kernel is generic. It is spanned on the
+/// arguments, `::<4>`, the token that is wrong.
+fn generic_arguments_refusal(arguments: &syn::PathArguments) -> syn::Error {
+    syn::Error::new_spanned(
+        arguments,
+        format!(
+            "generic arguments in a `kernel!` block\n\
+             \n\
+             note: nothing in a kernel is generic, so no `fn` takes generic arguments \
+             (§1.3 of {PLAN})\n\
+             help: a count is a literal, or a `usize` const of the block"
+        ),
+    )
+}
+
 /// Convert syn::Expr to our AST Expr.
 fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
     match expr {
@@ -663,12 +682,13 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             // Simple identifier: X, cx, etc.
             if expr_path.path.segments.len() == 1 && expr_path.qself.is_none() {
                 let segment = &expr_path.path.segments[0];
-                if segment.arguments.is_empty() {
-                    return Ok(Expr::Ident(IdentExpr {
-                        name: segment.ident.clone(),
-                        span: segment.ident.span(),
-                    }));
+                if !segment.arguments.is_empty() {
+                    return Err(generic_arguments_refusal(&segment.arguments));
                 }
+                return Ok(Expr::Ident(IdentExpr {
+                    name: segment.ident.clone(),
+                    span: segment.ident.span(),
+                }));
             }
             // A qualified path names something outside the block.
             Err(syn::Error::new_spanned(
@@ -758,17 +778,8 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             if let syn::Expr::Path(ref path) = *expr_call.func {
                 if path.path.segments.len() == 1 && path.qself.is_none() {
                     let segment = &path.path.segments[0];
-                    if !segment.arguments.is_none() {
-                        return Err(syn::Error::new_spanned(
-                            &segment.arguments,
-                            format!(
-                                "generic arguments at a call in a `kernel!` block\n\
-                                 \n\
-                                 note: nothing in a kernel is generic, so no `fn` takes generic \
-                                 arguments (§1.3 of {PLAN})\n\
-                                 help: a count is a literal, or a `usize` const of the block"
-                            ),
-                        ));
+                    if !segment.arguments.is_empty() {
+                        return Err(generic_arguments_refusal(&segment.arguments));
                     }
                     let func = segment.ident.clone();
                     let args = expr_call
@@ -2697,12 +2708,13 @@ mod tests {
         }
     }
 
-    /// No `fn` and no `const` takes generics, and no call names any. A `const`
-    /// generic is refused by saying what a count is — a literal or a `usize`
-    /// const, an entry being one program whatever its counts — naming the plan
-    /// that made a bound a value; any other generic names what the language's
-    /// values are; a call's generic arguments, whatever they are, say that
-    /// nothing in a kernel is generic.
+    /// No `fn` takes generics, and no name in a body takes generic arguments.
+    /// A `const` generic is refused by saying what a count is — a literal or a
+    /// `usize` const, an entry being one program whatever its counts — naming
+    /// the plan that made a bound a value; any other generic names what the
+    /// language's values are; generic arguments on a name, whatever they are
+    /// and whether the name is called or read, say that nothing in a kernel is
+    /// generic. Empty ones (`h::<>`) carry no arguments and read as the name.
     #[test]
     fn generics_are_refused_and_a_const_generic_says_what_a_count_is() {
         for input in [
@@ -2728,7 +2740,8 @@ mod tests {
             let err = refusal(input);
             assert!(
                 err.contains("generics in a `kernel!` block")
-                    && err.contains("nothing in a kernel is generic"),
+                    && err.contains("nothing in a kernel is generic")
+                    && err.contains("§1.3 of docs/language/2026-09-25-the-language-is-kernel.md"),
                 "got: {err}"
             );
         }
@@ -2741,14 +2754,23 @@ mod tests {
             quote! { fn h(x: f32) -> f32 { x } pub fn f() -> f32 { h::<4>(X) } },
             quote! { pub fn f() -> f32 { DX::<f32>(X * X) } },
             quote! { pub fn f(k: impl Fn(f32, f32) -> f32) -> f32 { k::<4>(X, Y) } },
+            quote! { const N: usize = 4; pub fn f() -> f32 { N::<4> as f32 } },
+            quote! { pub fn f() -> f32 { X::<f32> } },
         ] {
             let err = refusal(input);
             assert!(
-                err.contains("generic arguments at a call in a `kernel!` block")
+                err.contains("generic arguments in a `kernel!` block")
                     && err.contains("no `fn` takes generic arguments")
+                    && err.contains("§1.3 of docs/language/2026-09-25-the-language-is-kernel.md")
                     && err.contains("a count is a literal, or a `usize` const of the block"),
                 "got: {err}"
             );
+        }
+        for input in [
+            quote! { fn h(x: f32) -> f32 { x } pub fn f() -> f32 { h::<>(X) } },
+            quote! { const N: usize = 4; pub fn f() -> f32 { N::<> as f32 + X::<> } },
+        ] {
+            parse(input).expect("empty generic arguments name nothing");
         }
     }
 

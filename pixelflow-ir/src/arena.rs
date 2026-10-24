@@ -165,9 +165,9 @@ impl OpenFold {
 }
 
 /// What a builder closes a fold's body over ([`ExprArena::close_over`]): the
-/// fold's algebra and its bounds, each a literal or a term in the
-/// arena the body is built in. The binder is `close_over`'s to choose, so it is
-/// not here.
+/// fold's algebra and its bounds, each a literal or a term in the arena the
+/// body is built in. The binder is `close_over`'s to choose, so it is not
+/// here.
 ///
 /// A value bound is a term like any other, built where the body is before the
 /// fold closes (`Kernel::over_values` splices it beside the body). One that is

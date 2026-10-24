@@ -560,8 +560,8 @@ pub struct Staged {
     statements: Vec<TokenStream>,
     /// How many variables have been named: every one is fresh.
     named: u64,
-    /// The folds open, innermost last: the variable holding each fold's
-    /// index, and the `FoldTerms` it closes into.
+    /// The folds open, innermost last: the variable holding each open fold,
+    /// and the `FoldTerms` it closes into.
     open: Vec<(Ident, TokenStream)>,
 }
 

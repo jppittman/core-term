@@ -697,9 +697,13 @@ A5's deletion, which removes code #1427 only re-scopes.
   structural bound, a `Param` leaf, is `Variance::ALL` (`variance.rs:338`) and L3 refuses it.
   **Done:** `kernel!` refuses a generic on any `fn` at parse, a `const` one naming §1.2; the
   structural path is deleted (§3.4), and `FoldTerms` lost its stride, which only the template
-  set; the template exemption went with it, so A7 is empty (below). The test templates are
-  written over `usize` consts and are saturated at expansion, and the tests whose subject was
-  the template are deleted.
+  set past 1; the template exemption went with it, so A7 is empty (below). The test templates
+  that take no kernel (`ramp`, `rings`, `swept`, `mean_index`, and `emit.rs`'s
+  `counted`) are written over `usize` consts and are offered to the macro tier at expansion;
+  the two that take one (`applied`, `mean_down`) stay `Staged`; the tests whose subject was
+  the template are deleted. byte_probe empty in both columns under `PIXELFLOW_ISA=avx512` and
+  `=avx2`; the 29 font programs' keys, digests and saturation telemetry, the extraction fields
+  included, unchanged (gates compared to the base verified at main 7e9531e).
 - **A6. `kernel!` bounds are typed expressions** (§3.4). Waits on decision 2, the spelling;
   decision 1 is B5's. Gate: `tests/rustc_is_the_oracle.rs` gains a triangular case and a
   per-call count case (`fn rust_sum(n: usize, x: f32)`, in decision 2's spelling); the

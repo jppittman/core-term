@@ -145,11 +145,9 @@ fn unrepresentable_input_declines_rather_than_panicking() {
 /// A `Param` is holdable or not *according to the vocabulary*, which is the
 /// question `Vocabulary` exists to answer.
 ///
-/// `Templates` is the macro tier, where a builder's scalar is legitimately
-/// unbound — an unbound slot is what a builder is — so it inserts as the
-/// opaque leaf `ENode::Param`, alongside `Buffer` and `Uniform`. `Runtime` is
-/// bake time, by which a builder must have substituted it, so one surviving
-/// there means the term was never specialized and is declined.
+/// `Templates` holds a rewrite-rule template's unbound slot, so it inserts as
+/// the opaque leaf `ENode::Param`, alongside `Buffer` and `Uniform`. `Runtime`
+/// is bake time, where a slot with no value has no meaning, so it is declined.
 ///
 /// Both halves are asserted here because the interesting property is the
 /// *difference*: `insert` used to decline `Param` under every vocabulary, and

@@ -216,18 +216,17 @@ op_table! {
     /// call from a block; never folded, loaded once per call.
     Uniform = 50,
 
-    /// An unbound scalar slot in a `kernel!` builder, before the builder is
-    /// called. A leaf with no value yet — never folded, matched by no rewrite
-    /// rule, derivative zero — which is exactly [`OpKind::Uniform`]'s
-    /// contract, one tier earlier.
+    /// An unbound scalar slot of a rewrite-rule template. A leaf with no
+    /// value yet — never folded, matched by no rewrite rule, derivative zero —
+    /// which is exactly [`OpKind::Uniform`]'s contract, one tier earlier.
     ///
-    /// Only the macro tier may hold one (`Vocabulary::Templates`); a `Param`
-    /// reaching bake time means a builder was never called, and
-    /// `Vocabulary::Runtime` declines it. Before this existed, the e-graph
-    /// refused `Param` outright and every macro-side caller smuggled one past
-    /// as something else — as `Var(16 + i)`, or as an opaque identifier —
-    /// which is how `Var` reacquired the third meaning CLAUDE.md records as
-    /// retired.
+    /// `kernel!` builds none, and the JIT emitter and the compiler's emission
+    /// both panic on one. The e-graph holds one only under
+    /// `Vocabulary::Templates`; `Vocabulary::Runtime` declines it. Before this
+    /// existed, the e-graph refused `Param` outright and every macro-side
+    /// caller smuggled one past as something else — as `Var(16 + i)`, or as
+    /// an opaque identifier — which is how `Var` reacquired the third meaning
+    /// CLAUDE.md records as retired.
     Param = 51,
 
     // --- Effects (post-legalize) ---

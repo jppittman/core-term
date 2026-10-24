@@ -463,8 +463,8 @@ pub enum BoundRefusal {
     /// `Int` (T6), a computed bound is `f32` arithmetic that can round into the
     /// domain, so a user writes a leaf.
     BoundArithmetic { end: BoundEnd },
-    /// A bound that is not a number at all: a builder's `Param` slot, filled
-    /// before a kernel exists, or a `Buffer`'s address, read through a gather.
+    /// A bound that is not a number at all: a `Param` slot, which has no
+    /// value, or a `Buffer`'s address, read through a gather.
     BoundNotANumber { end: BoundEnd },
 }
 
@@ -499,9 +499,9 @@ impl core::fmt::Display for BoundRefusal {
             ),
             Self::BoundNotANumber { end } => write!(
                 f,
-                "BoundNotANumber: a fold's {end} bound is a builder's slot or a table's \
-                 address, not a number: a `Param` is filled before a kernel exists and a \
-                 `Buffer` is read through a gather (§1.4 of {PLAN})"
+                "BoundNotANumber: a fold's {end} bound is an unbound slot or a table's \
+                 address, not a number: a `Param` has no value and a `Buffer` is read \
+                 through a gather (§1.4 of {PLAN})"
             ),
         }
     }
@@ -536,9 +536,9 @@ pub struct Fold {
     binder: Binder,
     /// The step between visited indices: 1 from [`Fold::new`]. Not 1 only
     /// over a known range it divides, which the constructors that meet the
-    /// bounds check ([`FoldHeader::new`], `KnownRange::new`); only `pack`
-    /// and `HalveFold` make one. At most
-    /// [`Fold::EXACT_BOUND`]: it is added to an `f32` counter.
+    /// bounds check ([`FoldHeader::new`], `KnownRange::new`); only `pack` and
+    /// `HalveFold` make one. At most [`Fold::EXACT_BOUND`]: it is added to an
+    /// `f32` counter.
     stride: u64,
 }
 

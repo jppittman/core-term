@@ -101,8 +101,9 @@ pub enum Shape<'a, R> {
     Var(u8),
     /// Literal: a number or a mask.
     Const(Lit),
-    /// Macro-parameter slot. Valid only before kernel compilation; an e-graph
-    /// insert declines one rather than inventing a value for it.
+    /// Unbound slot of a rewrite-rule template. Valid only before kernel
+    /// compilation; a runtime-tier e-graph insert declines one rather than
+    /// inventing a value for it.
     Param(u8),
     /// Bound-memory leaf, carrying the identity that survives a merge.
     Buffer(BufferDecl),

@@ -2007,7 +2007,7 @@ mod tests {
         );
     }
 
-    /// A `Param` is a builder's slot, filled before a kernel exists.
+    /// A `Param` is a slot with no value.
     #[test]
     #[should_panic(expected = "BoundNotANumber")]
     fn over_values_refuses_a_param() {

@@ -753,15 +753,15 @@ impl<'a> FnAnalyzer<'a> {
                 ),
             ));
         }
-        let shadowed = match self.symbols.lookup(&text).map(|s| s.kind) {
-            Some(SymbolKind::Const) => Some(format!("the `const {text}` of this block")),
-            _ => None,
-        };
-        if let Some(shadowed) = shadowed {
+        if self
+            .symbols
+            .lookup(&text)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::Const)
+        {
             return Err(syn::Error::new(
                 name.span(),
                 format!(
-                    "{binder} `{text}` shadows {shadowed}\n\
+                    "{binder} `{text}` shadows the `const {text}` of this block\n\
                      help: rename this {binder} to something else"
                 ),
             ));

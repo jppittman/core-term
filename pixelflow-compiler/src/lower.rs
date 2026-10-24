@@ -793,9 +793,8 @@ impl<S: Site> Lowering<'_, S> {
             };
         }
         // The same order sema documents: a binding, then a const, then the
-        // coordinates. Sema refuses a
-        // parameter named X or Y, so the two stages agree without one
-        // relying on the other's refusal.
+        // coordinates. Sema refuses a parameter named X or Y, so the two
+        // stages agree without one relying on the other's refusal.
         match self.program.analyzed.consts.get(name) {
             Some(&ConstValue::F32(value)) => return Ok(self.site.constant(value)),
             Some(ConstValue::Usize(_)) => {
