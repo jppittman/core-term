@@ -1,0 +1,222 @@
+   Compiling pixelflow-graphics v0.1.0 (/home/user/pixelflow/pixelflow-graphics)
+   Compiling pixelflow-runtime v0.1.0 (/home/user/pixelflow/pixelflow-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.41s
+     Running unittests src/lib.rs (target.noindex/debug/deps/pixelflow_runtime-08dbb18e5deb6fb6)
+
+running 70 tests
+test coordinator_node::node_tests::a_manifold_arriving_mid_render_is_kept_not_dropped ... ok
+test coordinator_node::node_tests::a_resize_between_frames_renders_at_the_new_size ... ok
+test coordinator_node::node_tests::a_resize_does_not_grant_a_second_buffer_mid_render ... ok
+test coordinator_node::node_tests::a_resize_mid_render_keeps_the_old_frame_off_the_screen ... ok
+test coordinator_node::node_tests::an_idle_engine_does_not_hold_the_buffer ... ok
+test coordinator_node::node_tests::the_driver_never_lends_a_second_buffer ... ok
+test coordinator_node::node_tests::frames_circulate_through_request_render_and_present ... ok
+test coordinator_node::node_tests::a_second_ask_before_the_first_is_answered_does_not_earn_a_second_grant ... ok
+test coordinator_node::tests::a_request_window_step_latches_immediately_on_emission ... ok
+test coordinator_node::tests::a_granted_window_turns_a_submitted_scene_into_a_render_port ... ok
+test coordinator_node::tests::coordinator_data_debug_names_its_variant ... ok
+test display::window_keeper::tests::a_buffer_is_lent_once_and_comes_back ... ok
+test display::window_keeper::tests::a_pending_request_is_answered_by_a_resize_allocation ... ok
+test display::window_keeper::tests::a_resize_between_presentation_and_rest_does_not_restore_the_old_buffer ... ok
+test display::window_keeper::tests::a_request_refused_while_the_buffer_is_out_is_answered_when_it_returns ... ok
+test display::window_keeper::tests::a_resize_while_the_buffer_is_out_supersedes_it ... ok
+test display::window_keeper::tests::nothing_is_lent_before_a_window_exists ... ok
+test engine_core::tests::a_fullscreen_request_toggles_the_primary_window ... ok
+test engine_core::tests::a_paste_answer_reaches_the_app_with_its_selection ... ok
+test engine_core::tests::a_paste_request_names_its_selection_to_the_driver ... ok
+test engine_core::tests::a_vsync_tick_requests_a_frame_from_the_app_and_nudges_the_coordinator ... ok
+test engine_core::tests::an_app_bell_rings_the_driver_bell ... ok
+test engine_core::tests::close_requested_sets_quit_and_notifies_the_app ... ok
+test engine_core::tests::quit_control_sets_quit ... ok
+test coordinator_node::tests::render_complete_with_a_presentable_frame_emits_present_and_vsync_telemetry ... ok
+test engine_core::tests::set_title_emits_driver_control ... ok
+test engine_core::tests::skipped_frame_returns_the_token_without_touching_the_coordinator ... ok
+test engine_core::tests::window_created_and_resized_nudge_the_coordinator_to_advance ... ok
+test engine_core::tests::render_surface_returns_the_vsync_token_and_submits_to_the_coordinator ... ok
+test coordinator_node::tests::the_frame_counter_advances_once_per_presented_frame ... ok
+test engine_core::tests::window_granted_relays_to_the_coordinator ... ok
+test engine_troupe::tests::quit_shuts_down_the_driver_and_every_configured_handle ... ok
+test engine_troupe::tests::forwarder_relays_responses_and_exits_when_the_rasterizer_disconnects ... ok
+test display::window_keeper::tests::a_retina_surface_allocates_the_lattice_not_the_layout ... ok
+test engine_troupe::tests::skipped_frame_does_not_touch_the_coordinator ... ok
+test engine_troupe::tests::render_surface_relays_a_submit_to_the_coordinator ... ok
+test engine_troupe::tests::skipped_frame_returns_the_vsync_token ... ok
+test engine_troupe::tests::vsync_tick_relays_advance_to_the_coordinator ... ok
+test engine_troupe::tests::window_created_and_resized_relay_advance_to_the_coordinator ... ok
+test platform::linux::events::tests::a_control_chord_names_the_key_held ... ok
+test engine_troupe::tests::window_granted_relays_to_the_coordinator ... ok
+test platform::linux::events::tests::named_keys_are_keys_not_the_text_they_type ... ok
+test platform::linux::events::tests::unicode_keysyms_name_their_character_and_legacy_ones_fall_back_to_text ... ok
+test platform::linux::events::tests::the_keypad_is_navigation_with_num_lock_off_and_digits_with_it_on ... ok
+test render_coordinator::tests::a_completed_render_presents_and_asks_again ... ok
+test render_coordinator::tests::a_failed_render_send_frees_the_edge ... ok
+test render_coordinator::tests::a_granted_buffer_and_a_scene_render ... ok
+test render_coordinator::tests::a_scene_with_no_buffer_asks_for_one ... ok
+test render_coordinator::tests::a_second_scene_mid_render_does_not_start_a_second_render ... ok
+test render_coordinator::tests::a_skipped_render_retains_the_buffer_unpresented ... ok
+test render_coordinator::tests::an_unanswered_request_is_not_repeated ... ok
+test render_coordinator::tests::an_undelivered_request_is_retried_on_the_next_tick ... ok
+test render_coordinator::tests::nothing_to_draw_does_not_ask_for_the_buffer ... ok
+test render_coordinator::tests::window_metadata_survives_the_round_trip ... ok
+test engine_troupe::tests::relays_wait_out_a_full_coordinator_ring_and_lose_nothing ... ok
+test vsync_actor::tests::a_tick_before_start_emits_nothing ... ok
+test vsync_actor::tests::credit_caps_ticks_at_max_tokens_with_no_clock_involved ... ok
+test vsync_actor::tests::other_control_messages_leave_the_interval_port_unset ... ok
+test vsync_actor::tests::rendered_response_does_not_return_a_token ... ok
+test vsync_actor::tests::return_token_command_unblocks_exactly_one_more_tick ... ok
+test vsync_actor::tests::start_then_tick_emits_exactly_one_tick ... ok
+test vsync_actor::tests::stop_silences_further_ticks ... ok
+test vsync_actor::tests::update_refresh_rate_emits_the_new_interval_on_its_own_port ... ok
+test vsync_actor::wiring_tests::a_full_engine_inbox_parks_and_retains_the_tick ... ok
+test vsync_actor::wiring_tests::a_gone_engine_reports_disconnected_and_retains_the_tick ... ok
+test vsync_actor::wiring_tests::a_tick_reaches_the_engine_as_vsync_data ... ok
+test vsync_actor::wiring_tests::an_interval_change_reaches_the_clock_and_is_always_cleared ... ok
+test engine_troupe::tests::a_wedged_green_host_times_out_loudly - should panic ... ok
+test vsync_actor::integration_tests::the_real_green_node_saturates_its_credit_and_return_token_unblocks_one_more ... ok
+test render_coordinator::tests::a_packed_scene_reaches_the_rasterizer_in_the_frames_own_space ... ok
+
+test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+
+     Running tests/actor_bug_hunting_tests.rs (target.noindex/debug/deps/actor_bug_hunting_tests-590c8a935ac69509)
+
+running 13 tests
+test backoff_does_not_overflow_on_large_attempts ... ok
+test actor_panic_does_not_corrupt_state ... ok
+test doorbell_saturation_does_not_lose_messages ... ok
+test mass_sender_drop_does_not_cause_race ... ok
+test concurrent_send_during_processing ... ok
+test rapid_channel_creation_does_not_leak ... ok
+test shutdown_race_does_not_panic ... ok
+test park_poll_does_not_spin_indefinitely ... ok
+test large_queue_does_not_cause_issues ... ok
+test single_sender_fifo_ordering_maintained ... ok
+test zero_burst_limit_does_not_cause_infinite_loop ... ok
+test slow_handler_backpressure_works ... ok
+test control_lane_timeout_returns_error ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s
+
+     Running tests/actor_model_tests.rs (target.noindex/debug/deps/actor_model_tests-d2629d97bc3e48cb)
+
+running 24 tests
+test actor_run_exits_when_all_senders_dropped ... ok
+test actor_can_override_park_hint_to_poll ... ok
+test cloned_handle_works_after_original_dropped ... ok
+test different_message_types_per_lane ... ok
+test empty_message_types_work ... ok
+test custom_burst_and_buffer_sizes ... ok
+test fifo_ordering_within_same_lane ... ok
+test handle_debug_impl_works ... ok
+test handle_clone_is_independent ... ok
+test immediate_shutdown_no_messages ... ok
+test concurrent_senders_stress_test ... ok
+test large_message_type_works ... ok
+test data_lane_blocks_when_buffer_full ... ok
+test message_enum_variants_distinguishable ... ok
+test mixed_priority_messages_all_delivered ... ok
+test management_burst_limit_prevents_starvation ... ok
+test high_throughput_single_sender ... ok
+test large_burst_and_buffer_sizes ... ok
+test multiple_senders_all_messages_delivered ... ok
+test pending_messages_drain_in_priority_order ... ok
+test no_starvation_with_continuous_high_priority ... ok
+test park_hint_poll_when_burst_limit_hit ... ok
+test park_hint_wait_when_queues_empty ... ok
+test zero_size_type_messages ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+
+     Running tests/display_driver_tests.rs (target.noindex/debug/deps/display_driver_tests-edfd6eddd2438d06)
+
+running 26 tests
+test app_management_clipboard ... ok
+test app_management_set_title ... ok
+test app_management_cursor_icon ... ok
+test cursor_icon_variants ... ok
+test display_control_clone_works ... ok
+test display_control_debug_format ... ok
+test display_event_key_event_with_modifiers ... ok
+test display_event_mouse_events ... ok
+test display_event_paste_data_works ... ok
+test display_event_scroll_with_float_deltas ... ok
+test display_event_window_created_carries_both_extents ... ok
+test display_mgmt_create_window ... ok
+test app_management_resize_request ... ok
+test engine_event_data_request_frame ... ok
+test engine_event_control_resize ... ok
+test engine_event_control_scale_changed ... ok
+test engine_event_management_key_down ... ok
+test key_symbol_default_is_unknown ... ok
+test key_symbol_equality ... ok
+test key_symbol_modifier_detection ... ok
+test modifiers_can_combine ... ok
+test modifiers_clone_and_copy ... ok
+test modifiers_default_is_empty ... ok
+test mouse_button_variants ... ok
+test window_descriptor_custom_values ... ok
+test window_descriptor_default_values ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/macos_integration_tests.rs (target.noindex/debug/deps/macos_integration_tests-1dc6ad4eb34eb42f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/platform_actor_tests.rs (target.noindex/debug/deps/platform_actor_tests-052eb20a361bc3c6)
+
+running 2 tests
+test platform_ops_emit_without_an_engine ... ok
+test platform_actor_delegation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/target_topology.rs (target.noindex/debug/deps/target_topology-8dd8d3b31214920b)
+
+running 3 tests
+test regressed_aggregate_framing_is_cyclic ... ok
+test regressed_render_pipeline_framing_is_cyclic ... ok
+test the_target_engine_mesh_is_a_dag ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/troupe_pattern_tests.rs (target.noindex/debug/deps/troupe_pattern_tests-91cdbcb8fd2bcb2c)
+
+running 9 tests
+test circular_messaging_does_not_deadlock ... ok
+test actors_can_coordinate_startup_with_barrier ... ok
+test all_actor_threads_exit_on_channel_close ... ok
+test directory_allows_cross_actor_messaging ... ok
+test shutdown_message_causes_actor_exit ... ok
+test two_phase_initialization_queues_messages_before_play ... ok
+test shutdown_works_with_multiple_actors ... ok
+test multiple_producers_work_independently ... ok
+test actor_thread_panic_isolated ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/vsync_message_protocol.rs (target.noindex/debug/deps/vsync_message_protocol-13449e3f0a38fc93)
+
+running 5 tests
+test a_tick_converts_into_the_management_lane ... ok
+test a_command_converts_into_the_control_lane ... ok
+test a_rendered_response_converts_into_the_data_lane ... ok
+test command_debug_output_is_the_variant_name ... ok
+test the_default_command_is_shutdown ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pixelflow_runtime
+
+running 6 tests
+test pixelflow-runtime/src/api/public.rs - api::public::AppData::RenderSurface (line 307) ... ignored
+test pixelflow-runtime/src/display/messages.rs - display::messages::DisplayControl::SetSize (line 247) ... ignored
+test pixelflow-runtime/src/display/messages.rs - display::messages::DisplayControl::SetTitle (line 220) ... ignored
+test pixelflow-runtime/src/display/messages.rs - display::messages::DisplayData::Present (line 178) ... ignored
+test pixelflow-runtime/src/display/messages.rs - display::messages::DisplayMgmt::Create (line 411) ... ignored
+test pixelflow-runtime/src/display/messages.rs - display::messages::DisplayMgmt::Destroy (line 458) ... ignored
+
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+EXIT 0

@@ -1,0 +1,3 @@
+wrote /home/user/pixelflow/.wip/gates/out/gate2x.a4-f2.txt (29 lines, sha256 29834e148fbac219...)
+IDENTICAL to gate2x.base.txt
+EXIT 0
